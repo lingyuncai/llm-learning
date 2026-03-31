@@ -6,7 +6,7 @@
 
 **Architecture:** Astro Islands 架构，MDX 作为内容格式，React 组件作为交互岛。内容通过 Astro Content Collections 管理，学习路径通过 YAML 配置。首页展示路径卡片 + 标签浏览，文章页三栏布局（TOC / 正文 / 侧边栏）。
 
-**Tech Stack:** Astro 5, React 19, MDX, Tailwind CSS 3, Framer Motion, KaTeX, D3.js, TypeScript
+**Tech Stack:** Astro 5, React 19, MDX, Tailwind CSS 3, Motion (原 Framer Motion), KaTeX, D3.js, TypeScript
 
 **设计文档:** `docs/superpowers/specs/2026-03-31-llm-learning-site-design.md`
 
@@ -25,15 +25,26 @@
 
 - [ ] **Step 1: 创建 Astro 项目**
 
+> **注意**：项目目录已包含 `.git/`、`docs/` 等文件，不能直接在非空目录运行 `create astro`。
+> 使用临时目录生成脚手架后复制过来。
+
 ```bash
 cd C:/workspace/llm-learning
-npm create astro@latest . -- --template minimal --no-install --no-git --typescript strict
+# 在临时目录生成 Astro 脚手架
+npx create-astro@latest ./tmp-astro-scaffold --template minimal --no-install --no-git --typescript strict
+# 复制脚手架文件到项目根目录（不覆盖已有文件）
+cp -rn ./tmp-astro-scaffold/* .
+cp ./tmp-astro-scaffold/.vscode . 2>/dev/null || true
+# 删除模板生成的默认首页（与 i18n redirectToDefaultLocale 冲突）
+rm -f src/pages/index.astro
+# 清理临时目录
+rm -rf ./tmp-astro-scaffold
 ```
 
 - [ ] **Step 2: 安装核心依赖**
 
 ```bash
-npm install @astrojs/react @astrojs/mdx @astrojs/tailwind react react-dom framer-motion katex d3
+npm install @astrojs/react @astrojs/mdx @astrojs/tailwind react react-dom motion katex d3
 npm install -D @types/react @types/react-dom @types/katex @types/d3 tailwindcss@3 @tailwindcss/typography tsx
 ```
 
@@ -79,6 +90,8 @@ npm install remark-math rehype-katex
 
 ```javascript
 // tailwind.config.mjs
+import typography from '@tailwindcss/typography';
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./src/**/*.{astro,html,js,jsx,md,mdx,svelte,ts,tsx,vue}'],
@@ -114,7 +127,7 @@ export default {
       },
     },
   },
-  plugins: [require('@tailwindcss/typography')],
+  plugins: [typography],
 };
 ```
 
@@ -167,7 +180,7 @@ export default {
 npx astro dev
 ```
 
-Expected: 浏览器访问 `http://localhost:4321/zh/` 可看到页面。
+Expected: 浏览器访问 `http://localhost:4321/zh/` 可看到页面。访问 `http://localhost:4321/` 应自动重定向到 `/zh/`（由 i18n `redirectToDefaultLocale: true` 处理）。如果根路由没有重定向而是 404，说明 Step 1 中 `src/pages/index.astro` 未被正确删除。
 
 - [ ] **Step 9: 提交**
 
@@ -214,7 +227,7 @@ Thumbs.db
 ## 技术栈
 - 框架：Astro 5 (Islands 架构)
 - 内容：MDX (Markdown + JSX)
-- 交互组件：React + Framer Motion
+- 交互组件：React + Motion (原 Framer Motion, `import { motion } from 'motion/react'`)
 - 公式：KaTeX (remark-math + rehype-katex)
 - 可视化：D3.js + 自定义 SVG
 - 样式：Tailwind CSS + @tailwindcss/typography
@@ -265,12 +278,12 @@ references: array   # 至少一个 {type, title, url}
 - 组件通过 props 配置，不依赖外部状态
 - **在 MDX 中使用组件时，必须在 frontmatter 下方 import，并加 `client:visible` 指令**：
   ```mdx
-  import MyComponent from '../../components/interactive/MyComponent.tsx';
+  import MyComponent from '../../../components/interactive/MyComponent.tsx';
   <MyComponent client:visible />
   ```
   不加 `client:visible`，组件的 React 交互逻辑（useState、onClick 等）不会工作。
 - 纯展示型组件（无交互状态）可以不加 `client:` 指令
-- 动画用 Framer Motion，数据可视化用 D3 或自定义 SVG
+- 动画用 Motion (`import { motion } from 'motion/react'`)，数据可视化用 D3 或自定义 SVG
 
 ## 常用命令
 - `npm run dev` — 启动开发服务器
@@ -574,7 +587,7 @@ export interface ExternalResource {
 const RESOURCES_FILE = path.join(process.cwd(), 'src/content/resources/external-resources.yaml');
 
 export function getAllResources(): ExternalResource[] {
-  const content = fs.readFileSync(path.resolve(RESOURCES_FILE), 'utf-8');
+  const content = fs.readFileSync(RESOURCES_FILE, 'utf-8');
   return yaml.load(content) as ExternalResource[];
 }
 
@@ -603,7 +616,7 @@ Expected: 构建成功。
 - [ ] **Step 7: 提交**
 
 ```bash
-git add src/content/paths/ src/content/resources/ src/utils/paths.ts src/utils/resources.ts
+git add src/content/paths/ src/content/resources/ src/utils/paths.ts src/utils/resources.ts package.json package-lock.json
 git commit -m "feat: add learning path and external resource data loading"
 ```
 
@@ -614,9 +627,9 @@ git commit -m "feat: add learning path and external resource data loading"
 ### Task 5: 导航栏和基础布局
 
 **Files:**
-- Create: `src/components/layout/Navigation.astro`
+- Create: `src/components/layout/Navigation.astro` (含内联语言切换占位)
 - Create: `src/components/layout/BaseLayout.astro`
-- Create: `src/components/common/LanguageSwitch.astro`
+- Create: `src/utils/constants.ts`
 
 - [ ] **Step 1: 创建基础布局组件**
 
@@ -698,22 +711,12 @@ export const difficultyColor: Record<string, string> = {
 import BaseLayout from '../../components/layout/BaseLayout.astro';
 import { getAllPaths } from '../../utils/paths';
 import { getCollection } from 'astro:content';
+import { difficultyLabel, difficultyColor } from '../../utils/constants';
 
 const paths = getAllPaths();
-const articles = await getCollection('articles');
+const allArticles = await getCollection('articles');
+const articles = allArticles.filter(a => a.data.locale === 'zh');
 const allTags = [...new Set(articles.flatMap(a => a.data.tags))].sort();
-
-const difficultyLabel = {
-  beginner: '入门',
-  intermediate: '中级',
-  advanced: '高级',
-};
-
-const difficultyColor = {
-  beginner: 'bg-green-100 text-green-800',
-  intermediate: 'bg-blue-100 text-blue-800',
-  advanced: 'bg-purple-100 text-purple-800',
-};
 ---
 <BaseLayout title="首页">
   <!-- 学习路径 -->
@@ -773,7 +776,7 @@ const difficultyColor = {
 </BaseLayout>
 ```
 
-- [ ] **Step 3: 验证首页渲染**
+- [ ] **Step 4: 验证首页渲染**
 
 ```bash
 npx astro dev
@@ -781,10 +784,10 @@ npx astro dev
 
 Expected: 首页显示学习路径卡片和文章列表。
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 5: 提交**
 
 ```bash
-git add src/components/layout/ src/pages/zh/index.astro
+git add src/components/layout/ src/pages/zh/index.astro src/utils/constants.ts
 git commit -m "feat: add navigation, base layout, and homepage with path cards"
 ```
 
@@ -908,6 +911,7 @@ import ReferenceCard from '../common/ReferenceCard.astro';
 import PrerequisiteHint from '../common/PrerequisiteHint.astro';
 import { getCollection } from 'astro:content';
 import { getAllPaths } from '../../utils/paths';
+import { difficultyLabel, difficultyColor } from '../../utils/constants';
 
 interface Props {
   title: string;
@@ -925,7 +929,7 @@ const {
   references, updated, headings,
 } = Astro.props;
 
-const allArticles = await getCollection('articles');
+const allArticles = (await getCollection('articles')).filter(a => a.data.locale === 'zh');
 const paths = getAllPaths();
 
 // 找到包含当前文章的路径
@@ -940,12 +944,6 @@ function getNavigation(pathObj: typeof paths[0]) {
   const next = nextSlug ? allArticles.find(a => a.data.slug === nextSlug) : null;
   return { prev, next, pathTitle: pathObj.title.zh };
 }
-
-const difficultyLabel: Record<string, string> = {
-  beginner: '入门',
-  intermediate: '中级',
-  advanced: '高级',
-};
 ---
 <BaseLayout title={title}>
   <div class="flex gap-8">
@@ -958,7 +956,7 @@ const difficultyLabel: Record<string, string> = {
     <article class="flex-1 min-w-0">
       <header class="mb-8">
         <div class="flex items-center gap-3 mb-3">
-          <span class="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-800">
+          <span class={`text-xs px-2 py-0.5 rounded ${difficultyColor[difficulty]}`}>
             {difficultyLabel[difficulty] || difficulty}
           </span>
           {tags.map(tag => (
@@ -1020,7 +1018,8 @@ import { getCollection, render } from 'astro:content';
 import ArticleLayout from '../../../components/layout/ArticleLayout.astro';
 
 export async function getStaticPaths() {
-  const articles = await getCollection('articles');
+  const allArticles = await getCollection('articles');
+  const articles = allArticles.filter(a => a.data.locale === 'zh');
   return articles.map(article => ({
     params: { slug: article.data.slug },
     props: { article },
@@ -1075,6 +1074,7 @@ git commit -m "feat: add three-column article layout with TOC, references, and p
 import BaseLayout from '../../../components/layout/BaseLayout.astro';
 import { getAllPaths } from '../../../utils/paths';
 import { getCollection } from 'astro:content';
+import { difficultyLabel, difficultyColor } from '../../../utils/constants';
 
 export function getStaticPaths() {
   const paths = getAllPaths();
@@ -1085,23 +1085,11 @@ export function getStaticPaths() {
 }
 
 const { learningPath } = Astro.props;
-const allArticles = await getCollection('articles');
+const allArticles = (await getCollection('articles')).filter(a => a.data.locale === 'zh');
 
 const pathArticles = learningPath.articles
   .map(slug => allArticles.find(a => a.data.slug === slug))
   .filter(Boolean);
-
-const difficultyLabel: Record<string, string> = {
-  beginner: '入门',
-  intermediate: '中级',
-  advanced: '高级',
-};
-
-const difficultyColor: Record<string, string> = {
-  beginner: 'bg-green-100 text-green-800',
-  intermediate: 'bg-blue-100 text-blue-800',
-  advanced: 'bg-purple-100 text-purple-800',
-};
 ---
 <BaseLayout title={learningPath.title.zh}>
   <div class="max-w-3xl mx-auto">
@@ -1590,8 +1578,8 @@ slug: transformer-overview
 locale: zh
 # ... 其他 frontmatter
 ---
-import TransformerArchDiagram from '../../components/interactive/TransformerArchDiagram.tsx';
-import TensorShape from '../../components/primitives/TensorShape.tsx';
+import TransformerArchDiagram from '../../../components/interactive/TransformerArchDiagram.tsx';
+import TensorShape from '../../../components/primitives/TensorShape.tsx';
 
 ## 架构总览
 
@@ -1709,6 +1697,9 @@ function validateArticles() {
     }
 
     if (data.references && Array.isArray(data.references)) {
+      if (data.references.length === 0) {
+        errors.push({ file: filePath, field: 'references', message: 'references must have at least one entry' });
+      }
       for (const ref of data.references) {
         if (!ref.url || !ref.title || !ref.type) {
           errors.push({ file: filePath, field: 'references', message: 'Each reference must have type, title, and url' });
@@ -1818,7 +1809,7 @@ Expected: 因为路径 YAML 中引用了尚不存在的文章 slug，应显示 w
 - [ ] **Step 4: 提交**
 
 ```bash
-git add scripts/validate-content.ts package.json
+git add scripts/validate-content.ts package.json package-lock.json
 git commit -m "feat: add content validation script for frontmatter and path integrity"
 ```
 
@@ -1832,9 +1823,10 @@ git commit -m "feat: add content validation script for frontmatter and path inte
 > 3. 如需 B 级动画，创建对应的 React 交互组件
 > 4. **MDX 中 import React 组件时，必须加 `client:visible` 指令**，否则交互功能不工作：
 >    ```mdx
->    import KVCacheDemo from '../../components/interactive/KVCacheDemo.tsx';
+>    import KVCacheDemo from '../../../components/interactive/KVCacheDemo.tsx';
 >    <KVCacheDemo client:visible />
 >    ```
+>    **注意**：MDX 文件在 `src/content/articles/zh/`，到 `src/components/` 需要 3 级 `../`
 > 5. 验证渲染效果（特别是交互组件能否点击/响应）
 > 6. 提交
 >
@@ -2062,3 +2054,25 @@ npx astro dev
 git add -A
 git commit -m "chore: final validation and cleanup for V1"
 ```
+
+---
+
+## 附录：设计文档组件与 V1 计划的对照
+
+设计文档 (`docs/superpowers/specs/`) 目录结构中列出了以下组件，在 V1 计划中的状态：
+
+| 组件 | V1 状态 | 说明 |
+|------|---------|------|
+| `StepNavigator.tsx` | ✅ Task 8 | 基础分步控制器 |
+| `MatrixGrid.tsx` | ✅ Task 9 | 矩阵网格可视化 |
+| `TensorShape.tsx` | ✅ Task 10 | 张量形状标注 |
+| `TransformerArchDiagram.tsx` | ✅ Task 11 | 架构图 |
+| `QKVLinearProjection.tsx` | ✅ Task 13 | QKV 投影动画 |
+| `AttentionStepAnimation.tsx` | ✅ Task 14 | Attention 分步动画 |
+| `KVCacheDemo.tsx` | ✅ Task 18 | KV Cache 演示 |
+| `FlashAttentionTiling.tsx` | ✅ Task 19 | Flash Attention 分块动画 |
+| `CodeBlock.tsx` | ❌ 延迟 | 代码块增强，V1 使用 Astro 默认代码高亮即可 |
+| `MatrixMultiplyViewer.tsx` | ❌ 延迟 | 矩阵乘法可视化，Task 14 AttentionStepAnimation 已覆盖核心需求 |
+| `SoftmaxVisualization.tsx` | ❌ 延迟 | Softmax 可视化，Task 14 中 Attention 计算已包含 Softmax 步骤 |
+
+延迟的组件已记录在 `docs/TODO.md` 中，可在后续版本按需添加。

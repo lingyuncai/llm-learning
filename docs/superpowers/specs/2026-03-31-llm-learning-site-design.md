@@ -22,7 +22,7 @@
 | 框架 | Astro | 内容优先，Islands 架构，MDX 原生支持 |
 | 内容格式 | MDX | Markdown + JSX，公式/文字/组件无缝混排 |
 | 交互组件 | React | 生态丰富，动画库支持好 |
-| 动画 | Framer Motion | 分步动画，声明式 API |
+| 动画 | Motion (原 Framer Motion) | 分步动画，声明式 API |
 | 数据可视化 | D3.js + 自定义 SVG | 矩阵、数据流、架构图 |
 | 公式渲染 | KaTeX | 快速、轻量 |
 | 样式 | Tailwind CSS 3 | 实用优先，快速迭代，@astrojs/tailwind 集成成熟 |
@@ -243,7 +243,7 @@ llm-learning/
 | 级别 | 描述 | 使用场景 | 实现方式 |
 |------|------|----------|----------|
 | A 级 | 静态分步图解 | 大部分概念说明 | SVG + CSS，多帧切换 |
-| B 级 | 点击逐步推进 | 核心计算过程（Attention 计算、矩阵乘法） | React + Framer Motion + StepNavigator |
+| B 级 | 点击逐步推进 | 核心计算过程（Attention 计算、矩阵乘法） | React + Motion (原 Framer Motion) + StepNavigator |
 | C 级 | 完全交互参数化 | 按需，最核心概念 | React + D3 + 自定义状态管理 |
 
 ### 7.2 可复用基础组件
