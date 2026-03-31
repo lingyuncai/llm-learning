@@ -63,6 +63,7 @@ export default defineConfig({
     locales: ['zh', 'en'],
     routing: {
       prefixDefaultLocale: true,
+      redirectToDefaultLocale: true,
     },
   },
 });
@@ -262,7 +263,13 @@ references: array   # 至少一个 {type, title, url}
 ## 组件约定
 - 基础组件放 `primitives/`，特定主题放 `interactive/`
 - 组件通过 props 配置，不依赖外部状态
-- 在 MDX 中使用 `client:visible` 指令延迟加载交互组件
+- **在 MDX 中使用组件时，必须在 frontmatter 下方 import，并加 `client:visible` 指令**：
+  ```mdx
+  import MyComponent from '../../components/interactive/MyComponent.tsx';
+  <MyComponent client:visible />
+  ```
+  不加 `client:visible`，组件的 React 交互逻辑（useState、onClick 等）不会工作。
+- 纯展示型组件（无交互状态）可以不加 `client:` 指令
 - 动画用 Framer Motion，数据可视化用 D3 或自定义 SVG
 
 ## 常用命令
@@ -310,11 +317,12 @@ git commit -m "docs: add CLAUDE.md project conventions, TODO.md, and .gitignore"
 
 ```typescript
 // src/content.config.ts
-import { defineCollection, z } from 'astro:content';
+import { defineCollection } from 'astro:content';
+import { z } from 'astro/zod';
 import { glob } from 'astro/loaders';
 
 const articles = defineCollection({
-  loader: glob({ pattern: '**/*.mdx', base: './src/content/articles' }),
+  loader: glob({ pattern: '**/[^_]*.{md,mdx}', base: './src/content/articles' }),
   schema: z.object({
     title: z.string(),
     slug: z.string(),
@@ -663,14 +671,9 @@ const { title, description = 'LLM 技术知识库' } = Astro.props;
 </nav>
 ```
 
-- [ ] **Step 2: 创建根路由重定向和共享工具**
+- [ ] **Step 2: 创建共享工具**
 
-```astro
----
-// src/pages/index.astro — 根路由重定向到 /zh/
-return Astro.redirect('/zh/');
----
-```
+根路由重定向已通过 `astro.config.mjs` 中的 `redirectToDefaultLocale: true` 自动处理，无需手动创建 `src/pages/index.astro`。
 
 ```typescript
 // src/utils/constants.ts — 共享的标签/难度映射，避免多处重复定义
@@ -1013,7 +1016,7 @@ const difficultyLabel: Record<string, string> = {
 ```astro
 ---
 // src/pages/zh/articles/[slug].astro
-import { getCollection } from 'astro:content';
+import { getCollection, render } from 'astro:content';
 import ArticleLayout from '../../../components/layout/ArticleLayout.astro';
 
 export async function getStaticPaths() {
@@ -1025,7 +1028,7 @@ export async function getStaticPaths() {
 }
 
 const { article } = Astro.props;
-const { Content, headings } = await article.render();
+const { Content, headings } = await render(article);
 ---
 <ArticleLayout
   title={article.data.title}
@@ -1576,18 +1579,41 @@ export default function TransformerArchDiagram() {
 
 - [ ] **Step 3: 编写完整文章内容**
 
-将 `src/content/articles/zh/transformer-overview.mdx` 替换为完整内容。文章结构：
+将 `src/content/articles/zh/transformer-overview.mdx` 替换为完整内容。
+
+**关键：MDX 中使用 React 组件的正确方式**——在 frontmatter 下方 import 组件，并加 `client:visible` 指令：
+
+```mdx
+---
+title: "Transformer 网络结构总览"
+slug: transformer-overview
+locale: zh
+# ... 其他 frontmatter
+---
+import TransformerArchDiagram from '../../components/interactive/TransformerArchDiagram.tsx';
+import TensorShape from '../../components/primitives/TensorShape.tsx';
+
+## 架构总览
+
+<TransformerArchDiagram client:visible />
+
+张量形状为 <TensorShape client:visible dims={[{name: 'B', size: 1}, {name: 'S', size: 512}, {name: 'H', size: 768}]} />
+```
+
+**不加 `client:visible`，组件只会服务端渲染为静态 HTML，所有交互（useState、onClick 等）不会工作。**
+
+文章结构：
 
 1. **简介**：Transformer 是什么，为什么重要
 2. **直觉理解**：从 RNN 的序列瓶颈到并行化的 Attention
-3. **架构总览**：嵌入 `<TransformerArchDiagram />` 组件
+3. **架构总览**：嵌入 `<TransformerArchDiagram client:visible />` 组件
 4. **各组件详解**：
    - Input Embedding + Positional Encoding
    - LayerNorm (Pre-LN vs Post-LN)
    - Self-Attention（概述，详细在后续文章）
    - Feed-Forward Network (MLP)：$FFN(x) = \text{GELU}(xW_1 + b_1)W_2 + b_2$
    - Residual Connection
-5. **张量形状追踪**：使用 `<TensorShape />` 标注每一步的维度变化
+5. **张量形状追踪**：使用 `<TensorShape client:visible />` 标注每一步的维度变化
 6. **Encoder-Decoder vs Decoder-only**：架构对比
 7. **典型模型超参数对比表**
 8. **总结**
@@ -1601,10 +1627,14 @@ npx astro dev
 ```
 
 Expected:
-- 文章页：三栏布局正确，公式渲染正确，SVG 架构图显示，TOC 自动生成
+- 文章页：三栏布局正确，公式（KaTeX）渲染正确
+- **左侧 TOC 自动生成**（验证 `render()` 返回 `headings`，如果 TOC 为空，说明新 API 不返回 headings，需要改用其他方式获取）
+- **SVG 架构图正确显示**（验证 React 组件在 MDX 中正确渲染）
+- **如果组件有交互，点击/hover 可以正常响应**（验证 `client:visible` 生效）
 - 首页：文章出现在列表中
 - 路径页：文章出现在 Transformer 核心机制路径中
 - 侧边栏：references 渲染为延伸阅读卡片
+- **根路由 `/` 自动重定向到 `/zh/`**（验证 i18n 配置）
 
 - [ ] **Step 5: 提交**
 
@@ -1800,8 +1830,13 @@ git commit -m "feat: add content validation script for frontmatter and path inte
 > 1. 先搜索调研验证技术事实
 > 2. 编写 MDX 内容（遵循文章模板结构）
 > 3. 如需 B 级动画，创建对应的 React 交互组件
-> 4. 验证渲染效果
-> 5. 提交
+> 4. **MDX 中 import React 组件时，必须加 `client:visible` 指令**，否则交互功能不工作：
+>    ```mdx
+>    import KVCacheDemo from '../../components/interactive/KVCacheDemo.tsx';
+>    <KVCacheDemo client:visible />
+>    ```
+> 5. 验证渲染效果（特别是交互组件能否点击/响应）
+> 6. 提交
 >
 > 每篇文章的内容必须严格基于论文和权威来源，禁止猜测。下面列出每篇文章的要点和需要的组件。
 
