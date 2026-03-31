@@ -6,7 +6,7 @@
 
 **Architecture:** Astro Islands 架构，MDX 作为内容格式，React 组件作为交互岛。内容通过 Astro Content Collections 管理，学习路径通过 YAML 配置。首页展示路径卡片 + 标签浏览，文章页三栏布局（TOC / 正文 / 侧边栏）。
 
-**Tech Stack:** Astro 5, React 19, MDX, Tailwind CSS 4, Framer Motion, KaTeX, D3.js, TypeScript
+**Tech Stack:** Astro 5, React 19, MDX, Tailwind CSS 3, Framer Motion, KaTeX, D3.js, TypeScript
 
 **设计文档:** `docs/superpowers/specs/2026-03-31-llm-learning-site-design.md`
 
@@ -34,7 +34,7 @@ npm create astro@latest . -- --template minimal --no-install --no-git --typescri
 
 ```bash
 npm install @astrojs/react @astrojs/mdx @astrojs/tailwind react react-dom framer-motion katex d3
-npm install -D @types/react @types/react-dom @types/katex @types/d3 tailwindcss @tailwindcss/typography
+npm install -D @types/react @types/react-dom @types/katex @types/d3 tailwindcss@3 @tailwindcss/typography tsx
 ```
 
 - [ ] **Step 3: 配置 astro.config.mjs**
@@ -243,6 +243,7 @@ Thumbs.db
 ```yaml
 title: string       # 文章标题
 slug: string        # URL 标识符，kebab-case
+locale: string      # zh | en
 tags: string[]      # 分类标签
 difficulty: string  # beginner | intermediate | advanced
 created: string     # YYYY-MM-DD
@@ -317,6 +318,7 @@ const articles = defineCollection({
   schema: z.object({
     title: z.string(),
     slug: z.string(),
+    locale: z.enum(['zh', 'en']).default('zh'),
     tags: z.array(z.string()),
     prerequisites: z.array(z.string()).optional().default([]),
     difficulty: z.enum(['beginner', 'intermediate', 'advanced']),
@@ -340,6 +342,7 @@ export const collections = { articles };
 // src/templates/article-template.mdx
 title: "文章标题"
 slug: article-slug
+locale: zh
 tags: [tag1, tag2]
 prerequisites: []
 difficulty: intermediate
@@ -378,6 +381,7 @@ references:
 ---
 title: "Transformer 网络结构总览"
 slug: transformer-overview
+locale: zh
 tags: [transformer, architecture]
 prerequisites: []
 difficulty: intermediate
@@ -525,10 +529,10 @@ export interface LearningPath {
   articles: string[];
 }
 
-const PATHS_DIR = 'src/content/paths';
+const PATHS_DIR = path.join(process.cwd(), 'src/content/paths');
 
 export function getAllPaths(): LearningPath[] {
-  const pathsDir = path.resolve(PATHS_DIR);
+  const pathsDir = PATHS_DIR;
   const files = fs.readdirSync(pathsDir).filter(f => f.endsWith('.yaml'));
   return files.map(file => {
     const content = fs.readFileSync(path.join(pathsDir, file), 'utf-8');
@@ -559,7 +563,7 @@ export interface ExternalResource {
   description: string;
 }
 
-const RESOURCES_FILE = 'src/content/resources/external-resources.yaml';
+const RESOURCES_FILE = path.join(process.cwd(), 'src/content/resources/external-resources.yaml');
 
 export function getAllResources(): ExternalResource[] {
   const content = fs.readFileSync(path.resolve(RESOURCES_FILE), 'utf-8');
@@ -611,6 +615,9 @@ git commit -m "feat: add learning path and external resource data loading"
 ```astro
 ---
 // src/components/layout/BaseLayout.astro
+import Navigation from './Navigation.astro';
+import '../../styles/global.css';
+
 interface Props {
   title: string;
   description?: string;
@@ -624,7 +631,6 @@ const { title, description = 'LLM 技术知识库' } = Astro.props;
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
     <title>{title} | LLM Learning</title>
-    <link rel="stylesheet" href="/src/styles/global.css" />
   </head>
   <body class="min-h-screen bg-white">
     <Navigation />
@@ -633,10 +639,6 @@ const { title, description = 'LLM 技术知识库' } = Astro.props;
     </main>
   </body>
 </html>
-
-<script>
-  // 未来搜索功能入口
-</script>
 ```
 
 ```astro
@@ -661,7 +663,31 @@ const { title, description = 'LLM 技术知识库' } = Astro.props;
 </nav>
 ```
 
-- [ ] **Step 2: 更新首页使用基础布局**
+- [ ] **Step 2: 创建根路由重定向和共享工具**
+
+```astro
+---
+// src/pages/index.astro — 根路由重定向到 /zh/
+return Astro.redirect('/zh/');
+---
+```
+
+```typescript
+// src/utils/constants.ts — 共享的标签/难度映射，避免多处重复定义
+export const difficultyLabel: Record<string, string> = {
+  beginner: '入门',
+  intermediate: '中级',
+  advanced: '高级',
+};
+
+export const difficultyColor: Record<string, string> = {
+  beginner: 'bg-green-100 text-green-800',
+  intermediate: 'bg-blue-100 text-blue-800',
+  advanced: 'bg-purple-100 text-purple-800',
+};
+```
+
+- [ ] **Step 3: 更新首页使用基础布局**
 
 ```astro
 ---
@@ -1349,14 +1375,6 @@ export default function MatrixGrid({
               <div className="w-8 text-xs text-gray-400 text-right pr-2">
                 {rowLabels[r]}
               </div>
-            )}
-            {/* 左括号 */}
-            {r === 0 && (
-              <div className="text-2xl text-gray-400 leading-none self-start" style={{
-                fontSize: `${rows * (compact ? 2 : 2.5)}rem`,
-                position: 'absolute',
-                marginLeft: rowLabels ? '-0.5rem' : '-1rem',
-              }} />
             )}
             {row.map((val, c) => (
               <div

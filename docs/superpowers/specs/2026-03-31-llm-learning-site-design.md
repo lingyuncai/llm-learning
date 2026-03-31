@@ -25,7 +25,7 @@
 | 动画 | Framer Motion | 分步动画，声明式 API |
 | 数据可视化 | D3.js + 自定义 SVG | 矩阵、数据流、架构图 |
 | 公式渲染 | KaTeX | 快速、轻量 |
-| 样式 | Tailwind CSS | 实用优先，快速迭代 |
+| 样式 | Tailwind CSS 3 | 实用优先，快速迭代，@astrojs/tailwind 集成成熟 |
 | i18n | Astro 内置 i18n 路由 | `/zh/...`，未来扩展 `/en/...` |
 | 运行方式 | 本地 `astro dev` | localhost 访问，未来可 `astro build` 生成静态文件部署到自有服务器 |
 
