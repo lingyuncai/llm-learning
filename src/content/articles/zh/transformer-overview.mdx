@@ -29,6 +29,7 @@ import TransformerArchDiagram from '../../../components/interactive/TransformerA
 import TensorShape from '../../../components/primitives/TensorShape.tsx';
 import AttentionMaskVisualization from '../../../components/interactive/AttentionMaskVisualization.tsx';
 import PrePostLNComparison from '../../../components/interactive/PrePostLNComparison.tsx';
+import PositionalEncodingComparison from '../../../components/interactive/PositionalEncodingComparison.tsx';
 
 ## 简介
 
@@ -89,6 +90,8 @@ $$
 | 正弦/余弦（固定） | 原始 Transformer | 不可学习，支持外推 |
 | 可学习绝对位置编码 | GPT-2, BERT | 直接学习每个位置的向量 |
 | RoPE (旋转位置编码) | LLaMA, Qwen | 在 Attention 计算中通过旋转编码相对位置 |
+
+<PositionalEncodingComparison client:visible />
 
 ### LayerNorm
 
