@@ -28,6 +28,7 @@ references:
 import TransformerArchDiagram from '../../../components/interactive/TransformerArchDiagram.tsx';
 import TensorShape from '../../../components/primitives/TensorShape.tsx';
 import AttentionMaskVisualization from '../../../components/interactive/AttentionMaskVisualization.tsx';
+import PrePostLNComparison from '../../../components/interactive/PrePostLNComparison.tsx';
 
 ## 简介
 
@@ -109,6 +110,8 @@ $$
 - **原始 Transformer**（2017）使用 Post-LN：$\text{LN}(\mathbf{x} + \text{SubLayer}(\mathbf{x}))$
 - **GPT-2** 起，多数模型切换到 Pre-LN：$\mathbf{x} + \text{SubLayer}(\text{LN}(\mathbf{x}))$，因为它的训练更稳定
 - **LLaMA** 进一步用 **RMSNorm** 替代 LayerNorm，去掉均值中心化和偏置项，计算更高效
+
+<PrePostLNComparison client:visible />
 
 ### Self-Attention（概述）
 
