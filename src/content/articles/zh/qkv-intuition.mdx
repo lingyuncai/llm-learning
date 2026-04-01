@@ -24,6 +24,7 @@ references:
 
 import QKVLinearProjection from '../../../components/interactive/QKVLinearProjection.tsx';
 import QKVSemanticSpaces from '../../../components/interactive/QKVSemanticSpaces.tsx';
+import ReshapeTransposeAnimation from '../../../components/interactive/ReshapeTransposeAnimation.tsx';
 import TensorShape from '../../../components/primitives/TensorShape.tsx';
 
 ## 简介：为什么需要 QKV
@@ -167,6 +168,8 @@ $$
 $$
 (B, S, H) \xrightarrow{W_Q} (B, S, H) \xrightarrow{\text{reshape}} (B, S, h, d_k) \xrightarrow{\text{transpose}} (B, h, S, d_k)
 $$
+
+<ReshapeTransposeAnimation client:visible />
 
 > Multi-Head Attention 的完整机制将在后续文章中详细展开。这里只需理解：**QKV 投影是 Multi-Head 的基础步骤**。
 
