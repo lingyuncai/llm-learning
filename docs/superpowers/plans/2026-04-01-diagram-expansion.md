@@ -445,13 +445,13 @@ export default function AttentionMaskVisualization() {
 
 - [ ] **Step 2: Add to transformer-overview.mdx**
 
-Add the import after existing imports (line 29), and add the component after the Attention types comparison table (after line 216):
+Add the import after existing imports (line ~29), and add the component after the Encoder-Decoder/Encoder-only/Decoder-only comparison table (line ~216, just before the paragraph "目前几乎所有主流 LLM..."):
 
 ```mdx
-// After line 29 (existing imports):
+// After existing imports (line ~29):
 import AttentionMaskVisualization from '../../../components/interactive/AttentionMaskVisualization.tsx';
 
-// After line 216 (after the Encoder-Decoder/Encoder-only/Decoder-only comparison table):
+// After the Encoder-Decoder/Encoder-only/Decoder-only comparison table (line ~216, before "目前几乎所有主流 LLM"):
 <AttentionMaskVisualization client:visible />
 ```
 
@@ -628,7 +628,7 @@ export default function PrePostLNComparison() {
 // Add import after existing imports:
 import PrePostLNComparison from '../../../components/interactive/PrePostLNComparison.tsx';
 
-// Add after line 111 (after "Pre-LN 训练更稳定" paragraph, before ### Self-Attention):
+// Add after line ~111 (after "Pre-LN 训练更稳定" paragraph, before ### Self-Attention（概述）):
 <PrePostLNComparison client:visible />
 ```
 
@@ -778,7 +778,7 @@ export default function PositionalEncodingComparison() {
 // Add import:
 import PositionalEncodingComparison from '../../../components/interactive/PositionalEncodingComparison.tsx';
 
-// Add after line 89 (after the position encoding comparison table, before ### LayerNorm):
+// Add after line ~89 (after the position encoding comparison table, before ### LayerNorm):
 <PositionalEncodingComparison client:visible />
 ```
 
@@ -893,7 +893,7 @@ export default function FFNBottleneck() {
 // Add import:
 import FFNBottleneck from '../../../components/interactive/FFNBottleneck.tsx';
 
-// Add after line 154 (after the TensorShape chain showing FFN dimension flow, before ### Residual Connection):
+// Add after line ~154 (after the TensorShape showing FFN output dimension, before ### Residual Connection（残差连接）):
 <FFNBottleneck client:visible />
 ```
 
@@ -1021,7 +1021,7 @@ export default function QKVSemanticSpaces() {
 // Add import after existing imports (line 26):
 import QKVSemanticSpaces from '../../../components/interactive/QKVSemanticSpaces.tsx';
 
-// Add after line 104 (after "投影前每个 token... 承担不同的功能。" paragraph, before ## 分步可视化):
+// Add after line ~104 (after linear projection explanation, before ## 分步可视化):
 <QKVSemanticSpaces client:visible />
 ```
 
@@ -1184,7 +1184,7 @@ export default function ReshapeTransposeAnimation() {
 // Add import:
 import ReshapeTransposeAnimation from '../../../components/interactive/ReshapeTransposeAnimation.tsx';
 
-// Add after line 167 (after the reshape/transpose formula, before > Multi-Head Attention 的完整机制...):
+// Add after line ~167 (after the reshape/transpose formula in ## 多头场景下的 QKV, before the blockquote about MHA):
 <ReshapeTransposeAnimation client:visible />
 ```
 
@@ -1334,7 +1334,7 @@ export default function TensorShapeTracker() {
 // Add import after existing import (line 25):
 import TensorShapeTracker from '../../../components/interactive/TensorShapeTracker.tsx';
 
-// Add before ## 分步拆解 (line 50), after the formula section:
+// Add before ## 分步拆解：每一步的数学意义 (line ~50), after the formula section:
 <TensorShapeTracker client:visible />
 ```
 
@@ -1489,7 +1489,7 @@ export default function ScalingFactorDemo() {
 // Add import:
 import ScalingFactorDemo from '../../../components/interactive/ScalingFactorDemo.tsx';
 
-// Add after line 147 (after "梯度流畅，训练稳定。" and before the > 原论文原话):
+// Add after line ~147 (after "梯度流畅，训练稳定。" in ### 解决方案, before the > 原论文原话 blockquote):
 <ScalingFactorDemo client:visible />
 ```
 
@@ -1669,7 +1669,7 @@ export default function CausalMaskDemo() {
 // Add import:
 import CausalMaskDemo from '../../../components/interactive/CausalMaskDemo.tsx';
 
-// Add after line 175 (after the mask matrix, before ### 不同场景的遮罩策略):
+// Add after line ~175 (after the mask matrix formula in ### 遮罩的形状, before ### 不同场景的遮罩策略):
 <CausalMaskDemo client:visible />
 ```
 
@@ -1844,7 +1844,7 @@ export default function SingleVsMultiHeadAttention() {
 // Add import at top (after ---):
 import SingleVsMultiHeadAttention from '../../../components/interactive/SingleVsMultiHeadAttention.tsx';
 
-// Add after line 93 (after the head type table, before ## 维度分析):
+// Add after line ~93 (after the head type table in ## 空间切分的直觉, before ## 维度分析：reshape 和 transpose 的详细追踪):
 <SingleVsMultiHeadAttention client:visible />
 ```
 
@@ -1992,7 +1992,7 @@ export default function OutputProjectionFusion() {
 // Add import:
 import OutputProjectionFusion from '../../../components/interactive/OutputProjectionFusion.tsx';
 
-// Add after line 309 (after the W_O residual compatibility explanation, before ### 参数量分析):
+// Add after line ~309 (after ### 作用二：维持残差连接的兼容性, before ### 参数量分析):
 <OutputProjectionFusion client:visible />
 ```
 
@@ -2297,7 +2297,7 @@ export default function KVCacheGrowthChart() {
 // Add import at top:
 import KVCacheGrowthChart from '../../../components/interactive/KVCacheGrowthChart.tsx';
 
-// Add after line 314 (after the KV Cache calculation comparison text, before ### Batch Serving 的影响):
+// Add after line ~314 (after GQA KV Cache reduction calculation "缩减了约 8 倍", before ### Batch Serving 的影响):
 <KVCacheGrowthChart client:visible />
 ```
 
@@ -2661,7 +2661,7 @@ export default function UptrainingPooling() {
 // Add import:
 import UptrainingPooling from '../../../components/interactive/UptrainingPooling.tsx';
 
-// Add after line 124 (after the uptraining explanation, before ## 结构对比图):
+// Add after line ~124 (after uptraining explanation "不需要从头训练", before ## 结构对比图：MHA vs MQA vs GQA):
 <UptrainingPooling client:visible />
 ```
 
@@ -2778,7 +2778,7 @@ export default function ConcurrencyComparison() {
 // Add import:
 import ConcurrencyComparison from '../../../components/interactive/ConcurrencyComparison.tsx';
 
-// Add after line 326 (after the batch serving concurrency table, before ## 质量与性能的 Trade-off):
+// Add after line ~326 (after "GQA 将并发能力提升了约 10 倍", before ## 质量与性能的 Trade-off):
 <ConcurrencyComparison client:visible />
 ```
 
@@ -2906,11 +2906,11 @@ export default function RedundantComputationViz() {
 
 - [ ] **Step 2: Add to kv-cache.mdx**
 
-Add import and place after the section explaining why KV cache avoids redundant computation (the section that explains the problem KV Cache solves).
+Add import and place after ### 浪费在哪里？ section (line ~55), before ## KV Cache 机制：缓存和追加.
 
 ```mdx
 import RedundantComputationViz from '../../../components/interactive/RedundantComputationViz.tsx';
-// Place after the section explaining redundant computation without cache
+// Place after ### 浪费在哪里？ (line ~55), before ## KV Cache 机制：缓存和追加
 <RedundantComputationViz client:visible />
 ```
 
@@ -3042,7 +3042,7 @@ export default function KVCacheCalculator() {
 
 ```mdx
 import KVCacheCalculator from '../../../components/interactive/KVCacheCalculator.tsx';
-// Place after the KV Cache memory formula section
+// Place after ### 实际数值 section (line ~146), before ### Batch 场景
 <KVCacheCalculator client:visible />
 ```
 
@@ -3184,7 +3184,7 @@ export default function PagedAttentionComparison() {
 
 ```mdx
 import PagedAttentionComparison from '../../../components/interactive/PagedAttentionComparison.tsx';
-// Place in the PagedAttention section
+// Place after ### PagedAttention section (line ~189), before ### Continuous Batching
 <PagedAttentionComparison client:visible />
 ```
 
@@ -3332,7 +3332,7 @@ export default function ContinuousBatchingTimeline() {
 - [ ] **Step 2: Add to kv-cache.mdx and commit**
 
 ```bash
-# Add import + component to the Continuous Batching section of kv-cache.mdx
+# Add import + component after ### Continuous Batching (line ~204), before ## 与 GQA/MQA 的关系
 npm run dev
 git add src/components/interactive/ContinuousBatchingTimeline.tsx src/content/articles/zh/kv-cache.mdx
 git commit -m "feat: add continuous batching timeline (diagram 6.4)"
@@ -3483,7 +3483,7 @@ export default function RooflineModel() {
 
 ```mdx
 import RooflineModel from '../../../components/interactive/RooflineModel.tsx';
-// Place after the section explaining compute-bound vs memory-bound
+// Place after ### Roofline 模型 section (line ~293), after the ridge point explanation
 <RooflineModel client:visible />
 ```
 
@@ -3602,7 +3602,7 @@ export default function GEMMvsGEMV() {
 
 ```mdx
 import GEMMvsGEMV from '../../../components/interactive/GEMMvsGEMV.tsx';
-// Place in the section comparing Prefill vs Decode computation characteristics
+// Place after ### 计算特性 in ## Prefill 阶段 (line ~47), after the GEMM explanation and AI formula
 <GEMMvsGEMV client:visible />
 ```
 
@@ -3811,7 +3811,7 @@ In `src/content/articles/zh/flash-attention.mdx`, add import after existing impo
 import GPUMemoryHierarchy from '../../../components/interactive/GPUMemoryHierarchy.tsx';
 ```
 
-Insert the component after the "两级存储" table (after line 48, before "### 标准 Attention 的内存访问模式"):
+Insert after the "两级存储" table (line ~48, before ### 标准 Attention 的内存访问模式):
 
 ```mdx
 <GPUMemoryHierarchy client:visible />
@@ -4016,7 +4016,7 @@ In `src/content/articles/zh/flash-attention.mdx`, add import:
 import OnlineSoftmaxDemo from '../../../components/interactive/OnlineSoftmaxDemo.tsx';
 ```
 
-Insert after the recursive algorithm derivation (after "为什么是精确的？" section end at line 183, before "## 交互演示"):
+Insert after line ~183 (after ### 为什么是精确的？ section end, before ## 交互演示：Flash Attention 分块计算):
 
 ```mdx
 
@@ -4202,7 +4202,7 @@ In `src/content/articles/zh/flash-attention.mdx`, add import:
 import IOComplexityChart from '../../../components/interactive/IOComplexityChart.tsx';
 ```
 
-Insert after Flash Attention IO complexity analysis (after line 234 "实验中 Flash Attention 比标准实现快 **2-4 倍**。", before "### 下界"):
+Insert after line ~234 (after "实验中 Flash Attention 比标准实现快 **2-4 倍**。", before ### 下界):
 
 ```mdx
 
@@ -4399,7 +4399,7 @@ In `src/content/articles/zh/flash-attention.mdx`, add import:
 import BlockSizeCalculator from '../../../components/interactive/BlockSizeCalculator.tsx';
 ```
 
-Insert after the block size formulas (after line 77 "都能放进 SRAM。", before "### 双层循环结构"):
+Insert after line ~77 (after "都能放进 SRAM。", before ### 双层循环结构):
 
 ```mdx
 
