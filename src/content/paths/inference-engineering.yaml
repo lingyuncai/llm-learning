@@ -1,0 +1,12 @@
+id: inference-engineering
+title:
+  zh: "LLM 推理工程"
+  en: "LLM Inference Engineering"
+description:
+  zh: "从 Prefill/Decode 到 KV Cache 再到 Flash Attention，理解大模型推理的工程优化"
+  en: "Understanding engineering optimizations for LLM inference, from KV Cache to Flash Attention"
+level: advanced
+articles:
+  - prefill-vs-decode
+  - kv-cache
+  - flash-attention

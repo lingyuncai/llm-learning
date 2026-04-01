@@ -1,0 +1,14 @@
+id: transformer-core
+title:
+  zh: "Transformer 核心机制"
+  en: "Transformer Core Mechanisms"
+description:
+  zh: "从网络结构到注意力机制，深入理解 Transformer 的每一个组件"
+  en: "Deep dive into every component of the Transformer, from architecture to attention"
+level: intermediate
+articles:
+  - transformer-overview
+  - qkv-intuition
+  - attention-computation
+  - multi-head-attention
+  - gqa-mqa
