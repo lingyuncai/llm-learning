@@ -1,0 +1,262 @@
+---
+title: "KV Cache 原理"
+slug: kv-cache
+locale: zh
+tags: [inference, kv-cache, memory, optimization]
+prerequisites: [prefill-vs-decode, attention-computation]
+difficulty: advanced
+created: "2026-03-31"
+updated: "2026-03-31"
+references:
+  - type: paper
+    title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    url: "https://arxiv.org/abs/2309.06180"
+  - type: website
+    title: "The Illustrated Transformer"
+    url: "https://jalammar.github.io/illustrated-transformer/"
+---
+
+import KVCacheDemo from '../../../components/interactive/KVCacheDemo.tsx';
+
+## 简介：KV Cache 是推理加速的关键
+
+在前一篇文章中，我们了解了 LLM 推理分为 Prefill 和 Decode 两个阶段。Decode 阶段是**逐 token 自回归生成**的 — 每一步只生成一个新 token。
+
+这里有一个关键问题：在标准 Self-Attention 中，每个新 token 的 Query 需要与**序列中所有之前 token 的 Key** 做点积，然后用 **所有之前 token 的 Value** 做加权求和。如果每步都从头重新计算所有 token 的 K 和 V，计算量会随着生成长度**二次增长** — 这是不可接受的。
+
+**KV Cache** 的核心思想很简单：**把已经计算过的 Key 和 Value 向量缓存起来，每步只计算新 token 的 K 和 V，然后追加到缓存中。** 这将 Decode 阶段的计算复杂度从 $O(N^2)$ 降低到 $O(N)$（对线性层而言），是现代 LLM 推理系统的标配。
+
+## 问题：没有 Cache 时的 $O(N^2)$ 计算浪费
+
+### 朴素自回归生成
+
+考虑一个生成序列长度为 $N$ 的 Decode 过程。如果不使用 KV Cache，在第 $t$ 步生成第 $t$ 个 token 时，模型需要：
+
+1. 将前 $t$ 个 token 全部输入 Transformer
+2. 对每一层，计算**所有 $t$ 个 token** 的 $Q$、$K$、$V$
+3. 执行完整的 Attention 计算
+4. 只取最后一个位置的输出，用于预测下一个 token
+
+总计算量中，仅线性投影部分就需要：
+
+$$
+\sum_{t=1}^{N} t \times (2 \times 3 \times d^2) = 3d^2 \times N(N+1) \approx O(N^2 d^2)
+$$
+
+其中 $3d^2$ 对应 Q、K、V 三个投影矩阵的计算量（每个 token 经过 $W^Q$、$W^K$、$W^V$）。
+
+### 浪费在哪里？
+
+关键观察：**第 $t$ 步中前 $t-1$ 个 token 的 K 和 V 与第 $t-1$ 步完全相同**。因为这些 token 的输入没有变化（Decoder 使用因果遮罩，前面 token 的表示不受后面 token 影响），它们的 K、V 投影结果也完全一样。
+
+换句话说，每一步都在重复计算已经算过的 Key 和 Value — 这是纯粹的计算浪费。
+
+## KV Cache 机制：缓存和追加
+
+### 核心思路
+
+KV Cache 的机制非常直接：
+
+1. **Prefill 阶段**：处理完整 prompt，计算所有 token 的 K、V，并将结果**保存到缓存**
+2. **Decode 每一步**：
+   - 只将新的 1 个 token 送入模型
+   - 计算新 token 的 $q$、$k$、$v$（向量，不是矩阵）
+   - 将 $k$、$v$ **追加**到缓存末尾
+   - 用 $q$ 与完整的 K Cache 做 Attention
+   - 用 Attention 权重对完整的 V Cache 加权求和
+
+### 数学表示
+
+设第 $t$ 步时：
+- 新 token 的 Query: $q_t = x_t W^Q \in \mathbb{R}^{1 \times d_k}$
+- 新 token 的 Key: $k_t = x_t W^K \in \mathbb{R}^{1 \times d_k}$
+- 新 token 的 Value: $v_t = x_t W^V \in \mathbb{R}^{1 \times d_v}$
+
+缓存更新：
+
+$$
+K_{\text{cache}} \leftarrow \text{concat}(K_{\text{cache}},\ k_t) \in \mathbb{R}^{t \times d_k}
+$$
+
+$$
+V_{\text{cache}} \leftarrow \text{concat}(V_{\text{cache}},\ v_t) \in \mathbb{R}^{t \times d_v}
+$$
+
+Attention 计算：
+
+$$
+\text{scores} = q_t \cdot K_{\text{cache}}^T / \sqrt{d_k} \in \mathbb{R}^{1 \times t}
+$$
+
+$$
+\text{output}_t = \text{softmax}(\text{scores}) \cdot V_{\text{cache}} \in \mathbb{R}^{1 \times d_v}
+$$
+
+### 计算量对比
+
+| | 无 KV Cache | 有 KV Cache |
+|------|:---:|:---:|
+| 第 $t$ 步线性投影 | $t$ 个 token 全部重算 | 仅 1 个新 token |
+| 线性投影 FLOPs/步 | $2 \times 3 \times t \times d^2$ | $2 \times 3 \times d^2$ |
+| 总线性投影 FLOPs | $O(N^2 d^2)$ | $O(Nd^2)$ |
+| Attention FLOPs/步 | $O(t^2 d_k)$ | $O(t \cdot d_k)$ |
+| 代价 | 无额外内存 | 需要缓存 K, V |
+
+KV Cache 用**内存换时间**，将线性投影的总计算量从 $O(N^2)$ 降到 $O(N)$。
+
+## 交互演示
+
+下面的演示模拟了一个 5 步 Decode 过程。初始缓存包含 Prefill 阶段的 2 个 token 的 K/V。每一步中，观察：
+- 新 token 的 Q 向量如何与整个 K Cache 计算注意力分数
+- K Cache 和 V Cache 如何在每步增长一行（绿色高亮）
+
+<KVCacheDemo client:visible />
+
+## 内存占用分析
+
+KV Cache 是 LLM 推理中显存占用的**主要来源之一**，理解其内存公式至关重要。
+
+### 单层单头的 KV Cache
+
+对于一层 Transformer 的一个注意力头，缓存序列长度为 $S$ 时：
+
+$$
+\text{单头 KV Cache} = 2 \times S \times d_k \times \text{dtype\_size}
+$$
+
+其中因子 2 对应 K 和 V 各一份。
+
+### 完整模型的 KV Cache
+
+对于完整模型，设 $L$ 为 Transformer 层数，$H$ 为注意力头数，$d_k$ 为每个头的维度（$d_k = d_{\text{model}} / H$），则：
+
+$$
+\text{KV Cache} = 2 \times L \times H \times S \times d_k \times \text{dtype\_size}
+$$
+
+由于 $H \times d_k = d_{\text{model}}$，可以简化为：
+
+$$
+\boxed{\text{KV Cache} = 2 \times L \times d_{\text{model}} \times S \times \text{dtype\_size}}
+$$
+
+### 实际数值
+
+以 **LLaMA-2 7B** 为例（$L=32$，$d_{\text{model}}=4096$，FP16）：
+
+| 序列长度 $S$ | KV Cache 大小 |
+|:---:|:---:|
+| 512 | $2 \times 32 \times 4096 \times 512 \times 2 = 256$ MB |
+| 2048 | $2 \times 32 \times 4096 \times 2048 \times 2 = 1$ GB |
+| 4096 | $2 \times 32 \times 4096 \times 4096 \times 2 = 2$ GB |
+
+以 **LLaMA-2 70B** 为例（$L=80$，$d_{\text{model}}=8192$，FP16）：
+
+| 序列长度 $S$ | KV Cache 大小 |
+|:---:|:---:|
+| 2048 | $2 \times 80 \times 8192 \times 2048 \times 2 = 5.12$ GB |
+| 4096 | $2 \times 80 \times 8192 \times 4096 \times 2 = 10.24$ GB |
+
+可以看到，对于大模型和长序列，**KV Cache 的显存占用可以达到甚至超过模型参数本身**。这也是为什么 KV Cache 管理和压缩是推理优化的核心方向。
+
+### Batch 场景
+
+当服务多个并发请求时，KV Cache 随 batch size $B$ 线性增长：
+
+$$
+\text{Total KV Cache} = B \times 2 \times L \times d_{\text{model}} \times S \times \text{dtype\_size}
+$$
+
+例如 LLaMA-2 7B，$S=2048$，$B=32$：KV Cache 总量 = $32 \times 1\text{ GB} = 32$ GB。仅 KV Cache 就可能耗尽整块 GPU 的显存。
+
+## Cache 管理：PagedAttention 简介
+
+传统 KV Cache 实现面临一个严重问题：**显存碎片化**。
+
+### 传统方式的问题
+
+在最简单的实现中，系统为每个请求**预分配**最大序列长度的缓存空间。例如，最大长度 2048，即使实际只用了 100 个 token，也需要预留 2048 个位置的空间。这导致：
+
+- **内部碎片**：预分配但未使用的空间被浪费
+- **外部碎片**：请求结束后释放的空间难以被新请求完整利用
+- **显存利用率低**：实际有效利用率可能只有 20-40%
+
+### PagedAttention
+
+**PagedAttention**（来自 vLLM，论文 "Efficient Memory Management for Large Language Model Serving with PagedAttention"，arXiv 2309.06180）借鉴了操作系统的**虚拟内存分页**思想：
+
+1. 将 KV Cache 空间划分为固定大小的 **Block**（类似内存页，通常 16 或 32 个 token）
+2. 每个请求维护一个 **Block Table**（类似页表），记录逻辑块到物理块的映射
+3. 按需分配 Block：生成新 token 时，只有当前 Block 满了才分配新的 Block
+4. 请求结束后，Block 可以被回收并分配给新请求
+
+核心优势：
+- **消除碎片**：固定大小的 Block 分配和回收不会产生碎片
+- **动态增长**：不需要预分配最大长度，按需增长
+- **显存利用率高**：实际利用率可以接近 100%
+- **支持复杂调度**：如 beam search 中多个候选可以共享前缀的 KV Cache Block
+
+### Continuous Batching
+
+与 PagedAttention 配合的另一项重要技术是 **Continuous Batching**（连续批处理）：
+
+- 传统 Static Batching：一个 batch 中所有请求必须等最长的那个完成，才能处理新请求
+- Continuous Batching：某个请求完成后，**立即**插入新请求填补空位，不等待其他请求
+
+这使得 GPU 始终保持高利用率，显著提升推理吞吐量。vLLM、TensorRT-LLM 等主流推理引擎都采用了 PagedAttention + Continuous Batching 的组合。
+
+## 与 GQA/MQA 的关系：减少 KV Cache 的另一种方式
+
+KV Cache 的内存瓶颈促使研究者从**模型架构**层面寻找解决方案。
+
+### 回顾 KV Cache 公式
+
+$$
+\text{KV Cache} = 2 \times L \times \underbrace{H \times d_k}_{d_{\text{model}}} \times S \times \text{dtype\_size}
+$$
+
+其中 $H \times d_k$ 对应所有注意力头的 KV 维度。如果能**减少需要缓存的 KV 头数**，就能直接缩小 KV Cache。
+
+### MQA (Multi-Query Attention)
+
+MQA 让所有注意力头**共享同一组** K 和 V，仅 Q 保持多头。KV Cache 缩小为：
+
+$$
+\text{KV Cache}_{\text{MQA}} = 2 \times L \times 1 \times d_k \times S \times \text{dtype\_size}
+$$
+
+相比 MHA 缩小了 $H$ 倍（例如 $H=32$ 时缩小 32 倍）。
+
+### GQA (Grouped-Query Attention)
+
+GQA 是 MHA 和 MQA 的折中：将 $H$ 个 Q 头分成 $G$ 组，每组共享一组 K、V。KV Cache 为：
+
+$$
+\text{KV Cache}_{\text{GQA}} = 2 \times L \times G \times d_k \times S \times \text{dtype\_size}
+$$
+
+相比 MHA 缩小了 $H/G$ 倍。LLaMA-2 70B 使用 GQA（$H=64$，$G=8$），KV Cache 缩小为原来的 $1/8$。
+
+### 效果对比
+
+| 方法 | KV 头数 | KV Cache 相对大小 | 质量影响 |
+|------|:---:|:---:|:---:|
+| MHA | $H$ | $1\times$ (基准) | 最优 |
+| GQA | $G$ ($1 < G < H$) | $G/H$ | 极小损失 |
+| MQA | $1$ | $1/H$ | 略有损失 |
+
+GQA 在几乎不影响模型质量的前提下，大幅减少了 KV Cache，已被 LLaMA-2/3、Mistral 等主流模型采用。更详细的 GQA/MQA 介绍请参考 [MQA 与 GQA](/articles/zh/gqa-mqa) 一文。
+
+## 总结
+
+| 概念 | 说明 |
+|------|------|
+| KV Cache | 缓存已计算的 K、V 向量，避免 Decode 时重复计算 |
+| 无 Cache 的代价 | 每步重算所有 KV，总计算量 $O(N^2 d^2)$ |
+| 有 Cache 的加速 | 每步仅算 1 个新 token 的 KV 并追加，总量 $O(Nd^2)$ |
+| 内存公式 | $2 \times L \times d_{\text{model}} \times S \times \text{dtype\_size}$ |
+| PagedAttention | 借鉴虚拟内存分页，消除显存碎片，提升利用率 |
+| GQA/MQA | 从架构层面减少 KV 头数，直接缩小 Cache |
+| 核心权衡 | KV Cache 用**显存**换**计算**，是经典的时空权衡 |
+
+**核心直觉**：KV Cache 就像一个不断增长的"笔记本"。自回归生成时，每个新 token 只需要在笔记本末尾添加一行自己的 K 和 V，然后翻阅整个笔记本来决定关注什么。如果没有这个笔记本，每一步都要把之前所有 token 的 K 和 V 从头算一遍 — 这就像每次上课都要从第一节课重新复习到最新内容，显然是巨大的浪费。
