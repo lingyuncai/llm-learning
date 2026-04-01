@@ -1,7 +1,7 @@
 # 图表扩展设计文档 — 第一批
 
 **日期**: 2026-04-01
-**状态**: Draft
+**状态**: Review
 **关联**: V1 review 反馈第 4 项 — "整体图的数量太少"
 
 ## 1. 背景与目标
@@ -318,7 +318,7 @@
   - Y 轴: HBM 访问量（字节）
   - 标准 Attention: $\Theta(Nd + N^2)$ — 二次增长
   - Flash Attention v1: $\Theta(N^2 d^2 M^{-1})$ — 受 SRAM 大小 M 调节
-  - Flash Attention v2: 改进的 IO 模式
+  - Flash Attention v2: $\Theta(N^2 d M^{-1})$ — 减少非 matmul FLOPs，外循环遍历 Q 块而非 K/V 块
 - **可调参数**: head 维度 d（64/128）、SRAM 大小 M
 - **重点**: 长序列下标准方案的 IO 爆炸 vs Flash Attention 的亚二次增长
 
