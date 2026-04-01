@@ -1,4 +1,6 @@
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import type { ReactNode } from 'react';
 
 interface StepNavigatorProps {
   steps: {
@@ -10,10 +12,15 @@ interface StepNavigatorProps {
 
 export default function StepNavigator({ steps, className = '' }: StepNavigatorProps) {
   const [currentStep, setCurrentStep] = useState(0);
+  const [direction, setDirection] = useState(0);
 
-  const goNext = () => setCurrentStep(s => Math.min(s + 1, steps.length - 1));
-  const goPrev = () => setCurrentStep(s => Math.max(s - 1, 0));
-  const goReset = () => setCurrentStep(0);
+  const goTo = (target: number) => {
+    setDirection(target > currentStep ? 1 : -1);
+    setCurrentStep(target);
+  };
+  const goNext = () => { if (currentStep < steps.length - 1) goTo(currentStep + 1); };
+  const goPrev = () => { if (currentStep > 0) goTo(currentStep - 1); };
+  const goReset = () => goTo(0);
 
   return (
     <div className={`border border-gray-200 rounded-lg overflow-hidden ${className}`}>
@@ -22,7 +29,9 @@ export default function StepNavigator({ steps, className = '' }: StepNavigatorPr
         {steps.map((step, i) => (
           <button
             key={i}
-            onClick={() => setCurrentStep(i)}
+            onClick={() => goTo(i)}
+            aria-label={`步骤 ${i + 1}: ${step.title}`}
+            aria-current={i === currentStep ? 'step' : undefined}
             className={`w-7 h-7 rounded-full text-xs font-medium transition-colors ${
               i === currentStep
                 ? 'bg-primary-600 text-white'
@@ -39,9 +48,20 @@ export default function StepNavigator({ steps, className = '' }: StepNavigatorPr
         </span>
       </div>
 
-      {/* 步骤内容 */}
-      <div className="p-4">
-        {steps[currentStep].content}
+      {/* 步骤内容 — 带过渡动画 */}
+      <div className="p-4 relative overflow-hidden">
+        <AnimatePresence mode="wait" initial={false} custom={direction}>
+          <motion.div
+            key={currentStep}
+            custom={direction}
+            initial={{ opacity: 0, x: direction > 0 ? 40 : -40 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: direction > 0 ? -40 : 40 }}
+            transition={{ duration: 0.2, ease: 'easeInOut' }}
+          >
+            {steps[currentStep].content}
+          </motion.div>
+        </AnimatePresence>
       </div>
 
       {/* 控制按钮 */}

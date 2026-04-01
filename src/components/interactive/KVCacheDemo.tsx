@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import StepNavigator from '../primitives/StepNavigator';
 import MatrixGrid from '../primitives/MatrixGrid';
+import { seededValuesSigned as seededValues, dot, softmax1d } from '../primitives/mathUtils';
 
 /**
  * KVCacheDemo — B-level step animation simulating a 5-token decode process.
@@ -11,33 +12,6 @@ import MatrixGrid from '../primitives/MatrixGrid';
  *
  * Uses a small example: d_k=3, starting with 2 prefilled tokens, then decoding 5 more.
  */
-
-// Seed-based pseudo-random for reproducible demo data
-function seededValues(rows: number, cols: number, seed: number): number[][] {
-  let s = seed;
-  const next = () => {
-    s = (s * 16807 + 11) % 2147483647;
-    return parseFloat(((s % 200 - 100) / 100).toFixed(2));
-  };
-  return Array.from({ length: rows }, () =>
-    Array.from({ length: cols }, () => next()),
-  );
-}
-
-// Dot product of two vectors, rounded
-function dot(a: number[], b: number[]): number {
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) sum += a[i] * b[i];
-  return parseFloat(sum.toFixed(2));
-}
-
-// Softmax of a 1D array
-function softmax1d(arr: number[]): number[] {
-  const max = Math.max(...arr);
-  const exps = arr.map(v => Math.exp(v - max));
-  const sum = exps.reduce((a, b) => a + b, 0);
-  return exps.map(e => parseFloat((e / sum).toFixed(2)));
-}
 
 export default function KVCacheDemo() {
   const dk = 3;

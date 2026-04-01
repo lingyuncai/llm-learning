@@ -35,9 +35,10 @@ const allTags = [...new Set(articles.flatMap(a => a.data.tags))].sort();
     <h2 class="text-2xl font-bold mb-6">按标签浏览</h2>
     <div class="flex flex-wrap gap-2">
       {allTags.map(tag => (
-        <span class="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm hover:bg-primary-100 hover:text-primary-700 cursor-pointer">
+        <a href={`/zh/tags/${tag}`}
+           class="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm hover:bg-primary-100 hover:text-primary-700 transition-colors">
           {tag}
-        </span>
+        </a>
       ))}
     </div>
   </section>
@@ -57,7 +58,7 @@ const allTags = [...new Set(articles.flatMap(a => a.data.tags))].sort();
           </div>
           <div class="flex gap-2 mt-2">
             {article.data.tags.map(tag => (
-              <span class="text-xs text-gray-500">#{tag}</span>
+              <a href={`/zh/tags/${tag}`} class="text-xs text-gray-500 hover:text-primary-600">#{tag}</a>
             ))}
           </div>
         </a>

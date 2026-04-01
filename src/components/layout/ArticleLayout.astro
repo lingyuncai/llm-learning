@@ -39,7 +39,7 @@ function getNavigation(pathObj: typeof paths[0]) {
   return { prev, next, pathTitle: pathObj.title.zh };
 }
 ---
-<BaseLayout title={title}>
+<BaseLayout title={title} description={`${title} — LLM Learning 技术知识库`}>
   <div class="flex gap-8">
     <!-- 左侧 TOC -->
     <aside class="hidden lg:block w-56 shrink-0">
@@ -54,7 +54,7 @@ function getNavigation(pathObj: typeof paths[0]) {
             {difficultyLabel[difficulty] || difficulty}
           </span>
           {tags.map(tag => (
-            <span class="text-xs text-gray-500">#{tag}</span>
+            <a href={`/zh/tags/${tag}`} class="text-xs text-gray-500 hover:text-primary-600">#{tag}</a>
           ))}
         </div>
         <h1 class="text-3xl font-bold mb-2">{title}</h1>

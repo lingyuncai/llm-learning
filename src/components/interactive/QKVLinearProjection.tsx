@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import StepNavigator from '../primitives/StepNavigator';
 import MatrixGrid from '../primitives/MatrixGrid';
+import { seededValues01 as seededValues, matmul } from '../primitives/mathUtils';
 
 /**
  * QKVLinearProjection — B-level step animation showing QKV linear projection.
@@ -8,32 +9,6 @@ import MatrixGrid from '../primitives/MatrixGrid';
  * Uses a small example: S=4 tokens, H=6 hidden dim, d_k=3 head dim.
  * Steps: (1) Input X, (2) W_Q + multiply, (3) Q result, (4) K, (5) V.
  */
-
-// Seed-based pseudo-random for reproducible demo data
-function seededValues(rows: number, cols: number, seed: number): number[][] {
-  let s = seed;
-  const next = () => {
-    s = (s * 16807 + 11) % 2147483647;
-    return parseFloat(((s % 100) / 100).toFixed(2));
-  };
-  return Array.from({ length: rows }, () =>
-    Array.from({ length: cols }, () => next()),
-  );
-}
-
-// Simple matrix multiply (rounded to 2 decimals)
-function matmul(a: number[][], b: number[][]): number[][] {
-  const rows = a.length;
-  const cols = b[0].length;
-  const inner = b.length;
-  return Array.from({ length: rows }, (_, i) =>
-    Array.from({ length: cols }, (_, j) => {
-      let sum = 0;
-      for (let k = 0; k < inner; k++) sum += a[i][k] * b[k][j];
-      return parseFloat(sum.toFixed(2));
-    }),
-  );
-}
 
 export default function QKVLinearProjection() {
   const S = 4;

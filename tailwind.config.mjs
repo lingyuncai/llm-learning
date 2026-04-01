@@ -30,6 +30,8 @@ export default {
               borderRadius: '0.25rem',
               fontWeight: '400',
             },
+            'code::before': { content: 'none' },
+            'code::after': { content: 'none' },
           },
         },
       },

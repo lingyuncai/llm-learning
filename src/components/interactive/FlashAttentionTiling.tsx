@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import StepNavigator from '../primitives/StepNavigator';
 import MatrixGrid from '../primitives/MatrixGrid';
+import { seededValuesSigned as seededValues, matmul, transpose } from '../primitives/mathUtils';
 
 /**
  * FlashAttentionTiling — B-level step animation showing Flash Attention's
@@ -15,39 +16,6 @@ import MatrixGrid from '../primitives/MatrixGrid';
  *   5. Load second K, V block, compute scores for block (0,1)
  *   6. Online Softmax correction & final result
  */
-
-// Seed-based pseudo-random for reproducible demo data
-function seededValues(rows: number, cols: number, seed: number): number[][] {
-  let s = seed;
-  const next = () => {
-    s = (s * 16807 + 11) % 2147483647;
-    return parseFloat(((s % 200 - 100) / 100).toFixed(2));
-  };
-  return Array.from({ length: rows }, () =>
-    Array.from({ length: cols }, () => next()),
-  );
-}
-
-// Matrix multiply (rounded to 2 decimals)
-function matmul(a: number[][], b: number[][]): number[][] {
-  const rows = a.length;
-  const cols = b[0].length;
-  const inner = b.length;
-  return Array.from({ length: rows }, (_, i) =>
-    Array.from({ length: cols }, (_, j) => {
-      let sum = 0;
-      for (let k = 0; k < inner; k++) sum += a[i][k] * b[k][j];
-      return parseFloat(sum.toFixed(2));
-    }),
-  );
-}
-
-// Transpose
-function transpose(m: number[][]): number[][] {
-  return Array.from({ length: m[0].length }, (_, j) =>
-    Array.from({ length: m.length }, (_, i) => m[i][j]),
-  );
-}
 
 // Scale each element
 function scaleMatrix(m: number[][], s: number): number[][] {

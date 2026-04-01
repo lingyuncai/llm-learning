@@ -41,7 +41,7 @@ const pathArticles = learningPath.articles
               </div>
               <div class="flex gap-2">
                 {article!.data.tags.map(tag => (
-                  <span class="text-xs text-gray-500">#{tag}</span>
+                  <a href={`/zh/tags/${tag}`} class="text-xs text-gray-500 hover:text-primary-600" onclick="event.stopPropagation()">#{tag}</a>
                 ))}
               </div>
             </div>

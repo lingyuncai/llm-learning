@@ -14,6 +14,12 @@ references:
   - type: paper
     title: "Fast Transformer Decoding: One Write-Head is All You Need"
     url: "https://arxiv.org/abs/1911.02150"
+  - type: website
+    title: "LLM Visualization — Brendan Bycroft"
+    url: "https://bbycroft.net/llm"
+  - type: website
+    title: "Transformer Explainer — Georgia Tech / Polo Club"
+    url: "https://poloclub.github.io/transformer-explainer/"
 ---
 
 ## 简介：为什么 MHA 的 KV Cache 是瓶颈
@@ -58,7 +64,7 @@ MQA 的改动很简单：**所有 query head 共享同一组 Key 和 Value**。
 数学表达：
 
 $$
-\text{head}_i = \text{Attention}(Q W_i^Q, \, K W^K, \, V W^V)
+\text{head}_i = \text{Attention}(X W_i^Q, \, X W^K, \, X W^V)
 $$
 
 注意 $W^K$ 和 $W^V$ 不再有下标 $i$ — 它们在所有 head 之间是共享的。
@@ -96,7 +102,7 @@ MQA 的缩减是极端的，也带来了明显的代价：
 数学表达（设第 $i$ 个 query head 属于第 $\lfloor i \cdot g / h \rfloor$ 组）：
 
 $$
-\text{head}_i = \text{Attention}(Q W_i^Q, \, K W_{\text{group}(i)}^K, \, V W_{\text{group}(i)}^V)
+\text{head}_i = \text{Attention}(X W_i^Q, \, X W_{\text{group}(i)}^K, \, X W_{\text{group}(i)}^V)
 $$
 
 ### KV Cache 缩减

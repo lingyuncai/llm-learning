@@ -17,6 +17,12 @@ references:
   - type: website
     title: "The Illustrated Transformer"
     url: "https://jalammar.github.io/illustrated-transformer/"
+  - type: website
+    title: "LLM Visualization — Brendan Bycroft"
+    url: "https://bbycroft.net/llm"
+  - type: website
+    title: "Transformer Explainer — Georgia Tech / Polo Club"
+    url: "https://poloclub.github.io/transformer-explainer/"
 ---
 
 import TransformerArchDiagram from '../../../components/interactive/TransformerArchDiagram.tsx';
@@ -217,7 +223,7 @@ GPT 系列开创了 Decoder-only 架构，去掉 Encoder 和 Cross-Attention：
 |------|------------------|-------------|-----------|----------|--------------|
 | 隐藏维度 $H$ | 512 | 768 | 1600 | 4096 | 4096 |
 | 层数 $L$ | 6 (Enc+Dec) | 12 | 48 | 32 | 32 |
-| 注意力头数 $A$ | 8 | 12 | 25 | 32 | 32 |
+| 注意力头数 $h$ | 8 | 12 | 25 | 32 | 32 |
 | Head 维度 | 64 | 64 | 64 | 128 | 128 |
 | FFN 中间维度 | 2048 | 3072 | 6400 | 11008 | 14336 |
 | 词表大小 | 37000 | 50257 | 50257 | 32000 | 128256 |
@@ -227,7 +233,7 @@ GPT 系列开创了 Decoder-only 架构，去掉 Encoder 和 Cross-Attention：
 | 激活函数 | ReLU | GELU | GELU | SwiGLU | SwiGLU |
 | 位置编码 | 正弦/余弦 | 可学习绝对 | 可学习绝对 | RoPE | RoPE |
 
-> 注：Head 维度 = $H / A$。LLaMA 系列使用 GQA（Grouped-Query Attention），其中 LLaMA-3.1-8B 的 KV head 数为 8（而非 32）。
+> 注：Head 维度 = $H / h$。LLaMA 系列使用 GQA（Grouped-Query Attention），其中 LLaMA-3.1-8B 的 KV head 数为 8（而非 32）。
 
 ## 总结
 

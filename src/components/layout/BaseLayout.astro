@@ -7,14 +7,24 @@ interface Props {
   description?: string;
 }
 
-const { title, description = 'LLM 技术知识库' } = Astro.props;
+const { title, description = 'LLM 技术知识库 — 深入理解 Transformer、Attention、KV Cache 等核心技术' } = Astro.props;
+const fullTitle = `${title} | LLM Learning`;
+const siteUrl = Astro.url.href;
 ---
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
-    <title>{title} | LLM Learning</title>
+    <title>{fullTitle}</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>" />
+    <link rel="canonical" href={siteUrl} />
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={siteUrl} />
+    <meta property="og:locale" content="zh_CN" />
   </head>
   <body class="min-h-screen bg-white">
     <Navigation />

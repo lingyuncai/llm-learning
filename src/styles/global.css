@@ -12,6 +12,22 @@
   }
 }
 
+/* Fix: Astro MDX lowercases JSX camelCase SVG attrs (textAnchor → textanchor instead of text-anchor) */
+svg [textanchor="middle"] { text-anchor: middle; }
+svg [textanchor="end"] { text-anchor: end; }
+svg [fontweight="bold"] { font-weight: bold; }
+svg [fontstyle="italic"] { font-style: italic; }
+svg [fontsize="9"] { font-size: 9px; }
+svg [fontsize="10"] { font-size: 10px; }
+svg [fontsize="11"] { font-size: 11px; }
+svg [fontsize="12"] { font-size: 12px; }
+svg [fontsize="13"] { font-size: 13px; }
+svg [fontsize="15"] { font-size: 15px; }
+svg [fontsize="16"] { font-size: 16px; }
+svg [fontsize="17"] { font-size: 17px; }
+svg [fontsize="18"] { font-size: 18px; }
+svg [fontsize="20"] { font-size: 20px; }
+
 /* 文章内 KaTeX 公式样式微调 */
 .katex-display {
   @apply my-6 overflow-x-auto;
