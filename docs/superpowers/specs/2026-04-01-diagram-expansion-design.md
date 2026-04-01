@@ -50,6 +50,25 @@
 - **交互控件**: Tailwind 样式的滑块/按钮/输入框，与站点整体风格一致
 - **响应式**: 最小宽度 320px，SVG viewBox 自适应
 
+### 3.2 局部功能色（图表内部元素状态）
+
+全局语义色（3.1）用于跨图表的概念标识，以下局部功能色用于单图内的元素状态，不与全局语义冲突：
+
+- **遮罩/无效**: 灰色 `#f3f4f6`（如 Causal Mask 的上三角）
+- **有效/归一化**: 浅蓝 `#dbeafe`（如 softmax 后的有效权重）
+- **高亮/当前步**: 黄色 `#fef3c7`（如逐步动画中当前计算的元素）
+- **浪费/冗余**: 浅红 `#fee2e2`（如重复计算的标记，区别于全局红色的"警告"语义）
+- **复制品/引用**: 原色半透明 `opacity: 0.4` + 虚线边框（如 GQA 的 KV 复制）
+
+### 3.3 共享基础设施
+
+多个组件复用相同的参数类型和预设值，抽取为共享模块：
+
+- **`src/components/interactive/shared/types.ts`** — `ModelConfig` 接口、`HardwareConfig` 接口
+- **`src/components/interactive/shared/presets.ts`** — 预设模型配置（LLaMA-2 7B/13B/70B、Mistral 7B）、预设硬件配置（A100、H100）
+- **`src/components/interactive/shared/colors.ts`** — 全局语义色 + 局部功能色常量导出
+- **`src/components/interactive/shared/hooks.ts`** — 共用 hooks（如 `useStepNavigation`、`useDebouncedSlider`）
+
 ## 4. 图表清单 — 文章 1-4
 
 ### 4.1 Transformer 网络结构总览（4 个新增）
@@ -128,6 +147,7 @@
   - 完整模式: `(B,S,H) → (B,h,S,d_k) → (B,h,S,S) → (B,h,S,d_k) → (B,S,H)`
 - **交互**: 切换按钮选模式，点击逐步推进，每步高亮当前计算环节
 - **定位**: 贯穿 QKV→Attention→MHA 的核心参考图
+- **使用位置**: 主要放在 Attention 计算详解，QKV 直觉和 MHA 文章可通过链接引用
 
 #### 图 3.2 — Scaling 因子对 Softmax 分布的影响
 - **文件**: `src/components/interactive/ScalingFactorDemo.tsx`
@@ -193,7 +213,8 @@
   - MHA: 4 个 Q → 4 个独立 KV，一对一连线
   - GQA: 4 个 Q → 2 个 KV，两对一连线，KV 节点标注 `repeat_interleave` 复制
   - MQA: 4 个 Q → 1 个 KV，四对一连线，KV 节点标注"全共享"
-- **动画**: 连线逐步绘制，GQA 步骤高亮复制操作
+- **动画**: 连线逐步绘制，GQA 步骤中 KV 节点先闪烁，然后"分裂"成 h/g 个半透明副本，副本沿连线飞向对应的 Q head，最终每个 Q 旁显示自己的 KV 副本
+- **`repeat_interleave` 可视化**: GQA 列中，KV₁ 分裂为 [KV₁, KV₁] 配给 Q₁和Q₂，KV₂ 分裂为 [KV₂, KV₂] 配给 Q₃和Q₄。副本用虚线边框 + 原色半透明表示"这是复制品"
 - **注意**: 此图替换现有的内联 SVG 结构对比图（解决 Astro SVG bug 依赖）
 
 #### 图 5.3 — Uptraining 参数池化过程
@@ -274,6 +295,7 @@
   - 两个标注点: Prefill（AI 高，位于天花板区 = compute-bound）和 Decode（AI 低，位于斜坡区 = memory-bound）
 - **交互**: 拖动 batch size 滑块（1→256），Decode 的点沿 X 轴右移（AI = 2B/sizeof），当 AI 越过拐点时点变绿 = compute-bound
 - **标注**: 拐点位置标注 $I^* = \text{peak FLOPS} / \text{bandwidth}$
+- **硬件选择**: 下拉框切换硬件配置（A100/H100），参数从 `shared/presets.ts` 读取，默认 A100
 
 #### 图 7.2 — GEMM vs GEMV 并排对比
 - **文件**: `src/components/interactive/GEMMvsGEMV.tsx`
@@ -337,7 +359,7 @@
 
 | 文章 | 现有内联 SVG | 替换为 |
 |------|-------------|--------|
-| MHA | 多头并行计算结构图 | 图 3.1（端到端追踪）覆盖其内容 |
+| MHA | 多头并行计算结构图 | 将内联 SVG 转为 React 组件 `MultiHeadParallelDiagram.tsx`，保留原有的 h 个 head 并行框布局和内部 4 步标注，但用 React 重写以规避 Astro SVG bug。图 3.1（端到端追踪）作为补充而非替代 |
 | GQA/MQA | 三列结构对比图 | 图 5.2（Query-KV 映射动画）替换 |
 | Prefill vs Decode | 两阶段对比图 | 图 7.1 + 7.2 覆盖其内容 |
 
@@ -353,7 +375,14 @@
 6. **无障碍**: 图表需有 aria-label，动画可通过 `prefers-reduced-motion` 禁用
 7. **性能**: `client:visible` 确保组件仅在进入视口时加载，避免首屏性能问题
 
-## 8. 成功标准
+## 8. 性能优化策略
+
+1. **懒加载**: 所有组件使用 `client:visible`，仅进入视口时加载
+2. **滑块防抖**: 交互式计算器（6.2、5.1、8.4）的滑块输入用 debounce 150ms，避免高频重算
+3. **动画优先 CSS**: 简单过渡用 CSS transition，仅复杂编排用 Motion 的 `animate`
+4. **矩阵渲染上限**: 热力图/矩阵可视化限制最大 16×16 展示尺寸，超过时缩略或分页
+
+## 9. 成功标准
 
 - 每篇文章至少有 3 个可视化元素（图表 + 已有组件）
 - 公式推导环节都有对应的逐步可视化或交互演示
