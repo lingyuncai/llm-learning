@@ -388,3 +388,264 @@
 - 公式推导环节都有对应的逐步可视化或交互演示
 - 所有图表在移动端正常显示
 - 新增组件不显著影响页面加载速度（Lighthouse Performance > 90）
+
+## 附录 A：开发者参考（组件开发模式）
+
+本节提供完整的代码模式参考，确保即使上下文丢失也能独立开发。
+
+### A.1 技术栈版本
+
+- React 19.2.4 + Astro 5.18.1
+- motion 12.38.0（动画）
+- D3 7.9.0（可视化，可选）
+- Tailwind CSS 3.4.19（样式）
+- TypeScript
+
+### A.2 组件导出规范
+
+```typescript
+// 文件: src/components/interactive/MyComponent.tsx
+// 必须使用 default export 命名函数
+export default function MyComponent() {
+  return (/* JSX */);
+}
+```
+
+### A.3 基础组件 API
+
+#### StepNavigator（逐步动画容器）
+
+```typescript
+// 文件: src/components/primitives/StepNavigator.tsx
+interface StepNavigatorProps {
+  steps: {
+    title: string;        // 步骤标题
+    content: ReactNode;   // 步骤内容（任意 JSX）
+  }[];
+  className?: string;
+}
+// 功能: 圆形数字按钮（可跳转）、上/下一步、重置、Motion 滑动动画
+```
+
+#### MatrixGrid（矩阵网格）
+
+```typescript
+// 文件: src/components/primitives/MatrixGrid.tsx
+interface MatrixGridProps {
+  data: number[][];
+  label?: string;
+  shape?: string;                        // 如 "(4, 3)"
+  highlightCells?: [number, number][];   // 高亮特定格子
+  highlightRows?: number[];
+  highlightCols?: number[];
+  highlightColor?: string;               // 如 "#dbeafe"
+  rowLabels?: string[];
+  colLabels?: string[];
+  compact?: boolean;
+}
+```
+
+#### TensorShape（维度标注）
+
+```typescript
+// 文件: src/components/primitives/TensorShape.tsx
+interface TensorShapeProps {
+  dims: { name: string; size: number | string }[];
+  label?: string;
+}
+// 输出示例: output: (N=4, d_k=3)
+```
+
+#### mathUtils（数学工具）
+
+```typescript
+// 文件: src/components/primitives/mathUtils.ts
+seededValuesSigned(rows: number, cols: number, seed: number): number[][]
+matmul(a: number[][], b: number[][]): number[][]
+transpose(m: number[][]): number[][]
+dot(a: number[], b: number[]): number
+softmax1d(x: number[]): number[]
+```
+
+### A.4 MDX 集成模式
+
+```mdx
+---
+title: "文章标题"
+slug: article-slug
+locale: zh
+tags: [tag1, tag2]
+difficulty: intermediate
+created: "2026-03-31"
+updated: "2026-03-31"
+references:
+  - type: paper
+    title: "论文标题"
+    url: "https://..."
+---
+
+import MyComponent from '../../../components/interactive/MyComponent.tsx';
+
+## 章节标题
+
+正文内容...
+
+<MyComponent client:visible />
+
+更多内容...
+```
+
+**关键点**:
+- `client:visible` 必须加，否则 React 交互（useState、onClick）不工作
+- 路径从 MDX 文件位置出发，需 `../../../` 回到 `src/`
+- 纯展示型组件（无状态）可不加 `client:` 指令
+
+### A.5 完整组件模板
+
+```typescript
+import { useMemo, useState } from 'react';
+import StepNavigator from '../primitives/StepNavigator';
+import MatrixGrid from '../primitives/MatrixGrid';
+import { seededValuesSigned, matmul, transpose } from '../primitives/mathUtils';
+
+export default function ExampleDemo() {
+  const N = 4, d = 3;
+
+  // 用 useMemo 避免重复计算
+  const Q = useMemo(() => seededValuesSigned(N, d, 42), []);
+  const K = useMemo(() => seededValuesSigned(N, d, 84), []);
+  const scores = useMemo(() => matmul(Q, transpose(K)), [Q, K]);
+
+  const tokenLabels = ['t₁', 't₂', 't₃', 't₄'];
+
+  const steps = [
+    {
+      title: '初始化 Q, K',
+      content: (
+        <div className="flex flex-wrap gap-6 justify-center">
+          <MatrixGrid data={Q} label="Q" rowLabels={tokenLabels}
+            highlightColor="#dbeafe" highlightRows={[0,1,2,3]} />
+          <MatrixGrid data={K} label="K" rowLabels={tokenLabels}
+            highlightColor="#d1fae5" highlightRows={[0,1,2,3]} />
+        </div>
+      ),
+    },
+    {
+      title: '计算 QK^T',
+      content: (
+        <div className="flex flex-col items-center gap-4">
+          <MatrixGrid data={scores} label="QK^T" shape={`(${N}, ${N})`}
+            rowLabels={tokenLabels} colLabels={tokenLabels}
+            highlightColor="#fef3c7" />
+          <div className="p-3 bg-blue-50 rounded text-xs text-blue-800">
+            <strong>注意：</strong> 分数矩阵是 N×N，每个元素表示两个 token 的相关性。
+          </div>
+        </div>
+      ),
+    },
+  ];
+
+  return <StepNavigator steps={steps} />;
+}
+```
+
+### A.6 Motion 动画模式
+
+```typescript
+import { motion, AnimatePresence } from 'motion/react';
+
+// 淡入淡出
+<motion.div
+  initial={{ opacity: 0, y: 20 }}
+  animate={{ opacity: 1, y: 0 }}
+  exit={{ opacity: 0, y: -20 }}
+  transition={{ duration: 0.3, ease: 'easeInOut' }}
+>
+  内容
+</motion.div>
+
+// SVG 路径动画
+<motion.path
+  d="M10,10 L100,100"
+  initial={{ pathLength: 0 }}
+  animate={{ pathLength: 1 }}
+  transition={{ duration: 0.5 }}
+/>
+```
+
+### A.7 自定义 SVG 图表模式（非 StepNavigator 场景）
+
+```typescript
+export default function StaticDiagram() {
+  return (
+    <div className="w-full overflow-x-auto">
+      <svg viewBox="0 0 800 400" className="w-full max-w-3xl mx-auto">
+        {/* 背景 */}
+        <rect width="800" height="400" fill="#ffffff" />
+
+        {/* 节点 */}
+        <rect x="50" y="50" width="120" height="40" rx="6"
+          fill="#f8fafc" stroke="#1565c0" strokeWidth="1.5" />
+        <text x="110" y="75" textAnchor="middle" fontSize="12"
+          fill="#1a1a2e" fontFamily="system-ui">
+          节点标签
+        </text>
+
+        {/* 箭头连线 */}
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#666" />
+          </marker>
+        </defs>
+        <line x1="170" y1="70" x2="250" y2="70"
+          stroke="#666" strokeWidth="1.5" markerEnd="url(#arrow)" />
+      </svg>
+    </div>
+  );
+}
+```
+
+### A.8 交互式滑块模式
+
+```typescript
+export default function InteractiveCalculator() {
+  const [seqLen, setSeqLen] = useState(2048);
+
+  const kvCacheSize = useMemo(() => {
+    // 公式: 2 * L * d * S * sizeof(dtype)
+    const L = 32, d = 4096, bytesPerParam = 2; // FP16
+    return (2 * L * d * seqLen * bytesPerParam) / (1024 ** 3); // GB
+  }, [seqLen]);
+
+  return (
+    <div className="p-4 border rounded-lg">
+      <label className="block text-sm font-medium mb-2">
+        序列长度 S: {seqLen.toLocaleString()}
+      </label>
+      <input type="range" min="256" max="131072" step="256"
+        value={seqLen} onChange={e => setSeqLen(Number(e.target.value))}
+        className="w-full" />
+      <p className="mt-3 text-lg font-semibold">
+        KV Cache: {kvCacheSize.toFixed(2)} GB
+      </p>
+    </div>
+  );
+}
+```
+
+### A.9 开发命令
+
+```bash
+npm run dev       # 启动开发服务器 (localhost:4321)
+npm run build     # 构建静态站点
+npm run validate  # 运行内容校验
+```
+
+### A.10 Astro MDX SVG Bug 说明
+
+**问题**: Astro 的 MDX 编译器将 JSX camelCase SVG 属性（如 `textAnchor`）错误地转为全小写（`textanchor`）而非正确的 kebab-case（`text-anchor`），导致 SVG 属性在浏览器中不生效。
+
+**当前 workaround**: `src/styles/global.css` 中有 CSS 属性选择器修复。
+
+**本批次策略**: 全部使用 React 组件（React 正确处理 camelCase→kebab-case），不再新增内联 MDX SVG。现有 3 个内联 SVG（MHA、GQA、Prefill vs Decode）将转为 React 组件后移除，最终可删除 CSS hack。
