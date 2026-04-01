@@ -23,6 +23,7 @@ references:
 ---
 
 import QKVLinearProjection from '../../../components/interactive/QKVLinearProjection.tsx';
+import QKVSemanticSpaces from '../../../components/interactive/QKVSemanticSpaces.tsx';
 import TensorShape from '../../../components/primitives/TensorShape.tsx';
 
 ## 简介：为什么需要 QKV
@@ -102,6 +103,8 @@ $$
 每个 token 的 $H$ 维隐藏向量被投影（线性变换）到 $d_k$ 维的新空间。这就是所谓的"线性投影"（linear projection）。
 
 **为什么叫"投影"？** 从几何角度看，乘以权重矩阵相当于将高维空间中的向量投射到一个低维子空间上。不同的权重矩阵定义了不同的子空间 — Query 空间、Key 空间、Value 空间。
+
+<QKVSemanticSpaces client:visible />
 
 ## 分步可视化
 
