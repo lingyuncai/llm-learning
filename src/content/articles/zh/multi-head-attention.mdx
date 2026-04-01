@@ -1,0 +1,354 @@
+---
+title: "Multi-Head Attention"
+slug: multi-head-attention
+locale: zh
+tags: [transformer, attention, multi-head]
+prerequisites: [attention-computation]
+difficulty: intermediate
+created: "2026-03-31"
+updated: "2026-03-31"
+references:
+  - type: paper
+    title: "Attention Is All You Need"
+    url: "https://arxiv.org/abs/1706.03762"
+  - type: website
+    title: "The Illustrated Transformer"
+    url: "https://jalammar.github.io/illustrated-transformer/"
+---
+
+## 简介：为什么单头不够
+
+在上一篇文章中，我们详细拆解了 Scaled Dot-Product Attention 的计算过程。但在实际的 Transformer 中，注意力并不是只计算一次 — 而是**并行计算多次**，这就是 **Multi-Head Attention**。
+
+为什么需要多个头？考虑这个句子：
+
+> "The animal didn't cross the street because **it** was too tired."
+
+对于 "it" 这个 token，我们需要同时关注多种不同的关系：
+- **指代关系**：it → animal（语义共指）
+- **句法关系**：it → was（主谓搭配）
+- **因果关系**：it → because（逻辑连接）
+
+如果只有一个注意力头，它的 softmax 输出是一个概率分布 — 只能产生**一种**权重模式。这意味着模型必须将所有不同类型的关系"混合"到同一组权重中，严重限制了表达能力。
+
+**Multi-Head Attention 的核心思想**：让不同的注意力头在不同的**子空间**中独立计算注意力，每个头可以关注不同类型的模式，最后将结果拼接起来。
+
+## 多头的数学表达
+
+### 完整公式
+
+$$
+\text{MultiHead}(Q, K, V) = \text{Concat}(\text{head}_1, \ldots, \text{head}_h) \, W^O
+$$
+
+其中每个头的计算为：
+
+$$
+\text{head}_i = \text{Attention}(Q W_i^Q, \, K W_i^K, \, V W_i^V)
+$$
+
+各参数矩阵的形状：
+- $W_i^Q \in \mathbb{R}^{H \times d_k}$ — 第 $i$ 个头的 Query 投影
+- $W_i^K \in \mathbb{R}^{H \times d_k}$ — 第 $i$ 个头的 Key 投影
+- $W_i^V \in \mathbb{R}^{H \times d_v}$ — 第 $i$ 个头的 Value 投影
+- $W^O \in \mathbb{R}^{h \cdot d_v \times H}$ — 输出投影矩阵
+
+其中 $H$ 是模型的隐藏维度，$h$ 是头的数量，$d_k = d_v = H / h$。
+
+### 与单头 Attention 的关系
+
+单头 Attention 在完整的 $H$ 维空间中计算：
+
+$$
+\text{SingleHead}(Q, K, V) = \text{Attention}(Q, K, V)
+$$
+
+多头 Attention 则将 $H$ 维空间切分为 $h$ 个 $d_k$ 维子空间，在每个子空间中独立计算注意力，最后合并：
+
+$$
+H = h \times d_k
+$$
+
+**关键点**：多头 Attention 的**总参数量和计算量**与单头（使用完整维度）几乎相同。我们没有增加成本，而是将计算分配到了多个并行的子空间中。
+
+## 空间切分的直觉：不同 head 关注不同模式
+
+为什么在子空间中计算注意力比在完整空间中更好？直觉是每个 head 可以学习一种独立的"关注模式"。
+
+研究者在分析训练好的 Transformer 时发现，不同 head 确实学到了不同的功能（参见原论文附录和后续研究）：
+
+| Head 类型 | 关注模式 | 示例 |
+|-----------|---------|------|
+| 位置 Head | 总是关注相邻 token | Head 3 关注前一个 token |
+| 语法 Head | 关注句法依存关系 | Head 7 关注动词的主语 |
+| 语义 Head | 关注语义相关的 token | Head 5 关注共指关系 |
+| 分隔 Head | 关注特殊 token（如 [SEP]） | Head 11 关注句子分隔符 |
+
+每个 head 在自己的低维子空间中，通过独立的 $W_i^Q$、$W_i^K$、$W_i^V$ 学习不同的投影方式，从而在不同的"视角"下计算注意力。
+
+## 维度分析：reshape 和 transpose 的详细追踪
+
+在实际实现中，我们**不会**为每个 head 单独做矩阵乘法 — 这太慢了。取而代之的是，用一次大的投影 + reshape + transpose，高效地并行计算所有 head。
+
+### 详细的 tensor shape 变化
+
+以 Query 为例（Key 和 Value 同理），设 batch size 为 $B$，序列长度为 $S$，隐藏维度为 $H$，头数为 $h$，每头维度为 $d_k = H / h$：
+
+**第一步：线性投影**
+
+$$
+X \in \mathbb{R}^{B \times S \times H} \xrightarrow{W^Q} Q \in \mathbb{R}^{B \times S \times H}
+$$
+
+这里的 $W^Q \in \mathbb{R}^{H \times H}$ 是一个统一的大投影矩阵，等价于 $h$ 个小投影矩阵 $W_i^Q$ 的拼接。
+
+**第二步：reshape — 切分 head**
+
+$$
+Q \in \mathbb{R}^{B \times S \times H} \xrightarrow{\text{reshape}} Q \in \mathbb{R}^{B \times S \times h \times d_k}
+$$
+
+将最后一个维度从 $H$ 切分为 $h \times d_k$。
+
+**第三步：transpose — 让 head 维度提前**
+
+$$
+Q \in \mathbb{R}^{B \times S \times h \times d_k} \xrightarrow{\text{transpose}} Q \in \mathbb{R}^{B \times h \times S \times d_k}
+$$
+
+交换 $S$ 和 $h$ 维度。这样每个 head 对应一个 $(S, d_k)$ 的矩阵，可以对 $B \times h$ 个"batch"并行计算 attention。
+
+**第四步：Scaled Dot-Product Attention**
+
+$$
+Q \in \mathbb{R}^{B \times h \times S \times d_k}, \quad K \in \mathbb{R}^{B \times h \times S \times d_k}, \quad V \in \mathbb{R}^{B \times h \times S \times d_k}
+$$
+
+$$
+\text{Scores} = \frac{QK^T}{\sqrt{d_k}} \in \mathbb{R}^{B \times h \times S \times S}
+$$
+
+$$
+\text{Output} = \text{softmax}(\text{Scores}) \cdot V \in \mathbb{R}^{B \times h \times S \times d_k}
+$$
+
+**第五步：transpose 回来 + reshape**
+
+$$
+\mathbb{R}^{B \times h \times S \times d_k} \xrightarrow{\text{transpose}} \mathbb{R}^{B \times S \times h \times d_k} \xrightarrow{\text{reshape}} \mathbb{R}^{B \times S \times H}
+$$
+
+将所有 head 的输出重新拼接成 $H$ 维向量。
+
+**第六步：输出投影**
+
+$$
+\mathbb{R}^{B \times S \times H} \xrightarrow{W^O} \mathbb{R}^{B \times S \times H}
+$$
+
+### PyTorch 伪代码
+
+```python
+# 线性投影 (一次性计算所有 head)
+Q = self.W_q(X)                      # (B, S, H)
+K = self.W_k(X)                      # (B, S, H)
+V = self.W_v(X)                      # (B, S, H)
+
+# reshape + transpose
+Q = Q.view(B, S, h, d_k).transpose(1, 2)  # (B, h, S, d_k)
+K = K.view(B, S, h, d_k).transpose(1, 2)  # (B, h, S, d_k)
+V = V.view(B, S, h, d_k).transpose(1, 2)  # (B, h, S, d_k)
+
+# Scaled Dot-Product Attention (对所有 head 并行)
+scores = Q @ K.transpose(-2, -1) / math.sqrt(d_k)  # (B, h, S, S)
+weights = F.softmax(scores, dim=-1)                  # (B, h, S, S)
+output = weights @ V                                  # (B, h, S, d_k)
+
+# transpose + reshape + 输出投影
+output = output.transpose(1, 2).contiguous().view(B, S, H)  # (B, S, H)
+output = self.W_o(output)                                     # (B, S, H)
+```
+
+## 多头并行计算结构图
+
+<svg viewBox="0 0 800 620" xmlns="http://www.w3.org/2000/svg" style={{ maxWidth: '100%', height: 'auto', display: 'block', margin: '2rem auto' }}>
+  {/* Background */}
+  <rect width="800" height="620" fill="#fafafa" rx="8" />
+
+  {/* Title */}
+  <text x="400" y="35" textAnchor="middle" fontSize="18" fontWeight="bold" fill="#1a1a2e">Multi-Head Attention 计算结构</text>
+
+  {/* Input */}
+  <rect x="300" y="55" width="200" height="36" rx="6" fill="#e8eaf6" stroke="#3f51b5" strokeWidth="1.5" />
+  <text x="400" y="78" textAnchor="middle" fontSize="13" fill="#1a1a2e">输入 X: (B, S, H)</text>
+
+  {/* Arrows from input to linear projections */}
+  <line x1="340" y1="91" x2="140" y2="130" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+  <line x1="400" y1="91" x2="400" y2="130" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+  <line x1="460" y1="91" x2="660" y2="130" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+
+  {/* Linear Projections */}
+  <rect x="60" y="130" width="160" height="32" rx="6" fill="#fff3e0" stroke="#e65100" strokeWidth="1.5" />
+  <text x="140" y="151" textAnchor="middle" fontSize="12" fill="#1a1a2e">Linear W_Q: (H, H)</text>
+
+  <rect x="320" y="130" width="160" height="32" rx="6" fill="#fff3e0" stroke="#e65100" strokeWidth="1.5" />
+  <text x="400" y="151" textAnchor="middle" fontSize="12" fill="#1a1a2e">Linear W_K: (H, H)</text>
+
+  <rect x="580" y="130" width="160" height="32" rx="6" fill="#fff3e0" stroke="#e65100" strokeWidth="1.5" />
+  <text x="660" y="151" textAnchor="middle" fontSize="12" fill="#1a1a2e">Linear W_V: (H, H)</text>
+
+  {/* Arrows to reshape */}
+  <line x1="140" y1="162" x2="140" y2="195" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+  <line x1="400" y1="162" x2="400" y2="195" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+  <line x1="660" y1="162" x2="660" y2="195" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+
+  {/* Reshape + Transpose */}
+  <rect x="40" y="195" width="200" height="32" rx="6" fill="#e0f2f1" stroke="#00695c" strokeWidth="1.5" />
+  <text x="140" y="216" textAnchor="middle" fontSize="11" fill="#1a1a2e">reshape + transpose → (B,h,S,d_k)</text>
+
+  <rect x="300" y="195" width="200" height="32" rx="6" fill="#e0f2f1" stroke="#00695c" strokeWidth="1.5" />
+  <text x="400" y="216" textAnchor="middle" fontSize="11" fill="#1a1a2e">reshape + transpose → (B,h,S,d_k)</text>
+
+  <rect x="560" y="195" width="200" height="32" rx="6" fill="#e0f2f1" stroke="#00695c" strokeWidth="1.5" />
+  <text x="660" y="216" textAnchor="middle" fontSize="11" fill="#1a1a2e">reshape + transpose → (B,h,S,d_k)</text>
+
+  {/* Arrows to head split area */}
+  <line x1="140" y1="227" x2="140" y2="260" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+  <line x1="400" y1="227" x2="400" y2="260" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+  <line x1="660" y1="227" x2="660" y2="260" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+
+  {/* Parallel Heads Area */}
+  <rect x="30" y="255" width="740" height="200" rx="10" fill="none" stroke="#9e9e9e" strokeWidth="1" strokeDasharray="6,3" />
+  <text x="55" y="275" fontSize="12" fill="#666" fontStyle="italic">h 个 Head 并行计算</text>
+
+  {/* Head 1 */}
+  <rect x="55" y="290" width="150" height="80" rx="8" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.5" />
+  <text x="130" y="315" textAnchor="middle" fontSize="12" fontWeight="bold" fill="#1565c0">Head 1</text>
+  <text x="130" y="335" textAnchor="middle" fontSize="10" fill="#333">Attention(Q₁,K₁,V₁)</text>
+  <text x="130" y="355" textAnchor="middle" fontSize="10" fill="#666">(B, 1, S, d_k)</text>
+
+  {/* Head 2 */}
+  <rect x="225" y="290" width="150" height="80" rx="8" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.5" />
+  <text x="300" y="315" textAnchor="middle" fontSize="12" fontWeight="bold" fill="#1565c0">Head 2</text>
+  <text x="300" y="335" textAnchor="middle" fontSize="10" fill="#333">Attention(Q₂,K₂,V₂)</text>
+  <text x="300" y="355" textAnchor="middle" fontSize="10" fill="#666">(B, 1, S, d_k)</text>
+
+  {/* Dots */}
+  <text x="425" y="335" textAnchor="middle" fontSize="20" fill="#666">...</text>
+
+  {/* Head h */}
+  <rect x="475" y="290" width="150" height="80" rx="8" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.5" />
+  <text x="550" y="315" textAnchor="middle" fontSize="12" fontWeight="bold" fill="#1565c0">Head h</text>
+  <text x="550" y="335" textAnchor="middle" fontSize="10" fill="#333">Attention(Q_h,K_h,V_h)</text>
+  <text x="550" y="355" textAnchor="middle" fontSize="10" fill="#666">(B, 1, S, d_k)</text>
+
+  {/* Detail box */}
+  <rect x="645" y="285" width="115" height="90" rx="6" fill="#fff8e1" stroke="#f9a825" strokeWidth="1" />
+  <text x="702" y="305" textAnchor="middle" fontSize="9" fill="#333" fontWeight="bold">每个 Head 内部:</text>
+  <text x="702" y="322" textAnchor="middle" fontSize="9" fill="#555">1. QK^T / √d_k</text>
+  <text x="702" y="337" textAnchor="middle" fontSize="9" fill="#555">2. + Mask</text>
+  <text x="702" y="352" textAnchor="middle" fontSize="9" fill="#555">3. Softmax</text>
+  <text x="702" y="367" textAnchor="middle" fontSize="9" fill="#555">4. × V</text>
+
+  {/* Arrows from heads to concat */}
+  <line x1="130" y1="370" x2="130" y2="400" stroke="#666" strokeWidth="1.2" />
+  <line x1="300" y1="370" x2="300" y2="400" stroke="#666" strokeWidth="1.2" />
+  <line x1="550" y1="370" x2="550" y2="400" stroke="#666" strokeWidth="1.2" />
+
+  {/* Arrows converging to concat */}
+  <line x1="130" y1="400" x2="370" y2="475" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+  <line x1="300" y1="400" x2="380" y2="475" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+  <line x1="550" y1="400" x2="420" y2="475" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+
+  {/* Concat */}
+  <rect x="290" y="475" width="220" height="36" rx="6" fill="#f3e5f5" stroke="#7b1fa2" strokeWidth="1.5" />
+  <text x="400" y="498" textAnchor="middle" fontSize="12" fill="#1a1a2e">Concat → transpose + reshape: (B, S, H)</text>
+
+  {/* Arrow to output projection */}
+  <line x1="400" y1="511" x2="400" y2="540" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+
+  {/* Output Projection */}
+  <rect x="290" y="540" width="220" height="32" rx="6" fill="#fff3e0" stroke="#e65100" strokeWidth="1.5" />
+  <text x="400" y="561" textAnchor="middle" fontSize="12" fill="#1a1a2e">Linear W_O: (H, H)</text>
+
+  {/* Arrow to output */}
+  <line x1="400" y1="572" x2="400" y2="595" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrow)" />
+
+  {/* Output */}
+  <rect x="300" y="575" width="200" height="36" rx="6" fill="#e8f5e9" stroke="#2e7d32" strokeWidth="1.5" />
+  <text x="400" y="598" textAnchor="middle" fontSize="13" fill="#1a1a2e">输出: (B, S, H)</text>
+
+  {/* Arrow marker definition */}
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#666" />
+    </marker>
+  </defs>
+</svg>
+
+## 输出投影：$W^O$ 的作用
+
+多头拼接后，我们得到的向量已经回到 $H$ 维。那为什么还需要一个输出投影 $W^O$？
+
+### 作用一：融合多头信息
+
+各 head 在自己的子空间中独立计算，彼此没有交互。$W^O$ 提供了一个**跨 head 的线性变换**，让不同 head 捕获的信息能够混合和交互。
+
+可以这样理解：
+- 每个 head 是一个"专家"，捕获某种特定的关注模式
+- $W^O$ 是一个"融合层"，将各专家的意见综合为最终决策
+
+### 作用二：维持残差连接的兼容性
+
+Transformer 中每个子层的输出需要与输入做残差连接：$\text{Output} = \text{SubLayer}(X) + X$。$W^O$ 确保多头注意力的输出与输入具有相同的维度和数值范围，使残差连接能够正常工作。
+
+### 参数量分析
+
+对于一个多头注意力层，投影矩阵的参数量为：
+
+$$
+\underbrace{3 \times H^2}_{W^Q, W^K, W^V} + \underbrace{H^2}_{W^O} = 4H^2
+$$
+
+注意 $h$ 个 $W_i^Q$（每个 $H \times d_k$）拼接后等价于一个 $H \times H$ 的大矩阵 — 所以无论 head 数如何变化，**总参数量不变**。
+
+## 典型配置：不同模型的 head 设计
+
+| 模型 | 隐藏维度 $H$ | 头数 $h$ | 每头维度 $d_k$ | 层数 |
+|------|:---:|:---:|:---:|:---:|
+| Transformer (原论文) | 512 | 8 | 64 | 6 |
+| GPT-2 (Small) | 768 | 12 | 64 | 12 |
+| GPT-2 (Medium) | 1024 | 16 | 64 | 24 |
+| GPT-3 (175B) | 12288 | 96 | 128 | 96 |
+| LLaMA-7B | 4096 | 32 | 128 | 32 |
+| LLaMA-65B | 8192 | 64 | 128 | 80 |
+
+**有趣的观察**：
+- 小模型通常使用 $d_k = 64$（原论文的选择）
+- 大模型倾向于使用 $d_k = 128$（更大的子空间容量）
+- 头数随模型规模增长，但 $d_k$ 通常保持不变
+- 这暗示"子空间的粒度"有一个合理的范围，更多的 head 意味着更多并行的关注模式
+
+### 变体：Multi-Query Attention 和 Grouped-Query Attention
+
+近年来出现了一些效率优化变体：
+
+- **Multi-Query Attention (MQA)**：所有 head 共享同一组 K 和 V，只有 Q 不同。大幅减少 KV cache 的内存占用。
+- **Grouped-Query Attention (GQA)**：折中方案，将 $h$ 个 head 分为 $g$ 组，每组共享 K 和 V。LLaMA-2 70B 使用 8 组 GQA。
+
+这些变体的核心权衡是：用少量精度损失换取显著的推理效率提升。
+
+## 总结
+
+Multi-Head Attention 的设计哲学是**分而治之**：
+
+| 概念 | 说明 |
+|------|------|
+| 为什么多头 | 单头只能学一种注意力模式，多头可以并行关注不同关系 |
+| 空间切分 | $H = h \times d_k$，每个 head 在 $d_k$ 维子空间独立计算 |
+| 实现技巧 | reshape + transpose 让所有 head 并行计算，无额外开销 |
+| 维度流转 | $(B,S,H) \to (B,h,S,d_k) \to \text{Attention} \to (B,S,H)$ |
+| 输出投影 | $W^O$ 融合各 head 信息，保持维度兼容 |
+| 参数量 | $4H^2$，与 head 数无关 |
+
+**核心直觉**：Multi-Head Attention 不是简单地"多做几次 Attention"。它的精妙之处在于，通过将高维空间**切分为多个低维子空间**，在不增加计算量的前提下，让模型能够同时从多个角度理解 token 之间的关系。这就像用多台摄像机从不同角度拍摄同一个场景 — 每个角度都捕获了独特的信息，合在一起才是完整的画面。
