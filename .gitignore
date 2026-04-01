@@ -21,3 +21,12 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code
+.claude/
+
+# Playwright MCP
+.playwright-mcp/
+
+# Debug screenshots
+*.png
