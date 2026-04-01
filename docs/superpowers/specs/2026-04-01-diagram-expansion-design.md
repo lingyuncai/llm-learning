@@ -23,7 +23,7 @@
 
 ### 1.2 目标
 
-- 第一批新增 **25 个图表**，覆盖所有 8 篇文章
+- 第一批新增 **25 个全新图表** + **3 个内联 SVG 转 React 组件**（MHA、GQA、Prefill vs Decode 的现有图表），合计 28 个组件文件
 - 后续根据效果和反馈决定是否追加第二批
 
 ## 2. 设计决策
@@ -39,13 +39,15 @@
 
 ## 3. 视觉规范
 
+### 3.1 全局语义色与基础样式
+
 所有新增图表遵循统一的简洁学术风格：
 
 - **底色**: 白色 (`#ffffff`)，可选浅灰背景区域 (`#f8fafc`)
 - **主色调**: 蓝灰系 — 主蓝 `#1565c0`、深灰 `#1a1a2e`、中灰 `#666`、浅灰 `#e2e8f0`
 - **强调色**: 绿 `#2e7d32`（正面/Prefill）、红 `#c62828`（警告/Decode）、橙 `#e65100`（中性强调）、紫 `#6a1b9a`（输出/结果）
 - **线条**: 1-2px 实线，圆角矩形 `rx=6`
-- **字体**: 系统无衬线字体，代码用等宽体
+- **字体**: 系统无衬线字体，代码用等宽体；图表标题 16px，标签 12px，格子内数值 10-11px，注释 9px
 - **动画**: Motion (`motion/react`)，缓动 `easeInOut`，时长 300-500ms
 - **交互控件**: Tailwind 样式的滑块/按钮/输入框，与站点整体风格一致
 - **响应式**: 最小宽度 320px，SVG viewBox 自适应
@@ -163,9 +165,9 @@
 - **文件**: `src/components/interactive/CausalMaskDemo.tsx`
 - **类型**: 逐步动画（3 步）
 - **内容**:
-  - Step 1: 原始 Q×K^T 分数矩阵，所有格子填充随机数值（蓝色色调表示大小）
-  - Step 2: 上三角位置设为 -∞，标红 + 划掉原数值
-  - Step 3: softmax 后上三角变为 0.00（灰色），下三角归一化为概率（绿色深浅表示权重大小），每行和为 1.0
+  - Step 1: 原始 Q×K^T 分数矩阵，所有格子填充随机数值（浅蓝 `#dbeafe` 色调深浅表示大小）
+  - Step 2: 上三角位置设为 -∞，用浅红 `#fee2e2` 标记 + 划掉原数值
+  - Step 3: softmax 后上三角变为 0.00（灰色 `#f3f4f6`），下三角归一化为概率（浅蓝 `#dbeafe` 深浅表示权重大小），每行和为 1.0
 - **标注**: "每个 token 只能看到自己和前面的 token"
 
 ### 4.4 Multi-Head Attention（2 个新增）
@@ -361,7 +363,7 @@
 |------|-------------|--------|
 | MHA | 多头并行计算结构图 | 将内联 SVG 转为 React 组件 `MultiHeadParallelDiagram.tsx`，保留原有的 h 个 head 并行框布局和内部 4 步标注，但用 React 重写以规避 Astro SVG bug。图 3.1（端到端追踪）作为补充而非替代 |
 | GQA/MQA | 三列结构对比图 | 图 5.2（Query-KV 映射动画）替换 |
-| Prefill vs Decode | 两阶段对比图 | 图 7.1 + 7.2 覆盖其内容 |
+| Prefill vs Decode | 两阶段对比图 | 将内联 SVG 转为 React 组件 `PrefillDecodeOverview.tsx`，保留原有的完整两阶段流程（输入 token 数、GEMM/GEMV、KV Cache 生成/追加、compute/memory bound 指标等）。图 7.1（Roofline）和 7.2（GEMM vs GEMV）作为深入补充 |
 
 替换后可以移除 `global.css` 中的 SVG 属性 CSS hack（如果确认无其他内联 SVG 依赖）。
 
@@ -649,3 +651,65 @@ npm run validate  # 运行内容校验
 **当前 workaround**: `src/styles/global.css` 中有 CSS 属性选择器修复。
 
 **本批次策略**: 全部使用 React 组件（React 正确处理 camelCase→kebab-case），不再新增内联 MDX SVG。现有 3 个内联 SVG（MHA、GQA、Prefill vs Decode）将转为 React 组件后移除，最终可删除 CSS hack。
+
+### A.11 文章文件路径映射
+
+| 编号 | 文章 | MDX 文件路径 | slug |
+|------|------|-------------|------|
+| 1 | Transformer 总览 | `src/content/articles/zh/transformer-overview.mdx` | transformer-overview |
+| 2 | QKV 直觉 | `src/content/articles/zh/qkv-intuition.mdx` | qkv-intuition |
+| 3 | Attention 计算 | `src/content/articles/zh/attention-computation.mdx` | attention-computation |
+| 4 | Multi-Head Attention | `src/content/articles/zh/multi-head-attention.mdx` | multi-head-attention |
+| 5 | GQA/MQA | `src/content/articles/zh/gqa-mqa.mdx` | gqa-mqa |
+| 6 | KV Cache | `src/content/articles/zh/kv-cache.mdx` | kv-cache |
+| 7 | Prefill vs Decode | `src/content/articles/zh/prefill-vs-decode.mdx` | prefill-vs-decode |
+| 8 | Flash Attention | `src/content/articles/zh/flash-attention.mdx` | flash-attention |
+
+### A.12 新增组件完整清单（28 个文件）
+
+**新增图表（25 个）**:
+
+| 图编号 | 文件名 | 放入文章 |
+|--------|--------|---------|
+| 1.1 | AttentionMaskVisualization.tsx | transformer-overview |
+| 1.2 | PrePostLNComparison.tsx | transformer-overview |
+| 1.3 | PositionalEncodingComparison.tsx | transformer-overview |
+| 1.4 | FFNBottleneck.tsx | transformer-overview |
+| 2.1 | QKVSemanticSpaces.tsx | qkv-intuition |
+| 2.2 | ReshapeTransposeAnimation.tsx | qkv-intuition |
+| 3.1 | TensorShapeTracker.tsx | attention-computation（主），qkv-intuition 和 multi-head-attention 可链接引用 |
+| 3.2 | ScalingFactorDemo.tsx | attention-computation |
+| 3.3 | CausalMaskDemo.tsx | attention-computation |
+| 4.1 | SingleVsMultiHeadAttention.tsx | multi-head-attention |
+| 4.2 | OutputProjectionFusion.tsx | multi-head-attention |
+| 5.1 | KVCacheGrowthChart.tsx | gqa-mqa |
+| 5.2 | QueryKVMapping.tsx | gqa-mqa |
+| 5.3 | UptrainingPooling.tsx | gqa-mqa |
+| 5.4 | ConcurrencyComparison.tsx | gqa-mqa |
+| 6.1 | RedundantComputationViz.tsx | kv-cache |
+| 6.2 | KVCacheCalculator.tsx | kv-cache |
+| 6.3 | PagedAttentionComparison.tsx | kv-cache |
+| 6.4 | ContinuousBatchingTimeline.tsx | kv-cache |
+| 7.1 | RooflineModel.tsx | prefill-vs-decode |
+| 7.2 | GEMMvsGEMV.tsx | prefill-vs-decode |
+| 8.1 | GPUMemoryHierarchy.tsx | flash-attention |
+| 8.2 | OnlineSoftmaxDemo.tsx | flash-attention |
+| 8.3 | IOComplexityChart.tsx | flash-attention |
+| 8.4 | BlockSizeCalculator.tsx | flash-attention |
+
+**内联 SVG 转 React 组件（3 个）**:
+
+| 文件名 | 来源 | 放入文章 |
+|--------|------|---------|
+| MultiHeadParallelDiagram.tsx | multi-head-attention.mdx 第 180-293 行的内联 SVG | multi-head-attention |
+| QueryKVMapping.tsx（图 5.2 同时替换） | gqa-mqa.mdx 第 130-277 行的内联 SVG | gqa-mqa |
+| PrefillDecodeOverview.tsx | prefill-vs-decode.mdx 第 170-284 行的内联 SVG | prefill-vs-decode |
+
+**共享基础设施（4 个文件）**:
+
+| 文件路径 | 用途 |
+|---------|------|
+| `src/components/interactive/shared/types.ts` | ModelConfig、HardwareConfig 接口 |
+| `src/components/interactive/shared/presets.ts` | 预设模型和硬件配置 |
+| `src/components/interactive/shared/colors.ts` | 全局语义色 + 局部功能色常量 |
+| `src/components/interactive/shared/hooks.ts` | useStepNavigation、useDebouncedSlider 等共用 hooks |
