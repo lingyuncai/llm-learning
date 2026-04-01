@@ -1,0 +1,53 @@
+---
+import BaseLayout from '../../../components/layout/BaseLayout.astro';
+import { getAllPaths } from '../../../utils/paths';
+import { getCollection } from 'astro:content';
+import { difficultyLabel, difficultyColor } from '../../../utils/constants';
+
+export function getStaticPaths() {
+  const paths = getAllPaths();
+  return paths.map(p => ({
+    params: { id: p.id },
+    props: { learningPath: p },
+  }));
+}
+
+const { learningPath } = Astro.props;
+const allArticles = (await getCollection('articles')).filter(a => a.data.locale === 'zh');
+
+const pathArticles = learningPath.articles
+  .map(slug => allArticles.find(a => a.data.slug === slug))
+  .filter(Boolean);
+---
+<BaseLayout title={learningPath.title.zh}>
+  <div class="max-w-3xl mx-auto">
+    <h1 class="text-3xl font-bold mb-3">{learningPath.title.zh}</h1>
+    <p class="text-gray-600 mb-8">{learningPath.description.zh}</p>
+
+    <ol class="space-y-4">
+      {pathArticles.map((article, index) => (
+        <li>
+          <a href={`/zh/articles/${article!.data.slug}`}
+             class="flex items-start gap-4 p-4 border border-gray-200 rounded-lg hover:border-primary-400 hover:shadow-sm transition-all">
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-primary-100 text-primary-700 text-sm font-bold shrink-0">
+              {index + 1}
+            </span>
+            <div>
+              <div class="flex items-center gap-2 mb-1">
+                <h3 class="font-semibold">{article!.data.title}</h3>
+                <span class={`text-xs px-2 py-0.5 rounded ${difficultyColor[article!.data.difficulty]}`}>
+                  {difficultyLabel[article!.data.difficulty]}
+                </span>
+              </div>
+              <div class="flex gap-2">
+                {article!.data.tags.map(tag => (
+                  <span class="text-xs text-gray-500">#{tag}</span>
+                ))}
+              </div>
+            </div>
+          </a>
+        </li>
+      ))}
+    </ol>
+  </div>
+</BaseLayout>
