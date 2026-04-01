@@ -1,0 +1,416 @@
+---
+title: "MQA 与 GQA"
+slug: gqa-mqa
+locale: zh
+tags: [transformer, attention, mqa, gqa, kv-cache]
+prerequisites: [multi-head-attention]
+difficulty: advanced
+created: "2026-03-31"
+updated: "2026-03-31"
+references:
+  - type: paper
+    title: "GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints"
+    url: "https://arxiv.org/abs/2305.13245"
+  - type: paper
+    title: "Fast Transformer Decoding: One Write-Head is All You Need"
+    url: "https://arxiv.org/abs/1911.02150"
+---
+
+## 简介：为什么 MHA 的 KV Cache 是瓶颈
+
+在上一篇文章中，我们了解了 Multi-Head Attention (MHA) 的工作原理：$h$ 个 head 各自拥有独立的 $W^Q$、$W^K$、$W^V$ 投影矩阵，在不同的子空间中并行计算注意力。
+
+MHA 在**训练**时表现出色 — 所有 token 可以并行处理。但在**推理（自回归生成）**时，一个严重的效率瓶颈浮现：**KV Cache**。
+
+### 什么是 KV Cache
+
+在自回归生成中，每个新 token 需要与所有之前的 token 做注意力计算。为了避免重复计算，我们会把之前 token 的 Key 和 Value 缓存起来 — 这就是 **KV Cache**。
+
+对于标准 MHA，每一层的 KV Cache 大小为：
+
+$$
+\text{KV Cache per layer} = 2 \times h \times S \times d_k \times \text{sizeof(dtype)}
+$$
+
+其中 $h$ 是 head 数，$S$ 是序列长度，$d_k$ 是每头维度，factor 2 代表 K 和 V 两份缓存。
+
+以 LLaMA-2 70B 为例（$h = 64$，$d_k = 128$，$L = 80$ 层），生成长度 $S = 4096$ 的序列时，**每个请求**的 KV Cache：
+
+$$
+2 \times 64 \times 4096 \times 128 \times 80 \times 2\text{ bytes} \approx 10.7 \text{ GB (FP16)}
+$$
+
+这比模型参数本身的显存占用还要大！当需要同时服务多个用户（batch serving）时，KV Cache 会迅速耗尽 GPU 显存，成为吞吐量的核心瓶颈。
+
+**核心观察**：KV Cache 的大小与 head 数 $h$ 成正比。如果我们能减少需要缓存的 KV head 数量，就能直接缩小 KV Cache。
+
+## MQA：共享 KV 的极致方案
+
+**Multi-Query Attention (MQA)** 由 Noam Shazeer 在 2019 年提出（"Fast Transformer Decoding: One Write-Head is All You Need"），是最激进的 KV 缩减方案。
+
+### 核心思想
+
+MQA 的改动很简单：**所有 query head 共享同一组 Key 和 Value**。
+
+- 每个 head 仍然有自己独立的 $W_i^Q$（Query 投影各不相同）
+- 但所有 head 共用一个 $W^K$ 和一个 $W^V$
+
+数学表达：
+
+$$
+\text{head}_i = \text{Attention}(Q W_i^Q, \, K W^K, \, V W^V)
+$$
+
+注意 $W^K$ 和 $W^V$ 不再有下标 $i$ — 它们在所有 head 之间是共享的。
+
+### KV Cache 缩减
+
+由于只有一组 KV，缓存大小从：
+
+$$
+2 \times h \times S \times d_k \quad \xrightarrow{\text{MQA}} \quad 2 \times 1 \times S \times d_k
+$$
+
+缩减了 $h$ 倍！对于 $h = 64$ 的模型，这意味着 KV Cache 缩小为原来的 $\frac{1}{64}$。
+
+### 代价
+
+MQA 的缩减是极端的，也带来了明显的代价：
+
+- **质量下降**：所有 head 被迫在同一个 KV 子空间中计算注意力，丧失了 MHA 中"不同 head 关注不同模式"的能力
+- **训练不稳定**：从零训练 MQA 模型时，收敛可能更困难
+- 论文报告"only minor quality degradation"，但实际在下游任务上，尤其是需要细粒度推理的任务中，质量损失可能更明显
+
+## GQA：分组查询的折中方案
+
+**Grouped-Query Attention (GQA)** 由 Ainslie 等人在 2023 年提出，是 MHA 和 MQA 之间的优雅折中。
+
+### 核心思想
+
+将 $h$ 个 query head 分为 $g$ 个组，**每组共享一对 KV head**。
+
+- 当 $g = h$（每组一个 head）→ 退化为标准 MHA
+- 当 $g = 1$（所有 head 一组）→ 退化为 MQA
+- 当 $1 < g < h$ → GQA，折中方案
+
+数学表达（设第 $i$ 个 query head 属于第 $\lfloor i \cdot g / h \rfloor$ 组）：
+
+$$
+\text{head}_i = \text{Attention}(Q W_i^Q, \, K W_{\text{group}(i)}^K, \, V W_{\text{group}(i)}^V)
+$$
+
+### KV Cache 缩减
+
+$$
+2 \times h \times S \times d_k \quad \xrightarrow{\text{GQA}} \quad 2 \times g \times S \times d_k
+$$
+
+缩减了 $h / g$ 倍。例如 $h = 64$、$g = 8$ 时，KV Cache 缩小为原来的 $\frac{1}{8}$。
+
+### 关键创新：Uptraining
+
+GQA 论文的另一个重要贡献是提出了从已有的 MHA checkpoint **uptraining** 到 GQA 的方法：
+
+1. 将原始 MHA 中每组内的多个 KV head 的权重取**均值**，初始化 GQA 的共享 KV head
+2. 只需原始预训练计算量的约 **5%** 即可完成转换
+3. 转换后的模型质量接近原始 MHA，推理速度接近 MQA
+
+这意味着不需要从头训练 — 可以把现有的 MHA 模型高效地转换为 GQA 模型。
+
+## 结构对比图：MHA vs MQA vs GQA
+
+<svg viewBox="0 0 900 520" xmlns="http://www.w3.org/2000/svg" style={{ maxWidth: '100%', height: 'auto', display: 'block', margin: '2rem auto' }}>
+  {/* Background */}
+  <rect width="900" height="520" fill="#fafafa" rx="8" />
+
+  {/* Title */}
+  <text x="450" y="32" textAnchor="middle" fontSize="17" fontWeight="bold" fill="#1a1a2e">MHA vs MQA vs GQA 结构对比</text>
+
+  {/* === MHA Section === */}
+  <rect x="15" y="50" width="270" height="450" rx="10" fill="#f5f5ff" stroke="#c5cae9" strokeWidth="1.5" />
+  <text x="150" y="78" textAnchor="middle" fontSize="15" fontWeight="bold" fill="#283593">MHA</text>
+  <text x="150" y="96" textAnchor="middle" fontSize="10" fill="#666">Multi-Head Attention</text>
+
+  {/* MHA Query Heads */}
+  <text x="60" y="130" fontSize="11" fill="#444" fontWeight="bold">Query Heads</text>
+  <rect x="30" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
+  <text x="55" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₁</text>
+  <rect x="90" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
+  <text x="115" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₂</text>
+  <rect x="150" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
+  <text x="175" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₃</text>
+  <rect x="210" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
+  <text x="235" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₄</text>
+
+  {/* MHA KV Heads */}
+  <text x="60" y="210" fontSize="11" fill="#444" fontWeight="bold">KV Heads</text>
+  <rect x="30" y="220" width="50" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.2" />
+  <text x="55" y="239" textAnchor="middle" fontSize="10" fill="#e65100">KV₁</text>
+  <rect x="90" y="220" width="50" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.2" />
+  <text x="115" y="239" textAnchor="middle" fontSize="10" fill="#e65100">KV₂</text>
+  <rect x="150" y="220" width="50" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.2" />
+  <text x="175" y="239" textAnchor="middle" fontSize="10" fill="#e65100">KV₃</text>
+  <rect x="210" y="220" width="50" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.2" />
+  <text x="235" y="239" textAnchor="middle" fontSize="10" fill="#e65100">KV₄</text>
+
+  {/* MHA arrows: each Q connects to its own KV */}
+  <line x1="55" y1="168" x2="55" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
+  <line x1="115" y1="168" x2="115" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
+  <line x1="175" y1="168" x2="175" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
+  <line x1="235" y1="168" x2="235" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
+
+  {/* MHA label */}
+  <text x="150" y="285" textAnchor="middle" fontSize="10" fill="#555">每个 Q 对应独立的 KV</text>
+  <text x="150" y="300" textAnchor="middle" fontSize="10" fill="#555">KV heads = h</text>
+
+  {/* MHA KV Cache bar */}
+  <text x="150" y="335" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#444">KV Cache</text>
+  <rect x="30" y="345" width="240" height="24" rx="4" fill="#ffcdd2" stroke="#c62828" strokeWidth="1" />
+  <text x="150" y="362" textAnchor="middle" fontSize="10" fill="#c62828">||||||||||||||||||||||||||||||||</text>
+  <text x="150" y="390" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#c62828">100%</text>
+
+  {/* MHA parameters */}
+  <rect x="35" y="410" width="230" height="40" rx="6" fill="#fff" stroke="#ddd" strokeWidth="1" />
+  <text x="150" y="427" textAnchor="middle" fontSize="10" fill="#555">KV 参数: 2 x h x d_k x H</text>
+  <text x="150" y="442" textAnchor="middle" fontSize="10" fill="#555">KV Cache: 2 x h x S x d_k</text>
+
+  {/* === GQA Section === */}
+  <rect x="315" y="50" width="270" height="450" rx="10" fill="#f5fff5" stroke="#c8e6c9" strokeWidth="1.5" />
+  <text x="450" y="78" textAnchor="middle" fontSize="15" fontWeight="bold" fill="#2e7d32">GQA</text>
+  <text x="450" y="96" textAnchor="middle" fontSize="10" fill="#666">Grouped-Query Attention</text>
+
+  {/* GQA Query Heads */}
+  <text x="360" y="130" fontSize="11" fill="#444" fontWeight="bold">Query Heads</text>
+  <rect x="330" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
+  <text x="355" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₁</text>
+  <rect x="390" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
+  <text x="415" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₂</text>
+  <rect x="450" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
+  <text x="475" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₃</text>
+  <rect x="510" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
+  <text x="535" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₄</text>
+
+  {/* GQA group brackets */}
+  <rect x="328" y="172" width="114" height="3" rx="1" fill="#2e7d32" />
+  <text x="385" y="186" textAnchor="middle" fontSize="9" fill="#2e7d32">Group 1</text>
+  <rect x="448" y="172" width="114" height="3" rx="1" fill="#2e7d32" />
+  <text x="505" y="186" textAnchor="middle" fontSize="9" fill="#2e7d32">Group 2</text>
+
+  {/* GQA KV Heads (2 groups) */}
+  <text x="360" y="210" fontSize="11" fill="#444" fontWeight="bold">KV Heads</text>
+  <rect x="355" y="220" width="60" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.2" />
+  <text x="385" y="239" textAnchor="middle" fontSize="10" fill="#e65100">KV₁</text>
+  <rect x="475" y="220" width="60" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.2" />
+  <text x="505" y="239" textAnchor="middle" fontSize="10" fill="#e65100">KV₂</text>
+
+  {/* GQA arrows: Q1,Q2 → KV1; Q3,Q4 → KV2 */}
+  <line x1="355" y1="168" x2="375" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
+  <line x1="415" y1="168" x2="395" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
+  <line x1="475" y1="168" x2="495" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
+  <line x1="535" y1="168" x2="515" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
+
+  {/* GQA label */}
+  <text x="450" y="285" textAnchor="middle" fontSize="10" fill="#555">每组 Q 共享一对 KV</text>
+  <text x="450" y="300" textAnchor="middle" fontSize="10" fill="#555">KV heads = g (组数)</text>
+
+  {/* GQA KV Cache bar */}
+  <text x="450" y="335" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#444">KV Cache</text>
+  <rect x="390" y="345" width="120" height="24" rx="4" fill="#ffe0b2" stroke="#e65100" strokeWidth="1" />
+  <text x="450" y="362" textAnchor="middle" fontSize="10" fill="#e65100">||||||||||||||||</text>
+  <text x="450" y="390" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#e65100">g/h (e.g. 12.5%)</text>
+
+  {/* GQA parameters */}
+  <rect x="335" y="410" width="230" height="40" rx="6" fill="#fff" stroke="#ddd" strokeWidth="1" />
+  <text x="450" y="427" textAnchor="middle" fontSize="10" fill="#555">KV 参数: 2 x g x d_k x H</text>
+  <text x="450" y="442" textAnchor="middle" fontSize="10" fill="#555">KV Cache: 2 x g x S x d_k</text>
+
+  {/* === MQA Section === */}
+  <rect x="615" y="50" width="270" height="450" rx="10" fill="#fffde7" stroke="#fff9c4" strokeWidth="1.5" />
+  <text x="750" y="78" textAnchor="middle" fontSize="15" fontWeight="bold" fill="#f57f17">MQA</text>
+  <text x="750" y="96" textAnchor="middle" fontSize="10" fill="#666">Multi-Query Attention</text>
+
+  {/* MQA Query Heads */}
+  <text x="660" y="130" fontSize="11" fill="#444" fontWeight="bold">Query Heads</text>
+  <rect x="630" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
+  <text x="655" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₁</text>
+  <rect x="690" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
+  <text x="715" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₂</text>
+  <rect x="750" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
+  <text x="775" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₃</text>
+  <rect x="810" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
+  <text x="835" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₄</text>
+
+  {/* MQA single KV head */}
+  <text x="660" y="210" fontSize="11" fill="#444" fontWeight="bold">KV Head</text>
+  <rect x="710" y="220" width="80" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.5" />
+  <text x="750" y="239" textAnchor="middle" fontSize="10" fontWeight="bold" fill="#e65100">KV</text>
+
+  {/* MQA arrows: all Q → single KV */}
+  <line x1="655" y1="168" x2="730" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
+  <line x1="715" y1="168" x2="740" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
+  <line x1="775" y1="168" x2="760" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
+  <line x1="835" y1="168" x2="770" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
+
+  {/* MQA label */}
+  <text x="750" y="285" textAnchor="middle" fontSize="10" fill="#555">所有 Q 共享同一对 KV</text>
+  <text x="750" y="300" textAnchor="middle" fontSize="10" fill="#555">KV heads = 1</text>
+
+  {/* MQA KV Cache bar */}
+  <text x="750" y="335" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#444">KV Cache</text>
+  <rect x="735" y="345" width="30" height="24" rx="4" fill="#c8e6c9" stroke="#2e7d32" strokeWidth="1" />
+  <text x="750" y="362" textAnchor="middle" fontSize="10" fill="#2e7d32">||</text>
+  <text x="750" y="390" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#2e7d32">1/h (e.g. 1.6%)</text>
+
+  {/* MQA parameters */}
+  <rect x="635" y="410" width="230" height="40" rx="6" fill="#fff" stroke="#ddd" strokeWidth="1" />
+  <text x="750" y="427" textAnchor="middle" fontSize="10" fill="#555">KV 参数: 2 x 1 x d_k x H</text>
+  <text x="750" y="442" textAnchor="middle" fontSize="10" fill="#555">KV Cache: 2 x 1 x S x d_k</text>
+
+  {/* Bottom summary */}
+  <text x="450" y="510" textAnchor="middle" fontSize="11" fill="#444">KV Cache 大小: MHA (100%) &gt; GQA (g/h) &gt; MQA (1/h)　|　质量: MHA &ge; GQA &gt; MQA</text>
+
+  {/* Arrow marker */}
+  <defs>
+    <marker id="arrowGqa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#666" />
+    </marker>
+  </defs>
+</svg>
+
+上图展示了三种注意力机制的 head-to-KV 映射关系（以 $h = 4$ 为例）：
+
+- **MHA**：4 个 Query head 各自对应 1 个独立的 KV head（共 4 个 KV head）
+- **GQA**（$g = 2$）：4 个 Query head 分为 2 组，每组共享 1 个 KV head（共 2 个 KV head）
+- **MQA**：4 个 Query head 全部共享 1 个 KV head（共 1 个 KV head）
+
+## KV Cache 内存分析：具体数值对比
+
+让我们用真实模型的参数来计算 KV Cache 的内存占用。假设序列长度 $S = 4096$，FP16（2 bytes per element）：
+
+| 模型 | 层数 $L$ | $h$ | $d_k$ | KV heads | KV Cache / 请求 |
+|------|:---:|:---:|:---:|:---:|:---:|
+| 假设 MHA-70B | 80 | 64 | 128 | 64 (MHA) | **10.7 GB** |
+| LLaMA-2 70B (GQA) | 80 | 64 | 128 | 8 | **1.3 GB** |
+| 假设 MQA-70B | 80 | 64 | 128 | 1 (MQA) | **0.17 GB** |
+
+计算公式：
+
+$$
+\text{KV Cache} = 2 \times \text{KV heads} \times S \times d_k \times L \times 2\text{ bytes}
+$$
+
+以 LLaMA-2 70B 的 GQA 配置为例：
+
+$$
+2 \times 8 \times 4096 \times 128 \times 80 \times 2 = 1.34 \text{ GB}
+$$
+
+**对比**：从 MHA 的 10.7 GB 降到 GQA 的 1.3 GB，缩减了约 **8 倍**（$h / g = 64 / 8 = 8$），而如果用 MQA 则可以缩减 **64 倍**到仅 0.17 GB。
+
+### Batch Serving 的影响
+
+KV Cache 缩减对批处理推理的影响更加显著。假设 GPU 有 40 GB 剩余显存用于 KV Cache：
+
+| 方案 | KV Cache / 请求 | 可并发请求数 |
+|------|:---:|:---:|
+| MHA | 10.7 GB | ~3 |
+| GQA (8 组) | 1.3 GB | ~30 |
+| MQA | 0.17 GB | ~235 |
+
+GQA 将并发能力提升了约 10 倍 — 这对 LLM 服务的成本和延迟有决定性影响。
+
+## 质量与性能的 Trade-off
+
+减少 KV head 数量本质上是一种**信息压缩**：强制多个 query head 在同一个 KV 子空间中寻找不同的注意力模式。
+
+### 为什么 GQA 质量损失很小
+
+1. **冗余性**：研究发现 MHA 中相邻 head 的 KV 投影往往高度相似 — 许多 head 学到了冗余的 KV 表示
+2. **Query 多样性保留**：GQA 保留了所有 query head 的独立性，只是共享了 KV 空间。Query 投影仍然可以在共享的 KV 空间中学习不同的注意力模式
+3. **Uptraining 有效性**：从 MHA checkpoint 通过均值池化初始化 + 少量继续训练，可以高效恢复质量
+
+GQA 论文报告，使用原始预训练计算量约 5% 的 uptraining，GQA 模型在大多数基准测试中的表现接近原始 MHA 模型，同时推理速度接近 MQA。
+
+### 速度提升的来源
+
+KV Cache 缩减带来的速度提升主要来自两个方面：
+
+1. **内存带宽**：自回归解码是 memory-bandwidth bound 的操作。KV Cache 更小意味着每步生成需要加载的数据更少，直接提升生成速度
+2. **内存容量**：更小的 KV Cache 允许更大的 batch size，提升 GPU 利用率和整体吞吐量
+
+## 实际应用
+
+GQA 已成为当前主流大语言模型的标准配置：
+
+| 模型 | Query Heads | KV Heads | 组比例 (h/g) | 注意力类型 |
+|------|:---:|:---:|:---:|:---:|
+| LLaMA-2 7B | 32 | 32 | 1:1 | MHA |
+| LLaMA-2 13B | 40 | 40 | 1:1 | MHA |
+| LLaMA-2 70B | 64 | 8 | 8:1 | GQA |
+| LLaMA-3 8B | 32 | 8 | 4:1 | GQA |
+| LLaMA-3 70B | 64 | 8 | 8:1 | GQA |
+| Mistral 7B | 32 | 8 | 4:1 | GQA |
+| Gemini 1.0 Pro | — | 1 | — | MQA |
+
+**值得注意的趋势**：
+
+- **LLaMA-2 系列**：只有最大的 70B 模型使用 GQA，较小的 7B 和 13B 仍使用标准 MHA。这说明在当时，KV Cache 瓶颈主要是大模型面临的问题
+- **LLaMA-3 系列**：所有尺寸（包括 8B）都采用 GQA，反映了 GQA 已被证明在各种规模下都有效
+- **Mistral 7B**：即使是 7B 规模也使用 GQA（4:1），结合滑动窗口注意力进一步优化推理效率
+- **Gemini 1.0 Pro**：使用更激进的 MQA 方案，所有 query head 共享单一 KV head
+- **行业共识**：GQA 已成为新模型的默认选择，8 个 KV head 是一个常见的配置
+
+### PyTorch 实现要点
+
+GQA 的实现只需要在标准 MHA 基础上做少量修改：
+
+```python
+# GQA: g 个 KV head, h 个 query head, 每组 h//g 个 query 共享一个 KV
+class GroupedQueryAttention(nn.Module):
+    def __init__(self, H, h, g, d_k):
+        super().__init__()
+        self.h = h      # query head 数
+        self.g = g      # KV head 数 (group 数)
+        self.d_k = d_k
+        
+        self.W_q = nn.Linear(H, h * d_k)    # h 个 query head
+        self.W_k = nn.Linear(H, g * d_k)    # g 个 KV head
+        self.W_v = nn.Linear(H, g * d_k)    # g 个 KV head
+        self.W_o = nn.Linear(h * d_k, H)
+    
+    def forward(self, x):
+        B, S, _ = x.shape
+        
+        Q = self.W_q(x).view(B, S, self.h, self.d_k).transpose(1, 2)
+        K = self.W_k(x).view(B, S, self.g, self.d_k).transpose(1, 2)
+        V = self.W_v(x).view(B, S, self.g, self.d_k).transpose(1, 2)
+        
+        # 关键步骤：将 KV head 扩展以匹配 query head 数
+        # 每个 KV head 被复制 h//g 次
+        repeats = self.h // self.g
+        K = K.repeat_interleave(repeats, dim=1)  # (B, h, S, d_k)
+        V = V.repeat_interleave(repeats, dim=1)  # (B, h, S, d_k)
+        
+        # 标准 attention 计算
+        scores = Q @ K.transpose(-2, -1) / math.sqrt(self.d_k)
+        weights = F.softmax(scores, dim=-1)
+        output = weights @ V
+        
+        output = output.transpose(1, 2).contiguous().view(B, S, -1)
+        return self.W_o(output)
+```
+
+关键区别在于：`W_k` 和 `W_v` 的输出维度是 $g \times d_k$（而非 $h \times d_k$），然后通过 `repeat_interleave` 将每个 KV head 复制 $h/g$ 次以匹配 query head 数量。注意这个复制操作**不增加 KV Cache 的大小** — 缓存的仍然只有 $g$ 个 KV head。
+
+## 总结
+
+| 概念 | 说明 |
+|------|------|
+| MHA 瓶颈 | KV Cache 随 head 数线性增长，限制推理效率和并发能力 |
+| MQA | 所有 query head 共享一对 KV，KV Cache 缩减 $h$ 倍，但质量损失明显 |
+| GQA | $h$ 个 query head 分 $g$ 组，每组共享 KV，折中方案 |
+| KV Cache 缩减 | MHA: $2hSd_k$ → GQA: $2gSd_k$ → MQA: $2Sd_k$ |
+| Uptraining | 从 MHA checkpoint 用约 5% 计算量转换为 GQA |
+| 行业趋势 | GQA 已成为 LLaMA-3、Mistral 等主流模型的标准配置 |
+
+**核心直觉**：MHA 中大量 KV head 存在信息冗余。GQA 通过让一组 query head 共享同一对 KV head，在几乎不损失质量的前提下，将 KV Cache 缩减数倍，从而大幅提升推理效率和服务并发能力。这就像一个团队开会 — 不需要每个人都带一份完整的会议资料，几个人共享一份即可，节省的是桌面空间（显存），而不影响讨论质量（模型能力）。
