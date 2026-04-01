@@ -78,11 +78,43 @@ All in `src/content/articles/zh/`:
 ## Task Dependency Order
 
 ```
-Task 1 (shared infra) → Tasks 2-32 (all components, independent of each other)
+Task 1 (shared infra) → Tasks 2-28 (all components, independent of each other)
 Each component task includes its own MDX integration step.
-Task 33 (CSS cleanup) → after all SVG conversions are done
-Task 34 (final validation) → after everything
+Task 29 (CSS cleanup) → after all SVG conversions (Tasks 13, 15, 24) are done
+Task 30 (final validation) → after everything
 ```
+
+## Project Conventions (Self-Contained Reference)
+
+This section ensures the plan is usable even without prior conversation context.
+
+**Astro Islands**: Components in `.mdx` files need `client:visible` directive for React interactivity (useState, onClick, etc.). Without it, the component renders as static HTML.
+
+**MDX import pattern**:
+```mdx
+import ComponentName from '../../../components/interactive/ComponentName.tsx';
+<ComponentName client:visible />
+```
+
+**File locations**:
+- Interactive components: `src/components/interactive/`
+- Primitives (StepNavigator, MatrixGrid, TensorShape, mathUtils): `src/components/primitives/`
+- Articles: `src/content/articles/zh/`
+- Shared infrastructure: `src/components/interactive/shared/`
+
+**Available primitives**:
+- `StepNavigator`: Step-by-step animation with numbered navigation buttons. Props: `{ steps: { title: string; content: ReactNode }[]; className?: string }`
+- `MatrixGrid`: Renders a 2D number grid. Props: `{ data: number[][]; label?; shape?; highlightCells?; highlightRows?; highlightCols?; highlightColor?; rowLabels?; colLabels?; compact? }`
+- `TensorShape`: Shows dimension labels. Props: `{ dims: { name: string; size: number | string }[]; label?; className? }`
+- `mathUtils`: `seededValues01`, `seededValuesSigned`, `matmul`, `transpose`, `dot`, `softmax1d`
+
+**Animation**: Use `import { motion, AnimatePresence } from 'motion/react'` (NOT framer-motion)
+
+**Visual style**: Clean academic — white bg, thin lines, blue-gray palette. See shared/colors.ts for COLORS constants.
+
+**SVG in React**: Use React SVG (camelCase attributes: `textAnchor`, `fontSize`). Do NOT use inline SVG in MDX (Astro lowercases camelCase attrs).
+
+**Build commands**: `npm run dev` (dev server), `npm run build` (production), `npm run validate` (content validation)
 
 ---
 
@@ -3325,6 +3357,7 @@ import { HARDWARE_PRESETS } from './shared/presets';
 
 export default function RooflineModel() {
   const [batchSize, setBatchSize] = useState(1);
+  const [seqLen, setSeqLen] = useState(2048);
   const [hwPreset, setHwPreset] = useState('A100 80GB');
   const hw = HARDWARE_PRESETS[hwPreset];
 
@@ -3334,10 +3367,11 @@ export default function RooflineModel() {
   const ridgePoint = peakTFLOPS / bwTBs; // FLOP/Byte at knee
 
   // Arithmetic intensity for Prefill and Decode
-  // Prefill: compute-bound, high AI (~model_dim, simplified)
-  const prefillAI = 200; // FLOP/Byte (roughly, depends on seq len)
-  // Decode: memory-bound, AI ≈ 2*batch_size/sizeof(element) for matmul
-  const decodeAI = 2 * batchSize / 2; // FP16 = 2 bytes
+  // For a matmul W(d×d) × X(B×d): FLOPs = 2*B*d², Bytes = d²*2 (weights, FP16)
+  // Prefill: B = seqLen tokens, AI ≈ 2*seqLen*d² / (d²*2) = seqLen (for FP16)
+  const prefillAI = seqLen; // FLOP/Byte, compute-bound for large seqLen
+  // Decode: B = batchSize tokens (1 token per sequence), AI ≈ 2*batchSize*d² / (d²*2) = batchSize
+  const decodeAI = batchSize; // FLOP/Byte, memory-bound for small batchSize
 
   // Throughput on roofline
   const roofline = (ai: number) => Math.min(ai * bwTBs, peakTFLOPS);
@@ -3374,7 +3408,12 @@ export default function RooflineModel() {
     <div className="my-6 p-4 border rounded-lg">
       <div className="flex flex-wrap gap-4 mb-3">
         <div>
-          <label className="text-xs text-gray-500 block">Batch Size: {batchSize}</label>
+          <label className="text-xs text-gray-500 block">Seq Length (Prefill): {seqLen}</label>
+          <input type="range" min={128} max={8192} step={128} value={seqLen}
+            onChange={e => setSeqLen(Number(e.target.value))} className="w-40" />
+        </div>
+        <div>
+          <label className="text-xs text-gray-500 block">Batch Size (Decode): {batchSize}</label>
           <input type="range" min={1} max={256} step={1} value={batchSize}
             onChange={e => setBatchSize(Number(e.target.value))} className="w-40" />
         </div>
@@ -3586,13 +3625,21 @@ git commit -m "feat: add GEMM vs GEMV comparison (diagram 7.2)"
 
 - [ ] **Step 1: Create the component**
 
-Convert the existing inline SVG from prefill-vs-decode.mdx (lines 170-284) to a React component. Preserve the same two-phase comparison layout showing input tokens, GEMM/GEMV, KV Cache operations, and bound indicators.
+Convert the existing inline SVG from prefill-vs-decode.mdx (lines 170-284) to a React component. The original SVG shows a side-by-side comparison of Prefill vs Decode phases with:
+- Left: Prefill phase — multiple input tokens, GEMM operation, KV Cache 生成, compute-bound indicator
+- Right: Decode phase — single input token, GEMV operation, KV Cache 追加, memory-bound indicator
+- Each side has: input tokens → computation type → KV Cache → output → bottleneck indicator
 
 The implementer should:
-1. Read `src/content/articles/zh/prefill-vs-decode.mdx` lines 170-284
-2. Create `src/components/interactive/PrefillDecodeOverview.tsx` using React SVG (same layout)
-3. Import colors from `./shared/colors`
-4. Replace the inline SVG in MDX with `<PrefillDecodeOverview client:visible />`
+1. Read `src/content/articles/zh/prefill-vs-decode.mdx` lines 170-284 to see the full original SVG
+2. Create `src/components/interactive/PrefillDecodeOverview.tsx` as a React functional component
+3. Convert all SVG attributes to camelCase React format (textAnchor, fontSize, strokeWidth, etc.)
+4. Import `COLORS` from `./shared/colors` and replace hardcoded color values where applicable
+5. Use a default export: `export default function PrefillDecodeOverview()`
+6. The component should wrap the SVG in `<div className="my-6 w-full overflow-x-auto">...</div>`
+7. Replace the inline SVG in MDX (lines 170-284) with the import + `<PrefillDecodeOverview client:visible />`
+
+**Why not provide code inline:** The original SVG is ~115 lines and must be read directly to ensure exact visual fidelity. The conversion is mechanical (HTML SVG attrs → React camelCase) rather than creative.
 
 - [ ] **Step 2: Verify the converted component matches the original**
 
