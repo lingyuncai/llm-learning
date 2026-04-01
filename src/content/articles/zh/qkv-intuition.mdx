@@ -1,0 +1,174 @@
+---
+title: "QKV 的数据结构与直觉"
+slug: qkv-intuition
+locale: zh
+tags: [transformer, attention, qkv]
+prerequisites: [transformer-overview]
+difficulty: intermediate
+created: "2026-03-31"
+updated: "2026-03-31"
+references:
+  - type: paper
+    title: "Attention Is All You Need"
+    url: "https://arxiv.org/abs/1706.03762"
+  - type: website
+    title: "The Illustrated Transformer"
+    url: "https://jalammar.github.io/illustrated-transformer/"
+---
+
+import QKVLinearProjection from '../../../components/interactive/QKVLinearProjection.tsx';
+import TensorShape from '../../../components/primitives/TensorShape.tsx';
+
+## 简介：为什么需要 QKV
+
+在上一篇文章中，我们看到 Self-Attention 的核心公式：
+
+$$
+\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{QK^T}{\sqrt{d_k}}\right) V
+$$
+
+这个公式中出现了三个矩阵：**Q**（Query）、**K**（Key）、**V**（Value）。它们是从哪里来的？为什么需要三个不同的矩阵，而不是直接用输入本身？
+
+答案是：**通过三组不同的线性投影，让同一个输入在不同的子空间中扮演不同的角色**。这使得模型能够灵活地学习"问什么"、"用什么来匹配"和"提取什么信息"这三个本质不同的功能。
+
+## 直觉理解：图书馆检索类比
+
+想象你走进一座图书馆，想查找关于"Transformer 架构"的资料：
+
+| 角色 | 类比 | 说明 |
+|------|------|------|
+| **Query（查询）** | 你脑中的问题 | "我想了解 Transformer 架构" — 你带着这个问题去检索 |
+| **Key（键）** | 书籍的标签/索引卡 | 每本书都有关键词标签："深度学习"、"注意力机制"、"NLP"等 |
+| **Value（值）** | 书的实际内容 | 标签匹配后，你真正读到的是书中的文字内容 |
+
+检索过程如下：
+
+1. **Query 与 Key 比较**：你的问题（Query）和每本书的标签（Key）做匹配，计算"相关性分数"
+2. **Softmax 归一化**：将分数转化为概率分布 — 最相关的书获得最高权重
+3. **加权提取 Value**：根据相关性权重，从各本书的内容（Value）中提取信息
+
+关键点在于：**标签（Key）和内容（Value）是同一本书的不同表征**。标签用来快速匹配，内容才是你真正需要的信息。同理，在 Attention 中，Key 用于计算注意力权重，Value 用于聚合信息 — 它们来自同一个输入，但通过不同的投影承担不同的功能。
+
+> 如果不做投影，而是直接用输入 $X$ 同时充当 Q、K、V，那么模型只能计算"自身与自身的相似度"，表达能力极为有限。三组独立的投影赋予了模型更强的灵活性。
+
+## 数学定义：线性投影公式和维度
+
+### 输入
+
+设输入序列经过 Embedding 后的矩阵为 $X$：
+
+$$
+X \in \mathbb{R}^{S \times H}
+$$
+
+其中：
+- $S$ 是序列长度（token 数量）
+- $H$ 是隐藏层维度（hidden size）
+
+<TensorShape client:visible dims={[{name: "S", size: "seq_len"}, {name: "H", size: "hidden"}]} label="X" />
+
+### 权重矩阵
+
+三组可学习的权重矩阵：
+
+$$
+W_Q \in \mathbb{R}^{H \times d_k}, \quad W_K \in \mathbb{R}^{H \times d_k}, \quad W_V \in \mathbb{R}^{H \times d_v}
+$$
+
+其中 $d_k$（也常写作 $d_{\text{head}}$）是每个注意力头的维度。在标准 Transformer 中，通常 $d_k = d_v$。
+
+### 线性投影
+
+Q、K、V 的计算非常简单 — 就是矩阵乘法：
+
+$$
+Q = X W_Q \in \mathbb{R}^{S \times d_k}
+$$
+
+$$
+K = X W_K \in \mathbb{R}^{S \times d_k}
+$$
+
+$$
+V = X W_V \in \mathbb{R}^{S \times d_v}
+$$
+
+每个 token 的 $H$ 维隐藏向量被投影（线性变换）到 $d_k$ 维的新空间。这就是所谓的"线性投影"（linear projection）。
+
+**为什么叫"投影"？** 从几何角度看，乘以权重矩阵相当于将高维空间中的向量投射到一个低维子空间上。不同的权重矩阵定义了不同的子空间 — Query 空间、Key 空间、Value 空间。
+
+## 分步可视化
+
+下面用一个小例子（$S=4$, $H=6$, $d_k=3$）演示 QKV 线性投影的完整过程：
+
+<QKVLinearProjection client:visible />
+
+## 张量形状追踪
+
+从输入到 Q、K、V 的每一步维度变化：
+
+| 步骤 | 操作 | 形状 | 说明 |
+|------|------|------|------|
+| 1 | 输入 $X$ | $(S, H)$ | 每行是一个 token 的隐藏向量 |
+| 2 | 权重矩阵 $W_Q$ | $(H, d_k)$ | 可学习参数 |
+| 3 | $Q = X W_Q$ | $(S, d_k)$ | 矩阵乘法：$(S, H) \times (H, d_k) \to (S, d_k)$ |
+| 4 | 权重矩阵 $W_K$ | $(H, d_k)$ | 另一组可学习参数 |
+| 5 | $K = X W_K$ | $(S, d_k)$ | $(S, H) \times (H, d_k) \to (S, d_k)$ |
+| 6 | 权重矩阵 $W_V$ | $(H, d_v)$ | 第三组可学习参数 |
+| 7 | $V = X W_V$ | $(S, d_v)$ | $(S, H) \times (H, d_v) \to (S, d_v)$ |
+
+加上 batch 维度时，完整的张量形状为：
+
+<TensorShape client:visible dims={[{name: "B", size: "batch"}, {name: "S", size: "seq_len"}, {name: "H", size: "hidden"}]} label="输入 X" />
+
+经过投影后：
+
+<TensorShape client:visible dims={[{name: "B", size: "batch"}, {name: "S", size: "seq_len"}, {name: "d_k", size: "head_dim"}]} label="Q, K, V" />
+
+以 GPT-2 Small 为例（$H=768$, $h=12$ 个头）：
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| $H$ | 768 | 隐藏维度 |
+| $h$ | 12 | 注意力头数 |
+| $d_k$ | 64 | 每头维度 = $768 / 12$ |
+
+投影前每个 token 是 768 维向量，投影后变成 64 维的 Q/K/V 向量（单个头内）。
+
+## 多头场景下的 QKV
+
+在 Multi-Head Attention 中，隐藏维度被拆分为 $h$ 个头：
+
+$$
+d_k = \frac{H}{h}
+$$
+
+实际实现中，通常**不会**真的对每个头单独做矩阵乘法。而是用一个大的权重矩阵一次性投影出所有头的结果，然后 reshape：
+
+$$
+W_Q^{\text{all}} \in \mathbb{R}^{H \times H}
+$$
+
+$$
+Q^{\text{all}} = X W_Q^{\text{all}} \in \mathbb{R}^{S \times H}
+$$
+
+然后将 $Q^{\text{all}}$ 从 $(S, H)$ reshape 为 $(S, h, d_k)$，再转置为 $(h, S, d_k)$，这样每个头就有了自己的 Query 矩阵。
+
+$$
+(B, S, H) \xrightarrow{W_Q} (B, S, H) \xrightarrow{\text{reshape}} (B, S, h, d_k) \xrightarrow{\text{transpose}} (B, h, S, d_k)
+$$
+
+> Multi-Head Attention 的完整机制将在后续文章中详细展开。这里只需理解：**QKV 投影是 Multi-Head 的基础步骤**。
+
+## 总结
+
+本文介绍了 Transformer 中 Q、K、V 的核心概念：
+
+1. **直觉**：Query 是"问题"，Key 是"标签"，Value 是"内容" — 类似图书馆检索
+2. **数学本质**：三组独立的线性投影 $Q = XW_Q$, $K = XW_K$, $V = XW_V$
+3. **维度变化**：输入 $(S, H)$ 经过投影变为 $(S, d_k)$
+4. **为什么需要三组**：不同的投影让同一输入在不同子空间扮演不同角色，赋予模型更强的表达能力
+5. **多头扩展**：实际中一次投影完成所有头的 QKV，再通过 reshape 拆分
+
+下一步，我们将进入 **Attention 计算详解**，看看 Q、K、V 如何通过 $QK^T$、softmax 和加权求和完成信息聚合。
