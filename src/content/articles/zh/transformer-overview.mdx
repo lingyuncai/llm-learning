@@ -96,7 +96,7 @@ $$
 
 | 变体 | 公式 | 特点 |
 |------|------|------|
-| Post-LN（原始论文） | $\mathbf{x} + \text{LN}(\text{Attn}(\mathbf{x}))$ → 不对，准确为 $\text{LN}(\mathbf{x} + \text{Attn}(\mathbf{x}))$ | LayerNorm 在残差加法**之后** |
+| Post-LN（原始论文） | $\text{LN}(\mathbf{x} + \text{Attn}(\mathbf{x}))$ | LayerNorm 在残差加法**之后** |
 | Pre-LN（现代变体） | $\mathbf{x} + \text{Attn}(\text{LN}(\mathbf{x}))$ | LayerNorm 在子层**之前** |
 
 - **原始 Transformer**（2017）使用 Post-LN：$\text{LN}(\mathbf{x} + \text{SubLayer}(\mathbf{x}))$
