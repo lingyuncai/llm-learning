@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* KaTeX 样式 */
+@import 'katex/dist/katex.min.css';
+
+/* 自定义全局样式 */
+@layer base {
+  body {
+    @apply bg-white text-gray-900 antialiased;
+  }
+}
+
+/* 文章内 KaTeX 公式样式微调 */
+.katex-display {
+  @apply my-6 overflow-x-auto;
+}
