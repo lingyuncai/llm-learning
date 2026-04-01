@@ -30,6 +30,7 @@ import TensorShape from '../../../components/primitives/TensorShape.tsx';
 import AttentionMaskVisualization from '../../../components/interactive/AttentionMaskVisualization.tsx';
 import PrePostLNComparison from '../../../components/interactive/PrePostLNComparison.tsx';
 import PositionalEncodingComparison from '../../../components/interactive/PositionalEncodingComparison.tsx';
+import FFNBottleneck from '../../../components/interactive/FFNBottleneck.tsx';
 
 ## 简介
 
@@ -159,6 +160,8 @@ SwiGLU 引入了一个额外的 gate 投影，因此 LLaMA 的 FFN 中间维度�
 <TensorShape client:visible dims={[{name: "B", size: "batch"}, {name: "S", size: "seq\_len"}, {name: "4H", size: "intermediate"}]} label="中间层" />
 → 经过 $W_2$ →
 <TensorShape client:visible dims={[{name: "B", size: "batch"}, {name: "S", size: "seq\_len"}, {name: "H", size: "hidden"}]} label="FFN 输出" />
+
+<FFNBottleneck client:visible />
 
 ### Residual Connection（残差连接）
 
