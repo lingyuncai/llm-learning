@@ -27,6 +27,7 @@ references:
 
 import TransformerArchDiagram from '../../../components/interactive/TransformerArchDiagram.tsx';
 import TensorShape from '../../../components/primitives/TensorShape.tsx';
+import AttentionMaskVisualization from '../../../components/interactive/AttentionMaskVisualization.tsx';
 
 ## 简介
 
@@ -214,6 +215,8 @@ GPT 系列开创了 Decoder-only 架构，去掉 Encoder 和 Cross-Attention：
 | Encoder-Decoder | 原始 Transformer, T5, BART | 双向 + 因果 + 交叉 | 翻译、摘要 |
 | Encoder-only | BERT, RoBERTa | 双向 | 分类、NLU |
 | Decoder-only | GPT 系列, LLaMA, Qwen | 因果（Masked） | 文本生成、通用 LLM |
+
+<AttentionMaskVisualization client:visible />
 
 目前几乎所有主流 LLM（GPT-4、Claude、LLaMA、Qwen、Gemini）都采用 Decoder-only 架构。
 
