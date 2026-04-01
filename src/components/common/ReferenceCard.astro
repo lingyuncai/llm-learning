@@ -1,0 +1,34 @@
+---
+interface Props {
+  references: { type: string; title: string; url: string }[];
+}
+
+const { references } = Astro.props;
+
+const typeIcon: Record<string, string> = {
+  paper: '📄',
+  website: '🌐',
+  video: '🎬',
+  repo: '💻',
+};
+
+const typeLabel: Record<string, string> = {
+  paper: '论文',
+  website: '网站',
+  video: '视频',
+  repo: '代码',
+};
+---
+<div class="space-y-3">
+  <h4 class="text-sm font-semibold text-gray-900">延伸阅读</h4>
+  {references.map(ref => (
+    <a href={ref.url} target="_blank" rel="noopener noreferrer"
+       class="block p-3 border border-gray-100 rounded hover:border-primary-300 transition-colors">
+      <div class="flex items-center gap-2 text-xs text-gray-500 mb-1">
+        <span>{typeIcon[ref.type] || '📎'}</span>
+        <span>{typeLabel[ref.type] || ref.type}</span>
+      </div>
+      <p class="text-sm text-gray-700 leading-snug">{ref.title}</p>
+    </a>
+  ))}
+</div>

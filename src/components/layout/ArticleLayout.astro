@@ -1,0 +1,103 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import TableOfContents from '../common/TableOfContents.astro';
+import ReferenceCard from '../common/ReferenceCard.astro';
+import PrerequisiteHint from '../common/PrerequisiteHint.astro';
+import { getCollection } from 'astro:content';
+import { getAllPaths } from '../../utils/paths';
+import { difficultyLabel, difficultyColor } from '../../utils/constants';
+
+interface Props {
+  title: string;
+  slug: string;
+  difficulty: string;
+  tags: string[];
+  prerequisites: string[];
+  references: { type: string; title: string; url: string }[];
+  updated: string;
+  headings: { depth: number; slug: string; text: string }[];
+}
+
+const {
+  title, slug, difficulty, tags, prerequisites,
+  references, updated, headings,
+} = Astro.props;
+
+const allArticles = (await getCollection('articles')).filter(a => a.data.locale === 'zh');
+const paths = getAllPaths();
+
+// 找到包含当前文章的路径
+const containingPaths = paths.filter(p => p.articles.includes(slug));
+
+// 计算上一篇/下一篇
+function getNavigation(pathObj: typeof paths[0]) {
+  const idx = pathObj.articles.indexOf(slug);
+  const prevSlug = idx > 0 ? pathObj.articles[idx - 1] : null;
+  const nextSlug = idx < pathObj.articles.length - 1 ? pathObj.articles[idx + 1] : null;
+  const prev = prevSlug ? allArticles.find(a => a.data.slug === prevSlug) : null;
+  const next = nextSlug ? allArticles.find(a => a.data.slug === nextSlug) : null;
+  return { prev, next, pathTitle: pathObj.title.zh };
+}
+---
+<BaseLayout title={title}>
+  <div class="flex gap-8">
+    <!-- 左侧 TOC -->
+    <aside class="hidden lg:block w-56 shrink-0">
+      <TableOfContents headings={headings} />
+    </aside>
+
+    <!-- 中间正文 -->
+    <article class="flex-1 min-w-0">
+      <header class="mb-8">
+        <div class="flex items-center gap-3 mb-3">
+          <span class={`text-xs px-2 py-0.5 rounded ${difficultyColor[difficulty]}`}>
+            {difficultyLabel[difficulty] || difficulty}
+          </span>
+          {tags.map(tag => (
+            <span class="text-xs text-gray-500">#{tag}</span>
+          ))}
+        </div>
+        <h1 class="text-3xl font-bold mb-2">{title}</h1>
+        <p class="text-sm text-gray-400">更新于 {updated}</p>
+      </header>
+
+      <div class="prose prose-lg max-w-none">
+        <slot />
+      </div>
+
+      <!-- 路径导航（上一篇/下一篇） -->
+      {containingPaths.map(p => {
+        const nav = getNavigation(p);
+        return (
+          <div class="mt-12 pt-6 border-t border-gray-200">
+            <p class="text-sm text-gray-500 mb-3">
+              学习路径：<a href={`/zh/paths/${p.id}`} class="text-primary-600">{nav.pathTitle}</a>
+            </p>
+            <div class="flex justify-between">
+              {nav.prev ? (
+                <a href={`/zh/articles/${nav.prev.data.slug}`}
+                   class="text-sm text-primary-600 hover:text-primary-800">
+                  ← {nav.prev.data.title}
+                </a>
+              ) : <span />}
+              {nav.next ? (
+                <a href={`/zh/articles/${nav.next.data.slug}`}
+                   class="text-sm text-primary-600 hover:text-primary-800">
+                  {nav.next.data.title} →
+                </a>
+              ) : <span />}
+            </div>
+          </div>
+        );
+      })}
+    </article>
+
+    <!-- 右侧边栏 -->
+    <aside class="hidden xl:block w-64 shrink-0">
+      <div class="sticky top-24 space-y-6">
+        <PrerequisiteHint prerequisites={prerequisites} allArticles={allArticles} />
+        <ReferenceCard references={references} />
+      </div>
+    </aside>
+  </div>
+</BaseLayout>

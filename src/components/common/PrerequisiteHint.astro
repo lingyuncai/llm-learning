@@ -1,0 +1,27 @@
+---
+interface Props {
+  prerequisites: string[];
+  allArticles: { data: { slug: string; title: string } }[];
+}
+
+const { prerequisites, allArticles } = Astro.props;
+
+const prereqArticles = prerequisites
+  .map(slug => allArticles.find(a => a.data.slug === slug))
+  .filter(Boolean);
+---
+{prereqArticles.length > 0 && (
+  <div class="mb-4">
+    <h4 class="text-sm font-semibold text-gray-900 mb-2">前置知识</h4>
+    <ul class="space-y-1">
+      {prereqArticles.map(article => (
+        <li>
+          <a href={`/zh/articles/${article!.data.slug}`}
+             class="text-sm text-primary-600 hover:text-primary-800">
+            {article!.data.title}
+          </a>
+        </li>
+      ))}
+    </ul>
+  </div>
+)}
