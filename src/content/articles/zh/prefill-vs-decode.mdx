@@ -1,0 +1,427 @@
+---
+title: "Prefill vs Decode 阶段"
+slug: prefill-vs-decode
+locale: zh
+tags: [inference, prefill, decode, performance]
+prerequisites: [transformer-overview]
+difficulty: intermediate
+created: "2026-03-31"
+updated: "2026-03-31"
+references:
+  - type: paper
+    title: "Efficiently Scaling Transformer Inference"
+    url: "https://arxiv.org/abs/2211.05102"
+  - type: paper
+    title: "LLM Inference Unveiled: Survey and Roofline Model Insights"
+    url: "https://arxiv.org/abs/2402.16363"
+---
+
+## 简介：LLM 推理不是一步完成的
+
+当你向 ChatGPT 提问时，你会注意到两个明显不同的阶段：
+
+1. **等待片刻** — 模型在处理你的完整输入（prompt）
+2. **逐字输出** — 模型开始一个接一个地生成 token
+
+这两个阶段对应着 LLM 推理中的两个根本不同的计算过程：**Prefill（预填充）** 和 **Decode（解码）**。它们不仅在功能上不同，在计算特性上也截然相反 — 一个是 **compute-bound**（计算密集），另一个是 **memory-bound**（内存带宽密集）。
+
+理解这两个阶段的区别，是理解 LLM 服务性能优化的基础。
+
+## Prefill 阶段：并行处理 Prompt
+
+Prefill 阶段的任务是处理用户输入的完整 prompt，为生成阶段做准备。
+
+### 工作流程
+
+假设 prompt 有 $n$ 个 token，Prefill 阶段会：
+
+1. 将所有 $n$ 个 token **同时**送入模型
+2. 对每一层 Transformer，计算所有 token 的 Query、Key、Value
+3. 执行完整的 Self-Attention：每个 token 关注所有之前的 token
+4. **生成并缓存 KV Cache** — 后续 Decode 阶段将复用这些缓存
+5. 输出第一个生成 token
+
+### 计算特性
+
+Prefill 的核心计算是**大规模矩阵乘法**。以一层 Transformer 的 QKV 投影为例：
+
+$$
+Q = X \cdot W^Q, \quad K = X \cdot W^K, \quad V = X \cdot W^V
+$$
+
+其中 $X$ 的形状为 $(n \times d)$，$W$ 的形状为 $(d \times d)$。这是一个经典的矩阵-矩阵乘法（GEMM），计算量为：
+
+$$
+\text{FLOPs} = 2 \times n \times d \times d = 2nd^2
+$$
+
+需要加载的数据量（权重矩阵）约为：
+
+$$
+\text{Bytes} = d^2 \times \text{sizeof(dtype)}
+$$
+
+因此 **Arithmetic Intensity**（算术强度，即每加载一字节数据执行的浮点运算次数）为：
+
+$$
+\text{AI}_{\text{prefill}} = \frac{2nd^2}{d^2 \times \text{sizeof(dtype)}} = \frac{2n}{\text{sizeof(dtype)}}
+$$
+
+以 FP16 为例（2 bytes），当 prompt 长度 $n = 1024$ 时：
+
+$$
+\text{AI}_{\text{prefill}} = \frac{2 \times 1024}{2} = 1024 \text{ FLOPs/Byte}
+$$
+
+这个值非常高！远超现代 GPU 的计算-带宽比（如 A100 的约 312 FLOPs/Byte），意味着 **Prefill 是 compute-bound** — GPU 的算力是瓶颈，而非内存带宽。
+
+### 关键特征
+
+- **所有 token 并行处理**：充分利用 GPU 并行能力
+- **大矩阵运算**：$(n \times d) \times (d \times d)$ 的 GEMM 操作，GPU 擅长处理
+- **高算术强度**：计算量远大于数据搬运量
+- **GPU 利用率高**：通常可以达到较高的 MFU（Model FLOPs Utilization）
+
+## Decode 阶段：自回归逐 Token 生成
+
+Prefill 完成后，模型进入 Decode 阶段，开始逐个生成新 token。
+
+### 工作流程
+
+每个 Decode 步骤：
+
+1. 取上一步生成的 **单个 token** 作为输入
+2. 计算该 token 的 Query、Key、Value
+3. 将新的 K、V 追加到 KV Cache 中
+4. 用新 token 的 Query 与完整 KV Cache 做 Attention
+5. 通过 FFN 层，输出下一个 token 的概率分布
+6. 采样得到下一个 token，重复以上过程
+
+### 计算特性
+
+Decode 的核心计算退化为**向量-矩阵乘法**（GEMV）。以 QKV 投影为例：
+
+$$
+q = x \cdot W^Q
+$$
+
+其中 $x$ 的形状为 $(1 \times d)$，$W$ 的形状为 $(d \times d)$。计算量为：
+
+$$
+\text{FLOPs} = 2 \times 1 \times d \times d = 2d^2
+$$
+
+需要加载的数据量**不变** — 仍然要加载整个权重矩阵 $W$：
+
+$$
+\text{Bytes} = d^2 \times \text{sizeof(dtype)}
+$$
+
+Arithmetic Intensity：
+
+$$
+\text{AI}_{\text{decode}} = \frac{2d^2}{d^2 \times \text{sizeof(dtype)}} = \frac{2}{\text{sizeof(dtype)}}
+$$
+
+以 FP16 为例：
+
+$$
+\text{AI}_{\text{decode}} = \frac{2}{2} = 1 \text{ FLOPs/Byte}
+$$
+
+仅为 **1 FLOPs/Byte**！远低于 GPU 的计算-带宽比，意味着 **Decode 是 memory-bound** — 内存带宽是瓶颈，GPU 大量算力被闲置，等待数据加载。
+
+### Attention 部分同样是 memory-bound
+
+Decode 时的 Attention 计算也面临同样的问题。新 token 的 query 向量 $q$ 需要与 KV Cache 中所有 $S$ 个 key 做点积：
+
+$$
+\text{FLOPs} = 2 \times S \times d_k \quad (\text{点积 + 缩放})
+$$
+
+而需要从显存加载的 KV Cache 大小为：
+
+$$
+\text{Bytes} = 2 \times S \times d_k \times \text{sizeof(dtype)} \quad (\text{K 和 V 各一份})
+$$
+
+Arithmetic Intensity：
+
+$$
+\text{AI}_{\text{attn}} = \frac{2Sd_k}{2Sd_k \times \text{sizeof(dtype)}} = \frac{1}{\text{sizeof(dtype)}} = 0.5 \text{ FLOPs/Byte (FP16)}
+$$
+
+极低的算术强度。随着序列长度 $S$ 增长，KV Cache 线性增大，加载开销也线性增加。
+
+### 关键特征
+
+- **每步仅处理 1 个 token**：无法利用 GPU 大规模并行能力
+- **向量-矩阵运算**：$(1 \times d) \times (d \times d)$ 的 GEMV 操作
+- **低算术强度**：数据搬运量与计算量同阶
+- **GPU 利用率极低**：大部分时间在等待内存读取
+
+## 对比图：两阶段的计算流程
+
+<svg viewBox="0 0 860 580" xmlns="http://www.w3.org/2000/svg" style={{ maxWidth: '100%', height: 'auto', display: 'block', margin: '2rem auto' }}>
+  {/* Background */}
+  <rect width="860" height="580" fill="#fafafa" rx="8" />
+
+  {/* Title */}
+  <text x="430" y="32" textAnchor="middle" fontSize="17" fontWeight="bold" fill="#1a1a2e">Prefill vs Decode 阶段对比</text>
+
+  {/* Arrow marker */}
+  <defs>
+    <marker id="arrowPD" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#666" />
+    </marker>
+  </defs>
+
+  {/* === Prefill Section === */}
+  <rect x="20" y="50" width="400" height="510" rx="10" fill="#e8f5e9" stroke="#4caf50" strokeWidth="1.5" />
+  <text x="220" y="78" textAnchor="middle" fontSize="16" fontWeight="bold" fill="#2e7d32">Prefill 阶段</text>
+  <text x="220" y="96" textAnchor="middle" fontSize="11" fill="#555">处理完整 Prompt（并行）</text>
+
+  {/* Input tokens - multiple */}
+  <text x="220" y="125" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#444">输入: n 个 token 同时处理</text>
+  <rect x="40" y="135" width="55" height="26" rx="5" fill="#bbdefb" stroke="#1565c0" strokeWidth="1" />
+  <text x="67" y="153" textAnchor="middle" fontSize="9" fill="#1565c0">token₁</text>
+  <rect x="105" y="135" width="55" height="26" rx="5" fill="#bbdefb" stroke="#1565c0" strokeWidth="1" />
+  <text x="132" y="153" textAnchor="middle" fontSize="9" fill="#1565c0">token₂</text>
+  <rect x="170" y="135" width="55" height="26" rx="5" fill="#bbdefb" stroke="#1565c0" strokeWidth="1" />
+  <text x="197" y="153" textAnchor="middle" fontSize="9" fill="#1565c0">token₃</text>
+  <text x="245" y="153" textAnchor="middle" fontSize="12" fill="#666">...</text>
+  <rect x="265" y="135" width="55" height="26" rx="5" fill="#bbdefb" stroke="#1565c0" strokeWidth="1" />
+  <text x="292" y="153" textAnchor="middle" fontSize="9" fill="#1565c0">tokenₙ</text>
+
+  {/* Arrow down */}
+  <line x1="220" y1="165" x2="220" y2="190" stroke="#666" strokeWidth="1.5" markerEnd="url(#arrowPD)" />
+
+  {/* GEMM operation */}
+  <rect x="70" y="195" width="300" height="40" rx="6" fill="#c8e6c9" stroke="#388e3c" strokeWidth="1.2" />
+  <text x="220" y="212" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#1b5e20">矩阵 x 矩阵 (GEMM)</text>
+  <text x="220" y="227" textAnchor="middle" fontSize="10" fill="#2e7d32">(n x d) x (d x d) = n x d</text>
+
+  {/* Arrow down */}
+  <line x1="220" y1="240" x2="220" y2="265" stroke="#666" strokeWidth="1.5" markerEnd="url(#arrowPD)" />
+
+  {/* Full attention */}
+  <rect x="70" y="270" width="300" height="35" rx="6" fill="#c8e6c9" stroke="#388e3c" strokeWidth="1.2" />
+  <text x="220" y="292" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#1b5e20">Full Self-Attention (n x n)</text>
+
+  {/* Arrow down */}
+  <line x1="220" y1="310" x2="220" y2="335" stroke="#666" strokeWidth="1.5" markerEnd="url(#arrowPD)" />
+
+  {/* KV Cache generation */}
+  <rect x="70" y="340" width="300" height="35" rx="6" fill="#fff9c4" stroke="#f9a825" strokeWidth="1.2" />
+  <text x="220" y="362" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#e65100">生成完整 KV Cache</text>
+
+  {/* Arrow down */}
+  <line x1="220" y1="380" x2="220" y2="405" stroke="#666" strokeWidth="1.5" markerEnd="url(#arrowPD)" />
+
+  {/* Output */}
+  <rect x="140" y="410" width="160" height="30" rx="5" fill="#e1bee7" stroke="#7b1fa2" strokeWidth="1.2" />
+  <text x="220" y="430" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#6a1b9a">输出: 第一个 token</text>
+
+  {/* Prefill characteristics */}
+  <rect x="40" y="455" width="360" height="90" rx="6" fill="#fff" stroke="#c8e6c9" strokeWidth="1" />
+  <text x="220" y="475" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#2e7d32">Compute-bound</text>
+  <text x="220" y="493" textAnchor="middle" fontSize="10" fill="#555">AI = 2n / sizeof(dtype) (FP16 下约 1024)</text>
+  <text x="220" y="509" textAnchor="middle" fontSize="10" fill="#555">GPU 算力是瓶颈，利用率高</text>
+  <text x="220" y="525" textAnchor="middle" fontSize="10" fill="#555">决定 TTFT (Time To First Token)</text>
+
+  {/* === Decode Section === */}
+  <rect x="440" y="50" width="400" height="510" rx="10" fill="#fce4ec" stroke="#e57373" strokeWidth="1.5" />
+  <text x="640" y="78" textAnchor="middle" fontSize="16" fontWeight="bold" fill="#c62828">Decode 阶段</text>
+  <text x="640" y="96" textAnchor="middle" fontSize="11" fill="#555">自回归生成（逐 token）</text>
+
+  {/* Input token - single */}
+  <text x="640" y="125" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#444">输入: 1 个 token</text>
+  <rect x="600" y="135" width="80" height="26" rx="5" fill="#ffcdd2" stroke="#c62828" strokeWidth="1" />
+  <text x="640" y="153" textAnchor="middle" fontSize="9" fill="#c62828">new token</text>
+
+  {/* Arrow down */}
+  <line x1="640" y1="165" x2="640" y2="190" stroke="#666" strokeWidth="1.5" markerEnd="url(#arrowPD)" />
+
+  {/* GEMV operation */}
+  <rect x="490" y="195" width="300" height="40" rx="6" fill="#ffcdd2" stroke="#c62828" strokeWidth="1.2" />
+  <text x="640" y="212" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#b71c1c">向量 x 矩阵 (GEMV)</text>
+  <text x="640" y="227" textAnchor="middle" fontSize="10" fill="#c62828">(1 x d) x (d x d) = 1 x d</text>
+
+  {/* Arrow down */}
+  <line x1="640" y1="240" x2="640" y2="265" stroke="#666" strokeWidth="1.5" markerEnd="url(#arrowPD)" />
+
+  {/* KV Cache attention */}
+  <rect x="490" y="270" width="300" height="35" rx="6" fill="#ffcdd2" stroke="#c62828" strokeWidth="1.2" />
+  <text x="640" y="292" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#b71c1c">Query x KV Cache (1 x S)</text>
+
+  {/* Arrow down */}
+  <line x1="640" y1="310" x2="640" y2="335" stroke="#666" strokeWidth="1.5" markerEnd="url(#arrowPD)" />
+
+  {/* KV Cache update */}
+  <rect x="490" y="340" width="300" height="35" rx="6" fill="#fff9c4" stroke="#f9a825" strokeWidth="1.2" />
+  <text x="640" y="362" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#e65100">追加到 KV Cache (S → S+1)</text>
+
+  {/* Arrow down */}
+  <line x1="640" y1="380" x2="640" y2="405" stroke="#666" strokeWidth="1.5" markerEnd="url(#arrowPD)" />
+
+  {/* Output */}
+  <rect x="560" y="410" width="160" height="30" rx="5" fill="#e1bee7" stroke="#7b1fa2" strokeWidth="1.2" />
+  <text x="640" y="430" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#6a1b9a">输出: 下一个 token</text>
+
+  {/* Loop arrow */}
+  <path d="M 720 425 Q 780 425 780 300 Q 780 170 700 170 L 685 170" fill="none" stroke="#999" strokeWidth="1.2" strokeDasharray="4 3" markerEnd="url(#arrowPD)" />
+  <text x="800" y="300" textAnchor="middle" fontSize="9" fill="#999" transform="rotate(90, 800, 300)">重复直到结束</text>
+
+  {/* Decode characteristics */}
+  <rect x="460" y="455" width="360" height="90" rx="6" fill="#fff" stroke="#ffcdd2" strokeWidth="1" />
+  <text x="640" y="475" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#c62828">Memory-bound</text>
+  <text x="640" y="493" textAnchor="middle" fontSize="10" fill="#555">AI = 2 / sizeof(dtype) (FP16 下仅 1)</text>
+  <text x="640" y="509" textAnchor="middle" fontSize="10" fill="#555">内存带宽是瓶颈，GPU 算力闲置</text>
+  <text x="640" y="525" textAnchor="middle" fontSize="10" fill="#555">决定 TPS (Tokens Per Second)</text>
+</svg>
+
+上图清晰展示了两个阶段的核心区别：
+
+- **Prefill** 将所有 prompt token 并行送入模型，执行大规模矩阵乘法，是 compute-bound 操作
+- **Decode** 每步仅处理一个 token，执行向量-矩阵乘法并读取完整 KV Cache，是 memory-bound 操作
+
+## Compute-bound vs Memory-bound：Arithmetic Intensity 分析
+
+### Roofline 模型
+
+要理解为什么 Prefill 和 Decode 的瓶颈不同，需要借助 **Roofline 模型**。Roofline 模型描述了硬件的两个关键参数之间的关系：
+
+- **峰值算力** $\pi$（FLOPs/s）：GPU 每秒可执行的最大浮点运算次数
+- **峰值带宽** $\beta$（Bytes/s）：GPU 显存每秒可传输的最大数据量
+
+两者的比值定义了**计算-带宽平衡点**：
+
+$$
+I^* = \frac{\pi}{\beta} \quad (\text{FLOPs/Byte})
+$$
+
+对于 NVIDIA A100（SXM，FP16 Tensor Core）：
+
+$$
+I^*_{A100} = \frac{312 \text{ TFLOPS}}{2039 \text{ GB/s}} \approx 153 \text{ FLOPs/Byte}
+$$
+
+**判断规则**：
+
+- 如果操作的 Arithmetic Intensity $\text{AI} > I^*$，则该操作是 **compute-bound**
+- 如果 $\text{AI} < I^*$，则该操作是 **memory-bound**
+
+### 两阶段的 Arithmetic Intensity 对比
+
+| 指标 | Prefill ($n$ tokens) | Decode (1 token) |
+|------|:---:|:---:|
+| 线性层 FLOPs | $2nd^2$ | $2d^2$ |
+| 线性层 Bytes | $d^2 \times \text{sizeof}$ | $d^2 \times \text{sizeof}$ |
+| AI (线性层, FP16) | $n$ | $1$ |
+| Attention FLOPs | $O(n^2 d_k)$ | $O(S \cdot d_k)$ |
+| Attention Bytes | $O(n^2 + nd_k)$ | $O(S \cdot d_k)$ |
+| AI (Attention, FP16) | 较高 | $\approx 0.5$ |
+| 瓶颈类型 | **Compute-bound** | **Memory-bound** |
+
+以 A100 为例（$I^* \approx 153$），prompt 长度 $n = 512$：
+
+- **Prefill**：AI $\approx 512 \gg 153$，compute-bound。GPU 算力被充分利用
+- **Decode**：AI $\approx 1 \ll 153$，memory-bound。GPU 只利用了约 $1/153 \approx 0.65\%$ 的峰值算力
+
+这就是为什么 Decode 效率如此之低 — GPU 的绝大部分算力都在空转，等待数据从显存搬运过来。
+
+### Batch Size 的影响
+
+增加 batch size $B$ 可以提升 Decode 的算术强度。当同时为 $B$ 个请求做 Decode 时：
+
+$$
+\text{AI}_{\text{decode, batched}} = \frac{2Bd^2}{d^2 \times \text{sizeof(dtype)}} = \frac{2B}{\text{sizeof(dtype)}} = B \text{ (FP16)}
+$$
+
+权重矩阵只需加载一次，但为 $B$ 个请求分别计算，计算量乘以 $B$。当 $B \geq I^*$（A100 上 $B \geq 153$）时，Decode 也能变成 compute-bound。
+
+但实际中有两个限制：
+
+1. **KV Cache 显存**：每个请求的 KV Cache 会占用大量显存，限制了可用的 batch size
+2. **延迟约束**：batch 太大会增加单个请求的延迟
+
+这正是 GQA/MQA 等 KV Cache 压缩技术的重要性所在 — 缩小 KV Cache 后可以支持更大的 batch size，从而提升 Decode 阶段的效率。
+
+## 实际性能影响：TTFT vs TPS
+
+两个阶段分别对应不同的用户体感指标：
+
+### TTFT — Time To First Token
+
+**定义**：从用户发送请求到收到第一个生成 token 的时间。
+
+TTFT 主要由 Prefill 阶段决定。影响因素：
+
+- **Prompt 长度**：prompt 越长，Prefill 计算量越大，TTFT 越高
+- **GPU 算力**：Prefill 是 compute-bound，更快的 GPU 直接缩短 TTFT
+- **Prefill 计算量**与 prompt 长度近似线性（Attention 部分是二次的，但通常 FFN 主导）
+
+### TPS — Tokens Per Second
+
+**定义**：Decode 阶段每秒生成的 token 数量。
+
+TPS 由 Decode 阶段决定。影响因素：
+
+- **内存带宽**：Decode 是 memory-bound，带宽越高 TPS 越快
+- **模型大小**：参数越多，每步需要加载的权重越多
+- **KV Cache 大小**：序列越长，Attention 步骤加载的数据越多
+
+### 数值估算
+
+以 LLaMA-2 7B（约 $14 \times 10^9$ bytes FP16）在 A100 上为例：
+
+**Decode TPS 估算**（memory-bound，忽略 KV Cache）：
+
+$$
+\text{TPS} \approx \frac{\text{带宽}}{\text{模型大小}} = \frac{2039 \text{ GB/s}}{14 \text{ GB}} \approx 146 \text{ tokens/s}
+$$
+
+实际受 KV Cache 加载、内核启动开销等因素影响，真实值通常在 100-130 tokens/s 左右（batch size = 1）。
+
+**Prefill 速度估算**（compute-bound）：
+
+$$
+\text{tokens/s} \approx \frac{\text{峰值 TFLOPS}}{2 \times \text{参数量}} = \frac{312 \times 10^{12}}{2 \times 7 \times 10^9} \approx 22{,}286 \text{ tokens/s}
+$$
+
+即 Prefill 处理 prompt 的吞吐量可以达到 Decode 的 **100 倍以上** — 这就是为什么你感受到"等一下后快速输出"而不是"均匀缓慢输出"。
+
+## 优化方向
+
+针对两个阶段不同的计算特性，业界发展出了不同的优化策略：
+
+### Prefill 优化
+
+- **Flash Attention**：通过分块计算减少 HBM 访问，提升 Prefill 阶段 Attention 计算的效率
+- **Tensor Parallelism**：将矩阵运算分布到多个 GPU，提升 compute-bound 操作的吞吐量
+- **量化（Quantization）**：使用 INT8/FP8 降低精度，在相同硬件上获得更高的有效算力
+
+### Decode 优化
+
+- **KV Cache 压缩**：GQA、MQA 减少 KV Cache 大小，降低内存带宽需求
+- **Speculative Decoding（推测解码）**：用小模型快速"猜"多个 token，再用大模型一次验证，将多步 Decode 合并为一次 Prefill-like 的并行验证
+- **Continuous Batching**：动态组 batch，提升 GPU 利用率
+
+### 混合优化
+
+- **Chunked Prefill**：将长 prompt 分块处理，在 Prefill 的间隙穿插 Decode 步骤，避免长 prompt 的 Prefill 阻塞其他请求的 Decode
+- **Disaggregated Serving（分离式推理）**：将 Prefill 和 Decode 部署到不同的硬件上 — Prefill 用计算密集型 GPU，Decode 用高带宽设备
+
+## 总结
+
+| 概念 | 说明 |
+|------|------|
+| Prefill 阶段 | 并行处理完整 prompt，生成 KV Cache，compute-bound |
+| Decode 阶段 | 自回归逐 token 生成，读取 KV Cache，memory-bound |
+| Arithmetic Intensity | Prefill: $\frac{2n}{\text{sizeof}}$ (高) vs Decode: $\frac{2}{\text{sizeof}}$ (低) |
+| Roofline 模型 | AI $> \pi / \beta$ 为 compute-bound，反之为 memory-bound |
+| TTFT | Time To First Token，由 Prefill 决定 |
+| TPS | Tokens Per Second，由 Decode 决定 |
+| 核心矛盾 | Decode 的 AI 远低于硬件平衡点，GPU 算力严重浪费 |
+
+**核心直觉**：LLM 推理的两个阶段就像"备菜"和"上菜"。Prefill 像厨师同时处理所有食材（并行、计算密集），速度取决于厨师的刀工速度（GPU 算力）。Decode 像服务员一道道上菜（串行、带宽密集），速度取决于厨房到餐桌的传送带速度（内存带宽）。理解这个区别，是理解一切 LLM 推理优化技术的起点。
