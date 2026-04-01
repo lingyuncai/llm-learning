@@ -1,14 +1,67 @@
 ---
-// src/pages/zh/index.astro
+import BaseLayout from '../../components/layout/BaseLayout.astro';
+import { getAllPaths } from '../../utils/paths';
+import { getCollection } from 'astro:content';
+import { difficultyLabel, difficultyColor } from '../../utils/constants';
+
+const paths = getAllPaths();
+const allArticles = await getCollection('articles');
+const articles = allArticles.filter(a => a.data.locale === 'zh');
+const allTags = [...new Set(articles.flatMap(a => a.data.tags))].sort();
 ---
-<html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width" />
-    <title>LLM Learning</title>
-    <link rel="stylesheet" href="/src/styles/global.css" />
-  </head>
-  <body>
-    <h1 class="text-3xl font-bold p-8">LLM Learning - 构建中</h1>
-  </body>
-</html>
+<BaseLayout title="首页">
+  <!-- 学习路径 -->
+  <section class="mb-12">
+    <h2 class="text-2xl font-bold mb-6">学习路径</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {paths.map(p => (
+        <a href={`/zh/paths/${p.id}`}
+           class="block p-6 border border-gray-200 rounded-lg hover:border-primary-400 hover:shadow-md transition-all">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-lg font-semibold">{p.title.zh}</h3>
+            <span class={`text-xs px-2 py-1 rounded ${difficultyColor[p.level]}`}>
+              {difficultyLabel[p.level]}
+            </span>
+          </div>
+          <p class="text-sm text-gray-600 mb-3">{p.description.zh}</p>
+          <p class="text-xs text-gray-400">{p.articles.length} 篇文章</p>
+        </a>
+      ))}
+    </div>
+  </section>
+
+  <!-- 标签浏览 -->
+  <section>
+    <h2 class="text-2xl font-bold mb-6">按标签浏览</h2>
+    <div class="flex flex-wrap gap-2">
+      {allTags.map(tag => (
+        <span class="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm hover:bg-primary-100 hover:text-primary-700 cursor-pointer">
+          {tag}
+        </span>
+      ))}
+    </div>
+  </section>
+
+  <!-- 全部文章 -->
+  <section class="mt-8">
+    <h2 class="text-2xl font-bold mb-6">全部文章</h2>
+    <div class="space-y-3">
+      {articles.map(article => (
+        <a href={`/zh/articles/${article.data.slug}`}
+           class="block p-4 border border-gray-100 rounded hover:border-primary-300 transition-colors">
+          <div class="flex items-center gap-3">
+            <span class={`text-xs px-2 py-0.5 rounded ${difficultyColor[article.data.difficulty]}`}>
+              {difficultyLabel[article.data.difficulty]}
+            </span>
+            <h3 class="font-medium">{article.data.title}</h3>
+          </div>
+          <div class="flex gap-2 mt-2">
+            {article.data.tags.map(tag => (
+              <span class="text-xs text-gray-500">#{tag}</span>
+            ))}
+          </div>
+        </a>
+      ))}
+    </div>
+  </section>
+</BaseLayout>

@@ -1,0 +1,25 @@
+---
+import Navigation from './Navigation.astro';
+import '../../styles/global.css';
+
+interface Props {
+  title: string;
+  description?: string;
+}
+
+const { title, description = 'LLM 技术知识库' } = Astro.props;
+---
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <title>{title} | LLM Learning</title>
+  </head>
+  <body class="min-h-screen bg-white">
+    <Navigation />
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <slot />
+    </main>
+  </body>
+</html>
