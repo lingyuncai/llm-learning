@@ -20,6 +20,7 @@ import FlashAttentionTiling from '../../../components/interactive/FlashAttention
 import GPUMemoryHierarchy from '../../../components/interactive/GPUMemoryHierarchy.tsx';
 import OnlineSoftmaxDemo from '../../../components/interactive/OnlineSoftmaxDemo.tsx';
 import IOComplexityChart from '../../../components/interactive/IOComplexityChart.tsx';
+import BlockSizeCalculator from '../../../components/interactive/BlockSizeCalculator.tsx';
 
 ## 简介：为什么标准 Attention 的内存是瓶颈
 
@@ -80,6 +81,8 @@ B_c = \left\lceil \frac{M}{4d} \right\rceil, \quad B_r = \min\!\left(\left\lceil
 $$
 
 这样一个 $B_r \times d$ 的 Q 块、一个 $B_c \times d$ 的 K 块、一个 $B_c \times d$ 的 V 块，加上一个 $B_r \times B_c$ 的局部分数矩阵，都能放进 SRAM。
+
+<BlockSizeCalculator client:visible />
 
 ### 双层循环结构
 
