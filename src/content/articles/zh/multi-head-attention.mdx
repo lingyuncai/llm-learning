@@ -22,6 +22,8 @@ references:
     url: "https://poloclub.github.io/transformer-explainer/"
 ---
 
+import SingleVsMultiHeadAttention from '../../../components/interactive/SingleVsMultiHeadAttention.tsx';
+
 ## 简介：为什么单头不够
 
 在上一篇文章中，我们详细拆解了 Scaled Dot-Product Attention 的计算过程。但在实际的 Transformer 中，注意力并不是只计算一次 — 而是**并行计算多次**，这就是 **Multi-Head Attention**。
@@ -91,6 +93,8 @@ $$
 | 分隔 Head | 关注特殊 token（如 [SEP]） | Head 11 关注句子分隔符 |
 
 每个 head 在自己的低维子空间中，通过独立的 $W_i^Q$、$W_i^K$、$W_i^V$ 学习不同的投影方式，从而在不同的"视角"下计算注意力。
+
+<SingleVsMultiHeadAttention client:visible />
 
 ## 维度分析：reshape 和 transpose 的详细追踪
 
