@@ -105,11 +105,15 @@ export default function AcceptanceRateCalculator() {
           {curves.map(c => (
             <g key={c.alpha}>
               <path d={c.pathD} fill="none" stroke={c.color} strokeWidth={1.5}
-                opacity={Math.abs(c.alpha - alpha) < 0.06 ? 1 : 0.3} />
+                opacity={c.alpha === curves.reduce((prev, curr) =>
+                  Math.abs(curr.alpha - alpha) < Math.abs(prev.alpha - alpha) ? curr : prev
+                ).alpha ? 1 : 0.3} />
               <text x={c.points[c.points.length - 1].x + 4}
                 y={c.points[c.points.length - 1].y + 3}
                 fontSize="7" fill={c.color} fontFamily="monospace"
-                opacity={Math.abs(c.alpha - alpha) < 0.06 ? 1 : 0.5}>
+                opacity={c.alpha === curves.reduce((prev, curr) =>
+                  Math.abs(curr.alpha - alpha) < Math.abs(prev.alpha - alpha) ? curr : prev
+                ).alpha ? 1 : 0.5}>
                 α={c.alpha}
               </text>
             </g>

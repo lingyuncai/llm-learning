@@ -8,7 +8,7 @@ const DRAFT_TOKENS = [
   { token: 'The', draftProb: 0.4, targetProb: 0.45, accepted: true },
   { token: 'quick', draftProb: 0.3, targetProb: 0.35, accepted: true },
   { token: 'brown', draftProb: 0.25, targetProb: 0.10, accepted: false },
-  { token: 'fox', draftProb: 0.35, targetProb: 0.30, accepted: true },
+  { token: 'fox', draftProb: 0.35, targetProb: 0.40, accepted: true },
 ];
 const RESAMPLE_TOKEN = { token: 'red', prob: 0.22 };
 

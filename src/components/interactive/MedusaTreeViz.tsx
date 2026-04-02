@@ -83,7 +83,7 @@ export default function MedusaTreeViz() {
                 <motion.line
                   key={`${node.id}-${childId}`}
                   x1={from.x + NODE_W / 2} y1={from.y}
-                  x2={to.x - NODE_W / 2 + 10} y2={to.y}
+                  x2={to.x - NODE_W / 2} y2={to.y}
                   stroke={isRejected ? '#d1d5db' : isAccepted ? COLORS.green : COLORS.primary}
                   strokeWidth={isAccepted ? 2.5 : isRejected ? 1 : 1.5}
                   strokeDasharray={isRejected ? '4,3' : 'none'}

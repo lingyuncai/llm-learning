@@ -25,7 +25,7 @@ function Arrow({ fromAngle, toAngle, r, color, label, showArc }: {
   const arcR = 30;
   const arcStart = polarToXY(fromAngle || 0, arcR);
   const arcEnd = polarToXY(toAngle, arcR);
-  const sweep = toAngle > fromAngle ? 0 : 1;
+  const sweep = toAngle > fromAngle ? 1 : 0;
 
   return (
     <g>

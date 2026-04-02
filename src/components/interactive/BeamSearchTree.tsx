@@ -67,7 +67,7 @@ function buildTree(step: number): { nodes: TreeNode[]; edges: { from: string; to
         // Step 3: final expansion
         const step3 = [
           { id: 's3-0', token: 'sat', score: -1.3, parentId: 's2-0', kept: true },
-          { id: 's3-1', token: 'is', score: -1.5, parentId: 's2-0', kept: true },
+          { id: 's3-1', token: 'is', score: -1.5, parentId: 's2-0', kept: false },
           { id: 's3-2', token: 'cats', score: -1.6, parentId: 's2-2', kept: false },
           { id: 's3-3', token: 'dogs', score: -1.8, parentId: 's2-2', kept: false },
         ];
