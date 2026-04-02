@@ -19,6 +19,8 @@ references:
     url: "https://bbycroft.net/llm"
 ---
 
+import RooflineModel from '../../../components/interactive/RooflineModel.tsx';
+
 ## 简介：LLM 推理不是一步完成的
 
 当你向 ChatGPT 提问时，你会注意到两个明显不同的阶段：
@@ -313,6 +315,8 @@ $$
 
 - 如果操作的 Arithmetic Intensity $\text{AI} > I^*$，则该操作是 **compute-bound**
 - 如果 $\text{AI} < I^*$，则该操作是 **memory-bound**
+
+<RooflineModel client:visible />
 
 ### 两阶段的 Arithmetic Intensity 对比
 
