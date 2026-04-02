@@ -19,6 +19,7 @@ references:
 import FlashAttentionTiling from '../../../components/interactive/FlashAttentionTiling.tsx';
 import GPUMemoryHierarchy from '../../../components/interactive/GPUMemoryHierarchy.tsx';
 import OnlineSoftmaxDemo from '../../../components/interactive/OnlineSoftmaxDemo.tsx';
+import IOComplexityChart from '../../../components/interactive/IOComplexityChart.tsx';
 
 ## 简介：为什么标准 Attention 的内存是瓶颈
 
@@ -239,6 +240,8 @@ $$
 - 因为 $B_c = \Theta(M/d)$，所以 $\frac{N^2 d}{B_c} = \Theta(N^2 d^2 / M)$
 
 对于典型参数（$d = 64\text{-}128$，$M \approx 100\text{KB}$），$d^2$ 远小于 $M$，因此 $N^2 d^2 / M \ll N^2$。实验中 Flash Attention 比标准实现快 **2-4 倍**。
+
+<IOComplexityChart client:visible />
 
 ### 下界
 
