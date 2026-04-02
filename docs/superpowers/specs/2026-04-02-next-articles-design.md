@@ -2,7 +2,7 @@
 
 **Status:** Approved
 **Date:** 2026-04-02
-**Scope:** 3 new articles, 13 interactive components
+**Scope:** 3 new articles, 14 interactive components
 
 ## 1. Overview
 
