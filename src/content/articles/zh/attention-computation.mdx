@@ -24,6 +24,7 @@ references:
 
 import AttentionStepAnimation from '../../../components/interactive/AttentionStepAnimation.tsx';
 import TensorShapeTracker from '../../../components/interactive/TensorShapeTracker.tsx';
+import ScalingFactorDemo from '../../../components/interactive/ScalingFactorDemo.tsx';
 
 ## 简介：Attention 是 Transformer 的核心
 
@@ -146,6 +147,8 @@ $$
 $$
 
 这样 softmax 的输入保持在合理范围内，梯度流畅，训练稳定。
+
+<ScalingFactorDemo client:visible />
 
 > 原论文原话："We suspect that for large values of $d_k$, the dot products grow large in magnitude, pushing the softmax function into regions where it has extremely small gradients."
 
