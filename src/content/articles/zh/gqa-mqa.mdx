@@ -22,6 +22,8 @@ references:
     url: "https://poloclub.github.io/transformer-explainer/"
 ---
 
+import KVCacheGrowthChart from '../../../components/interactive/KVCacheGrowthChart.tsx';
+
 ## 简介：为什么 MHA 的 KV Cache 是瓶颈
 
 在上一篇文章中，我们了解了 Multi-Head Attention (MHA) 的工作原理：$h$ 个 head 各自拥有独立的 $W^Q$、$W^K$、$W^V$ 投影矩阵，在不同的子空间中并行计算注意力。
@@ -312,6 +314,8 @@ $$
 $$
 
 **对比**：从 MHA 的 10.7 GB 降到 GQA 的 1.3 GB，缩减了约 **8 倍**（$h / g = 64 / 8 = 8$），而如果用 MQA 则可以缩减 **64 倍**到仅 0.17 GB。
+
+<KVCacheGrowthChart client:visible />
 
 ### Batch Serving 的影响
 
