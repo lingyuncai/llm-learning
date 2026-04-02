@@ -23,6 +23,7 @@ import KVCacheDemo from '../../../components/interactive/KVCacheDemo.tsx';
 import RedundantComputationViz from '../../../components/interactive/RedundantComputationViz.tsx';
 import KVCacheCalculator from '../../../components/interactive/KVCacheCalculator.tsx';
 import PagedAttentionComparison from '../../../components/interactive/PagedAttentionComparison.tsx';
+import ContinuousBatchingTimeline from '../../../components/interactive/ContinuousBatchingTimeline.tsx';
 
 ## 简介：KV Cache 是推理加速的关键
 
@@ -218,6 +219,8 @@ $$
 - Continuous Batching：某个请求完成后，**立即**插入新请求填补空位，不等待其他请求
 
 这使得 GPU 始终保持高利用率，显著提升推理吞吐量。vLLM、TensorRT-LLM 等主流推理引擎都采用了 PagedAttention + Continuous Batching 的组合。
+
+<ContinuousBatchingTimeline client:visible />
 
 ## 与 GQA/MQA 的关系：减少 KV Cache 的另一种方式
 
