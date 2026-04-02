@@ -21,6 +21,7 @@ references:
 
 import KVCacheDemo from '../../../components/interactive/KVCacheDemo.tsx';
 import RedundantComputationViz from '../../../components/interactive/RedundantComputationViz.tsx';
+import KVCacheCalculator from '../../../components/interactive/KVCacheCalculator.tsx';
 
 ## 简介：KV Cache 是推理加速的关键
 
@@ -166,6 +167,8 @@ $$
 > **注意**：以上使用标准 MHA 公式计算（$n_h = 64$），即假设所有 head 独立缓存 KV。实际上 LLaMA-2 70B 使用 GQA（$n_{kv} = 8$），真实 KV Cache 仅为上表的 $1/8$（S=4096 时约 1.25 GiB）。详见下方 [GQA/MQA 小节](#与-gqamqa-的关系减少-kv-cache-的另一种方式)。
 
 可以看到，对于大模型和长序列，**KV Cache 的显存占用可以达到甚至超过模型参数本身**。这也是为什么 KV Cache 管理和压缩是推理优化的核心方向。
+
+<KVCacheCalculator client:visible />
 
 ### Batch 场景
 
