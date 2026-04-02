@@ -18,6 +18,7 @@ references:
 
 import FlashAttentionTiling from '../../../components/interactive/FlashAttentionTiling.tsx';
 import GPUMemoryHierarchy from '../../../components/interactive/GPUMemoryHierarchy.tsx';
+import OnlineSoftmaxDemo from '../../../components/interactive/OnlineSoftmaxDemo.tsx';
 
 ## 简介：为什么标准 Attention 的内存是瓶颈
 
@@ -184,6 +185,8 @@ $$
 $$
 
 无论数据被分成多少块、以什么顺序处理，最终结果完全相同。
+
+<OnlineSoftmaxDemo client:visible />
 
 ## 交互演示：Flash Attention 分块计算
 
