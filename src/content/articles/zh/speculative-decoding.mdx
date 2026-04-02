@@ -1,0 +1,217 @@
+---
+title: "Speculative Decoding — 猜测式解码加速"
+slug: speculative-decoding
+locale: zh
+tags: [inference, optimization, speculative-decoding]
+prerequisites: [sampling-and-decoding, prefill-vs-decode]
+difficulty: advanced
+created: "2026-04-02"
+updated: "2026-04-02"
+references:
+  - type: paper
+    title: "Fast Inference from Transformers via Speculative Decoding"
+    url: "https://arxiv.org/abs/2211.17192"
+  - type: paper
+    title: "Accelerating Large Language Model Decoding with Speculative Sampling"
+    url: "https://arxiv.org/abs/2302.01318"
+  - type: paper
+    title: "Medusa: Simple LLM Inference Acceleration Framework with Multiple Decoding Heads"
+    url: "https://arxiv.org/abs/2401.10774"
+  - type: paper
+    title: "Better & Faster Large Language Models via Multi-Token Prediction"
+    url: "https://arxiv.org/abs/2404.19737"
+  - type: paper
+    title: "EAGLE: Speculative Sampling Requires Rethinking Feature Uncertainty"
+    url: "https://arxiv.org/abs/2401.15077"
+  - type: paper
+    title: "EAGLE-2: Faster Inference of Language Models with Dynamic Draft Trees"
+    url: "https://arxiv.org/abs/2406.16858"
+  - type: paper
+    title: "Break the Sequential Dependency of LLM Inference Using Lookahead Decoding"
+    url: "https://arxiv.org/abs/2402.02057"
+  - type: website
+    title: "DeepSeek-V3 Technical Report"
+    url: "https://arxiv.org/abs/2412.19437"
+---
+
+import DraftVerifyAnimation from '../../../components/interactive/DraftVerifyAnimation.tsx';
+import AcceptanceRateCalculator from '../../../components/interactive/AcceptanceRateCalculator.tsx';
+import MedusaTreeViz from '../../../components/interactive/MedusaTreeViz.tsx';
+import MTPTrainInferBridge from '../../../components/interactive/MTPTrainInferBridge.tsx';
+import EagleArchitecture from '../../../components/interactive/EagleArchitecture.tsx';
+import SpecMethodComparison from '../../../components/interactive/SpecMethodComparison.tsx';
+
+LLM 推理的 Decode 阶段是 **memory-bound** 的 — 每步只生成 1 个 token，GPU 算力大量空闲。自回归生成的核心瓶颈在于**顺序依赖**：每个 token 的生成都依赖前一个 token 的结果。
+
+Speculative Decoding（猜测式解码）的核心思路是：**用一个快速但不那么准确的方法"猜测"多个未来 token，然后让目标大模型一次性并行验证这些猜测。** 如果猜对了，一轮就能产出多个 token；猜错了，从错误位置重新采样 — 而且可以保证最终输出分布和只用大模型生成**完全一致**。
+
+## 动机 — 为什么 Decode 很慢
+
+回顾 prefill-vs-decode 的结论：
+
+- **Prefill 阶段：** 并行处理所有 prompt token，是 **compute-bound**（GPU 算力充分利用）
+- **Decode 阶段：** 逐 token 生成，每步执行 GEMV（矩阵-向量乘法），是 **memory-bound**
+
+Decode 的每次 forward pass 都需要把整个模型权重从 HBM 加载到计算单元，但只做很少的计算（一个 token 的 GEMV）。GPU 的算力利用率极低。
+
+核心问题：能否"批量"生成 token？直接批量不行（因为自回归依赖），但可以**先猜后验** — 这就是 Speculative Decoding。
+
+## Draft-then-Verify — 经典方案
+
+### Draft 阶段
+
+使用一个参数量小得多的 **draft model**（例如 7B 目标模型配一个 68M 的小模型），自回归生成 $K$ 个候选 token。小模型速度快但不够准确。
+
+### Verify 阶段
+
+目标大模型对 $K$ 个候选 token 做**一次 forward pass** — 这就像 Prefill 阶段一样是并行的，一次性获得所有 $K$ 个位置的概率分布。
+
+<DraftVerifyAnimation client:visible />
+
+### Rejection Sampling — 保证分布一致性
+
+这是 Speculative Decoding 最精妙的部分 — 通过 rejection sampling 保证输出分布与只用大模型生成**完全一致**：
+
+对每个位置 $i$，比较 draft 概率 $q(x_i)$ 和 target 概率 $p(x_i)$：
+
+- 如果 $q(x) \leq p(x)$：**接受** — draft 的保守猜测是安全的
+- 如果 $q(x) > p(x)$：以概率 $1 - p(x)/q(x)$ **拒绝**
+
+被拒绝后，从修正分布 $\text{norm}(\max(0, p(x) - q(x)))$ 重新采样 1 个 token。
+
+**关键保证：** 无论 draft model 有多差，最终输出分布都和只用 target model 生成一模一样。差的 draft model 只会降低加速比（更多 rejection），不会影响质量。
+
+### 加速比分析
+
+定义 acceptance rate $\alpha$ — draft token 被接受的平均概率。
+
+期望每轮生成的 token 数为：
+
+$$
+E[\text{tokens}] = \frac{1 - \alpha^{K+1}}{1 - \alpha}
+$$
+
+$\alpha$ 越高（draft 越准）、$K$ 越大（一次猜得越多），加速比越高：
+
+<AcceptanceRateCalculator client:visible />
+
+实际加速比通常在 **2–3x**（取决于 draft model 质量和目标模型大小）。
+
+## Medusa — 推理时加多头
+
+Cai et al. (2024) 提出了一种不需要独立 draft model 的方案。
+
+### 核心改进
+
+在 target model 的最后一层 hidden state 上接**多个轻量 prediction head**：
+- Head 1 预测下一个 token
+- Head 2 预测再下一个 token
+- Head K 预测第 $K$ 个 token
+
+### Tree Attention 验证
+
+多个 head 的预测组合成一棵**候选树**（而非单一序列），用 tree attention mask 一次 forward pass 验证所有候选路径，选择最长的被接受路径：
+
+<MedusaTreeViz client:visible />
+
+### 训练
+
+冻结 target model，只训练额外的 prediction heads。训练成本低，只需要少量数据和小参数量。
+
+**优势：** 不需要额外模型、部署简单、训练成本低
+
+**局限：** Heads 未经联合训练（推理时才加上的），预测质量有限 → acceptance rate 不如后面的 Eagle
+
+## Multi-Token Prediction (MTP) — 训练时加多头
+
+### 核心思想
+
+与 Medusa 的关键区别：**训练时就让模型同时预测未来第 1, 2, ..., K 个 token。** 每个预测头共享主干网络，各有独立的输出层，训练 loss = 各头 loss 之和（或加权和）。
+
+### 和 Medusa 的关键区别
+
+| | Medusa | MTP |
+|---|---|---|
+| 训练方式 | 推理时冻结主模型，单独训 heads | 联合训练，heads 和 backbone 一起优化 |
+| Head 质量 | 未见过主模型的训练过程 | 与主干共同优化 |
+| 类比 | 临时加装的猜测器 | 出厂自带的多步预测能力 |
+
+<MTPTrainInferBridge client:visible />
+
+### 训练到推理的桥梁
+
+训练时的多头预测 → 推理时直接复用这些头做 speculative draft。不需要额外的 draft model，**模型自身就是 drafter + verifier**（self-speculative）。
+
+### 实际应用
+
+- **DeepSeek-V3：** 训练时使用 MTP，推理时利用 MTP heads 做 speculative decoding
+- **Meta 2024：** "Better & Faster LLMs via Multi-Token Prediction" 系统验证了 MTP 的有效性
+
+## Eagle — Feature-Level Drafting
+
+Li et al. (2024) 提出了当前 acceptance rate 最高的方案。
+
+### 核心洞察
+
+Draft 不需要从 token embedding 开始预测 — target model 最后一层的 **hidden state** 已编码了丰富的上下文语义信息。直接用 hidden state feature 做 draft，信息量远大于 token-level，准确率自然更高。
+
+<EagleArchitecture client:visible />
+
+### 架构
+
+Eagle 的 "auto-regression head" 是一个轻量 decoder 层：
+
+- **输入：** Target model 的 top-layer hidden state + 当前 token embedding
+- **输出：** 下一位置的 feature 向量 → 通过 target model 的 LM head 映射到 token 概率
+- **自回归：** 可以用自己的输出继续预测更远的位置
+
+### 为什么 Acceptance Rate 更高
+
+- **Feature-level 信息量 >> token-level：** Hidden state 包含了完整上下文、语义关系、语法模式
+- **Token embedding 只有 token 本身的信息**，丢失了上下文
+- 实验显示 Eagle 的 acceptance rate 比 Medusa 高约 **10–15%**
+
+### Eagle-2 改进
+
+引入 **context-aware dynamic draft tree**：
+- 根据每个节点的置信度动态调整树结构
+- 高置信度分支 → 展开更深（更多候选）
+- 低置信度分支 → 提前剪枝（不浪费验证计算）
+- 结果：比 Eagle-1 进一步提升加速比
+
+### 训练
+
+冻结 target model，只训练轻量 decoder（类似 Medusa 的训练方式），但因为输入是 feature 而非 token，同等训练量下效果更好。
+
+## Lookahead Decoding — 无 Draft Model
+
+Fu et al. (2024) 提出了一种完全不同的思路。
+
+### 基于 Jacobi 迭代
+
+不需要任何 draft model 或额外 head — 基于 **Jacobi 迭代**，同时猜测多个未来位置的 token，并行验证，不断迭代直到收敛。
+
+**工作原理：**
+
+1. **初始：** 随机猜测位置 $t+1, t+2, \ldots, t+K$ 的 token
+2. **每步：** 用 target model 对所有位置并行做 forward pass
+3. 如果某位置的预测和猜测一致 → 该位置"收敛"
+4. 未收敛的位置用新预测替换，继续迭代
+5. 通常 2–3 轮迭代就能收敛
+
+**优势：** 零额外参数、零训练成本、任何模型即插即用
+
+**局限：** 加速比通常低于 Medusa/Eagle（迭代次数不可控），实际约 1.5–2x
+
+## 对比总结
+
+<SpecMethodComparison client:visible />
+
+### 选择指南
+
+- **已有配套小模型** → Draft-then-Verify
+- **从头训新模型** → MTP（预训练时内置多头预测能力）
+- **已有大模型，想快速加速** → Eagle > Medusa > Lookahead
+- **不想训练任何东西** → Lookahead（即插即用）
+
+所有方法都通过 rejection sampling 保证**分布一致性** — 加速是无损的，只影响速度不影响质量。核心区别在于 draft 的**来源和质量**，这决定了 acceptance rate 和最终加速比。
