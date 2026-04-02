@@ -23,6 +23,7 @@ references:
 ---
 
 import AttentionStepAnimation from '../../../components/interactive/AttentionStepAnimation.tsx';
+import TensorShapeTracker from '../../../components/interactive/TensorShapeTracker.tsx';
 
 ## 简介：Attention 是 Transformer 的核心
 
@@ -46,6 +47,8 @@ $$
 - $\sqrt{d_k}$ — 缩放因子，防止点积过大
 
 这个公式看似简洁，但包含了五个关键步骤。下面逐一拆解。
+
+<TensorShapeTracker client:visible />
 
 ## 分步拆解：每一步的数学意义
 
