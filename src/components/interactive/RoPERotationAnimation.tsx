@@ -97,7 +97,7 @@ export default function RoPERotationAnimation() {
               fontFamily="system-ui">Position 0: 旋转角度 = 0</text>
           </svg>
           <p className="text-sm text-gray-600 text-center">
-            把 Q 向量的一对维度 $(d_{2i}, d_{2i+1})$ 看作二维平面上的向量
+            把 Q 向量的一对维度 (d₂ᵢ, d₂ᵢ₊₁) 看作二维平面上的向量
           </p>
         </div>
       ),
@@ -181,7 +181,7 @@ export default function RoPERotationAnimation() {
               fontFamily="system-ui">Q₃ᵀK₅ = Qᵀ R(5−3)θ K — 只依赖相对距离</text>
           </svg>
           <p className="text-sm text-gray-600 text-center">
-            <strong>关键性质：</strong>$\tilde{{q}}_m^T \tilde{{k}}_n = q^T R_{{(n-m)\theta}} k$ — 内积只依赖 $n - m$
+            <strong>关键性质：</strong>Q̃ₘᵀK̃ₙ = QᵀR₍ₙ₋ₘ₎θK — 内积只依赖 n - m
           </p>
         </div>
       ),
@@ -243,7 +243,7 @@ export default function RoPERotationAnimation() {
             })}
           </div>
           <p className="text-sm text-gray-600 text-center">
-            不同维度对使用不同 $\theta_i$，类似 Sinusoidal 的多频率思想
+            不同维度对使用不同 θᵢ，类似 Sinusoidal 的多频率思想
             <br />
             <span className="text-xs">低频 → 捕捉远距离位置关系；高频 → 捕捉近距离精确位置</span>
           </p>
