@@ -1,0 +1,179 @@
+---
+title: "Sampling & Decoding — 从概率到文本"
+slug: sampling-and-decoding
+locale: zh
+tags: [inference, sampling, decoding, perplexity]
+prerequisites: [transformer-overview]
+difficulty: intermediate
+created: "2026-04-02"
+updated: "2026-04-02"
+references:
+  - type: paper
+    title: "The Curious Case of Neural Text Degeneration"
+    url: "https://arxiv.org/abs/1904.09751"
+  - type: paper
+    title: "Hierarchical Neural Story Generation"
+    url: "https://arxiv.org/abs/1805.04833"
+  - type: paper
+    title: "Perplexity — a Measure of the Difficulty of Speech Recognition Tasks"
+    url: "https://ieeexplore.ieee.org/document/1457626"
+  - type: paper
+    title: "Language Models are Unsupervised Multitask Learners"
+    url: "https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf"
+---
+
+import PerplexityIntuition from '../../../components/interactive/PerplexityIntuition.tsx';
+import TemperatureDistribution from '../../../components/interactive/TemperatureDistribution.tsx';
+import SamplingStrategyComparison from '../../../components/interactive/SamplingStrategyComparison.tsx';
+import BeamSearchTree from '../../../components/interactive/BeamSearchTree.tsx';
+
+语言模型的输出是一个**概率分布** — 对词表中每个 token 的预测概率。但最终我们需要的是一段**确定的文本**。从概率分布到实际 token 的选择过程，就是 **Sampling & Decoding**。
+
+不同的采样策略会产生截然不同的文本：确定性的 Greedy 适合代码生成，高温 Top-p 适合创意写作。而 **Perplexity（困惑度）** 则是衡量模型预测质量的核心指标 — 它告诉我们模型在每个位置"有多困惑"。
+
+## Perplexity — 语言模型的"困惑度"
+
+### 信息论基础
+
+在理解 Perplexity 之前，需要两个信息论概念：
+
+**熵（Entropy）：** 衡量随机变量的不确定性
+
+$$
+H(p) = -\sum_{x} p(x) \log_2 p(x)
+$$
+
+**交叉熵（Cross-Entropy）：** 衡量模型 $q$ 对真实分布 $p$ 的近似程度
+
+$$
+H(p, q) = -\sum_{x} p(x) \log_2 q(x)
+$$
+
+模型越好，交叉熵越低。
+
+### Perplexity 定义
+
+$$
+\text{PPL} = 2^{H(p,q)}
+$$
+
+直觉：**模型在每个位置平均要从多少个 token 中做选择。** PPL = 1 表示完全确定（模型每次都知道下一个 token），PPL = |V|（词表大小）表示完全随机猜测。
+
+对一段文本 $w_1, w_2, \ldots, w_N$，实际计算公式为：
+
+$$
+\text{PPL} = \exp\left(-\frac{1}{N}\sum_{i=1}^{N} \ln p(w_i | w_{<i})\right)
+$$
+
+<PerplexityIntuition client:visible />
+
+### PPL 的局限
+
+- **PPL 低 ≠ 生成质量高：** 模型可能通过保守的高频词获得低 PPL，但生成的文本缺乏多样性和创造力
+- **不同 tokenizer 不可比较：** PPL 值依赖于词表切分方式，BPE 和 SentencePiece 的 PPL 不能直接对比
+- **长度归一化重要：** 不做归一化的话，长句子的 PPL 会系统性偏高
+
+那么，模型输出了概率分布之后，我们该如何选择下一个 token？
+
+## Greedy Decoding
+
+最简单的策略 — 每步选概率最高的 token：
+
+$$
+w_t = \arg\max_{w} p(w | w_{<t})
+$$
+
+**优点：** 确定性、速度快、实现简单
+
+**问题：**
+- **局部最优陷阱：** 贪心选择不一定得到全局最优序列
+- **退化重复：** 容易产生 "the the the..." 之类的重复循环
+- **缺乏多样性：** 同样的输入永远产生同样的输出
+
+**适用场景：** 分类、信息提取等不需要创造性的任务。
+
+## Temperature Scaling
+
+在 softmax 之前对 logits 除以温度参数 $T$：
+
+$$
+p_i = \frac{\exp(z_i / T)}{\sum_j \exp(z_j / T)}
+$$
+
+- **T < 1：** 分布更尖锐 → 更确定，接近 Greedy
+- **T > 1：** 分布更平坦 → 更随机，增加多样性
+- **T → 0：** 退化为 Greedy；**T → ∞：** 退化为均匀分布
+
+<TemperatureDistribution client:visible />
+
+Temperature 与 Perplexity 的关系：T 升高 → 选择更分散 → 生成文本的 PPL 上升。
+
+## Top-k Sampling
+
+Fan et al. (2018) 提出只保留概率最高的 $k$ 个 token，其余概率设为 0，重新归一化后采样。
+
+**k 的选择困境：**
+- **k 太小** → 遗漏合理选项（"I ate a ___" — 可能的食物种类很多）
+- **k 太大** → 包含概率极低的噪声 token
+
+核心问题：$k$ 是**固定的**，无法适应不同上下文的确定性程度。高确定性上下文（"the capital of France is"）只需保留 1-2 个 token，而低确定性上下文需要保留更多。
+
+## Top-p / Nucleus Sampling
+
+Holtzman et al. (2020) 提出的解决方案 — **动态截断：**
+
+选择最小的 token 集合 $V_p$，使得累积概率 $\sum_{w \in V_p} p(w) \geq p$。
+
+- 确定性上下文（"the capital of France is"）→ 集合很小（1-2 个 token 就够）
+- 不确定上下文（"I like to eat"）→ 集合较大（需要更多 token 才达到阈值）
+
+<SamplingStrategyComparison client:visible />
+
+Top-p 比 Top-k 更**自适应**，实际效果也更好。通常设 $p = 0.9 \sim 0.95$。
+
+## Beam Search
+
+与上面的采样策略不同，Beam Search 是一种**搜索算法**。它维护 $B$ 条候选序列（beam），每步扩展所有可能的下一 token，保留总分数最高的 $B$ 条：
+
+$$
+\text{score}(w_{1:t}) = \sum_{i=1}^{t} \log p(w_i | w_{<i})
+$$
+
+通常还会加 **length penalty** 避免偏好短序列。
+
+<BeamSearchTree client:visible />
+
+**优点：** 全局搜索比 Greedy 更优
+
+**缺点：** 计算量是 Greedy 的 $B$ 倍、生成文本偏"安全"（缺乏惊喜和创造性）、不适合开放式生成
+
+**适用场景：** 机器翻译、文本摘要等需要高准确性的任务。
+
+## Repetition Penalty 与其他技巧
+
+实际部署中，采样策略通常不是单独使用的：
+
+- **Frequency Penalty：** 已生成 token 的 logit 按出现次数递减
+- **Presence Penalty：** 已出现过的 token 统一减去固定值
+- **Min-P Sampling：** 设定最小概率阈值，低于 $p_{min} \times p_{max}$ 的 token 被过滤
+
+组合使用示例：Temperature + Top-p + Repetition Penalty 联合，是当前 LLM API（如 OpenAI、Anthropic）的标准配置。
+
+## 策略选择指南
+
+| 场景 | 推荐策略 | 参数参考 |
+|------|---------|---------|
+| 代码生成 | Greedy 或低温 Top-p | T=0.2, p=0.9 |
+| 创意写作 | 高温 Top-p | T=0.9, p=0.95 |
+| 翻译/摘要 | Beam Search | B=4, length_penalty=0.6 |
+| 对话 | 中温 Top-p + Repetition | T=0.7, p=0.9, rep=1.1 |
+
+## 总结
+
+- **Perplexity** 衡量模型的预测质量，是评估语言模型的核心指标
+- **Greedy** 简单但退化，适合确定性任务
+- **Temperature** 控制分布的锐度，是其他策略的基础
+- **Top-k** 固定截断，简单但不够自适应
+- **Top-p** 动态截断，是当前最常用的采样策略
+- **Beam Search** 全局搜索，适合翻译等精确任务
+- 实际应用中通常**组合多种策略**
