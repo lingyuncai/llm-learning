@@ -10,3 +10,5 @@ articles:
   - prefill-vs-decode
   - kv-cache
   - flash-attention
+  - sampling-and-decoding
+  - speculative-decoding
