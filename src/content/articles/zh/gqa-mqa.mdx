@@ -24,6 +24,7 @@ references:
 
 import KVCacheGrowthChart from '../../../components/interactive/KVCacheGrowthChart.tsx';
 import QueryKVMapping from '../../../components/interactive/QueryKVMapping.tsx';
+import UptrainingPooling from '../../../components/interactive/UptrainingPooling.tsx';
 
 ## 简介：为什么 MHA 的 KV Cache 是瓶颈
 
@@ -125,6 +126,8 @@ GQA 论文的另一个重要贡献是提出了从已有的 MHA checkpoint **uptr
 3. 转换后的模型质量接近原始 MHA，推理速度接近 MQA
 
 这意味着不需要从头训练 — 可以把现有的 MHA 模型高效地转换为 GQA 模型。
+
+<UptrainingPooling client:visible />
 
 ## 结构对比图：MHA vs MQA vs GQA
 
