@@ -20,6 +20,10 @@ references:
 ---
 
 import KVCacheDemo from '../../../components/interactive/KVCacheDemo.tsx';
+import RedundantComputationViz from '../../../components/interactive/RedundantComputationViz.tsx';
+import KVCacheCalculator from '../../../components/interactive/KVCacheCalculator.tsx';
+import PagedAttentionComparison from '../../../components/interactive/PagedAttentionComparison.tsx';
+import ContinuousBatchingTimeline from '../../../components/interactive/ContinuousBatchingTimeline.tsx';
 
 ## 简介：KV Cache 是推理加速的关键
 
@@ -53,6 +57,8 @@ $$
 关键观察：**第 $t$ 步中前 $t-1$ 个 token 的 K 和 V 与第 $t-1$ 步完全相同**。因为这些 token 的输入没有变化（Decoder 使用因果遮罩，前面 token 的表示不受后面 token 影响），它们的 K、V 投影结果也完全一样。
 
 换句话说，每一步都在重复计算已经算过的 Key 和 Value — 这是纯粹的计算浪费。
+
+<RedundantComputationViz client:visible />
 
 ## KV Cache 机制：缓存和追加
 
@@ -164,6 +170,8 @@ $$
 
 可以看到，对于大模型和长序列，**KV Cache 的显存占用可以达到甚至超过模型参数本身**。这也是为什么 KV Cache 管理和压缩是推理优化的核心方向。
 
+<KVCacheCalculator client:visible />
+
 ### Batch 场景
 
 当服务多个并发请求时，KV Cache 随 batch size $B$ 线性增长：
@@ -201,6 +209,8 @@ $$
 - **显存利用率高**：实际利用率可以接近 100%
 - **支持复杂调度**：如 beam search 中多个候选可以共享前缀的 KV Cache Block
 
+<PagedAttentionComparison client:visible />
+
 ### Continuous Batching
 
 与 PagedAttention 配合的另一项重要技术是 **Continuous Batching**（连续批处理）：
@@ -209,6 +219,8 @@ $$
 - Continuous Batching：某个请求完成后，**立即**插入新请求填补空位，不等待其他请求
 
 这使得 GPU 始终保持高利用率，显著提升推理吞吐量。vLLM、TensorRT-LLM 等主流推理引擎都采用了 PagedAttention + Continuous Batching 的组合。
+
+<ContinuousBatchingTimeline client:visible />
 
 ## 与 GQA/MQA 的关系：减少 KV Cache 的另一种方式
 

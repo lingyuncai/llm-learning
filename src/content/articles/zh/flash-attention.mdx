@@ -17,6 +17,10 @@ references:
 ---
 
 import FlashAttentionTiling from '../../../components/interactive/FlashAttentionTiling.tsx';
+import GPUMemoryHierarchy from '../../../components/interactive/GPUMemoryHierarchy.tsx';
+import OnlineSoftmaxDemo from '../../../components/interactive/OnlineSoftmaxDemo.tsx';
+import IOComplexityChart from '../../../components/interactive/IOComplexityChart.tsx';
+import BlockSizeCalculator from '../../../components/interactive/BlockSizeCalculator.tsx';
 
 ## 简介：为什么标准 Attention 的内存是瓶颈
 
@@ -48,6 +52,8 @@ $$
 
 关键数据：**SRAM 的带宽是 HBM 的约 10 倍**，但容量只有 HBM 的约 1/2000。
 
+<GPUMemoryHierarchy client:visible />
+
 ### 标准 Attention 的内存访问模式
 
 标准实现的问题不在于计算量（FLOPs），而在于**内存访问量**（IO）：
@@ -75,6 +81,8 @@ B_c = \left\lceil \frac{M}{4d} \right\rceil, \quad B_r = \min\!\left(\left\lceil
 $$
 
 这样一个 $B_r \times d$ 的 Q 块、一个 $B_c \times d$ 的 K 块、一个 $B_c \times d$ 的 V 块，加上一个 $B_r \times B_c$ 的局部分数矩阵，都能放进 SRAM。
+
+<BlockSizeCalculator client:visible />
 
 ### 双层循环结构
 
@@ -182,6 +190,8 @@ $$
 
 无论数据被分成多少块、以什么顺序处理，最终结果完全相同。
 
+<OnlineSoftmaxDemo client:visible />
+
 ## 交互演示：Flash Attention 分块计算
 
 下面用一个 $N=4, d=3, B=2$ 的小例子，逐步演示 Flash Attention 如何处理 Q 的第一个块（$t_1, t_2$），依次与两个 K/V 块交互，并通过 Online Softmax 修正得到精确结果。
@@ -233,6 +243,8 @@ $$
 - 因为 $B_c = \Theta(M/d)$，所以 $\frac{N^2 d}{B_c} = \Theta(N^2 d^2 / M)$
 
 对于典型参数（$d = 64\text{-}128$，$M \approx 100\text{KB}$），$d^2$ 远小于 $M$，因此 $N^2 d^2 / M \ll N^2$。实验中 Flash Attention 比标准实现快 **2-4 倍**。
+
+<IOComplexityChart client:visible />
 
 ### 下界
 

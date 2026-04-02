@@ -22,6 +22,11 @@ references:
     url: "https://poloclub.github.io/transformer-explainer/"
 ---
 
+import KVCacheGrowthChart from '../../../components/interactive/KVCacheGrowthChart.tsx';
+import QueryKVMapping from '../../../components/interactive/QueryKVMapping.tsx';
+import UptrainingPooling from '../../../components/interactive/UptrainingPooling.tsx';
+import ConcurrencyComparison from '../../../components/interactive/ConcurrencyComparison.tsx';
+
 ## 简介：为什么 MHA 的 KV Cache 是瓶颈
 
 在上一篇文章中，我们了解了 Multi-Head Attention (MHA) 的工作原理：$h$ 个 head 各自拥有独立的 $W^Q$、$W^K$、$W^V$ 投影矩阵，在不同的子空间中并行计算注意力。
@@ -123,165 +128,11 @@ GQA 论文的另一个重要贡献是提出了从已有的 MHA checkpoint **uptr
 
 这意味着不需要从头训练 — 可以把现有的 MHA 模型高效地转换为 GQA 模型。
 
+<UptrainingPooling client:visible />
+
 ## 结构对比图：MHA vs MQA vs GQA
 
-<svg viewBox="0 0 900 520" xmlns="http://www.w3.org/2000/svg" style={{ maxWidth: '100%', height: 'auto', display: 'block', margin: '2rem auto' }}>
-  {/* Background */}
-  <rect width="900" height="520" fill="#fafafa" rx="8" />
-
-  {/* Title */}
-  <text x="450" y="32" textAnchor="middle" fontSize="17" fontWeight="bold" fill="#1a1a2e">MHA vs MQA vs GQA 结构对比</text>
-
-  {/* === MHA Section === */}
-  <rect x="15" y="50" width="270" height="450" rx="10" fill="#f5f5ff" stroke="#c5cae9" strokeWidth="1.5" />
-  <text x="150" y="78" textAnchor="middle" fontSize="15" fontWeight="bold" fill="#283593">MHA</text>
-  <text x="150" y="96" textAnchor="middle" fontSize="10" fill="#666">Multi-Head Attention</text>
-
-  {/* MHA Query Heads */}
-  <text x="60" y="130" fontSize="11" fill="#444" fontWeight="bold">Query Heads</text>
-  <rect x="30" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
-  <text x="55" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₁</text>
-  <rect x="90" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
-  <text x="115" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₂</text>
-  <rect x="150" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
-  <text x="175" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₃</text>
-  <rect x="210" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
-  <text x="235" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₄</text>
-
-  {/* MHA KV Heads */}
-  <text x="60" y="210" fontSize="11" fill="#444" fontWeight="bold">KV Heads</text>
-  <rect x="30" y="220" width="50" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.2" />
-  <text x="55" y="239" textAnchor="middle" fontSize="10" fill="#e65100">KV₁</text>
-  <rect x="90" y="220" width="50" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.2" />
-  <text x="115" y="239" textAnchor="middle" fontSize="10" fill="#e65100">KV₂</text>
-  <rect x="150" y="220" width="50" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.2" />
-  <text x="175" y="239" textAnchor="middle" fontSize="10" fill="#e65100">KV₃</text>
-  <rect x="210" y="220" width="50" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.2" />
-  <text x="235" y="239" textAnchor="middle" fontSize="10" fill="#e65100">KV₄</text>
-
-  {/* MHA arrows: each Q connects to its own KV */}
-  <line x1="55" y1="168" x2="55" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
-  <line x1="115" y1="168" x2="115" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
-  <line x1="175" y1="168" x2="175" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
-  <line x1="235" y1="168" x2="235" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
-
-  {/* MHA label */}
-  <text x="150" y="285" textAnchor="middle" fontSize="10" fill="#555">每个 Q 对应独立的 KV</text>
-  <text x="150" y="300" textAnchor="middle" fontSize="10" fill="#555">KV heads = h</text>
-
-  {/* MHA KV Cache bar */}
-  <text x="150" y="335" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#444">KV Cache</text>
-  <rect x="30" y="345" width="240" height="24" rx="4" fill="#ffcdd2" stroke="#c62828" strokeWidth="1" />
-  <text x="150" y="362" textAnchor="middle" fontSize="10" fill="#c62828">||||||||||||||||||||||||||||||||</text>
-  <text x="150" y="390" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#c62828">100%</text>
-
-  {/* MHA parameters */}
-  <rect x="35" y="410" width="230" height="40" rx="6" fill="#fff" stroke="#ddd" strokeWidth="1" />
-  <text x="150" y="427" textAnchor="middle" fontSize="10" fill="#555">KV 参数: 2 x h x d_k x H</text>
-  <text x="150" y="442" textAnchor="middle" fontSize="10" fill="#555">KV Cache: 2 x h x S x d_k</text>
-
-  {/* === GQA Section === */}
-  <rect x="315" y="50" width="270" height="450" rx="10" fill="#f5fff5" stroke="#c8e6c9" strokeWidth="1.5" />
-  <text x="450" y="78" textAnchor="middle" fontSize="15" fontWeight="bold" fill="#2e7d32">GQA</text>
-  <text x="450" y="96" textAnchor="middle" fontSize="10" fill="#666">Grouped-Query Attention</text>
-
-  {/* GQA Query Heads */}
-  <text x="360" y="130" fontSize="11" fill="#444" fontWeight="bold">Query Heads</text>
-  <rect x="330" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
-  <text x="355" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₁</text>
-  <rect x="390" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
-  <text x="415" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₂</text>
-  <rect x="450" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
-  <text x="475" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₃</text>
-  <rect x="510" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
-  <text x="535" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₄</text>
-
-  {/* GQA group brackets */}
-  <rect x="328" y="172" width="114" height="3" rx="1" fill="#2e7d32" />
-  <text x="385" y="186" textAnchor="middle" fontSize="9" fill="#2e7d32">Group 1</text>
-  <rect x="448" y="172" width="114" height="3" rx="1" fill="#2e7d32" />
-  <text x="505" y="186" textAnchor="middle" fontSize="9" fill="#2e7d32">Group 2</text>
-
-  {/* GQA KV Heads (2 groups) */}
-  <text x="360" y="210" fontSize="11" fill="#444" fontWeight="bold">KV Heads</text>
-  <rect x="355" y="220" width="60" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.2" />
-  <text x="385" y="239" textAnchor="middle" fontSize="10" fill="#e65100">KV₁</text>
-  <rect x="475" y="220" width="60" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.2" />
-  <text x="505" y="239" textAnchor="middle" fontSize="10" fill="#e65100">KV₂</text>
-
-  {/* GQA arrows: Q1,Q2 → KV1; Q3,Q4 → KV2 */}
-  <line x1="355" y1="168" x2="375" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
-  <line x1="415" y1="168" x2="395" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
-  <line x1="475" y1="168" x2="495" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
-  <line x1="535" y1="168" x2="515" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
-
-  {/* GQA label */}
-  <text x="450" y="285" textAnchor="middle" fontSize="10" fill="#555">每组 Q 共享一对 KV</text>
-  <text x="450" y="300" textAnchor="middle" fontSize="10" fill="#555">KV heads = g (组数)</text>
-
-  {/* GQA KV Cache bar */}
-  <text x="450" y="335" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#444">KV Cache</text>
-  <rect x="390" y="345" width="120" height="24" rx="4" fill="#ffe0b2" stroke="#e65100" strokeWidth="1" />
-  <text x="450" y="362" textAnchor="middle" fontSize="10" fill="#e65100">||||||||||||||||</text>
-  <text x="450" y="390" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#e65100">g/h (e.g. 12.5%)</text>
-
-  {/* GQA parameters */}
-  <rect x="335" y="410" width="230" height="40" rx="6" fill="#fff" stroke="#ddd" strokeWidth="1" />
-  <text x="450" y="427" textAnchor="middle" fontSize="10" fill="#555">KV 参数: 2 x g x d_k x H</text>
-  <text x="450" y="442" textAnchor="middle" fontSize="10" fill="#555">KV Cache: 2 x g x S x d_k</text>
-
-  {/* === MQA Section === */}
-  <rect x="615" y="50" width="270" height="450" rx="10" fill="#fffde7" stroke="#fff9c4" strokeWidth="1.5" />
-  <text x="750" y="78" textAnchor="middle" fontSize="15" fontWeight="bold" fill="#f57f17">MQA</text>
-  <text x="750" y="96" textAnchor="middle" fontSize="10" fill="#666">Multi-Query Attention</text>
-
-  {/* MQA Query Heads */}
-  <text x="660" y="130" fontSize="11" fill="#444" fontWeight="bold">Query Heads</text>
-  <rect x="630" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
-  <text x="655" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₁</text>
-  <rect x="690" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
-  <text x="715" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₂</text>
-  <rect x="750" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
-  <text x="775" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₃</text>
-  <rect x="810" y="140" width="50" height="28" rx="5" fill="#e3f2fd" stroke="#1565c0" strokeWidth="1.2" />
-  <text x="835" y="159" textAnchor="middle" fontSize="10" fill="#1565c0">Q₄</text>
-
-  {/* MQA single KV head */}
-  <text x="660" y="210" fontSize="11" fill="#444" fontWeight="bold">KV Head</text>
-  <rect x="710" y="220" width="80" height="28" rx="5" fill="#fff3e0" stroke="#e65100" strokeWidth="1.5" />
-  <text x="750" y="239" textAnchor="middle" fontSize="10" fontWeight="bold" fill="#e65100">KV</text>
-
-  {/* MQA arrows: all Q → single KV */}
-  <line x1="655" y1="168" x2="730" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
-  <line x1="715" y1="168" x2="740" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
-  <line x1="775" y1="168" x2="760" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
-  <line x1="835" y1="168" x2="770" y2="220" stroke="#666" strokeWidth="1.2" markerEnd="url(#arrowGqa)" />
-
-  {/* MQA label */}
-  <text x="750" y="285" textAnchor="middle" fontSize="10" fill="#555">所有 Q 共享同一对 KV</text>
-  <text x="750" y="300" textAnchor="middle" fontSize="10" fill="#555">KV heads = 1</text>
-
-  {/* MQA KV Cache bar */}
-  <text x="750" y="335" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#444">KV Cache</text>
-  <rect x="735" y="345" width="30" height="24" rx="4" fill="#c8e6c9" stroke="#2e7d32" strokeWidth="1" />
-  <text x="750" y="362" textAnchor="middle" fontSize="10" fill="#2e7d32">||</text>
-  <text x="750" y="390" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#2e7d32">1/h (e.g. 1.6%)</text>
-
-  {/* MQA parameters */}
-  <rect x="635" y="410" width="230" height="40" rx="6" fill="#fff" stroke="#ddd" strokeWidth="1" />
-  <text x="750" y="427" textAnchor="middle" fontSize="10" fill="#555">KV 参数: 2 x 1 x d_k x H</text>
-  <text x="750" y="442" textAnchor="middle" fontSize="10" fill="#555">KV Cache: 2 x 1 x S x d_k</text>
-
-  {/* Bottom summary */}
-  <text x="450" y="510" textAnchor="middle" fontSize="11" fill="#444">KV Cache 大小: MHA (100%) &gt; GQA (g/h) &gt; MQA (1/h)　|　质量: MHA &ge; GQA &gt; MQA</text>
-
-  {/* Arrow marker */}
-  <defs>
-    <marker id="arrowGqa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#666" />
-    </marker>
-  </defs>
-</svg>
+<QueryKVMapping client:visible />
 
 上图展示了三种注意力机制的 head-to-KV 映射关系（以 $h = 4$ 为例）：
 
@@ -313,6 +164,8 @@ $$
 
 **对比**：从 MHA 的 10.7 GB 降到 GQA 的 1.3 GB，缩减了约 **8 倍**（$h / g = 64 / 8 = 8$），而如果用 MQA 则可以缩减 **64 倍**到仅 0.17 GB。
 
+<KVCacheGrowthChart client:visible />
+
 ### Batch Serving 的影响
 
 KV Cache 缩减对批处理推理的影响更加显著。假设 GPU 有 40 GB 剩余显存用于 KV Cache：
@@ -324,6 +177,8 @@ KV Cache 缩减对批处理推理的影响更加显著。假设 GPU 有 40 GB �
 | MQA | 0.17 GB | ~235 |
 
 GQA 将并发能力提升了约 10 倍 — 这对 LLM 服务的成本和延迟有决定性影响。
+
+<ConcurrencyComparison client:visible />
 
 ## 质量与性能的 Trade-off
 

@@ -23,6 +23,9 @@ references:
 ---
 
 import AttentionStepAnimation from '../../../components/interactive/AttentionStepAnimation.tsx';
+import TensorShapeTracker from '../../../components/interactive/TensorShapeTracker.tsx';
+import ScalingFactorDemo from '../../../components/interactive/ScalingFactorDemo.tsx';
+import CausalMaskDemo from '../../../components/interactive/CausalMaskDemo.tsx';
 
 ## 简介：Attention 是 Transformer 的核心
 
@@ -46,6 +49,8 @@ $$
 - $\sqrt{d_k}$ — 缩放因子，防止点积过大
 
 这个公式看似简洁，但包含了五个关键步骤。下面逐一拆解。
+
+<TensorShapeTracker client:visible />
 
 ## 分步拆解：每一步的数学意义
 
@@ -144,6 +149,8 @@ $$
 
 这样 softmax 的输入保持在合理范围内，梯度流畅，训练稳定。
 
+<ScalingFactorDemo client:visible />
+
 > 原论文原话："We suspect that for large values of $d_k$, the dot products grow large in magnitude, pushing the softmax function into regions where it has extremely small gradients."
 
 ## Causal Mask：Decoder 的因果遮罩
@@ -173,6 +180,8 @@ M = \begin{pmatrix} 0 & -\infty & -\infty & -\infty \\ 0 & 0 & -\infty & -\infty
 $$
 
 这是一个下三角矩阵。第 $i$ 行只保留前 $i$ 个位置的分数。
+
+<CausalMaskDemo client:visible />
 
 ### 不同场景的遮罩策略
 
