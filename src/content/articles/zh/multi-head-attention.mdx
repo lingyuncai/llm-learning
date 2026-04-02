@@ -23,6 +23,7 @@ references:
 ---
 
 import SingleVsMultiHeadAttention from '../../../components/interactive/SingleVsMultiHeadAttention.tsx';
+import OutputProjectionFusion from '../../../components/interactive/OutputProjectionFusion.tsx';
 
 ## 简介：为什么单头不够
 
@@ -311,6 +312,8 @@ output = self.W_o(output)                                     # (B, S, H)
 ### 作用二：维持残差连接的兼容性
 
 Transformer 中每个子层的输出需要与输入做残差连接：$\text{Output} = \text{SubLayer}(X) + X$。$W^O$ 确保多头注意力的输出与输入具有相同的维度和数值范围，使残差连接能够正常工作。
+
+<OutputProjectionFusion client:visible />
 
 ### 参数量分析
 
