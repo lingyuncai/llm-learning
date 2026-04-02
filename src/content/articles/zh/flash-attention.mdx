@@ -17,6 +17,7 @@ references:
 ---
 
 import FlashAttentionTiling from '../../../components/interactive/FlashAttentionTiling.tsx';
+import GPUMemoryHierarchy from '../../../components/interactive/GPUMemoryHierarchy.tsx';
 
 ## 简介：为什么标准 Attention 的内存是瓶颈
 
@@ -47,6 +48,8 @@ $$
 | **HBM**（高带宽内存） | 显存 | 40-80 GB | ~1.5-2.0 TB/s | 容量大，但带宽有限 |
 
 关键数据：**SRAM 的带宽是 HBM 的约 10 倍**，但容量只有 HBM 的约 1/2000。
+
+<GPUMemoryHierarchy client:visible />
 
 ### 标准 Attention 的内存访问模式
 
