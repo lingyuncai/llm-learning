@@ -20,6 +20,7 @@ references:
 ---
 
 import RooflineModel from '../../../components/interactive/RooflineModel.tsx';
+import GEMMvsGEMV from '../../../components/interactive/GEMMvsGEMV.tsx';
 
 ## 简介：LLM 推理不是一步完成的
 
@@ -79,6 +80,8 @@ $$
 $$
 
 这个值非常高！远超现代 GPU 的计算-带宽比（如 A100 的约 312 FLOPs/Byte），意味着 **Prefill 是 compute-bound** — GPU 的算力是瓶颈，而非内存带宽。
+
+<GEMMvsGEMV client:visible />
 
 ### 关键特征
 
