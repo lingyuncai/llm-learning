@@ -22,6 +22,7 @@ references:
 import KVCacheDemo from '../../../components/interactive/KVCacheDemo.tsx';
 import RedundantComputationViz from '../../../components/interactive/RedundantComputationViz.tsx';
 import KVCacheCalculator from '../../../components/interactive/KVCacheCalculator.tsx';
+import PagedAttentionComparison from '../../../components/interactive/PagedAttentionComparison.tsx';
 
 ## 简介：KV Cache 是推理加速的关键
 
@@ -206,6 +207,8 @@ $$
 - **动态增长**：不需要预分配最大长度，按需增长
 - **显存利用率高**：实际利用率可以接近 100%
 - **支持复杂调度**：如 beam search 中多个候选可以共享前缀的 KV Cache Block
+
+<PagedAttentionComparison client:visible />
 
 ### Continuous Batching
 
