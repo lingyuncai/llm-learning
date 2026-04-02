@@ -20,6 +20,7 @@ references:
 ---
 
 import KVCacheDemo from '../../../components/interactive/KVCacheDemo.tsx';
+import RedundantComputationViz from '../../../components/interactive/RedundantComputationViz.tsx';
 
 ## 简介：KV Cache 是推理加速的关键
 
@@ -53,6 +54,8 @@ $$
 关键观察：**第 $t$ 步中前 $t-1$ 个 token 的 K 和 V 与第 $t-1$ 步完全相同**。因为这些 token 的输入没有变化（Decoder 使用因果遮罩，前面 token 的表示不受后面 token 影响），它们的 K、V 投影结果也完全一样。
 
 换句话说，每一步都在重复计算已经算过的 Key 和 Value — 这是纯粹的计算浪费。
+
+<RedundantComputationViz client:visible />
 
 ## KV Cache 机制：缓存和追加
 
