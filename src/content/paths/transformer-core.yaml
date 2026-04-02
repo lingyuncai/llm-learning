@@ -12,3 +12,4 @@ articles:
   - attention-computation
   - multi-head-attention
   - gqa-mqa
+  - positional-encoding
