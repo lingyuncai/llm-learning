@@ -25,6 +25,7 @@ references:
 import AttentionStepAnimation from '../../../components/interactive/AttentionStepAnimation.tsx';
 import TensorShapeTracker from '../../../components/interactive/TensorShapeTracker.tsx';
 import ScalingFactorDemo from '../../../components/interactive/ScalingFactorDemo.tsx';
+import CausalMaskDemo from '../../../components/interactive/CausalMaskDemo.tsx';
 
 ## 简介：Attention 是 Transformer 的核心
 
@@ -179,6 +180,8 @@ M = \begin{pmatrix} 0 & -\infty & -\infty & -\infty \\ 0 & 0 & -\infty & -\infty
 $$
 
 这是一个下三角矩阵。第 $i$ 行只保留前 $i$ 个位置的分数。
+
+<CausalMaskDemo client:visible />
 
 ### 不同场景的遮罩策略
 
