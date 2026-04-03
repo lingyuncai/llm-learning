@@ -17,6 +17,14 @@
 
 **设计原则：** 讲关系不讲实现。每层用 1-2 段讲清"是什么、为什么存在、跟谁对话"，不展开内部实现细节。
 
+**明确不覆盖（out-of-scope）：**
+- GPU 微架构细节（SM/CU 内部结构、warp scheduler）— 留给后续 GPU Architecture 文章
+- Kernel 优化技术（tiling 算法、shared memory 优化、bank conflict）— 留给 GPU 编程专题
+- 量化算法（INT8/INT4 calibration）— 只在图优化器处一句话提及
+- 分布式推理（tensor parallelism、pipeline parallelism）
+- 训练框架（PyTorch 训练流程、autograd）— 本文聚焦推理
+- 已有文章覆盖的内容：GPU 内存层次（见 flash-attention）、GEMM vs GEMV（见 prefill-vs-decode）— 可简短交叉引用但不重复展开
+
 ### 核心教学策略
 
 **1. 为什么这些概念特别绕？**
@@ -68,7 +76,7 @@
 
 - Driver 是什么：操作系统级的硬件管理层，类似 CPU 世界的设备驱动
 - **内含编译器**：把 IR（SPIR-V、PTX）翻译成硬件 ISA（SASS、Xe ISA 等）。这是很多人不知道的 — driver 不只是"驱动"，它有完整的编译器后端
-  - NVIDIA：PTX → SASS（JIT 编译，每次加载 kernel 时执行）
+  - NVIDIA：PTX → SASS。支持两种模式：(1) AOT — 构建时用 ptxas 编译为 SASS 嵌入二进制；(2) JIT — 运行时由 driver 编译 PTX，支持前向兼容新 GPU 架构
   - Intel：SPIR-V → Xe ISA
   - AMD：LLVM IR / AMD IL → RDNA ISA
 - **硬件资源管理**：GPU 内存分配/回收、计算单元调度、多进程隔离
@@ -161,6 +169,20 @@ GPU runtime 的角色类似 C Runtime (libc) 或 JRE：
 - **Compiler**：Language → IR 的翻译器（nvcc, DPC++/ICX, clang, glslc, dxc 等）
 - **IR (Intermediate Representation)**：编译后的中间字节码，还不是最终机器码。类比 Java bytecode — 平台无关，由 driver 里的编译器做最终翻译
 
+#### Single-Source vs Dual-Source
+
+影响开发体验的关键架构差异：
+
+- **Single-source（CUDA C++, SYCL, HIP）**：host 代码和 device 代码（kernel）写在同一个文件里。编译器分别提取 host 和 device 部分。开发体验好，可共享类型定义和模板。
+- **Dual-source（OpenCL C, GLSL, HLSL）**：kernel 代码写在单独的文件/字符串中，host 代码通过 runtime API 加载编译。灵活（runtime 可动态加载不同 kernel），但开发体验割裂。
+
+#### HIP 的跨平台机制
+
+HIP 是理解"语言层如何实现跨平台"的好例子：
+- HIP 语法和 CUDA C++ 几乎一致（`hipMalloc` 对应 `cudaMalloc`）
+- 编译器 `hipcc` 检测目标平台：→ AMD GPU 时调用 HIP-Clang (LLVM) 生成 AMDGCN；→ NVIDIA GPU 时调用 nvcc 生成 PTX
+- 这是**源码级可移植性**：同一份代码，编译时选择不同后端，不是二进制翻译
+
 #### GPU 编程语言全景
 
 | Language | 生态 | 编译目标 (IR) | 特点 |
@@ -229,6 +251,12 @@ Triton 介于手写 kernel 和算子库之间 — 你用 Python 风格写 kernel
 
 **注意：** 栈图（Component 1）中 Graph Optimizer 是独立层，但在文章内容中作为 Section 6 的子节讨论。原因：图优化器通常是推理框架的内置模块（如 TensorRT 的优化器、ONNX RT 的 graph transformer），而非独立可部署的组件。栈图中分开是为了视觉清晰，文章中合并讨论是因为它们在实际调用链中不可分离。
 
+#### ONNX 格式 vs ONNX Runtime（常见混淆）
+
+- **ONNX（Open Neural Network Exchange）**：开放的模型交换**格式**（.onnx 文件），定义了算子集合和序列化标准。类比 HTML — 是一种描述格式。
+- **ONNX Runtime**：Microsoft 的推理**引擎**，能加载 .onnx 文件并执行推理。类比 Chrome — 是格式的执行者。
+- 其他引擎（TensorRT、OpenVINO）也能消费 .onnx 文件。ONNX 格式不绑定任何特定引擎。
+
 #### 框架做什么
 
 1. **模型加载**：解析模型文件（.onnx, .tflite, .xml+.bin, .gguf）
@@ -280,6 +308,21 @@ ggml 同时承担了 Operator Library + 部分 Kernel 的角色：
 ### Section 7: 跨层品牌解剖（~10%）
 
 **核心困惑终极解答：** 这些名字不是"一个东西"，而是"一套东西"的品牌名。
+
+#### 合并对比总表（文章核心图表之一）
+
+| 层 | CUDA (NVIDIA) | ROCm (AMD) | oneAPI (Intel) | OpenCL (Khronos) | Metal (Apple) |
+|----|--------------|------------|---------------|-----------------|--------------|
+| Language | CUDA C++ | HIP | SYCL (DPC++) | OpenCL C | Metal SL |
+| Compiler | nvcc / NVRTC | hipcc (Clang) | DPC++ / ICX | 各厂商实现 | Metal Compiler |
+| IR | PTX | LLVM IR→AMDGCN | SPIR-V | SPIR-V | AIR |
+| Runtime | CUDA RT | HIP RT (ROCr) | Level Zero | OpenCL RT | Metal |
+| Operator Lib | cuDNN/cuBLAS | MIOpen/rocBLAS | oneDNN/oneMKL | — | MPS |
+| Framework | TensorRT | — | OpenVINO | — | CoreML |
+
+**注意"—"**表示该品牌在该层没有自己的组件（如 OpenCL 没有配套的算子库或推理框架，ROCm 没有自己的推理框架但可用 ONNX RT + ROCm EP）。
+
+SYCL 特殊：它没有自己的 runtime，而是通过 backend plugin 使用 OpenCL RT、Level Zero 或 CUDA RT。这是唯一一个"语言层和 runtime 层解耦"的方案。
 
 #### CUDA（NVIDIA）
 
@@ -402,7 +445,7 @@ ggml 同时承担了 Operator Library + 部分 Kernel 的角色：
 - **Type:** 场景路径选择器
 
 **预设场景（5 条路径）：**
-1. **PyTorch + CUDA (NVIDIA):** PyTorch → TensorRT/cuDNN → CUDA kernel → CUDA RT → NVIDIA Driver → SASS
+1. **PyTorch + CUDA (NVIDIA):** PyTorch → ATen → cuDNN/cuBLAS → CUDA kernel → CUDA RT → NVIDIA Driver → SASS（注：也可走 torch.compile → Triton → PTX → CUDA RT 路径，此处展示传统路径）
 2. **ONNX Runtime + oneAPI (Intel):** ONNX RT → oneDNN → SYCL kernel (SPIR-V) → Level Zero → Intel Driver → Xe ISA
 3. **llama.cpp + Metal (Apple):** llama.cpp → ggml(=operator lib+kernel) → Metal → Apple Driver → Apple GPU ISA
 4. **llama.cpp + Vulkan (跨平台):** llama.cpp → ggml(=operator lib+kernel) → Vulkan → 各厂商 Driver → 各 ISA
@@ -451,6 +494,11 @@ articles:
 - NVIDIA TensorRT Documentation
 - Intel OpenVINO Documentation
 - Google LiteRT (TensorFlow Lite) Documentation
+- AdaptiveCpp (formerly hipSYCL) — GitHub repository and compilation documentation
+- Shader-slang/slang — GitHub repository (multi-target shader language)
+- Apache TVM Documentation
+- Google XLA (Accelerated Linear Algebra) Documentation
+- W3C WebGPU / WGSL Specification
 
 ---
 
