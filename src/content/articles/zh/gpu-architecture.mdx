@@ -1,0 +1,174 @@
+---
+title: "GPU Architecture — 从晶体管到线程"
+slug: gpu-architecture
+locale: zh
+tags: [gpu, architecture, hardware, nvidia, intel]
+prerequisites: [ai-compute-stack]
+difficulty: intermediate
+created: "2026-04-03"
+updated: "2026-04-03"
+references:
+  - type: website
+    title: "NVIDIA H100 Tensor Core GPU Architecture Whitepaper"
+    url: "https://resources.nvidia.com/en-us-tensor-core"
+  - type: website
+    title: "NVIDIA CUDA C++ Programming Guide"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/"
+  - type: website
+    title: "Intel Xe2 Architecture (Lunar Lake)"
+    url: "https://www.intel.com/content/www/us/en/products/docs/processors/core-ultra/core-ultra-200v-brief.html"
+---
+
+import CpuGpuTransistorCompare from '../../../components/interactive/CpuGpuTransistorCompare.tsx';
+import LatencyHidingCompare from '../../../components/interactive/LatencyHidingCompare.tsx';
+import GpuChipTopology from '../../../components/interactive/GpuChipTopology.tsx';
+import SmInternalDiagram from '../../../components/interactive/SmInternalDiagram.tsx';
+import SmResourceTable from '../../../components/interactive/SmResourceTable.tsx';
+import WarpExecutionAnimation from '../../../components/interactive/WarpExecutionAnimation.tsx';
+import WarpSchedulerTimeline from '../../../components/interactive/WarpSchedulerTimeline.tsx';
+import MemoryHierarchyDetailed from '../../../components/interactive/MemoryHierarchyDetailed.tsx';
+
+在 [AI Compute Stack 全景](/zh/articles/ai-compute-stack) 文章中，我们从软件栈的角度理解了从推理框架到硬件 ISA 的七层结构。那篇文章的最底层是"Hardware ISA — GPU 能执行的唯一东西"。
+
+本文往下钻一层：**GPU 硬件本身长什么样**。理解硬件架构是写高性能 GPU 代码的前提 — 你需要知道指令在什么样的物理结构上执行，才能做出正确的优化决策。
+
+## Section 1: GPU vs CPU — 两种设计哲学
+
+CPU 和 GPU 面对的是两种截然不同的计算需求，因此走了完全不同的设计路线。
+
+**CPU 的设计目标：最小化单个任务的延迟（latency）。** 为此，CPU 把大量晶体管预算投入到：
+- **大容量多级缓存**（L1/L2/L3，有时占芯片面积 50%+）— 让数据尽可能靠近计算单元
+- **复杂的控制逻辑** — 分支预测、乱序执行（out-of-order execution）、寄存器重命名，让单个线程跑得尽可能快
+- **少量高性能核心**（4-8 个）— 每个核心都是"重装步兵"
+
+**GPU 的设计目标：最大化总吞吐量（throughput）。** 完全不同的策略：
+- **海量简单 ALU** — 数千个小计算单元，每个都很弱，但合在一起吞吐量极高
+- **最小化控制逻辑** — 没有复杂的分支预测和乱序执行，控制逻辑占比极小
+- **小缓存，靠线程切换隐藏延迟** — 遇到内存等待不是靠缓存命中来加速，而是立即切换到另一组线程继续执行
+
+<CpuGpuTransistorCompare client:visible />
+
+### 延迟隐藏：两种截然不同的策略
+
+CPU 遇到 cache miss（数据不在缓存中）时，线程会 **stall（阻塞）** — 什么都不做，干等数据从内存返回。这段等待时间完全浪费了。CPU 的应对策略是：用更大的缓存减少 miss 的概率。
+
+GPU 的应对策略完全不同：**不减少等待，而是在等待期间做别的事**。GPU 上同时有数千个线程（分组为 warp），当一组线程等内存时，硬件 warp scheduler 立即切换到另一组已经准备好的线程。只要同时活跃的线程足够多，就能把等待时间完全填满。
+
+<LatencyHidingCompare client:visible />
+
+这就是为什么 GPU 需要大量线程 — 不是因为有那么多独立的任务要做，而是**需要足够多的线程来掩盖内存延迟**。这个概念叫 **latency hiding**，是理解 GPU 架构最核心的思想。
+
+---
+
+## Section 2: NVIDIA GPU 全局结构
+
+以 NVIDIA H100 为例，从芯片级到最小计算单元的层级结构：
+
+**GPU 芯片** → **GPC** (Graphics Processing Cluster) → **TPC** (Texture Processing Cluster) → **SM** (Streaming Multiprocessor)
+
+- **GPC** 是最大的逻辑分组。H100 有 8 个 GPC。
+- 每个 GPC 包含若干 **TPC**（Texture Processing Cluster）。TPC 是历史遗留名称（来自图形渲染），在计算场景下主要是 SM 的容器。
+- 每个 TPC 包含 2 个 **SM** — SM 是 GPU 的核心计算单元，也是我们最需要理解的层级。
+- 所有 SM 共享一个大的 **L2 Cache**（H100 约 50MB）。
+- L2 之外是 **HBM**（High Bandwidth Memory）— GPU 的主显存。
+
+**H100 SXM 全芯片：** 8 GPC × 9 TPC × 2 SM = 144 SM（实际启用 132 个），50 MB L2，80 GB HBM3。
+
+<GpuChipTopology client:visible />
+
+> 对比：RTX 4090 有 128 SM，L2 96 MB，24 GB GDDR6X。架构核心相同（都基于 Ada / Hopper SM），但规模和显存技术不同。
+
+---
+
+## Section 3: SM 内部解剖
+
+SM（Streaming Multiprocessor）是 GPU 中**真正执行计算的单元**。理解 SM 的内部结构，就理解了 GPU 的执行模型。
+
+### 四个 Processing Block
+
+每个 SM 被分为 **4 个 Processing Block**（也叫 Sub-partition），每个 Processing Block 有：
+
+- **1 个 Warp Scheduler** + 1 个 Dispatch Unit — 选择并发射指令
+- **FP32 CUDA Core** — 做浮点乘加（Hopper 每 block 32 个，整个 SM 128 个）
+- **INT32 Core** — 整数运算
+- **Tensor Core** — 矩阵乘加速单元（下一篇文章详细讲）
+- **SFU** (Special Function Unit) — 计算 sin/cos/exp 等超越函数
+- **Load/Store Unit** — 从内存加载/写入数据
+
+<SmInternalDiagram client:visible />
+
+### 共享资源
+
+4 个 Processing Block 共享：
+
+- **Register File** — 256 KB，这是 GPU 中最快的存储。每个线程最多使用 255 个 32-bit 寄存器。Register file 很大是因为 GPU 需要同时维持数千个线程的寄存器状态（实现零开销 warp 切换的关键）
+- **Shared Memory / L1 Cache** — 228 KB（Hopper），Block 内线程间共享的高速存储。可以配置 shared memory 和 L1 cache 的分配比例
+
+### 代际演进
+
+<SmResourceTable client:visible />
+
+---
+
+## Section 4: Warp — GPU 的最小执行单位
+
+### 什么是 Warp
+
+**Warp** = 32 个线程组成的一组，是 GPU 调度和执行的最小单位。Warp 中的 32 个线程在硬件层面**锁步执行同一条指令**（SIMT — Single Instruction, Multiple Threads）。
+
+这就像一个班的士兵齐步走 — 32 人同时迈左脚、同时迈右脚。他们执行相同的"指令"（步伐），但各自踩在不同的"数据"（地面位置）上。
+
+每个 Processing Block 的 Warp Scheduler 每个周期选择一个 **ready warp**（不在等待内存的 warp），为它发射一条指令。4 个 Processing Block 可以同时各选一个 warp，所以一个 SM 每周期最多发射 4 条指令。
+
+### Warp Divergence
+
+32 个线程必须执行**同一条指令** — 那如果代码里有 `if/else` 呢？
+
+这就是 **Warp Divergence**：当 warp 中的线程走了不同的分支路径时，硬件无法同时执行两条路径。解决方式是**串行化** — 先执行 if 路径（不走 if 的线程被 mask 掉），再执行 else 路径（不走 else 的线程被 mask 掉）。两条路径的时间加在一起。
+
+<WarpExecutionAnimation client:visible />
+
+> 这就是为什么 GPU 代码要尽量避免分支 — 不是说不能写 if/else，而是同一个 warp 的 32 个线程最好都走同一条路径。
+
+### Warp Scheduler 与延迟隐藏
+
+Warp scheduler 是 SM 的"调度大脑"。它的工作很简单：**在 ready warp 中挑一个，发射它的下一条指令**。
+
+当一个 warp 执行了内存加载指令后，需要等待数百个周期才能拿到数据。Scheduler 不会空等 — 它立刻切换到另一个 ready warp 继续执行。**这个切换是零开销的**（zero-overhead context switch），因为所有 warp 的寄存器状态都常驻在 SM 的 register file 中，不需要保存/恢复。
+
+<WarpSchedulerTimeline client:visible />
+
+---
+
+## Section 5: 内存层次
+
+GPU 的内存层次是影响性能最大的因素。从快到慢：
+
+| 层级 | 容量 (H100) | 带宽 | 延迟 | 作用域 |
+|------|------------|------|------|--------|
+| Register File | 256 KB / SM | 极高（片上） | 0 周期 | 线程私有 |
+| Shared Memory / L1 | 228 KB / SM | 极高（片上） | ~20-30 周期 | Block 内共享 |
+| L2 Cache | 50 MB | ~12 TB/s（理论计算值） | ~200 周期 | 全局共享 |
+| HBM3 | 80 GB | 3.35 TB/s | ~400-600 周期 | 全局 |
+
+<MemoryHierarchyDetailed client:visible />
+
+关键数字：从 register 到 HBM 的延迟差距是 **数百倍**，带宽差距是 **5-6 倍**。这意味着：
+
+- **让数据尽可能停留在 register 和 shared memory** 是优化的核心
+- 从 HBM 读一次数据很贵 — 读来之后应该尽可能**多次复用**
+- 这就是 tiling（分块）策略的本质动机，我们将在 [GEMM 优化](/zh/articles/gemm-optimization) 文章中详细展开
+
+> Flash Attention 的核心创新正是基于这个内存层次 — 把 Attention 计算分块到 SRAM（shared memory）中完成，避免写回巨大的中间矩阵到 HBM。详见 [Flash Attention 分块原理](/zh/articles/flash-attention)。
+
+---
+
+## 总结
+
+GPU 架构的核心设计思想可以归纳为三点：
+
+1. **吞吐优先** — 数千个简单核心，牺牲单线程延迟换取总吞吐量
+2. **延迟隐藏** — 不减少等待时间，而是用大量线程（warp）填满等待。这要求 register file 常驻所有 warp 状态
+3. **内存层次** — 从 register 到 HBM 延迟差数百倍，优化 = 尽量让数据留在快速存储中
+
+下一篇文章将深入 GPU 中最重要的专用加速单元 — [Tensor Core 与 XMX](/zh/articles/matrix-acceleration)，理解它们为什么能让矩阵乘法快一个数量级。
