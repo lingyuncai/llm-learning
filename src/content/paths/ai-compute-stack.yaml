@@ -1,0 +1,10 @@
+id: ai-compute-stack
+title:
+  zh: "AI Compute Stack"
+  en: "AI Compute Stack"
+description:
+  zh: "从推理框架到硬件指令集，理解 AI 软件栈的各层关系"
+  en: "Understanding the AI software stack from inference frameworks to hardware ISA"
+level: intermediate
+articles:
+  - ai-compute-stack
