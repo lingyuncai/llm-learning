@@ -109,7 +109,7 @@ export const STACK_LAYERS: StackLayer[] = [
     nodes: [
       { id: 'nvidia-drv', label: 'NVIDIA Driver (PTX→SASS)',          brands: ['cuda'] },
       { id: 'amd-drv',    label: 'AMD Driver (→RDNA ISA)',            brands: ['rocm'] },
-      { id: 'intel-drv',  label: 'Intel Driver (SPIR-V→Xe ISA)',      brands: ['oneapi', 'opencl-sycl'] },
+      { id: 'intel-drv',  label: 'Intel Driver (SPIR-V→Gen ISA)',     brands: ['oneapi', 'opencl-sycl'] },
       { id: 'apple-drv',  label: 'Apple Driver (AIR→Apple GPU ISA)',   brands: ['metal'] },
     ],
   },
@@ -120,7 +120,7 @@ export const STACK_LAYERS: StackLayer[] = [
     nodes: [
       { id: 'sass',      label: 'NVIDIA SASS',      brands: ['cuda'] },
       { id: 'rdna',      label: 'AMD RDNA ISA',     brands: ['rocm'] },
-      { id: 'xe-isa',    label: 'Intel Xe ISA',     brands: ['oneapi'] },
+      { id: 'xe-isa',    label: 'Intel Gen ISA',    brands: ['oneapi'] },
       { id: 'apple-isa', label: 'Apple GPU ISA',    brands: ['metal'] },
       { id: 'adreno',    label: 'Qualcomm Adreno',  brands: [] },
     ],

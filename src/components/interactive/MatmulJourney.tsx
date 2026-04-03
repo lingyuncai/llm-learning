@@ -249,7 +249,7 @@ function IllusDriver() {
   const boxes = [
     { x: 30,  w: 70, label: 'PTX / SPIR-V',  sub: '(IR 字节码)', color: '#fef3c7' },
     { x: 140, w: 60, label: '编译器',          sub: '(Driver 内置)', color: '#e2e8f0' },
-    { x: 240, w: 70, label: 'SASS / Xe ISA',   sub: '(硬件指令)', color: '#dcfce7' },
+    { x: 240, w: 70, label: 'SASS / Gen ISA',   sub: '(硬件指令)', color: '#dcfce7' },
   ];
   return (
     <svg viewBox={`0 0 ${ILLUS_W} ${ILLUS_H}`} className="w-full">
