@@ -6,7 +6,7 @@ import { difficultyLabel, difficultyColor } from '../../utils/constants';
 
 const paths = getAllPaths();
 const allArticles = await getCollection('articles');
-const articles = allArticles.filter(a => a.data.locale === 'zh');
+const articles = allArticles.filter(a => a.data.locale === 'zh').sort((a, b) => a.data.title.localeCompare(b.data.title, 'zh'));
 const allTags = [...new Set(articles.flatMap(a => a.data.tags))].sort();
 ---
 <BaseLayout title="首页">
