@@ -1,0 +1,340 @@
+---
+title: "AI Compute Stack 全景 — 从推理框架到硬件指令集"
+slug: ai-compute-stack
+locale: zh
+tags: [gpu, compute, software-stack, runtime, inference]
+difficulty: intermediate
+created: "2026-04-03"
+updated: "2026-04-03"
+references:
+  - type: website
+    title: "NVIDIA CUDA C++ Programming Guide"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/"
+  - type: website
+    title: "Khronos OpenCL Specification"
+    url: "https://www.khronos.org/opencl/"
+  - type: website
+    title: "Khronos SYCL Specification"
+    url: "https://www.khronos.org/sycl/"
+  - type: website
+    title: "Intel oneAPI Level Zero Specification"
+    url: "https://spec.oneapi.io/level-zero/latest/index.html"
+  - type: website
+    title: "AMD ROCm HIP Programming Guide"
+    url: "https://rocm.docs.amd.com/projects/HIP/en/latest/"
+  - type: website
+    title: "Apple Metal Shading Language Specification"
+    url: "https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf"
+  - type: repo
+    title: "ggml / llama.cpp"
+    url: "https://github.com/ggerganov/llama.cpp"
+  - type: website
+    title: "ONNX Runtime Documentation"
+    url: "https://onnxruntime.ai/docs/"
+---
+
+import StackLayerDiagram from '../../../components/interactive/StackLayerDiagram.tsx';
+import MatmulJourney from '../../../components/interactive/MatmulJourney.tsx';
+import EcosystemPathSelector from '../../../components/interactive/EcosystemPathSelector.tsx';
+
+## 为什么这些概念特别绕？
+
+当你听到 CUDA、OpenCL、SYCL、ROCm、oneAPI 这些名字时，最容易犯的错误是把它们当成"一个东西"。实际上，它们每一个都是**"一套东西"的品牌名**，横跨编程语言、编译器、运行时、算子库等多个层次。
+
+比如 OpenCL，它既有编程语言（OpenCL C）又有运行时（OpenCL Runtime）；SYCL 是一门语言，但它没有自己的运行时，而是借用别人的后端（OpenCL Runtime / Level Zero / CUDA Runtime）。这种"一个名字覆盖多层"的设计，正是混淆的根源。
+
+本文的目标：用一张 7 层全景图，把每一层**是什么、为什么存在、跟谁对话**讲清楚。读完之后，你再遇到任何 GPU 计算技术名词，都能精确地把它放到正确的层次上。
+
+## Section 0: 全景概览
+
+先建立全局视野。下面这张交互式栈图展示了 AI/GPU 软件栈的 7 个层次，从最上层的推理框架到最底层的硬件指令集。**点击任意层**可以展开查看该层包含的具体技术；**底部品牌按钮**可以高亮某个品牌横跨的所有层。
+
+<StackLayerDiagram client:visible />
+
+### 一次 MatMul 的旅程
+
+理解各层关系最好的方式，是追踪一次具体操作的完整调用链。下面我们跟踪 `model.forward()` 中一次矩阵乘法，看它如何从框架层一路下沉到硬件执行：
+
+<MatmulJourney client:visible />
+
+接下来，我们自底向上逐层展开。
+
+---
+
+## Section 1: Hardware ISA — GPU 能执行的唯一东西
+
+**为什么需要这层：** 这是 GPU 能直接执行的最底层 — 二进制机器指令。
+
+ISA（Instruction Set Architecture）是 GPU 硬件能理解的指令集，类比 CPU 的 x86 或 ARM 指令集。每个 GPU 厂商的 ISA 互不兼容：
+
+| ISA | 厂商 | 特点 |
+|-----|------|------|
+| SASS | NVIDIA | 每代 GPU 架构不同（Ampere、Hopper...），不公开完整文档 |
+| RDNA ISA | AMD | RDNA 3、RDNA 4 各有不同 |
+| Xe ISA | Intel | Arc / Data Center GPU |
+| Apple GPU ISA | Apple | M1/M2/M3 系列，完全不公开 |
+
+**为什么你不直接写 ISA？** 太底层、厂商不公开完整文档、换硬件就得重写全部代码。
+
+**PTX vs SASS（NVIDIA 特有）：** PTX（Parallel Thread Execution）是 NVIDIA 设计的**虚拟 ISA** — 一种稳定的中间层，跨 GPU 代际不变。SASS 是真实硬件 ISA，每代不同。Driver 负责最终的 PTX → SASS 翻译。这让你的 CUDA 程序在新 GPU 上也能跑（前向兼容）。
+
+> 需要一层帮我们屏蔽硬件差异 → **Driver**
+
+---
+
+## Section 2: Driver — 不只是"驱动程序"
+
+**为什么需要这层：** 屏蔽硬件差异，给上层提供稳定接口。
+
+GPU Driver 的角色类似操作系统中的设备驱动，但它做的事比你以为的多得多：
+
+### 内含编译器后端
+
+**这是很多人不知道的** — Driver 不只是"让硬件工作"的驱动，它有完整的**编译器后端**，负责把中间表示（IR）翻译成硬件 ISA：
+
+| 厂商 | IR → ISA | 编译模式 |
+|------|----------|---------|
+| NVIDIA | PTX → SASS | **AOT**（构建时用 `ptxas` 预编译）或 **JIT**（运行时由 Driver 编译，支持前向兼容新 GPU） |
+| Intel | SPIR-V → Xe ISA | JIT（Driver 内含 SPIR-V → Xe 编译器） |
+| AMD | LLVM IR / AMD IL → RDNA ISA | 主要 AOT（编译时生成目标 ISA），也支持 JIT |
+
+### 硬件资源管理
+
+- GPU 显存分配/回收
+- 计算单元调度
+- 多进程 GPU 隔离
+
+> Driver 接口太底层（ioctl 级别），需要更友好的编程抽象 → **Runtime**
+
+---
+
+## Section 3: Runtime — GPU 的 "C Runtime"
+
+**为什么需要这层：** 给程序员一个"操作 GPU"的编程接口，封装 Driver 的底层细节。
+
+### 正确理解 Runtime
+
+GPU Runtime 的角色类似 **C Runtime (libc)** 或 **JRE**：
+- C Runtime 给你 `malloc/free` + `pthread_create`
+- GPU Runtime 给你 `bufferAlloc/free` + `kernelDispatch`
+
+它**不是操作系统**（那是 Driver 的角色），而是**编程语言级的运行时库**。
+
+### Runtime 的四大职责
+
+**1. Device Discovery** — 查询系统有哪些 GPU、它们的能力
+
+**2. Buffer 管理** — 在 GPU 显存上分配/释放内存块（类比 CPU 的 `malloc/free`）
+
+**3. Command Queue / Command List：**
+- **Queue**（CUDA / OpenCL 风格）：按顺序执行的操作序列 — "先拷数据 → 跑 kernel → 拷回来"
+- **Command List**（Level Zero / Vulkan 风格）：预先录制一组命令，然后一次性提交。更显式、更高效，但编程更复杂
+
+**4. Kernel Dispatch** — 把编译好的 kernel 程序加载到 GPU，配置线程网格（grid/block），提交执行
+
+### Kernel Dispatch 具体流程（OpenCL 为例）
+
+```
+1. Platform/Device discovery — clGetPlatformIDs() → clGetDeviceIDs()
+2. Context + Queue — clCreateContext() → clCreateCommandQueue()
+3. Buffer — clCreateBuffer(size_A)              // 类比 malloc
+4. 数据传输 — clEnqueueWriteBuffer(queue, bufA, hostA)
+5. Kernel 加载 — clCreateProgramWithIL(spirv) → clCreateKernel("matmul")
+6. 参数绑定 + Dispatch — clSetKernelArg() → clEnqueueNDRangeKernel()
+7. 同步 + 读回 — clFinish() → clEnqueueReadBuffer()
+```
+
+这个流程将 Buffer、Queue、Kernel、Dispatch 的关系串联起来。CUDA Runtime API 做了更多隐式封装（自动管理 context），但底层逻辑相同。
+
+### 主要 Runtime 对比
+
+| Runtime | 厂商 | 特点 |
+|---------|------|------|
+| CUDA Runtime API | NVIDIA | 最高层抽象，隐式上下文管理，NVIDIA GPU 开发首选 |
+| CUDA Driver API | NVIDIA | 更底层，显式控制上下文/模块 |
+| OpenCL Runtime | Khronos | 跨平台，显式 buffer/queue 管理 |
+| Level Zero | Intel | 低开销、显式控制，oneAPI 底层 runtime。规范厂商中立，但实际仅 Intel 实现 |
+| Vulkan (Compute) | Khronos | 极致显式控制，command buffer 录制。不只是图形 API — llama.cpp 就用它做跨平台 GPU 推理 |
+| Metal | Apple | Apple 专属，command buffer 模式 |
+| HIP Runtime | AMD | ROCm 的 runtime，API 几乎对齐 CUDA Runtime |
+
+### 常见误解
+
+- **CUDA Runtime API vs CUDA Driver API**：同一厂商的两层抽象。Runtime 更简单（隐式 context），Driver API 更底层。大多数人只用 Runtime API
+- **Vulkan 不只是图形 API**：Vulkan Compute 可以跑通用计算 kernel
+- **Level Zero vs OpenCL Runtime**：都能驱动 Intel GPU，Level Zero 更新更底层（类似 Vulkan 设计哲学）
+
+---
+
+## Section 4: Language → Compiler → IR → Kernel
+
+**为什么需要这层：** 你需要用某种语言写出 GPU 能跑的程序（kernel），编译器把它翻译成 Runtime 可以 dispatch 的格式。
+
+### 四个概念
+
+- **Language** — 写 GPU 代码的编程语言/扩展
+- **Kernel** — 编译后可被 Runtime dispatch 到 GPU 并行执行的计算程序。它自己不知道怎么跑 — 需要 Runtime 来 allocate buffer、dispatch 它
+- **Compiler** — Language → IR 的翻译器（nvcc, DPC++, hipcc, clang...）
+- **IR (Intermediate Representation)** — 编译后的中间字节码，类比 **Java bytecode** — 平台无关，由 Driver 的编译器做最终翻译成硬件 ISA
+
+### Single-Source vs Dual-Source
+
+影响开发体验的关键架构差异：
+
+- **Single-source（CUDA C++, SYCL, HIP）：** host 代码和 kernel 写在同一个文件，编译器分别提取。开发体验好，可共享类型定义
+- **Dual-source（OpenCL C, GLSL, HLSL）：** kernel 单独写在文件/字符串中，host 代码通过 Runtime API 加载。灵活但体验割裂
+
+### HIP 的跨平台机制
+
+HIP 是理解"语言层如何实现跨平台"的好例子：
+- HIP 语法和 CUDA C++ 几乎一致（`hipMalloc` ↔ `cudaMalloc`）
+- 编译器 `hipcc` 检测目标平台：AMD GPU → HIP-Clang (LLVM) 生成 AMDGCN；NVIDIA GPU → nvcc 生成 PTX
+- 这是**源码级可移植性**：同一份代码，编译时选择不同后端
+
+### GPU 编程语言全景
+
+| Language | 生态 | 编译目标 (IR) | 特点 |
+|----------|------|-------------|------|
+| CUDA C++ | NVIDIA | PTX | NVIDIA 专属，最成熟生态 |
+| HIP | AMD (ROCm) | AMD GPU IR / PTX | AMD 对标 CUDA 的语言，语法几乎一致 |
+| OpenCL C | Khronos | SPIR-V | 跨平台，C99 风格，较老 |
+| SYCL | Khronos | SPIR-V (via DPC++) | 现代 C++ single-source，Intel 主推 |
+| Triton | OpenAI | Triton IR → MLIR → LLVM IR → PTX/AMDGCN | Python 风格写 kernel，自动 tiling |
+| GLSL | Khronos | SPIR-V | 图形着色器语言，也可用于 compute shader |
+| HLSL | Microsoft | DXIL / SPIR-V | DirectX 着色器语言 |
+| WGSL | W3C | SPIR-V / HLSL / MSL (via Tint/Naga) | WebGPU 着色器语言 |
+| Metal SL | Apple | Metal IR (AIR) | Apple 专属 |
+| Slang | Khronos 开源 | SPIR-V / HLSL / MSL / CUDA / GLSL | 新一代跨平台着色器语言，多后端输出 |
+
+### Shader vs Kernel
+
+- **Shader**：图形渲染管线中的可编程阶段（vertex shader, fragment shader, compute shader）
+- **Kernel**：通用计算程序（CUDA kernel, OpenCL kernel）
+- **Compute Shader** 是两者交叉点 — 用图形 API (Vulkan/Metal/DX12) 跑通用计算
+- 本质相同：一段跑在 GPU 上的并行程序
+
+### IR 对比
+
+| IR | 对应语言 | 消费者 | 特点 |
+|----|---------|--------|------|
+| PTX | CUDA C++ | NVIDIA Driver | NVIDIA 专有虚拟 ISA，文本格式可读 |
+| SPIR-V | OpenCL C, SYCL, GLSL, HLSL, WGSL, Slang | OpenCL RT, Vulkan, Level Zero | Khronos 标准，二进制格式，跨平台通用 |
+| DXIL | HLSL | DirectX 12 Driver | Microsoft 专有 |
+| Metal IR (AIR) | Metal SL | Metal Driver | Apple 专有 |
+| LLVM IR | Triton, HIP | 各厂商 LLVM 后端 | 通用编译器 IR，被多个工具链复用 |
+
+---
+
+## Section 5: Operator Library — 你不用手写 Kernel
+
+**为什么需要这层：** 手写 kernel 太难。算子库提供**预优化的 kernel 集合 + 调用 Runtime 的胶水代码**。
+
+对上层暴露 `matmul(A, B, C)` 接口，内部选择最优 kernel、配置 tiling 策略、通过 Runtime API allocate buffer 并 dispatch。矩阵拆分（tiling）就发生在这里 — 大矩阵被切成适合 GPU shared memory 的 tile。
+
+正确类比：算子库 ≈ **Intel MKL / BLAS** — 性能优化的算法库，不是"标准库"（范围太广了）。
+
+| 算子库 | 厂商 | Runtime 依赖 | 覆盖算子 |
+|--------|------|-------------|---------|
+| cuDNN | NVIDIA | CUDA Runtime | 卷积、归一化、Attention |
+| cuBLAS | NVIDIA | CUDA Runtime | 矩阵乘法、BLAS 运算 |
+| oneDNN | Intel | OpenCL RT / Level Zero / CPU JIT | 卷积、MatMul、归一化 |
+| MPS | Apple | Metal | 矩阵乘法、卷积、图像处理 |
+| XNNPACK | Google | CPU 直接调用 | 移动端 CPU 优化算子 |
+| rocBLAS / MIOpen | AMD | HIP Runtime | BLAS / 深度学习算子 |
+
+### oneDNN 内部怎么工作
+
+oneDNN 是理解"算子库如何使用 kernel + runtime"的最好例子：
+
+- **Intel GPU 路径**：kernel 用 OpenCL C 或 nGen JIT 编写 → 编译为 SPIR-V → 通过 OpenCL Runtime 或 Level Zero 提交到 GPU
+- **CPU 路径**：使用 JIT 汇编生成器（Xbyak for x86, Xbyak_aarch64 for ARM），运行时动态生成针对当前 CPU 微架构优化的机器码
+- **选择逻辑**：oneDNN 内部根据输入 tensor 的形状、数据类型、硬件，自动选择最优 kernel
+
+这展示了算子库的本质：**kernel 集合 + runtime 胶水 + 自动选择策略**。
+
+### Triton 的特殊位置
+
+Triton 介于手写 kernel 和算子库之间 — 你用 Python 风格写 kernel 逻辑，Triton 编译器自动做 tiling 和优化。PyTorch 2.0+ 的 `torch.compile` 后端大量使用 Triton 生成 kernel。
+
+---
+
+## Section 6: Inference Framework + Graph Optimizer
+
+**为什么需要这层：** 你不想手动调算子库的 API。推理框架加载模型文件，做图优化，把每个算子 dispatch 到对应的算子库/后端。
+
+### ONNX 格式 vs ONNX Runtime（常见混淆）
+
+- **ONNX** — 开放的模型交换**格式**（.onnx 文件），类比 HTML
+- **ONNX Runtime** — Microsoft 的推理**引擎**，类比 Chrome
+- 其他引擎（TensorRT、OpenVINO）也能消费 .onnx 文件
+
+### 框架做什么
+
+1. **模型加载** — 解析 .onnx / .tflite / .gguf 等模型文件
+2. **图优化** — 算子融合（MatMul+BiasAdd+ReLU → 一个 fused kernel）、常量折叠、layout 转换
+3. **调度** — 把图中每个算子 dispatch 到对应的后端
+
+| 框架 | 输入格式 | 后端机制 | 典型调用链 |
+|------|---------|---------|-----------|
+| ONNX Runtime | .onnx | Execution Provider 插件 | → CUDA EP → cuDNN → CUDA RT |
+| TensorRT | .onnx / .plan | NVIDIA 专有引擎 | → 自有 kernel → CUDA RT |
+| OpenVINO | 多种→内部 IR | 内置插件 | → oneDNN → OpenCL/L0 |
+| LiteRT (TFLite) | .tflite | Delegate 插件 | → GPU delegate → OpenCL/Vulkan |
+| CoreML | .mlmodel | Apple 专有 | → MPS / ANE |
+| llama.cpp | .gguf | ggml backends | → ggml → CUDA/Metal/Vulkan |
+
+### 图优化器 = 图级编译器
+
+TensorRT、XLA、Apache TVM 不是简单的推理框架 — 它们是**图级编译器**：输入计算图，输出优化后的 kernel 调用序列。做的事：算子融合、内存规划、精度优化（FP16/INT8）、kernel 自动选择。
+
+### llama.cpp / ggml 的垂直整合
+
+传统分层：`ONNX Runtime → oneDNN → OpenCL Runtime → Driver`（每层独立，标准接口）
+
+llama.cpp / ggml 的做法：
+- ggml 同时承担 Operator Library + Kernel 的角色
+- **不依赖** cuDNN/oneDNN — 针对 LLM 推理场景手写每个后端的 kernel
+- 自定义量化格式（GGUF）、融合算子
+- 好处：极致控制、无依赖、易部署
+- 代价：每加一个硬件后端都要从头写 kernel
+
+---
+
+## Section 7: 跨层品牌解剖
+
+**核心困惑终极解答**：这些名字不是"一个东西"，而是"一套东西"的品牌名。
+
+下面用交互式工具，选择不同场景看技术栈路径：
+
+<EcosystemPathSelector client:visible />
+
+### 五大品牌 × 六层对比
+
+| 层 | CUDA (NVIDIA) | ROCm (AMD) | oneAPI (Intel) | OpenCL (Khronos) | Metal (Apple) |
+|----|--------------|------------|---------------|-----------------|--------------|
+| Language | CUDA C++ | HIP | SYCL (DPC++) | OpenCL C | Metal SL |
+| Compiler | nvcc / NVRTC | hipcc (Clang) | DPC++ / ICX | 各厂商实现 | Metal Compiler |
+| IR | PTX | LLVM IR→AMDGCN | SPIR-V | SPIR-V | AIR |
+| Runtime | CUDA RT | HIP RT (ROCr) | Level Zero | OpenCL RT | Metal |
+| Operator Lib | cuDNN/cuBLAS | MIOpen/rocBLAS | oneDNN/oneMKL | — | MPS |
+| Framework | TensorRT | — | OpenVINO | — | CoreML |
+
+**注意"—"**表示该品牌在该层没有自己的组件。
+
+**SYCL 特殊之处：** 它没有自己的 runtime，而是通过 backend plugin 使用 OpenCL RT、Level Zero 或 CUDA RT。这是唯一一个"语言层和 runtime 层完全解耦"的方案。
+
+---
+
+## 总结
+
+AI/GPU 软件栈可以清晰地分为 7 层，每层解决一个明确的问题：
+
+1. **Hardware ISA** — GPU 能执行的机器指令（厂商私有）
+2. **Driver** — 硬件管理 + IR→ISA 编译器后端
+3. **Runtime** — 编程接口：buffer、queue、kernel dispatch（类比 libc/JRE）
+4. **Language + IR** — 写 kernel 的语言 + 编译后的平台无关字节码（类比 Java bytecode）
+5. **Operator Library** — 预优化 kernel 集合 + runtime 胶水（类比 MKL/BLAS）
+6. **Graph Optimizer** — 图级编译器，算子融合和内存优化
+7. **Inference Framework** — 加载模型、调度算子
+
+CUDA/OpenCL/SYCL/ROCm/oneAPI 之所以让人困惑，是因为它们每一个都横跨了多层。记住这个 7 层模型，遇到新技术名词时，先问"它在哪一层？"就能迅速定位。
