@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { motion } from 'motion/react';
 import { STACK_LAYERS, ECO_PATHS, type EcoPath } from './shared/stackData';
-import { COLORS } from './shared/colors';
+import { COLORS, FONTS } from './shared/colors';
 
 // Layout
 const SVG_W = 600;
@@ -88,7 +88,7 @@ export default function EcosystemPathSelector() {
                 {/* Layer name */}
                 <text x={PAD_X + 6} y={y + LABEL_H / 2 + 1}
                   dominantBaseline="middle" fontSize="11" fontWeight="600"
-                  fill={layer.color} fontFamily="system-ui">
+                  fill={layer.color} fontFamily={FONTS.sans}>
                   {layer.name}
                 </text>
 
@@ -117,13 +117,13 @@ export default function EcosystemPathSelector() {
                         strokeWidth={nodeActive ? 1.5 : 0.5} />
                       <text x={nx + NODE_PILL_W / 2} y={ny + NODE_PILL_H / 2 + 1}
                         dominantBaseline="middle" textAnchor="middle"
-                        fontSize="8.5" fill="#1a1a2e" fontFamily="system-ui">
+                        fontSize="8.5" fill="#1a1a2e" fontFamily={FONTS.sans}>
                         {node.label}
                       </text>
                       {isGgmlSpan && (
                         <text x={nx + NODE_PILL_W / 2} y={ny + NODE_PILL_H + 8}
                           dominantBaseline="middle" textAnchor="middle"
-                          fontSize="7" fill={COLORS.orange} fontFamily="system-ui">
+                          fontSize="7" fill={COLORS.orange} fontFamily={FONTS.sans}>
                           (= operator lib + kernel)
                         </text>
                       )}

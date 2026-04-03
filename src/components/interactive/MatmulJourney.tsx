@@ -1,7 +1,7 @@
 // src/components/interactive/MatmulJourney.tsx
 import StepNavigator from '../primitives/StepNavigator';
 import { STACK_LAYERS } from './shared/stackData';
-import { COLORS } from './shared/colors';
+import { COLORS, FONTS } from './shared/colors';
 
 // ---- Mini stack indicator (left side) ----
 const MINI_W = 100;
@@ -30,7 +30,7 @@ function MiniStack({ activeIndex }: { activeIndex: number }) {
               fontSize={isActive ? '8' : '6.5'}
               fontWeight={isActive ? '700' : '400'}
               fill={isActive ? layer.color : '#999'}
-              fontFamily="system-ui">
+              fontFamily={FONTS.sans}>
               {layer.name.replace(' + Compiler + IR', '')}
             </text>
           </g>
@@ -69,13 +69,13 @@ function IllusFramework() {
             strokeWidth={n.hl ? 2 : 1} />
           <text x={n.x} y={n.y+1} textAnchor="middle" dominantBaseline="middle"
             fontSize="9" fontWeight={n.hl ? '700' : '400'}
-            fill={n.hl ? COLORS.primary : '#64748b'} fontFamily="system-ui">
+            fill={n.hl ? COLORS.primary : '#64748b'} fontFamily={FONTS.sans}>
             {n.label}
           </text>
         </g>
       ))}
       <text x={ILLUS_W/2} y={ILLUS_H-8} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily="system-ui">model.forward() 执行计算图</text>
+        fill="#94a3b8" fontFamily={FONTS.sans}>model.forward() 执行计算图</text>
     </svg>
   );
 }
@@ -104,17 +104,17 @@ function IllusGraphOpt() {
             strokeWidth={n.hl ? 2 : 1} />
           <text x={n.x} y={n.y+1} textAnchor="middle" dominantBaseline="middle"
             fontSize="9" fontWeight={n.hl ? '700' : '400'}
-            fill={n.hl ? COLORS.green : '#64748b'} fontFamily="system-ui">
+            fill={n.hl ? COLORS.green : '#64748b'} fontFamily={FONTS.sans}>
             {n.label}
           </text>
         </g>
       ))}
       <text x={200} y={100} textAnchor="middle" fontSize="9" fill={COLORS.green}
-        fontFamily="system-ui" fontWeight="600">
+        fontFamily={FONTS.sans} fontWeight="600">
         ✦ MatMul + BiasAdd → FusedMatMul
       </text>
       <text x={ILLUS_W/2} y={ILLUS_H-8} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily="system-ui">算子融合：减少 kernel 启动次数</text>
+        fill="#94a3b8" fontFamily={FONTS.sans}>算子融合：减少 kernel 启动次数</text>
     </svg>
   );
 }
@@ -137,7 +137,7 @@ function IllusOperatorLib() {
           fill={tileColors[r*2+c]} stroke="#64748b" strokeWidth={0.5} />
       )))}
       <text x={matX+matW/2} y={matY+matH+14} textAnchor="middle" fontSize="8"
-        fill="#64748b" fontFamily="system-ui">大矩阵 A</text>
+        fill="#64748b" fontFamily={FONTS.sans}>大矩阵 A</text>
 
       {/* Arrow */}
       <text x={165} y={55} fontSize="16" fill="#94a3b8">→</text>
@@ -151,14 +151,14 @@ function IllusOperatorLib() {
             <rect x={tx} y={ty} width={40} height={35} rx={4}
               fill={tileColors[i]} stroke="#64748b" strokeWidth={0.5} />
             <text x={tx+20} y={ty+20} textAnchor="middle" dominantBaseline="middle"
-              fontSize="7" fill="#1a1a2e" fontFamily="monospace">
+              fontSize="7" fill="#1a1a2e" fontFamily={FONTS.mono}>
               Block {i}
             </text>
           </g>
         );
       })}
       <text x={ILLUS_W/2} y={ILLUS_H-8} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily="system-ui">选择 tiling 策略，每个 tile → thread block</text>
+        fill="#94a3b8" fontFamily={FONTS.sans}>选择 tiling 策略，每个 tile → thread block</text>
     </svg>
   );
 }
@@ -181,12 +181,12 @@ function IllusKernel() {
       {lines.map((line, i) => (
         <text key={i} x={22} y={24 + i * 16} fontSize="9"
           fill={line.startsWith('//') || line.startsWith('  //') ? '#6b7280' : '#e2e8f0'}
-          fontFamily="monospace">
+          fontFamily={FONTS.mono}>
           {line}
         </text>
       ))}
       <text x={ILLUS_W/2} y={ILLUS_H-8} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily="system-ui">每个 thread block 执行一份 tile 的计算</text>
+        fill="#94a3b8" fontFamily={FONTS.sans}>每个 thread block 执行一份 tile 的计算</text>
     </svg>
   );
 }
@@ -206,17 +206,17 @@ function IllusRuntime() {
           <rect x={b.x} y={15} width={60} height={35} rx={4}
             fill={b.color} stroke="#64748b" strokeWidth={1} />
           <text x={b.x+30} y={36} textAnchor="middle" fontSize="9"
-            fill="#1a1a2e" fontFamily="monospace">{b.label}</text>
+            fill="#1a1a2e" fontFamily={FONTS.mono}>{b.label}</text>
         </g>
       ))}
       <text x={150} y={8} textAnchor="middle" fontSize="8" fill="#94a3b8"
-        fontFamily="system-ui">GPU 显存 Buffer</text>
+        fontFamily={FONTS.sans}>GPU 显存 Buffer</text>
 
       {/* Command Queue arrow */}
       <line x1={30} y1={75} x2={290} y2={75}
         stroke={COLORS.purple} strokeWidth={2} markerEnd="url(#arrowPurple)" />
       <text x={160} y={70} textAnchor="middle" fontSize="8" fill={COLORS.purple}
-        fontFamily="system-ui" fontWeight="600">Command Queue</text>
+        fontFamily={FONTS.sans} fontWeight="600">Command Queue</text>
 
       {/* Queue items */}
       {['拷 A→GPU', '拷 B→GPU', 'dispatch kernel', '拷 C→CPU'].map((item, i) => (
@@ -225,7 +225,7 @@ function IllusRuntime() {
             fill={i===2 ? '#ede9fe' : '#f1f5f9'} stroke={i===2 ? COLORS.purple : '#cbd5e1'}
             strokeWidth={1} />
           <text x={20+i*70+31} y={99} textAnchor="middle" fontSize="7"
-            fill={i===2 ? COLORS.purple : '#64748b'} fontFamily="system-ui">
+            fill={i===2 ? COLORS.purple : '#64748b'} fontFamily={FONTS.sans}>
             {item}
           </text>
         </g>
@@ -239,7 +239,7 @@ function IllusRuntime() {
       </defs>
 
       <text x={ILLUS_W/2} y={ILLUS_H-8} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily="system-ui">allocate buffer → 入队命令 → dispatch kernel</text>
+        fill="#94a3b8" fontFamily={FONTS.sans}>allocate buffer → 入队命令 → dispatch kernel</text>
     </svg>
   );
 }
@@ -258,9 +258,9 @@ function IllusDriver() {
           <rect x={b.x} y={30} width={b.w} height={50} rx={6}
             fill={b.color} stroke="#64748b" strokeWidth={1} />
           <text x={b.x+b.w/2} y={50} textAnchor="middle" fontSize="9"
-            fontWeight="600" fill="#1a1a2e" fontFamily="system-ui">{b.label}</text>
+            fontWeight="600" fill="#1a1a2e" fontFamily={FONTS.sans}>{b.label}</text>
           <text x={b.x+b.w/2} y={65} textAnchor="middle" fontSize="7"
-            fill="#64748b" fontFamily="system-ui">{b.sub}</text>
+            fill="#64748b" fontFamily={FONTS.sans}>{b.sub}</text>
         </g>
       ))}
       {/* Arrows between boxes */}
@@ -270,7 +270,7 @@ function IllusDriver() {
         markerEnd="url(#arrowGray)" />
 
       <text x={160} y={105} textAnchor="middle" fontSize="9" fill={COLORS.orange}
-        fontFamily="system-ui" fontWeight="600">
+        fontFamily={FONTS.sans} fontWeight="600">
         JIT 编译 (运行时) 或 AOT (构建时)
       </text>
 
@@ -280,7 +280,7 @@ function IllusDriver() {
         </marker>
       </defs>
       <text x={ILLUS_W/2} y={ILLUS_H-8} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily="system-ui">Driver 将 IR 编译为硬件可执行的 ISA</text>
+        fill="#94a3b8" fontFamily={FONTS.sans}>Driver 将 IR 编译为硬件可执行的 ISA</text>
     </svg>
   );
 }
@@ -294,7 +294,7 @@ function IllusHardware() {
   return (
     <svg viewBox={`0 0 ${ILLUS_W} ${ILLUS_H}`} className="w-full">
       <text x={ILLUS_W/2} y={14} textAnchor="middle" fontSize="9" fill="#64748b"
-        fontFamily="system-ui">GPU Die</text>
+        fontFamily={FONTS.sans}>GPU Die</text>
       <rect x={startX-10} y={20} width={totalW+20} height={smH+20} rx={6}
         fill="#f1f5f9" stroke="#94a3b8" strokeWidth={1} />
       {Array.from({length: smCount}).map((_, i) => (
@@ -305,13 +305,13 @@ function IllusHardware() {
             strokeWidth={i < 4 ? 1.5 : 1} />
           <text x={startX + i*(smW+gap) + smW/2} y={48}
             textAnchor="middle" fontSize="7" fill={i < 4 ? COLORS.primary : '#94a3b8'}
-            fontFamily="monospace" fontWeight="600">
+            fontFamily={FONTS.mono} fontWeight="600">
             SM {i}
           </text>
           {i < 4 && (
             <text x={startX + i*(smW+gap) + smW/2} y={62}
               textAnchor="middle" fontSize="6" fill={COLORS.primary}
-              fontFamily="monospace">
+              fontFamily={FONTS.mono}>
               warp×32
             </text>
           )}
@@ -321,7 +321,7 @@ function IllusHardware() {
       <line x1={ILLUS_W/2} y1={100} x2={ILLUS_W/2} y2={120}
         stroke={COLORS.green} strokeWidth={1.5} markerEnd="url(#arrowGreen)" />
       <text x={ILLUS_W/2} y={135} textAnchor="middle" fontSize="8" fill={COLORS.green}
-        fontFamily="system-ui" fontWeight="600">结果写回显存</text>
+        fontFamily={FONTS.sans} fontWeight="600">结果写回显存</text>
       <defs>
         <marker id="arrowGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
           <path d="M0,0 L8,3 L0,6" fill={COLORS.green} />

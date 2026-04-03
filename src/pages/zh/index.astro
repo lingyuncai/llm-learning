@@ -56,9 +56,9 @@ const allTags = [...new Set(articles.flatMap(a => a.data.tags))].sort();
             </span>
             <h3 class="font-medium">{article.data.title}</h3>
           </div>
-          <div class="flex gap-2 mt-2">
+          <div class="flex gap-2 flex-wrap mt-2">
             {article.data.tags.map(tag => (
-              <a href={`/zh/tags/${tag}`} class="text-xs text-gray-500 hover:text-primary-600">#{tag}</a>
+              <span class="text-xs text-gray-500">#{tag}</span>
             ))}
           </div>
         </a>

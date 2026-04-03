@@ -36,3 +36,9 @@ export const HEAD_COLORS = [
 ] as const;
 
 export type ColorKey = keyof typeof COLORS;
+
+// Font stacks for SVG text elements (mirrors Tailwind's font-mono / font-sans)
+export const FONTS = {
+  mono: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+  sans: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+} as const;

@@ -31,7 +31,7 @@ import ConcurrencyComparison from '../../../components/interactive/ConcurrencyCo
 
 在上一篇文章中，我们了解了 Multi-Head Attention (MHA) 的工作原理：$h$ 个 head 各自拥有独立的 $W^Q$、$W^K$、$W^V$ 投影矩阵，在不同的子空间中并行计算注意力。
 
-MHA 在**训练**时表现出色 — 所有 token 可以并行处理。但在**推理（自回归生成）**时，一个严重的效率瓶颈浮现：**KV Cache**。
+MHA 在**训练**时表现出色 — 所有 token 可以并行处理。但在**推理**（自回归生成）时，一个严重的效率瓶颈浮现：**KV Cache**。
 
 ### 什么是 KV Cache
 

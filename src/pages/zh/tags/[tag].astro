@@ -33,12 +33,11 @@ const { articles } = Astro.props;
             </span>
             <h3 class="font-medium">{article.data.title}</h3>
           </div>
-          <div class="flex gap-2 mt-2">
+          <div class="flex gap-2 flex-wrap mt-2">
             {article.data.tags.map(t => (
-              <a href={`/zh/tags/${t}`}
-                 class={`text-xs ${t === tag ? 'text-primary-600 font-medium' : 'text-gray-500'}`}>
+              <span class={`text-xs ${t === tag ? 'text-primary-600 font-medium' : 'text-gray-500'}`}>
                 #{t}
-              </a>
+              </span>
             ))}
           </div>
         </a>

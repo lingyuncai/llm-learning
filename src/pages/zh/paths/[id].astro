@@ -39,9 +39,9 @@ const pathArticles = learningPath.articles
                   {difficultyLabel[article!.data.difficulty]}
                 </span>
               </div>
-              <div class="flex gap-2">
+              <div class="flex gap-2 flex-wrap">
                 {article!.data.tags.map(tag => (
-                  <a href={`/zh/tags/${tag}`} class="text-xs text-gray-500 hover:text-primary-600" onclick="event.stopPropagation()">#{tag}</a>
+                  <span class="text-xs text-gray-500">#{tag}</span>
                 ))}
               </div>
             </div>

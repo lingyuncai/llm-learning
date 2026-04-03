@@ -2,6 +2,7 @@
 import { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { STACK_LAYERS, BRANDS, type StackLayer, type TechNode } from './shared/stackData';
+import { FONTS } from './shared/colors';
 
 // ---------- Layout constants ----------
 const SVG_W = 600;
@@ -92,13 +93,13 @@ export default function StackLayerDiagram() {
               {/* Layer name */}
               <text x={LAYER_PAD_X + 6} y={y + LAYER_H_COLLAPSED / 2 + 1}
                 dominantBaseline="middle" fontSize="13" fontWeight="600"
-                fill={layer.color} fontFamily="system-ui">
+                fill={layer.color} fontFamily={FONTS.sans}>
                 {layer.name}
               </text>
               {/* Expand indicator */}
               <text x={SVG_W - LAYER_PAD_X} y={y + LAYER_H_COLLAPSED / 2 + 1}
                 dominantBaseline="middle" textAnchor="end" fontSize="11"
-                fill={layer.color} fontFamily="system-ui" opacity={0.6}>
+                fill={layer.color} fontFamily={FONTS.sans} opacity={0.6}>
                 {expanded ? '▾' : '▸'} {layer.nodes.length}
               </text>
               {/* Expanded node pills */}
@@ -120,7 +121,7 @@ export default function StackLayerDiagram() {
                       rx={4} fill="white" stroke={layer.color} strokeWidth={1} />
                     <text x={nx + NODE_PILL_W / 2} y={ny + NODE_PILL_H / 2 + 1}
                       dominantBaseline="middle" textAnchor="middle"
-                      fontSize="9" fill="#1a1a2e" fontFamily="system-ui">
+                      fontSize="9" fill="#1a1a2e" fontFamily={FONTS.sans}>
                       {node.label}
                     </text>
                   </motion.g>

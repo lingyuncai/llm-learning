@@ -36,10 +36,13 @@ references:
 import StackLayerDiagram from '../../../components/interactive/StackLayerDiagram.tsx';
 import MatmulJourney from '../../../components/interactive/MatmulJourney.tsx';
 import EcosystemPathSelector from '../../../components/interactive/EcosystemPathSelector.tsx';
+import ShaderKernelPathway from '../../../components/interactive/ShaderKernelPathway.tsx';
+import CommandModelDiagram from '../../../components/interactive/CommandModelDiagram.tsx';
+import GpuContextDiagram from '../../../components/interactive/GpuContextDiagram.tsx';
 
 ## 为什么这些概念特别绕？
 
-当你听到 CUDA、OpenCL、SYCL、ROCm、oneAPI 这些名字时，最容易犯的错误是把它们当成"一个东西"。实际上，它们每一个都是**"一套东西"的品牌名**，横跨编程语言、编译器、运行时、算子库等多个层次。
+当你听到 CUDA、OpenCL、SYCL、ROCm、oneAPI 这些名字时，最容易犯的错误是把它们当成"一个东西"。实际上，它们每一个都是 **"一套东西"的品牌名**，横跨编程语言、编译器、运行时、算子库等多个层次。
 
 比如 OpenCL，它既有编程语言（OpenCL C）又有运行时（OpenCL Runtime）；SYCL 是一门语言，但它没有自己的运行时，而是借用别人的后端（OpenCL Runtime / Level Zero / CUDA Runtime）。这种"一个名字覆盖多层"的设计，正是混淆的根源。
 
@@ -120,17 +123,30 @@ GPU Runtime 的角色类似 **C Runtime (libc)** 或 **JRE**：
 
 它**不是操作系统**（那是 Driver 的角色），而是**编程语言级的运行时库**。
 
-### Runtime 的四大职责
+### Runtime 的五大职责
 
 **1. Device Discovery** — 查询系统有哪些 GPU、它们的能力
 
-**2. Buffer 管理** — 在 GPU 显存上分配/释放内存块（类比 CPU 的 `malloc/free`）
+**2. Context（上下文）** — GPU 编程的"会话/沙箱"。Context 是一个容器，绑定了：一个 GPU 设备 + 它名下所有的 buffer、queue、program、kernel。多个进程各自创建独立 Context，资源互不干扰。类比：数据库 Connection — 你在 Connection 上创建 Transaction、执行 Query，Connection 就是 Context。
 
-**3. Command Queue / Command List：**
-- **Queue**（CUDA / OpenCL 风格）：按顺序执行的操作序列 — "先拷数据 → 跑 kernel → 拷回来"
-- **Command List**（Level Zero / Vulkan 风格）：预先录制一组命令，然后一次性提交。更显式、更高效，但编程更复杂
+<GpuContextDiagram client:visible />
 
-**4. Kernel Dispatch** — 把编译好的 kernel 程序加载到 GPU，配置线程网格（grid/block），提交执行
+CUDA Runtime API 隐式管理 Context（你不需要手动创建），但底层仍然存在。OpenCL / Level Zero / Vulkan 都要求显式创建 Context。
+
+**3. Buffer 管理** — 在 GPU 显存上分配/释放内存块（类比 CPU 的 `malloc/free`）
+
+**4. Command Queue / Command List：**
+
+GPU 不像 CPU 那样"调一个函数就立即执行"，而是通过"命令提交"的方式工作。有两种模型：
+
+- **Command Queue**（CUDA / OpenCL 风格）：**即时提交** — 每次 API 调用立即将一条命令放入队列，GPU 按顺序执行。你不能"重放"同一个命令序列，想再跑一遍就得重新调用 API
+- **Command List**（Level Zero / Vulkan / Metal 风格）：**录制-提交** — 先把一整套命令录制到一个 command list 里（此时 GPU 什么都没做），然后一次性 submit 给 GPU 执行。好处是 driver 可以在录制时预编译和预验证整个命令序列，提交时开销极小。同一个 command list 可以**重复提交**（重放），适合每帧渲染、迭代训练等场景
+
+<CommandModelDiagram client:visible />
+
+Command list 的参数在录制时绑定。如果需要改参数，可以：(1) 录制新的 command list；(2) 用 push constants（Vulkan）在提交时塞少量参数；(3) 用 indirect dispatch — 参数从 GPU buffer 动态读取。
+
+**5. Kernel Dispatch** — 把编译好的 kernel 程序加载到 GPU，配置线程网格（grid/block），提交执行
 
 ### Kernel Dispatch 具体流程（OpenCL 为例）
 
@@ -144,7 +160,17 @@ GPU Runtime 的角色类似 **C Runtime (libc)** 或 **JRE**：
 7. 同步 + 读回 — clFinish() → clEnqueueReadBuffer()
 ```
 
-这个流程将 Buffer、Queue、Kernel、Dispatch 的关系串联起来。CUDA Runtime API 做了更多隐式封装（自动管理 context），但底层逻辑相同。
+这个流程将 Context、Buffer、Queue、Kernel、Dispatch 的关系串联起来。CUDA Runtime API 做了更多隐式封装（自动管理 Context），但底层逻辑相同。
+
+### Extension（扩展）
+
+Vulkan / OpenCL 的核心规范定义了基础功能，但 GPU 能力在快速演进。Extension 机制允许在不改动核心规范的情况下增加新能力：
+
+- **跨厂商标准扩展**（`VK_KHR_xxx`）：Khronos 官方批准，多厂商实现。例如 `VK_KHR_ray_tracing_pipeline` 给 Vulkan 加了光线追踪
+- **厂商私有扩展**（`VK_NV_xxx`、`VK_AMD_xxx`）：单厂商实现，可能后续被标准化
+- 使用前必须**运行时查询** GPU 是否支持该扩展，支持才能启用
+
+这类似浏览器的 Web API — 核心规范是 baseline，新特性先作为实验性 API 提供，成熟后纳入标准。
 
 ### 主要 Runtime 对比
 
@@ -206,12 +232,17 @@ HIP 是理解"语言层如何实现跨平台"的好例子：
 | Metal SL | Apple | Metal IR (AIR) | Apple 专属 |
 | Slang | Khronos 开源 | SPIR-V / HLSL / MSL / CUDA / GLSL | 新一代跨平台着色器语言，多后端输出 |
 
-### Shader vs Kernel
+### Shader vs Kernel — 两条通道，同一个硬件
 
-- **Shader**：图形渲染管线中的可编程阶段（vertex shader, fragment shader, compute shader）
-- **Kernel**：通用计算程序（CUDA kernel, OpenCL kernel）
-- **Compute Shader** 是两者交叉点 — 用图形 API (Vulkan/Metal/DX12) 跑通用计算
-- 本质相同：一段跑在 GPU 上的并行程序
+这两个词来自不同的历史传统，但最终跑在**完全相同的 GPU 硬件**（SM/CU）上：
+
+- **Kernel**：通过 **Compute API**（CUDA、OpenCL、Level Zero、HIP）提交的通用计算程序。这些 API 专为并行计算设计，不涉及图形管线
+- **Shader**：通过 **Graphics API**（Vulkan、Metal、DirectX 12、WebGPU）提交的 GPU 程序。名字来自图形渲染 — GPU 最初只做"着色"（shading），管线中的可编程阶段叫 shader（vertex shader、fragment shader 等）
+- **Compute Shader**：Graphics API 中**独立于图形管线**的计算通道。它功能上等同于 kernel，但通过 Graphics API 的 compute pipeline 提交，**不经过 vertex/rasterize/fragment 等图形阶段**
+
+为什么有人用 compute shader 而不用 kernel？因为 Vulkan/Metal 的**跨平台覆盖面比 CUDA 广得多** — llama.cpp 就用 Vulkan compute shader 实现跨 NVIDIA/AMD/Intel/手机 GPU 的推理。
+
+<ShaderKernelPathway client:visible />
 
 ### IR 对比
 
@@ -244,11 +275,17 @@ HIP 是理解"语言层如何实现跨平台"的好例子：
 
 ### oneDNN 内部怎么工作
 
-oneDNN 是理解"算子库如何使用 kernel + runtime"的最好例子：
+oneDNN 是理解"算子库如何使用 kernel + runtime"的最好例子。它支持多个**后端**（backend），每个后端是一整套针对特定硬件的 kernel 实现 + 对应的 runtime 调用：
 
-- **Intel GPU 路径**：kernel 用 OpenCL C 或 nGen JIT 编写 → 编译为 SPIR-V → 通过 OpenCL Runtime 或 Level Zero 提交到 GPU
-- **CPU 路径**：使用 JIT 汇编生成器（Xbyak for x86, Xbyak_aarch64 for ARM），运行时动态生成针对当前 CPU 微架构优化的机器码
-- **选择逻辑**：oneDNN 内部根据输入 tensor 的形状、数据类型、硬件，自动选择最优 kernel
+- **Intel GPU 后端**：kernel 用 OpenCL C 编写，或用 nGen 在运行时生成 → 通过 OpenCL Runtime 或 Level Zero 提交到 GPU
+- **CPU 后端**：使用 Xbyak（x86）/ Xbyak_aarch64（ARM）在运行时生成优化的机器码
+- **NVIDIA GPU 后端**：通过 CUDA Runtime 提交 kernel
+- **AMD GPU 后端**：通过 HIP Runtime 提交 kernel
+- **选择逻辑**：oneDNN 根据输入 tensor 的形状、数据类型、当前硬件，自动选择最优的后端和 kernel 实现
+
+**nGen** 是 oneDNN 内部的 Intel GPU **JIT 汇编器**（不是编译器）。它不接受任何编程语言输入，而是一个 C++ API — 开发者用 C++ 函数调用逐条拼出 Intel GPU 指令（类似 CPU 端的 Xbyak 拼 x86 汇编），运行时直接输出二进制。nGen 生成的是 **Gen ISA 真实指令**（不是 PTX 那样的虚拟 ISA），但 API 屏蔽了不同 Gen 代际之间的编码差异（Gen9 vs Gen12 等），所以同一套 C++ 代码可以为不同代 Intel GPU 生成正确的二进制。
+
+**Xbyak** 是同样思路的 CPU 版本 — x86/x64 的 JIT 汇编器。oneDNN 在 CPU 端用它根据运行时检测到的 CPU 特性（AVX-512? AVX2?）动态生成最优机器码，比"编译时生成多个版本 + 运行时选择"更灵活。
 
 这展示了算子库的本质：**kernel 集合 + runtime 胶水 + 自动选择策略**。
 
@@ -289,14 +326,29 @@ TensorRT、XLA、Apache TVM 不是简单的推理框架 — 它们是**图级编
 
 ### llama.cpp / ggml 的垂直整合
 
-传统分层：`ONNX Runtime → oneDNN → OpenCL Runtime → Driver`（每层独立，标准接口）
+**传统分层**（以 NVIDIA 为例）：
 
-llama.cpp / ggml 的做法：
-- ggml 同时承担 Operator Library + Kernel 的角色
-- **不依赖** cuDNN/oneDNN — 针对 LLM 推理场景手写每个后端的 kernel
-- 自定义量化格式（GGUF）、融合算子
-- 好处：极致控制、无依赖、易部署
-- 代价：每加一个硬件后端都要从头写 kernel
+```
+TensorRT → cuDNN/cuBLAS → CUDA Runtime → Driver
+```
+
+每层各管各的，标准接口隔开。cuDNN 只服务 CUDA 一个后端；TensorRT 不关心 cuDNN 内部怎么实现 kernel；换 GPU 代际时，只需 cuDNN 更新 kernel，TensorRT 不用改。
+
+**ggml 的做法** — 把"算子库"整层吞掉，自己给**每个硬件后端从头写 kernel**：
+
+```
+llama.cpp → ggml ──┬── ggml-cuda.cu   → CUDA Runtime → Driver
+                   ├── ggml-metal.m   → Metal        → Driver
+                   ├── ggml-vulkan.cpp → Vulkan       → Driver
+                   └── ggml-cpu.c     → (直接执行)
+```
+
+ggml 和 cuDNN/oneDNN/MPS **是同一层的东西** — 都是算子库。区别在于：ggml 定义了一套**自己的算子接口**（针对 LLM 推理：矩阵乘法、softmax、RoPE、Q4_K_M 量化等），然后为这套接口实现了多个后端。它不用 cuDNN，不是因为层级不同，而是因为 cuDNN 的算子接口不匹配 ggml 的需求（比如 cuDNN 没有 ggml 需要的特殊量化 kernel），加上 ggml 追求零依赖部署。
+
+本质上，ggml 是一个**自带跨平台策略的算子库** — 以"为每个后端从头写 kernel"的方式实现跨平台，而不是像 oneDNN 那样复用标准 runtime 的抽象层。
+
+- **好处**：极致控制、零第三方依赖、一个二进制跑所有平台、深度定制（自定义量化格式 GGUF、激进的算子融合）
+- **代价**：每加一个硬件后端，所有算子都要从头实现一遍。cuDNN 的 matmul kernel 经过 NVIDIA 工程师多年优化，ggml 的 CUDA kernel 未必能打平
 
 ---
 
@@ -319,7 +371,7 @@ llama.cpp / ggml 的做法：
 | Operator Lib | cuDNN/cuBLAS | MIOpen/rocBLAS | oneDNN/oneMKL | — | MPS |
 | Framework | TensorRT | — | OpenVINO | — | CoreML |
 
-**注意"—"**表示该品牌在该层没有自己的组件。
+**注意**："—"表示该品牌在该层没有自己的组件。
 
 **SYCL 特殊之处：** 它没有自己的 runtime，而是通过 backend plugin 使用 OpenCL RT、Level Zero 或 CUDA RT。这是唯一一个"语言层和 runtime 层完全解耦"的方案。
 

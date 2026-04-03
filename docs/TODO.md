@@ -15,3 +15,4 @@
 - [ ] Speculative Decoding 文章补充：EAGLE3、Draft Tree 详解（树状推测结构 + 并行验证机制） (来源: 2026-04-03)
 - [ ] GPU Architecture 专题（SM/CU 内部结构、warp scheduler）— AI Compute Stack 文章的后续深入 (来源: 2026-04-03)
 - [ ] CUDA 编程模型专题（kernel 编写、tiling 优化、shared memory）— AI Compute Stack 文章的后续深入 (来源: 2026-04-03)
+- [ ] Attention 变体专题：Hybrid Attention、Linear Attention、Sliding Window Attention 等 (来源: 2026-04-03)
