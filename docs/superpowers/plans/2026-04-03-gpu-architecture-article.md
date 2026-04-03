@@ -12,6 +12,39 @@
 
 ---
 
+## Key Decisions & Context
+
+### Project-Level Decisions
+- **Phase 1 = 4 篇文章**：GPU Architecture → 矩阵加速单元 (Tensor Core/XMX) → CUDA 编程模型 → GEMM 优化。Phase 2（非 CUDA 路线 + 矩阵加速指令进阶）后续再做
+- **4 个独立 plan**，每篇文章一个 plan。后续 3 篇 plan 在前一篇完成后写（复用模式）
+- **归入 ai-compute-stack 学习路径**，排在全景文章之后。未来如果有复杂 GPU 编程路径，同一文章可放到多条路径
+- **混合型风格**：交互动画建立直觉 + 关键处给真实代码片段。图要多（静态 + 动态），不怕数量多
+- **NVIDIA 为主线，Intel iGPU (Xe2, Lunar Lake/Panther Lake) 详讲**，AMD 简要提及
+- **XMX 很重要** — 在文章 2（硬件原理）、文章 3（编程接口）、文章 4（GEMM 优化）三个层面递进覆盖
+- **DeepSeek V3/R1 的 dual-pipe 优化**作为 Tensor Core + CUDA Core 同时利用的实战案例（文章 2）
+
+### This Article's Decisions
+- **叙事主线**：一条指令从发射到执行完毕经过哪些硬件单元
+- **以 H100 Hopper 为主要参考芯片**，数字来自 NVIDIA whitepaper。对比提及 RTX 4090
+- **Intel Xe2 对照放在文章 2**（矩阵加速单元那篇），本文不涉及 Intel 架构细节
+- **已有 GPUMemoryHierarchy 组件**在 flash-attention 文章中，本文新建 MemoryHierarchyDetailed 展示完整 4 级层次（那个侧重 SRAM vs HBM 二分）
+- **StepNavigator primitive** 已存在于 `src/components/primitives/StepNavigator.tsx`，WarpExecutionAnimation 和 WarpSchedulerTimeline 直接复用
+- **SVG 组件模式**：viewBox 坐标系 + COLORS/FONTS 共享常量 + helper 子组件。参考 ShaderKernelPathway.tsx、GpuContextDiagram.tsx 的风格
+- **不用 emoji** — CLAUDE.md 规定，除非用户明确要求
+
+### Codebase Patterns to Follow
+- 组件文件命名：PascalCase，放在 `src/components/interactive/`
+- MDX 中 import 路径：`'../../../components/interactive/XXX.tsx'`
+- 必须加 `client:visible` 才能启用 React 交互逻辑
+- 共享常量：`import { COLORS, FONTS } from './shared/colors'`
+- 动画库：`import { motion } from 'motion/react'`（不是 framer-motion）
+- 步骤动画用 StepNavigator：`import StepNavigator from '../primitives/StepNavigator'`
+- Frontmatter 必填：title, slug, locale, tags, difficulty, created, updated, references
+- Build 命令：`npm run build`，验证命令：`npm run validate`
+- 当前 build 产出 43 pages，新增 1 页后应为 44 pages
+
+---
+
 ## File Structure
 
 ### New Files
