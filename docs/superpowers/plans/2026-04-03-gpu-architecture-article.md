@@ -355,13 +355,14 @@ Create `src/components/interactive/GpuChipTopology.tsx`:
 import { useState } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
-// H100 SXM example: 8 GPC, 2 TPC per GPC (simplified), 2 SM per TPC
+// H100 SXM: full die = 8 GPC × 9 TPC × 2 SM = 144 SM, 132 enabled
+// Visualization simplified: showing 2 TPC per GPC to fit diagram
 const GPU_SPEC = {
   name: 'H100 SXM',
   gpcs: 8,
-  tpcsPerGpc: 2,
+  tpcsPerGpc: 2,   // simplified for viz (actual: ~9 per GPC)
   smsPerTpc: 2,
-  totalSMs: 132, // not all enabled
+  totalSMs: 132,    // 144 on die, 132 enabled for yield
   l2Cache: '50 MB',
   hbm: '80 GB HBM3',
 };
@@ -407,7 +408,7 @@ export default function GpuChipTopology() {
 
   // Calculate dynamic height
   const hasExpanded = expandedGpc !== null;
-  const expandedRow = hasExpanded ? Math.floor(expandedGpc / GPC_COLS) : -1;
+  const expandedRow = hasExpanded ? Math.floor(expandedGpc! / GPC_COLS) : -1;
   const EXPAND_EXTRA = 80;
   const H = COLLAPSED_H + (hasExpanded ? EXPAND_EXTRA : 0);
 
@@ -644,10 +645,19 @@ export default function SmInternalDiagram() {
             </text>
 
             {/* Legend */}
-            <text x={PART_START_X} y={sharedY + 52} fontSize="8" fill="#94a3b8"
-              fontFamily={FONTS.sans}>
-              🟠 控制单元 · 🔵 计算单元 · 🟣 特殊单元 · 🟢 存储单元
-            </text>
+            {[
+              { color: COLORS.orange, label: '控制单元' },
+              { color: COLORS.primary, label: '计算单元' },
+              { color: COLORS.purple, label: '特殊单元' },
+              { color: COLORS.green, label: '存储单元' },
+            ].map((item, idx) => (
+              <g key={idx}>
+                <rect x={PART_START_X + idx * 80} y={sharedY + 44} width={10} height={10} rx={2}
+                  fill={item.color} opacity={0.6} />
+                <text x={PART_START_X + idx * 80 + 14} y={sharedY + 53} fontSize="8" fill="#94a3b8"
+                  fontFamily={FONTS.sans}>{item.label}</text>
+              </g>
+            ))}
           </g>
         );
       })()}
@@ -993,15 +1003,17 @@ interface TimelineState {
 function generateSchedule(): SlotType[][] {
   const schedule: SlotType[][] = WARPS.map(() => Array(CYCLES).fill('idle'));
 
+  // 3 warps rotate: each executes 2 cycles then waits 4 cycles for memory
   // Warp 0: exec 0-1, wait 2-5, exec 6-7, wait 8-11, exec 12-13
   // Warp 1: exec 2-3, wait 4-7, exec 8-9, wait 10-13, exec 14-15
   // Warp 2: exec 4-5, wait 6-9, exec 10-11, wait 12-15
-  // Warp 3: exec 6-7 (filling gap while 0,1,2 wait)
+  // Warp 3: shown as idle (not enough work to schedule) — demonstrates that
+  //         more active warps = better latency hiding
   const patterns = [
     [0, 1, -1, -1, -1, -1, 6, 7, -1, -1, -1, -1, 12, 13, -1, -1],
     [-1, -1, 2, 3, -1, -1, -1, -1, 8, 9, -1, -1, -1, -1, 14, 15],
     [-1, -1, -1, -1, 4, 5, -1, -1, -1, -1, 10, 11, -1, -1, -1, -1],
-    [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1], // filled below
+    [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1], // idle
   ];
 
   for (let w = 0; w < 3; w++) {
@@ -1176,11 +1188,11 @@ interface Level {
 }
 
 const levels: Level[] = [
-  { label: 'Register File', capacity: '256 KB / SM', bandwidth: '~19 TB/s (估算)',
+  { label: 'Register File', capacity: '256 KB / SM', bandwidth: '极高（片上）',
     latency: '0 周期', color: COLORS.green, bg: '#dcfce7', width: 120 },
-  { label: 'Shared Memory / L1', capacity: '228 KB / SM', bandwidth: '~12 TB/s (估算)',
+  { label: 'Shared Memory / L1', capacity: '228 KB / SM', bandwidth: '极高（片上）',
     latency: '~20-30 周期', color: COLORS.primary, bg: '#dbeafe', width: 200 },
-  { label: 'L2 Cache', capacity: '50 MB (全局共享)', bandwidth: '~12 TB/s',
+  { label: 'L2 Cache', capacity: '50 MB (全局共享)', bandwidth: '~12 TB/s（理论计算值）',
     latency: '~200 周期', color: COLORS.orange, bg: '#fff7ed', width: 320 },
   { label: 'HBM3 (全局显存)', capacity: '80 GB', bandwidth: '3.35 TB/s',
     latency: '~400-600 周期', color: COLORS.purple, bg: '#f3e8ff', width: 440 },
@@ -1427,9 +1439,9 @@ GPU 的内存层次是影响性能最大的因素。从快到慢：
 
 | 层级 | 容量 (H100) | 带宽 | 延迟 | 作用域 |
 |------|------------|------|------|--------|
-| Register File | 256 KB / SM | ~19 TB/s | 0 周期 | 线程私有 |
-| Shared Memory / L1 | 228 KB / SM | ~12 TB/s | ~20-30 周期 | Block 内共享 |
-| L2 Cache | 50 MB | ~12 TB/s | ~200 周期 | 全局共享 |
+| Register File | 256 KB / SM | 极高（片上） | 0 周期 | 线程私有 |
+| Shared Memory / L1 | 228 KB / SM | 极高（片上） | ~20-30 周期 | Block 内共享 |
+| L2 Cache | 50 MB | ~12 TB/s（理论计算值） | ~200 周期 | 全局共享 |
 | HBM3 | 80 GB | 3.35 TB/s | ~400-600 周期 | 全局 |
 
 <MemoryHierarchyDetailed client:visible />
