@@ -52,7 +52,6 @@ export default function GpuChipTopology() {
   const [expandedGpc, setExpandedGpc] = useState<number | null>(null);
 
   const gpcStartY = 70;
-  const gpcRows = Math.ceil(GPU_SPEC.gpcs / GPC_COLS);
 
   // Calculate dynamic height
   const hasExpanded = expandedGpc !== null;

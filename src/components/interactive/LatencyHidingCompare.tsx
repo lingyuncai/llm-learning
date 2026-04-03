@@ -6,12 +6,10 @@ const W = 560;
 const H = 200;
 const SLOT_W = 32;
 const SLOT_H = 28;
-const Y_TRACK = 80;
 
 // Timeline slot colors
 const COMPUTE = '#dbeafe';   // blue — active compute
 const STALL = '#fee2e2';     // red — stalled / idle
-const SWITCH = '#dcfce7';    // green — active (different warp)
 
 interface Slot { label: string; color: string; textColor: string; }
 

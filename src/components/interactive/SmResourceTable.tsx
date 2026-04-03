@@ -73,7 +73,6 @@ export default function SmResourceTable() {
           {rows.map((row, ri) => {
             const isHovered = hoveredRow === ri;
             const vals = generations.map(g => String(g[row.key]));
-            const allSame = vals.every(v => v === vals[0]);
             return (
               <tr key={ri}
                 onMouseEnter={() => setHoveredRow(ri)}

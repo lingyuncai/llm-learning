@@ -12,12 +12,6 @@ const SLOT_H = 24;
 
 type SlotType = 'exec' | 'wait' | 'idle';
 
-interface TimelineState {
-  warps: SlotType[][];
-  activeWarp: number;
-  cycle: number;
-}
-
 // Simplified schedule: each warp executes 2 cycles, then waits 4 cycles for memory
 function generateSchedule(): SlotType[][] {
   const schedule: SlotType[][] = WARPS.map(() => Array(CYCLES).fill('idle'));
