@@ -52,7 +52,7 @@ function ProcessingBlock({ x, y, index }: { x: number; y: number; index: number 
       <UnitRow x={ux} y={y + 106} w={uw}
         label="INT32 Core" count="×16" color={COLORS.primary} bg="#eff6ff" />
       <UnitRow x={ux} y={y + 132} w={uw}
-        label="FP64 Core" count="×8" color={COLORS.primary} bg="#eff6ff" />
+        label="FP64 Core" count="×16" color={COLORS.primary} bg="#eff6ff" />
 
       {/* Special — purple */}
       <UnitRow x={ux} y={y + 162} w={uw}

@@ -98,9 +98,9 @@ export default function GpuChipTopology() {
             {isExpanded && (
               <g>
                 <TpcBox x={x + 4} y={y + GPC_H} />
-                <text x={x + GPC_W / 2} y={y + GPC_H + EXPAND_EXTRA - 6} textAnchor="middle"
-                  fontSize="7" fill="#94a3b8" fontFamily={FONTS.sans}>
-                  点击收起
+                <text x={x + GPC_W / 2} y={y + GPC_H + EXPAND_EXTRA - 16} textAnchor="middle"
+                  fontSize="6.5" fill="#94a3b8" fontFamily={FONTS.sans}>
+                  展示 1/{GPU_SPEC.tpcsPerGpc} TPC（简化视图）· 点击收起
                 </text>
               </g>
             )}

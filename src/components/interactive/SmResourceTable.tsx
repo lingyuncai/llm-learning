@@ -21,7 +21,7 @@ interface GenSpec {
 const generations: GenSpec[] = [
   {
     name: 'Ampere (A100)', year: 2020, smsPerGpu: '108',
-    fp32Cores: 64, int32Cores: 32, tensorCores: '4 (3rd gen)', tensorGen: 'FP16/BF16/TF32/INT8/INT4',
+    fp32Cores: 128, int32Cores: 128, tensorCores: '4 (3rd gen)', tensorGen: 'FP16/BF16/TF32/INT8/INT4',
     regFile: '256 KB', sharedMem: '164 KB', l1Cache: '192 KB 共享',
     maxWarps: 64, maxThreads: 2048,
   },
