@@ -1,0 +1,367 @@
+---
+title: "KV Cache 与 Batch 调度"
+slug: "ollama-kv-cache-scheduling"
+locale: "zh"
+tags: ["kv-cache", "batch-scheduling", "continuous-batching", "prefix-cache"]
+prerequisites: ["ollama-compute-graph", "kv-cache"]
+difficulty: "advanced"
+created: "2026-04-04"
+updated: "2026-04-04"
+references:
+  - type: "paper"
+    title: "Efficient Memory Management for LLM Serving with PagedAttention"
+    url: "https://arxiv.org/abs/2309.06180"
+  - type: "repo"
+    title: "Ollama GitHub"
+    url: "https://github.com/ollama/ollama"
+---
+
+import KVCacheSlotManager from '../../../components/interactive/KVCacheSlotManager.tsx';
+import PrefixCacheHit from '../../../components/interactive/PrefixCacheHit.tsx';
+import ContinuousBatchingTimeline from '../../../components/interactive/ContinuousBatchingTimeline.tsx';
+
+## llama.cpp 的 KV Cache 实现
+
+llama.cpp 使用基于 **slot** 的 KV Cache 管理策略，这是一种固定分配 (fixed allocation) 的内存管理方案。每个 slot 代表一个独立的推理请求所使用的 KV Cache 空间，在服务启动时预先分配固定大小的内存块。
+
+### Slot-Based 设计原理
+
+在 llama.cpp 中，KV Cache 的核心数据结构是 `llama_kv_cache`，它包含多个 slot：
+
+```cpp
+struct llama_kv_cache {
+    struct ggml_tensor * k; // [n_layer, n_ctx, n_embd_k_gqa]
+    struct ggml_tensor * v; // [n_layer, n_ctx, n_embd_v_gqa]
+    
+    struct llama_kv_cell {
+        llama_pos pos;   // 当前 token 在序列中的位置
+        llama_seq_id seq_id; // 所属的 sequence ID
+        bool has_seq_id(llama_seq_id id);
+    } * cells;
+    
+    uint32_t size;  // 总 cell 数量 (n_ctx)
+    uint32_t used;  // 已使用的 cell 数量
+};
+```
+
+每个 slot 对应一个独立的 sequence ID (`llama_seq_id`)，在并发推理场景下，不同的请求会被分配到不同的 slot 中。每个 slot 的容量由模型的 context length 决定（如 2048、4096 或 8192 tokens）。
+
+### Memory Layout
+
+KV Cache 的内存布局采用分层存储：
+
+- **K tensor**: 形状为 `[n_layer, n_ctx, n_embd_k_gqa]`，存储所有层的 Key 向量
+- **V tensor**: 形状为 `[n_layer, n_ctx, n_embd_v_gqa]`，存储所有层的 Value 向量
+- **Cells 数组**: 每个 cell 记录该位置的元数据（位置索引、sequence ID）
+
+当推理一个新 token 时，llama.cpp 会：
+1. 找到该请求对应的 slot（通过 `seq_id`）
+2. 在该 slot 内找到下一个空闲的 cell 位置
+3. 将新计算的 K/V 向量写入对应位置
+4. 更新 cell 的元数据（`pos` 和 `seq_id`）
+
+### 固定分配的权衡
+
+Slot-based 固定分配的优点是**实现简单**、**内存访问可预测**、**无需动态内存管理**，但缺点是可能造成**内存浪费**：如果一个请求只用了 50 个 tokens，但 slot 分配了 2048 tokens 的空间，剩余 1998 个 token 的空间就被浪费了。
+
+<KVCacheSlotManager client:visible />
+
+上图展示了 llama.cpp 的 slot 管理器：每个 slot 是固定大小的容器，并发请求会占用不同的 slot，当请求完成后 slot 被释放供新请求使用。
+
+## Ollama 的 Go KV Cache 管理
+
+Ollama 的 Go 层在 llama.cpp 的 slot 机制之上构建了更高层次的 KV Cache 管理抽象，主要代码位于 `llm/kvcache/` 包中。
+
+### kvcache 包的设计
+
+Ollama 定义了两种 KV Cache 类型：
+
+**1. Causal Cache (因果缓存)**
+
+用于标准的 Transformer decoder 模型（如 Llama、Mistral），每个 token 只能看到它之前的 tokens（因果注意力）：
+
+```go
+type CausalCache struct {
+    numLayers    int
+    numHeads     int
+    headDim      int
+    maxSeqLen    int
+    dtype        DataType
+    tensors      []Tensor  // K/V tensors for each layer
+}
+```
+
+**2. Recurrent Cache (循环缓存)**
+
+用于具有循环结构的模型（如 Mamba、RWKV），这些模型不使用标准的 attention 机制，而是使用状态空间模型 (SSM) 或循环单元：
+
+```go
+type RecurrentCache struct {
+    numLayers   int
+    stateSize   int
+    convWidth   int  // convolution 窗口宽度
+    states      []Tensor
+}
+```
+
+### KV Cache 生命周期管理
+
+Ollama 的 KV Cache 管理遵循以下生命周期：
+
+1. **初始化** (`NewCache`): 在加载模型时，根据模型架构类型创建对应的 cache 实例
+2. **预热** (`Warmup`): 可选步骤，预先分配 GPU 内存以避免首次推理的延迟
+3. **更新** (`Update`): 每次推理时，将新计算的 K/V 或 state 写入 cache
+4. **清理** (`Clear`): 请求完成后，清空该 sequence 的 cache 数据
+5. **释放** (`Free`): 模型卸载时，释放所有 GPU/CPU 内存
+
+Ollama 还实现了 **跨请求的 cache 复用机制**，如果多个请求共享相同的 system prompt，Ollama 可以复用相同前缀的 KV Cache，这就是下一节要讲的 Prefix Cache。
+
+## Prefix Cache / Prompt Cache
+
+**Prefix Cache**（也称 Prompt Cache）是一种优化技术，用于**复用相同前缀的 KV Cache**，从而显著减少 prefill 阶段的计算量。
+
+### 核心思想
+
+在实际应用中，许多请求会共享相同的前缀，最典型的场景是 **system prompt**：
+
+```
+System: You are a helpful AI assistant. Always respond politely.
+User: What is the weather today?
+```
+
+如果 system prompt 有 1000 个 tokens，每次新请求都需要对这 1000 个 tokens 进行完整的 prefill，这是巨大的计算浪费。Prefix Cache 的思路是：
+
+1. **首次请求**：完整 prefill system prompt，计算并缓存这 1000 个 tokens 的 KV
+2. **后续请求**：检测到相同的 system prompt，直接**复用缓存的 KV**，只需 prefill 用户输入的新 tokens
+
+### Hash 匹配算法
+
+Ollama 和 llama.cpp 使用基于哈希的前缀匹配算法：
+
+```
+# 伪代码
+def find_prefix_match(tokens: List[int]) -> int:
+    """返回最长公共前缀的长度"""
+    for length in range(len(tokens), 0, -1):
+        prefix_hash = hash(tokens[:length])
+        if prefix_hash in cache_index:
+            # 找到匹配，验证 token 序列完全相同
+            cached_tokens = cache_index[prefix_hash].tokens
+            if tokens[:length] == cached_tokens:
+                return length
+    return 0  # 没有匹配
+
+def prefill_with_cache(tokens: List[int]):
+    prefix_len = find_prefix_match(tokens)
+    if prefix_len > 0:
+        # 复用前 prefix_len 个 token 的 KV Cache
+        reuse_kv_cache(sequence_id, 0, prefix_len)
+        # 只需 prefill 新 tokens
+        new_tokens = tokens[prefix_len:]
+        compute_and_cache_kv(new_tokens, start_pos=prefix_len)
+    else:
+        # 完整 prefill
+        compute_and_cache_kv(tokens, start_pos=0)
+```
+
+<PrefixCacheHit client:visible />
+
+上图展示了 Prefix Cache 的工作流程：第一次请求完整 prefill 并缓存 KV，第二次请求匹配到公共前缀后直接复用缓存的 KV，只需 prefill 新增的 token，从而将 TTFT (Time To First Token) 降低 67%。
+
+### 实现细节
+
+在 llama.cpp 中，prefix cache 通过 `llama_kv_cache_seq_cp` 函数实现 KV 复制：
+
+```cpp
+// 将 seq_id=src 的 KV Cache 复制到 seq_id=dst
+void llama_kv_cache_seq_cp(
+    struct llama_context * ctx,
+    llama_seq_id seq_id_src,
+    llama_seq_id seq_id_dst,
+    llama_pos p0,  // 起始位置
+    llama_pos p1   // 结束位置
+);
+```
+
+当检测到 prefix 匹配时，只需调用此函数将缓存的 KV 复制到新 sequence，无需重新计算。
+
+## Continuous Batching
+
+**Continuous Batching** 是 LLM 推理服务中的关键优化技术，用于提高 GPU 利用率和降低延迟。它与传统的 **Static Batching** 形成鲜明对比。
+
+### Static Batching vs Continuous Batching
+
+**Static Batching（静态批处理）**：
+
+- 将多个请求组成一个 batch，**一起开始**、**一起结束**
+- 问题：如果 batch 中有一个请求生成 1000 个 tokens，而其他请求只生成 10 个 tokens，那么短请求会被迫等待长请求完成
+- 结果：**GPU 资源浪费**、**短请求延迟增加**
+
+**Continuous Batching（连续批处理）**：
+
+- 动态维护一个活跃请求的 batch
+- 当某个请求完成时，**立即从 batch 中移除**
+- 如果有新请求到达，**立即加入 batch**
+- 结果：batch 大小动态变化，GPU 利用率最大化
+
+<ContinuousBatchingTimeline client:visible />
+
+### 混合 Prefill/Decode Batch
+
+Continuous Batching 的另一个关键优化是**混合 prefill 和 decode 请求**在同一个 batch 中：
+
+- **Prefill**：处理输入 prompt，计算所有 tokens 的 KV Cache（计算密集型）
+- **Decode**：生成一个新 token（内存带宽密集型）
+
+传统做法是将 prefill 和 decode 分离到不同的 batch，但这会导致：
+- Decode batch 等待 prefill batch 完成才能执行
+- 短 prefill 请求无法快速插入
+
+Continuous Batching 允许在同一个 batch 中混合执行：
+
+```
+Batch at t=3:
+  Request A: decode (生成第 50 个 token)
+  Request B: decode (生成第 200 个 token)
+  Request C: prefill (处理输入 prompt 的第 10-30 个 token)
+```
+
+llama.cpp 通过 `llama_batch` 结构支持这种混合 batch：
+
+```cpp
+struct llama_batch {
+    int32_t n_tokens;  // batch 中的 token 总数
+    
+    llama_token  * token;    // 每个 token 的 ID
+    llama_pos    * pos;      // 每个 token 的位置索引
+    llama_seq_id * seq_id;   // 每个 token 所属的 sequence
+    int8_t       * logits;   // 是否需要计算 logits (decode=1, prefill=0)
+};
+```
+
+关键在于 `logits` 字段：只有正在 decode 的 token 才需要计算 logits 输出，prefill 的 token 只需计算 KV Cache。
+
+## 上下文管理
+
+在长上下文推理中，KV Cache 的大小会随着生成的 token 数量线性增长，最终会达到模型的 **max context length** 限制。Ollama 和 llama.cpp 实现了多种上下文管理策略来处理这个问题。
+
+### Max Context 限制
+
+每个模型都有一个预训练时的最大上下文长度（如 Llama 2 是 4096，Llama 3 是 8192），超过这个长度会导致：
+- 注意力分数计算失效（位置编码超出训练范围）
+- KV Cache 内存溢出
+
+llama.cpp 在推理时会严格检查：
+
+```cpp
+if (n_past + n_tokens > n_ctx) {
+    // 超出 context 限制，需要触发 context shifting
+    llama_kv_cache_seq_shift(...);
+}
+```
+
+### Context Shifting
+
+当达到 context 限制时，**context shifting** 策略会移除最早的 tokens，为新 tokens 腾出空间：
+
+```
+原始序列: [tok_0, tok_1, ..., tok_4095]  (已满)
+生成 tok_4096 时:
+  1. 移除前 N 个 tokens (如前 512 个)
+  2. 将剩余 tokens 的位置索引向前移动 N
+  3. 在末尾追加新 token
+结果: [tok_512, tok_513, ..., tok_4095, tok_4096]
+```
+
+在 llama.cpp 中通过 `llama_kv_cache_seq_rm` 和 `llama_kv_cache_seq_shift` 实现：
+
+```cpp
+// 移除前 512 个 tokens
+llama_kv_cache_seq_rm(ctx, seq_id, 0, 512);
+
+// 将剩余 tokens 的位置向前移动 512
+llama_kv_cache_seq_shift(ctx, seq_id, 512, -1, -512);
+```
+
+### Sliding Window Attention
+
+部分模型（如 Mistral 7B）使用 **sliding window attention**，只关注最近的 W 个 tokens（如 W=4096）。这种机制天然支持长上下文：
+
+- KV Cache 只保留最近 W 个 tokens
+- 超出窗口的 KV 自动丢弃
+- 无需复杂的 shifting 逻辑
+
+llama.cpp 根据模型的 `sliding_window` 配置自动应用这种策略：
+
+```cpp
+if (model.sliding_window > 0 && n_past >= model.sliding_window) {
+    // 自动移除超出窗口的 KV
+    llama_kv_cache_seq_rm(ctx, seq_id, 0, n_past - model.sliding_window);
+}
+```
+
+### 内存管理策略
+
+Ollama 在上层还实现了智能的内存管理策略：
+
+1. **动态卸载**：当 GPU 内存不足时，将部分 KV Cache 卸载到 CPU 内存
+2. **优先级淘汰**：根据请求优先级决定保留哪些 KV Cache
+3. **压缩存储**：对于冷数据，使用低精度存储（如 FP16 → INT8）减少内存占用
+
+## 为什么不一样：对比 PagedAttention
+
+Ollama 和 llama.cpp 的 slot-based KV Cache 管理与学术界流行的 **PagedAttention** (vLLM) 有显著区别。
+
+### PagedAttention 的核心思想
+
+PagedAttention 借鉴操作系统的**虚拟内存分页机制**：
+
+- 将 KV Cache 分成固定大小的 **pages**（如每个 page 64 tokens）
+- 每个 sequence 的 KV Cache 由多个 pages 组成（可以不连续）
+- 使用 **page table** 记录逻辑地址到物理地址的映射
+- 支持 **copy-on-write** (COW) 和 **内存共享**
+
+优点：
+- **零内存浪费**：page 级别的细粒度分配，几乎无碎片
+- **灵活共享**：多个 sequence 可以共享相同的 pages（如 beam search）
+- **高内存利用率**：vLLM 论文显示可提升 2-4x 吞吐量
+
+### Slot-Based 的设计权衡
+
+llama.cpp 选择 slot-based 而非 PagedAttention 的原因：
+
+**1. 实现复杂度**
+- Slot-based：简单直接，代码量小，易于维护
+- PagedAttention：需要实现 page table、COW、内存分配器，复杂度高
+
+**2. 跨平台兼容性**
+- Slot-based：CPU/GPU/Metal/Vulkan 全平台统一实现
+- PagedAttention：高度依赖 CUDA，跨平台支持困难
+
+**3. 单机 vs 服务化**
+- llama.cpp 定位：本地推理，通常单用户或低并发
+- vLLM 定位：云端服务，高并发、高吞吐
+- 在低并发场景下，slot-based 的内存浪费可接受
+
+**4. 硬件差异**
+- vLLM：面向 A100/H100 等大显存 GPU，内存管理收益明显
+- llama.cpp：支持 8GB 消费级 GPU、Apple Silicon、CPU，内存压力相对较小
+
+### Ollama 的中间路线
+
+Ollama 在 llama.cpp 基础上增加了 Go 层的抽象，提供了一些 PagedAttention 的特性：
+
+- **Prefix Cache**：通过 hash 匹配实现类似 page sharing 的效果
+- **动态 Slot 分配**：Go 层动态决定为每个请求分配多大的 context
+- **跨请求复用**：通过 sequence copy 实现类似 COW 的机制
+
+这种设计在**实现复杂度**和**内存效率**之间取得了平衡，适合 Ollama 的"易用本地 LLM 服务"的定位。
+
+---
+
+## 延伸阅读
+
+- [PagedAttention 论文](https://arxiv.org/abs/2309.06180)：了解基于分页的 KV Cache 管理
+- [vLLM 源码](https://github.com/vllm-project/vllm)：学习生产级 LLM 推理系统的实现
+- [llama.cpp KV Cache 源码](https://github.com/ggerganov/llama.cpp/blob/master/llama.cpp#L3000)：深入理解 slot-based 实现细节
+- [Continuous Batching in LLM Serving](https://www.anyscale.com/blog/continuous-batching-llm-inference)：Anyscale 对 continuous batching 的详细解析

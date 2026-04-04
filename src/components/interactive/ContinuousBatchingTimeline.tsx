@@ -1,119 +1,153 @@
-// src/components/interactive/ContinuousBatchingTimeline.tsx
-import { COLORS, HEAD_COLORS } from './shared/colors';
+import { useState } from 'react';
+import { COLORS, FONTS } from './shared/colors';
 
-// Request definitions: [startTime, duration]
-const REQUESTS = [
-  { id: 'A', duration: 3, color: HEAD_COLORS[0] },
-  { id: 'B', duration: 5, color: HEAD_COLORS[1] },
-  { id: 'C', duration: 2, color: HEAD_COLORS[2] },
-  { id: 'D', duration: 3, color: HEAD_COLORS[3] },
-  { id: 'E', duration: 2, color: HEAD_COLORS[4] },
-];
+const W = 580;
+const H = 300;
 
-const TOTAL_TIME = 8;
-const SLOTS = 3;
-
-function Timeline({ title, schedule, utilization }: {
-  title: string;
-  schedule: { slot: number; start: number; end: number; reqId: string; color: string; idle?: boolean }[];
-  utilization: number;
-}) {
-  const svgW = 500;
-  const svgH = SLOTS * 30 + 40;
-  const padL = 30;
-  const padT = 24;
-  const timeW = (svgW - padL - 10) / TOTAL_TIME;
-  const slotH = 24;
-
-  return (
-    <div className="flex flex-col items-center">
-      <div className="text-sm font-semibold text-gray-700 mb-1">{title}</div>
-      <svg viewBox={`0 0 ${svgW} ${svgH}`} className="w-full max-w-md">
-        {/* Time axis */}
-        {Array.from({ length: TOTAL_TIME + 1 }, (_, t) => (
-          <g key={t}>
-            <line x1={padL + t * timeW} y1={padT - 4} x2={padL + t * timeW} y2={padT + SLOTS * (slotH + 2)}
-              stroke="#e5e7eb" strokeWidth={0.5} />
-            <text x={padL + t * timeW} y={padT - 8} textAnchor="middle"
-              fontSize="8" fill={COLORS.mid} fontFamily="system-ui">t{t}</text>
-          </g>
-        ))}
-        {/* Slot labels */}
-        {Array.from({ length: SLOTS }, (_, s) => (
-          <text key={s} x={padL - 4} y={padT + s * (slotH + 2) + slotH / 2 + 3}
-            textAnchor="end" fontSize="8" fill={COLORS.mid} fontFamily="system-ui">Slot {s + 1}</text>
-        ))}
-        {/* Schedule blocks */}
-        {schedule.map((s, i) => (
-          <g key={i}>
-            <rect
-              x={padL + s.start * timeW + 1}
-              y={padT + s.slot * (slotH + 2)}
-              width={(s.end - s.start) * timeW - 2}
-              height={slotH}
-              rx={4}
-              fill={s.idle ? '#f3f4f6' : s.color + '55'}
-              stroke={s.idle ? '#d1d5db' : s.color}
-              strokeWidth={1}
-            />
-            {!s.idle && (
-              <text
-                x={padL + ((s.start + s.end) / 2) * timeW}
-                y={padT + s.slot * (slotH + 2) + slotH / 2 + 3}
-                textAnchor="middle" fontSize="9" fill={COLORS.dark} fontFamily="system-ui" fontWeight="600">
-                {s.reqId}
-              </text>
-            )}
-          </g>
-        ))}
-        {/* Utilization */}
-        <text x={svgW / 2} y={svgH - 4} textAnchor="middle" fontSize="10"
-          fill={utilization > 80 ? COLORS.green : COLORS.orange} fontFamily="system-ui" fontWeight="600">
-          GPU 利用率: {utilization}%
-        </text>
-      </svg>
-    </div>
-  );
+interface Request {
+  id: string;
+  prefillLen: number;
+  decodeLen: number;
+  startTime: number;
+  color: string;
 }
 
-export default function ContinuousBatchingTimeline() {
-  // Static batching: A(3), B(5), C(2) start together, wait for B to finish
-  const staticSchedule = [
-    { slot: 0, start: 0, end: 3, reqId: 'A', color: REQUESTS[0].color },
-    { slot: 0, start: 3, end: 5, reqId: '', color: '', idle: true }, // A idle
-    { slot: 1, start: 0, end: 5, reqId: 'B', color: REQUESTS[1].color },
-    { slot: 2, start: 0, end: 2, reqId: 'C', color: REQUESTS[2].color },
-    { slot: 2, start: 2, end: 5, reqId: '', color: '', idle: true }, // C idle
-    // New batch after t=5
-    { slot: 0, start: 5, end: 8, reqId: 'D', color: REQUESTS[3].color },
-    { slot: 1, start: 5, end: 7, reqId: 'E', color: REQUESTS[4].color },
-    { slot: 1, start: 7, end: 8, reqId: '', color: '', idle: true },
-    { slot: 2, start: 5, end: 8, reqId: '', color: '', idle: true },
-  ];
+const INITIAL_REQUESTS: Request[] = [
+  { id: 'A', prefillLen: 2, decodeLen: 6, startTime: 0, color: '#3b82f6' },
+  { id: 'B', prefillLen: 1, decodeLen: 3, startTime: 1, color: '#f59e0b' },
+  { id: 'C', prefillLen: 2, decodeLen: 4, startTime: 3, color: '#10b981' },
+];
 
-  // Continuous batching: fill slots as they become free
-  const contSchedule = [
-    { slot: 0, start: 0, end: 3, reqId: 'A', color: REQUESTS[0].color },
-    { slot: 1, start: 0, end: 5, reqId: 'B', color: REQUESTS[1].color },
-    { slot: 2, start: 0, end: 2, reqId: 'C', color: REQUESTS[2].color },
-    // C finishes at t=2, D fills in
-    { slot: 2, start: 2, end: 5, reqId: 'D', color: REQUESTS[3].color },
-    // A finishes at t=3, E fills in
-    { slot: 0, start: 3, end: 5, reqId: 'E', color: REQUESTS[4].color },
-    { slot: 0, start: 5, end: 8, reqId: '', color: '', idle: true },
-    { slot: 1, start: 5, end: 8, reqId: '', color: '', idle: true },
-    { slot: 2, start: 5, end: 8, reqId: '', color: '', idle: true },
-  ];
+export default function ContinuousBatchingTimeline() {
+  const [requests] = useState(INITIAL_REQUESTS);
+  const [showStatic, setShowStatic] = useState(true);
+
+  const timeScale = 42; // pixels per time unit
+  const timelineX = 60;
+  const maxTime = 12;
+
+  // Continuous batching layout
+  const contY = 60;
+  const staticY = 180;
+  const rowH = 24;
 
   return (
-    <div className="my-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Timeline title="Static Batching" schedule={staticSchedule} utilization={63} />
-        <Timeline title="Continuous Batching" schedule={contSchedule} utilization={83} />
+    <div>
+      <div className="flex gap-2 justify-center mb-3">
+        <button onClick={() => setShowStatic(!showStatic)}
+          className={`px-3 py-1 text-xs rounded-full border ${
+            showStatic ? 'bg-gray-100 border-gray-400 text-gray-700' : 'bg-white border-gray-300 text-gray-500'
+          }`}>
+          {showStatic ? '隐藏' : '显示'} Static Batching 对比
+        </button>
       </div>
-      <p className="text-xs text-gray-500 text-center mt-2">
-        Continuous Batching 在请求完成后立即插入新请求，显著提高 GPU 利用率
-      </p>
+
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
+        <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
+          fill={COLORS.dark} fontFamily={FONTS.sans}>
+          Continuous Batching 时间线
+        </text>
+
+        {/* Time axis */}
+        <text x={timelineX - 5} y={contY - 8} textAnchor="end" fontSize="7"
+          fill={COLORS.mid} fontFamily={FONTS.sans}>Continuous</text>
+        {Array.from({ length: maxTime + 1 }, (_, t) => (
+          <g key={t}>
+            <line x1={timelineX + t * timeScale} y1={contY - 3}
+              x2={timelineX + t * timeScale} y2={contY + requests.length * rowH + 3}
+              stroke="#e2e8f0" strokeWidth={0.5} />
+            <text x={timelineX + t * timeScale} y={contY + requests.length * rowH + 15}
+              textAnchor="middle" fontSize="6" fill={COLORS.mid} fontFamily={FONTS.mono}>
+              t={t}
+            </text>
+          </g>
+        ))}
+
+        {/* Continuous batching bars */}
+        {requests.map((req, ri) => {
+          const y = contY + ri * rowH;
+          const prefillX = timelineX + req.startTime * timeScale;
+          const decodeX = prefillX + req.prefillLen * timeScale;
+          return (
+            <g key={req.id}>
+              <text x={timelineX - 8} y={y + rowH / 2 + 3} textAnchor="end"
+                fontSize="7" fontWeight="600" fill={req.color} fontFamily={FONTS.sans}>
+                {req.id}
+              </text>
+              {/* Prefill */}
+              <rect x={prefillX} y={y + 2} width={req.prefillLen * timeScale - 2}
+                height={rowH - 4} rx={3} fill={req.color} opacity={0.7} />
+              <text x={prefillX + (req.prefillLen * timeScale) / 2} y={y + rowH / 2 + 3}
+                textAnchor="middle" fontSize="6" fill="white" fontWeight="600"
+                fontFamily={FONTS.sans}>P</text>
+              {/* Decode */}
+              <rect x={decodeX} y={y + 2} width={req.decodeLen * timeScale - 2}
+                height={rowH - 4} rx={3} fill={req.color} opacity={0.35} />
+              <text x={decodeX + (req.decodeLen * timeScale) / 2} y={y + rowH / 2 + 3}
+                textAnchor="middle" fontSize="6" fill={req.color} fontWeight="600"
+                fontFamily={FONTS.sans}>D ({req.decodeLen})</text>
+            </g>
+          );
+        })}
+
+        {/* Static batching comparison */}
+        {showStatic && (
+          <g>
+            <text x={timelineX - 5} y={staticY - 8} textAnchor="end" fontSize="7"
+              fill={COLORS.mid} fontFamily={FONTS.sans}>Static</text>
+
+            {/* Time axis for static */}
+            {Array.from({ length: maxTime + 1 }, (_, t) => (
+              <line key={t} x1={timelineX + t * timeScale} y1={staticY - 3}
+                x2={timelineX + t * timeScale} y2={staticY + requests.length * rowH + 3}
+                stroke="#e2e8f0" strokeWidth={0.5} />
+            ))}
+
+            {/* In static batching, B waits for A to finish before being in same batch */}
+            {requests.map((req, ri) => {
+              const y = staticY + ri * rowH;
+              // Static: each request runs in its own batch sequentially
+              const staticStart = ri === 0 ? 0 : ri === 1 ? 0 : 4; // simplified
+              const totalLen = req.prefillLen + req.decodeLen;
+              return (
+                <g key={req.id}>
+                  <text x={timelineX - 8} y={y + rowH / 2 + 3} textAnchor="end"
+                    fontSize="7" fontWeight="600" fill={req.color} fontFamily={FONTS.sans}>
+                    {req.id}
+                  </text>
+                  <rect x={timelineX + staticStart * timeScale} y={y + 2}
+                    width={totalLen * timeScale - 2} height={rowH - 4} rx={3}
+                    fill={req.color} opacity={0.3} />
+                  {/* Gray waiting period for C */}
+                  {ri === 2 && (
+                    <rect x={timelineX + 3 * timeScale} y={y + 2}
+                      width={1 * timeScale - 2} height={rowH - 4} rx={3}
+                      fill="#e2e8f0" stroke="#94a3b8" strokeWidth={0.5}
+                      strokeDasharray="2,2" />
+                  )}
+                </g>
+              );
+            })}
+
+            <text x={W / 2} y={staticY + requests.length * rowH + 28} textAnchor="middle"
+              fontSize="7" fill={COLORS.mid} fontFamily={FONTS.sans}>
+              Static: 短请求等长请求完成才能释放 | Continuous: 完成即释放, 新请求立即插入
+            </text>
+          </g>
+        )}
+
+        {/* Legend */}
+        <rect x={30} y={H - 18} width={20} height={10} rx={2} opacity={0.7}
+          fill={COLORS.primary} />
+        <text x={55} y={H - 10} fontSize="6.5" fill={COLORS.mid} fontFamily={FONTS.sans}>
+          Prefill (P)
+        </text>
+        <rect x={120} y={H - 18} width={20} height={10} rx={2} opacity={0.35}
+          fill={COLORS.primary} />
+        <text x={145} y={H - 10} fontSize="6.5" fill={COLORS.mid} fontFamily={FONTS.sans}>
+          Decode (D)
+        </text>
+      </svg>
     </div>
   );
 }
