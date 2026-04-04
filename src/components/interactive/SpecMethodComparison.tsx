@@ -51,6 +51,15 @@ const METHODS: SpecMethod[] = [
     summary: '用 target model 的 hidden state（而非 token embedding）做 draft，信息量远大于 token 级别 → 最高 acceptance rate',
   },
   {
+    name: 'Eagle-3',
+    extraParams: '轻量 draft model',
+    trainingCost: '低',
+    trainingLevel: 'low',
+    speedup: '~6.5x',
+    useCase: '最高加速比',
+    summary: 'Direct token prediction + multi-layer feature fusion (Training-Time Test)，不再预测 feature 而是直接预测 token，比 EAGLE-2 提升约 1.4x',
+  },
+  {
     name: 'Lookahead',
     extraParams: '无',
     trainingCost: '零',
