@@ -32,6 +32,9 @@ references:
   - type: website
     title: "DeepSeek-V3 Technical Report"
     url: "https://arxiv.org/abs/2412.19437"
+  - type: paper
+    title: "EAGLE-3: Scaling up Inference Acceleration of Large Language Models via Training-Time Test"
+    url: "https://arxiv.org/abs/2503.01840"
 ---
 
 import DraftVerifyAnimation from '../../../components/interactive/DraftVerifyAnimation.tsx';
@@ -40,6 +43,10 @@ import MedusaTreeViz from '../../../components/interactive/MedusaTreeViz.tsx';
 import MTPTrainInferBridge from '../../../components/interactive/MTPTrainInferBridge.tsx';
 import EagleArchitecture from '../../../components/interactive/EagleArchitecture.tsx';
 import SpecMethodComparison from '../../../components/interactive/SpecMethodComparison.tsx';
+import DraftTreeStructure from '../../../components/interactive/DraftTreeStructure.tsx';
+import TreeAttentionMask from '../../../components/interactive/TreeAttentionMask.tsx';
+import EagleEvolution from '../../../components/interactive/EagleEvolution.tsx';
+import DraftVerifyPipeline from '../../../components/interactive/DraftVerifyPipeline.tsx';
 
 LLM 推理的 Decode 阶段是 **memory-bound** 的 — 每步只生成 1 个 token，GPU 算力大量空闲。自回归生成的核心瓶颈在于**顺序依赖**：每个 token 的生成都依赖前一个 token 的结果。
 
@@ -182,6 +189,38 @@ Eagle 的 "auto-regression head" 是一个轻量 decoder 层：
 ### 训练
 
 冻结 target model，只训练轻量 decoder（类似 Medusa 的训练方式），但因为输入是 feature 而非 token，同等训练量下效果更好。
+
+## Draft Tree — 树状推测结构
+
+前面 Medusa 和 Eagle-2 都提到了 tree attention — 这里详细展开 draft tree 的结构和验证机制。
+
+### 为什么树比序列好
+
+经典的 Draft-then-Verify 生成一条链（序列）：一旦某个位置被 reject，后续所有 token 全部作废。而 **draft tree** 维护多条候选路径，一次 forward pass 并行验证所有路径 — reject 只影响单条分支，其他路径不受影响。
+
+<DraftTreeStructure client:visible />
+
+### Tree Attention Mask
+
+要在一次 forward pass 中验证整棵树，需要构造特殊的 attention mask：每个节点只能 attend 自己的**祖先路径**上的节点（而非所有前面的节点）。这比标准因果 mask 更加稀疏：
+
+<TreeAttentionMask />
+
+验证完成后，选择树中**最长的被接受路径**作为输出。固定 token budget 下，树结构的 expected accepted tokens 显著高于链结构。
+
+## EAGLE-3 — Scaling Up Speculative Decoding
+
+EAGLE 系列是目前 acceptance rate 最高的 speculative decoding 方案。从 EAGLE-1 到 EAGLE-3，核心演进是：
+
+<EagleEvolution client:visible />
+
+### EAGLE-3 的关键改进
+
+EAGLE-1/2 预测 **feature 向量**（target model 的 hidden state），再映射到 token。EAGLE-3 转为 **direct token prediction** — 直接预测下一个 token，同时融合 target model 多层的特征（multi-layer feature fusion），通过 Training-Time Test 技术更好地利用训练数据 scaling。
+
+<DraftVerifyPipeline client:visible />
+
+实测 EAGLE-3 达到 **6.5x 加速比**，比 EAGLE-2 提升约 1.4x。在 SGLang 推理框架中，batch=64 时吞吐提升 1.38x。
 
 ## Lookahead Decoding — 无 Draft Model
 
