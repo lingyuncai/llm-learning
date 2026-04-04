@@ -36,9 +36,9 @@ function MatrixGrid({ x, y, label, rows, cols, highlightRow, highlightCol, value
           const isRowHL = highlightRow === r;
           const isColHL = highlightCol === c;
           const isActive = activeCell?.r === r && activeCell?.c === c;
-          let fill = '#f8fafc';
-          let stroke = '#cbd5e1';
-          let textColor = COLORS.dark;
+          let fill: string = '#f8fafc';
+          let stroke: string = '#cbd5e1';
+          let textColor: string = COLORS.dark;
           if (isActive) { fill = '#fef3c7'; stroke = COLORS.orange; textColor = COLORS.orange; }
           else if (isRowHL && isColHL) { fill = '#dbeafe'; stroke = COLORS.primary; textColor = COLORS.primary; }
           else if (isRowHL) { fill = '#dbeafe'; stroke = COLORS.primary; }

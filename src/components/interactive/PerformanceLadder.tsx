@@ -57,12 +57,12 @@ const STAGES: Stage[] = [
     keyChange: '隐藏内存延迟，流水线充分利用',
   },
   {
-    label: 'Tensor Core',
+    label: 'Tensor Core (FP16)',
     gflops: 60000,
     pct: '~90%',
     color: COLORS.primary,
     detail: 'FP16 HGEMM: WMMA 一条指令完成 16x16x16 矩阵块乘加 (FP16 in, FP32 acc)',
-    keyChange: '切换到 FP16 Tensor Core (vs FP16 TC practical peak ~70K GFLOPS at 4096x4096)',
+    keyChange: '切换到 FP16 Tensor Core — 注意: 此处百分比基于 FP16 TC practical peak (~70K GFLOPS)',
   },
 ];
 
@@ -86,7 +86,7 @@ export default function PerformanceLadder() {
         </text>
         <text x={W / 2} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
           fontFamily={FONTS.sans}>
-          每步优化的 GFLOPS — 悬停查看详情
+          每步优化的 GFLOPS (前 5 步: FP32 SGEMM, 最后一步: FP16 HGEMM) — 悬停查看详情
         </text>
 
         {/* cuBLAS reference line */}

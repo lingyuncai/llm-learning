@@ -276,12 +276,12 @@ const steps = [
         <text x={W / 2} y={285} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>内存访问量对比 (M=N=K=4096, BS=32)</text>
         <text x={120} y={305} textAnchor="middle" fontSize="8" fill={COLORS.red} fontFamily={FONTS.mono}>
-          Naive: 2MNK = 275G
+          Naive: 2MNK = 137G
         </text>
         <text x={W / 2} y={305} textAnchor="middle" fontSize="8" fill={COLORS.dark}
           fontFamily={FONTS.sans}>→</text>
         <text x={420} y={305} textAnchor="middle" fontSize="8" fill={COLORS.green} fontFamily={FONTS.mono}>
-          Tiling: 2MNK/BS = 8.6G (32x 减少)
+          Tiling: 2MNK/BS = 4.3G (32x 减少)
         </text>
       </StepSvg>
     ),

@@ -32,7 +32,7 @@ function TimeBar({ x, y, w, h, label, color, bg }: {
 
 const TRACK_Y = 65;
 const TRACK_H = 26;
-const UNIT_W = 70;
+const UNIT_W = 60;
 
 const steps = [
   {
