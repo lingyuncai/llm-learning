@@ -1,0 +1,196 @@
+---
+title: "矩阵加速单元 — Tensor Core 与 XMX"
+slug: matrix-acceleration
+locale: zh
+tags: [gpu, tensor-core, xmx, systolic-array, nvidia, intel]
+prerequisites: [gpu-architecture]
+difficulty: intermediate
+created: "2026-04-03"
+updated: "2026-04-03"
+references:
+  - type: website
+    title: "NVIDIA H100 Tensor Core GPU Architecture Whitepaper"
+    url: "https://resources.nvidia.com/en-us-tensor-core"
+  - type: paper
+    title: "Why Systolic Architectures? — H.T. Kung"
+    url: "https://www.cs.virginia.edu/~smk9u/CS4330S19/kung_1982.pdf"
+  - type: website
+    title: "NVIDIA PTX ISA — Matrix Multiply-Accumulate"
+    url: "https://docs.nvidia.com/cuda/parallel-thread-execution/"
+  - type: website
+    title: "Intel Xe2 Architecture — Xe-Core and XMX"
+    url: "https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/"
+  - type: paper
+    title: "DeepSeek-V3 Technical Report"
+    url: "https://arxiv.org/abs/2412.19437"
+---
+
+import TensorCoreVsCudaCore from '../../../components/interactive/TensorCoreVsCudaCore.tsx';
+import SystolicArrayAnimation from '../../../components/interactive/SystolicArrayAnimation.tsx';
+import SystolicDataflowCompare from '../../../components/interactive/SystolicDataflowCompare.tsx';
+import TensorCorePrecisionTimeline from '../../../components/interactive/TensorCorePrecisionTimeline.tsx';
+import TensorCoreMmaFlow from '../../../components/interactive/TensorCoreMmaFlow.tsx';
+import XmxArchitectureDiagram from '../../../components/interactive/XmxArchitectureDiagram.tsx';
+import TensorCoreXmxCompare from '../../../components/interactive/TensorCoreXmxCompare.tsx';
+import DualPipeOverlap from '../../../components/interactive/DualPipeOverlap.tsx';
+
+在 [GPU Architecture](/zh/articles/gpu-architecture) 文章中，我们了解了 SM 内部的 Processing Block 结构 — 每个 Block 有 Warp Scheduler、FP32 CUDA Core、INT32 Core 和一个 **Tensor Core**。
+
+那篇文章中 Tensor Core 只是一个名字。本文要回答：**它内部到底是什么，为什么能让矩阵乘法快一个数量级**。同时，我们会深入 Intel 的对应技术 — XMX (Xe Matrix eXtensions)，理解两大阵营如何用不同的硬件实现相同的目标。
+
+## Section 1: 为什么需要专用矩阵单元
+
+传统 CUDA Core 做矩阵乘法是**逐元素标量乘加**。以一个 4×4 矩阵乘为例：
+
+- C(4×4) = A(4×4) × B(4×4)
+- 每个输出元素需要 4 次乘法 + 3 次加法 = 7 次标量操作
+- 16 个输出元素 × 7 = **112 次标量操作**
+
+而 Tensor Core 一条 MMA (Matrix Multiply-Accumulate) 指令就完成整块矩阵乘累加 D = A·B + C。
+
+<TensorCoreVsCudaCore client:visible />
+
+吞吐量差距是数量级的：H100 SXM 上 FP32 CUDA Core 约 67 TFLOPS，FP16 Tensor Core 约 990 TFLOPS — **约 15 倍差距**。
+
+AI 训练和推理中 90%+ 的计算量是矩阵乘法（QKV 投影、Attention score、FFN 全是 GEMM）。这就是为什么专用矩阵加速单元如此重要 — 它直接决定了 AI 工作负载的性能天花板。
+
+那么 Tensor Core 和 XMX 内部是怎么做到一拍完成矩阵乘的？答案是 **Systolic Array（脉动阵列）**。
+
+---
+
+## Section 2: Systolic Array — 数据在阵列中脉动流动
+
+### 基本概念
+
+Systolic Array 是一种由大量简单 PE (Processing Element) 组成的计算网格。核心思想：
+
+- **数据从边缘流入**，沿固定方向在 PE 之间传递
+- 每个 PE 执行一次 **Multiply-Accumulate (MAC)**，然后将数据传给邻居
+- 数据被**多个 PE 复用** — 一个输入元素经过多个 PE，参与多次计算
+- 不需要每次都从内存读取 — **极高的数据复用率**是效率的关键
+
+这个名字来自 "systole"（心脏收缩），形容数据像血液一样有节奏地在阵列中脉动流动。
+
+### 4×4 脉动阵列动画
+
+下面的动画展示一个 4×4 output-stationary systolic array 的工作过程。A 矩阵的行从左侧流入，B 矩阵的列从顶部流入，每个 PE 累加自己负责的输出元素。
+
+<SystolicArrayAnimation client:visible />
+
+关键观察：
+- **波前对角线** — 活跃 PE 像波浪一样从左上角扫到右下角
+- **PE(i,j) 在 cycle i+j+k 时处理第 k 对输入** — 输入的错开保证数据同时到达
+- **4×4 矩阵乘需要 10 个 cycle**（而非 1 个），但硬件可以**流水线化**多组矩阵
+
+### Dataflow 变体
+
+Systolic array 有多种数据流模式，区别在于**哪个矩阵"固定"在 PE 内，哪个"流动"**：
+
+<SystolicDataflowCompare />
+
+- **Output-Stationary**: 输出矩阵 C 固定在 PE 中累加，A 和 B 都流过。优点是部分和不需要移动
+- **Weight-Stationary**: 权重矩阵 B 预加载到 PE，输入 A 流过，部分和向下传递。适合推理（权重固定）
+
+Tensor Core 和 XMX 的具体实现是厂商机密，但本质都是 systolic array 的变体。
+
+---
+
+## Section 3: NVIDIA Tensor Core
+
+### MMA 操作
+
+Tensor Core 的核心操作是矩阵乘累加：**D = A × B + C**
+
+- 原始概念尺寸是 4×4，但从 Volta 到 Blackwell，实际支持的块尺寸越来越大
+- Hopper (4th gen) wmma API 常用尺寸：`m16n16k16` — 即 A(16×16) × B(16×16) → D(16×16)；PTX 层面有更小的 `m16n8k16`
+- 每个 SM 有 **4 个 Tensor Core**（每个 Processing Block 一个）
+
+### 精度支持演进
+
+从 Volta (2017) 到 Blackwell (2024)，Tensor Core 支持的精度不断扩展：
+
+<TensorCorePrecisionTimeline />
+
+趋势非常清晰：精度越来越低，吞吐量越来越高。FP8 的吞吐量是 FP16 的 2 倍，FP4 又翻倍。这也是为什么 FP8 训练（如 DeepSeek V3）和 FP4 量化推理成为趋势。
+
+### Warp 级操作
+
+Tensor Core 操作不是单个线程发起的 — 它是 **warp 级协作操作**。一个 warp 的 32 个线程共同持有输入矩阵的片段（fragment），一起发射 MMA 指令。
+
+<TensorCoreMmaFlow client:visible />
+
+关键要点：
+- **Fragment** 是矩阵块在 32 个线程寄存器中的分布式表示 — 每个线程只持有一部分
+- `wmma::load_matrix_sync` 从内存加载到 fragment，`wmma::mma_sync` 执行矩阵乘，`wmma::store_matrix_sync` 写回内存
+- wmma API 操作 m16n16k16 块；底层 PTX 指令 `mma.sync.aligned.m16n8k16` 操作更小的块，由编译器拆分
+
+---
+
+## Section 4: Intel XMX
+
+Intel 的矩阵加速单元叫 **XMX (Xe Matrix eXtensions)**，是 Xe2 架构的核心组件。
+
+<XmxArchitectureDiagram />
+
+### 关键规格 (Xe2 / Lunar Lake)
+
+- 每个 **Xe-Core** 包含 8 个 XMX 单元 + 2 个 Vector Engine
+- XMX 内部是 **8×8 systolic array**
+- 支持精度：FP16、BF16、TF32、INT8、INT4
+- 编程接口：SYCL `joint_matrix` (高层) / ESIMD `dpas` (低层)
+
+### 与 NVIDIA 的架构类比
+
+| NVIDIA | Intel | 说明 |
+|--------|-------|------|
+| SM | Xe-Core | 基本计算单元 |
+| CUDA Core | Vector Engine | 标量/向量计算 |
+| Tensor Core | XMX | 矩阵加速 |
+| Warp (32 threads) | Sub-group (8/16 wide) | SIMD 执行单位 |
+| Shared Memory | SLM (Shared Local Memory) | SM/Xe-Core 内共享存储 |
+| wmma / mma.sync | joint_matrix / dpas | 矩阵操作 API |
+
+核心思路完全一致 — 都是用 systolic array 做 D = A × B + C。主要区别在**规模**（数据中心 GPU vs 客户端 iGPU）和**编程模型**（CUDA 的 warp-level vs SYCL 的 sub-group）。
+
+---
+
+## Section 5: Tensor Core vs XMX 详细对比
+
+<TensorCoreXmxCompare client:visible />
+
+两者的**相似点**比区别更重要：
+- 都是 systolic array 变体，都做 D = A·B + C
+- 都只能做特定尺寸、特定精度的矩阵乘 — 其他操作仍走传统 CUDA Core / Vector Engine
+- 都需要软件配合（tiling、数据对齐）才能发挥峰值性能 — 这是 GEMM 优化文章的主题
+
+**关键区别**主要在规模和目标场景：
+- H100 Tensor Core 峰值 ~990 TFLOPS (FP16)，面向数据中心 AI 训练
+- Lunar Lake XMX 峰值 ~48 TOPS (INT8)，面向客户端 AI 推理
+- NVIDIA 的 32-wide warp vs Intel 的 8/16-wide sub-group 影响编程方式
+
+---
+
+## Section 6: Dual-Pipe — 同时利用两种计算单元
+
+Tensor Core 和 CUDA Core 是 SM 内不同的功能单元，有独立的执行通道。传统做法是串行执行：矩阵乘（Tensor Core）完成后才开始 element-wise 操作（CUDA Core）。
+
+**Dual-Pipe 优化**打破了这个限制：让 Tensor Core 做**当前层**的 GEMM 的同时，CUDA Core 做**上一层**的 activation/normalization。
+
+<DualPipeOverlap client:visible />
+
+Dual-pipe 的条件：
+- 两组操作之间**没有数据依赖**（当前 GEMM 不依赖当前 Act/Norm 的结果）
+- 需要精心安排执行顺序和数据布局
+- 可以显著提升 SM 利用率，特别是在 MoE 等 element-wise 操作较多的架构中
+
+---
+
+## 总结
+
+矩阵加速单元的核心设计思想：
+
+1. **专用硬件做矩阵乘** — Systolic array 用极高的数据复用率实现单条指令完成整块矩阵乘累加
+2. **精度换吞吐** — 从 FP16 到 FP8 到 FP4，每降一级精度吞吐量翻倍，AI 工作负载可以接受较低精度
+3. **协作执行** — 矩阵操作是 warp/sub-group 级别的协作，需要软件配合（fragment 管理、tiling 策略）
+
+下一篇文章将从编程者的视角出发 — CUDA 编程模型，理解 thread/block/grid 的层级、shared memory 的使用、memory coalescing 等关键概念。这些知识是写高性能 GPU 代码（包括利用 Tensor Core）的前提。
