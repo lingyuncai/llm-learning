@@ -11,3 +11,4 @@ articles:
   - gpu-architecture
   - matrix-acceleration
   - cuda-programming-model
+  - gemm-optimization
