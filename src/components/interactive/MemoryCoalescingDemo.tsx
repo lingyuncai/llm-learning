@@ -113,7 +113,7 @@ const steps = [
         </text>
         <text x={W / 2} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
           fontFamily={FONTS.sans}>
-          stride=16: 32 个线程的地址散落在 16 个 128B segment 中
+          stride=16: warp 中线程的地址散落在 16 个 128B segment 中 (显示前 16 个线程)
         </text>
 
         {/* Thread row — spread out */}
@@ -144,7 +144,7 @@ const steps = [
               return (
                 <MemSegment key={segIdx}
                   x={x} y={y} w={120} h={14}
-                  label={`seg ${segIdx}: 128B (有效 4B)`} used={4} total={128}
+                  label={`seg ${segIdx}: 128B (有效 8B)`} used={8} total={128}
                   color={COLORS.red} bg="#fee2e2" />
               );
             })}
@@ -164,7 +164,7 @@ const steps = [
         </text>
         <text x={W / 2} y={278} textAnchor="middle" fontSize="7" fill="#64748b"
           fontFamily={FONTS.sans}>
-          每个 thread 的 4B 数据分散在不同 segment → 每个 segment 只用 4B
+          每对相邻 thread 的 8B 数据落在同一 segment → 每个 segment 仅用 8B / 128B
         </text>
 
         {/* Note */}

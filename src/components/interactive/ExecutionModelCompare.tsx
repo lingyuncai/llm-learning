@@ -68,7 +68,7 @@ export default function ExecutionModelCompare() {
       {HEADERS.map((h, i) => (
         <g key={`h-${i}`}>
           <rect x={COL_X[i] - 70} y={42} width={140} height={26} rx={4}
-            fill={`${COL_COLORS[i]}15`} stroke={COL_COLORS[i]} strokeWidth={1} />
+            fill={COL_COLORS[i]} fillOpacity={0.08} stroke={COL_COLORS[i]} strokeWidth={1} />
           <text x={COL_X[i]} y={58} textAnchor="middle" fontSize="9" fontWeight="600"
             fill={COL_COLORS[i]} fontFamily={FONTS.sans}>{h}</text>
         </g>

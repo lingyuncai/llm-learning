@@ -26,7 +26,6 @@ const TRACK_H = 26;
 const TRACK_GAP = 8;
 const LABEL_X = 85;
 const TIMELINE_X = 95;
-const TIMELINE_W = 420;
 
 const warps = ['Warp 0', 'Warp 1', 'Warp 2', 'Warp 3'];
 

@@ -219,16 +219,16 @@ function WarpPacking() {
         })
       )}
 
-      {/* Warp labels */}
+      {/* Warp bounding boxes — warp 0: rows 0-1, warp 1: rows 2-3 */}
       {[0, 1].map(warpId => {
-        const y = startY + (warpId === 0 ? 0 : 2) * (cellH + gap) + cellH + gap + 2;
         const color = warpId === 0 ? COLORS.primary : COLORS.green;
+        const boxY = startY - 2 + warpId * 2 * (cellH + gap);
         return (
           <g key={warpId}>
-            <rect x={startX + (warpId === 0 ? 0 : COLS / 2 * (cellW + gap))}
-              y={startY - 2 + (warpId === 0 ? 0 : 2) * (cellH + gap)}
-              width={COLS * (cellW + gap) - gap}
-              height={2 * (cellH + gap) + cellH + 4}
+            <rect x={startX - 2}
+              y={boxY}
+              width={COLS * (cellW + gap) - gap + 4}
+              height={2 * (cellH + gap) - gap + 4}
               rx={4} fill="none" stroke={color} strokeWidth={1.5} strokeDasharray="4 2" />
           </g>
         );

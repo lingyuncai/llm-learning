@@ -135,7 +135,7 @@ export default function CudaSyclCodeCompare() {
         fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
       <text x={W / 2} y={legendY + 116} textAnchor="middle" fontSize="8" fill={COLORS.dark}
         fontFamily={FONTS.sans}>
-        CUDA: __shared__ → SYCL: local accessor | CUDA: __syncthreads() → SYCL: item.barrier()
+        CUDA: __shared__ → SYCL: local accessor | CUDA: __syncthreads() → SYCL: group_barrier()
       </text>
       <text x={W / 2} y={legendY + 130} textAnchor="middle" fontSize="8" fill="#64748b"
         fontFamily={FONTS.sans}>

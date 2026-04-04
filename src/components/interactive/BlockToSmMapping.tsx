@@ -107,7 +107,7 @@ const steps = [
         {/* Arrows from top to SMs */}
         <text x={W / 2} y={45} textAnchor="middle" fontSize="9" fill="#64748b"
           fontFamily={FONTS.sans}>
-          每个 SM 最多 2 个 Block (因为每个 Block 用 4 warps，SM 最大 ~8-16 active warps)
+          此例中每个 SM 分配 2 个 Block (实际数量由 register / shared memory / warp 资源共同决定)
         </text>
 
         <SmBox x={20} y={60} smId={0} blocks={[0, 1]} />

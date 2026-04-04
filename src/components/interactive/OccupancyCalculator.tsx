@@ -21,7 +21,7 @@ function calcOccupancy(blockSize: number, regsPerThread: number, smemPerBlock: n
   // Limit from warps
   const blocksByWarps = Math.floor(SM.maxWarps / warpsPerBlock);
 
-  // Limit from registers (regs allocated in granularity of 256 per warp)
+  // Limit from registers (Hopper: regs allocated in granularity of 256 per warp; other archs may differ)
   const regsPerWarp = Math.ceil(regsPerThread * 32 / 256) * 256;
   const totalRegsPerBlock = regsPerWarp * warpsPerBlock;
   const blocksByRegs = totalRegsPerBlock > 0 ? Math.floor(SM.maxRegs / totalRegsPerBlock) : SM.maxBlocks;
@@ -75,7 +75,7 @@ export default function OccupancyCalculator() {
         </label>
         <label className="text-sm">
           <span className="text-gray-600 font-medium block mb-1">Shared Mem / Block</span>
-          <input type="range" min={0} max={65536} step={4096} value={smemPerBlock}
+          <input type="range" min={0} max={131072} step={4096} value={smemPerBlock}
             onChange={e => setSmemPerBlock(+e.target.value)} className="w-full" />
           <span className="font-mono text-primary-600">{(smemPerBlock / 1024).toFixed(0)} KB</span>
         </label>
