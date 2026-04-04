@@ -1,0 +1,316 @@
+---
+title: "服务层与调度"
+slug: "ollama-server-scheduling"
+locale: "zh"
+tags: ["ollama", "scheduler", "runner", "model-management"]
+prerequisites: ["ollama-architecture", "ollama-kv-cache-scheduling"]
+difficulty: "advanced"
+created: "2026-04-04"
+updated: "2026-04-04"
+references:
+  - type: "repo"
+    title: "Ollama GitHub"
+    url: "https://github.com/ollama/ollama"
+  - type: "repo"
+    title: "Ollama FAQ"
+    url: "https://github.com/ollama/ollama/blob/main/docs/faq.md"
+---
+
+import RunnerLifecycle from '../../../components/interactive/RunnerLifecycle.tsx';
+import MemoryBudgetCalculator from '../../../components/interactive/MemoryBudgetCalculator.tsx';
+import MultiModelScheduler from '../../../components/interactive/MultiModelScheduler.tsx';
+
+Ollama 作为本地 LLM 推理引擎，其服务层承担着关键的请求调度、模型生命周期管理和内存预算分配任务。本文深入剖析 Ollama Server 的架构设计、Scheduler 调度策略、Runner 状态机以及多模型并发场景下的资源协调机制。
+
+## Ollama Server 架构
+
+Ollama Server 是一个基于 Gin 框架构建的 HTTP 服务器，负责对外暴露 RESTful API 并协调后端推理引擎。其核心架构分为三层：
+
+### HTTP 层
+
+Server 通过 Gin 路由处理客户端请求，主要 endpoint 包括：
+
+- **`POST /api/generate`** — 单轮生成请求，接收 prompt 并流式返回 token
+- **`POST /api/chat`** — 多轮对话请求，维护 conversation history
+- **`POST /api/embeddings`** — 生成文本 embedding
+- **`POST /api/pull`** — 从 Ollama Registry 拉取模型
+- **`POST /api/create`** — 从 Modelfile 创建自定义模型
+
+每个请求经过中间件层 (middleware) 进行日志记录、请求限流、认证（如果启用）和参数验证。验证通过后，请求被转发给 Scheduler 层处理。
+
+### Scheduler 层
+
+Scheduler 是 Ollama 的核心调度器，负责：
+
+1. **请求队列管理** — 维护全局请求队列 (FIFO 或优先级队列)，确保多个并发请求按序处理
+2. **模型实例路由** — 根据请求的 model name 查找或创建对应的 Runner 实例
+3. **资源预算检查** — 计算模型加载所需内存（权重 + KV Cache），判断 GPU/CPU 放置策略
+4. **并发控制** — 限制同时运行的 Runner 数量，避免 OOM
+
+Scheduler 通过 IPC (gRPC 或 Unix socket) 与 Runner 进程通信，发送 Load / Infer / Unload 指令。
+
+### Runner 层
+
+Runner 是实际执行推理的子进程，封装了 llama.cpp 的 C++ binding。每个 Runner 对应一个已加载的模型实例，拥有独立的内存空间（mmap GGUF、GPU VRAM、KV Cache）。Runner 通过健康检查机制 (health check) 向 Scheduler 汇报状态，支持热重载 (hot reload) 和优雅关闭 (graceful shutdown)。
+
+## Scheduler 调度器
+
+Scheduler 的核心职责是在有限的硬件资源下，协调多个用户的模型推理请求。其调度策略包括：
+
+### 请求队列与优先级
+
+Ollama Scheduler 默认使用 FIFO 队列，按请求到达顺序处理。未来版本可能支持优先级调度，允许紧急请求插队。请求入队时携带元数据：
+
+- **model** — 目标模型名称（如 `llama3-8b`）
+- **context_length** — 上下文长度（影响 KV Cache 大小）
+- **max_tokens** — 最大生成 token 数
+- **stream** — 是否流式返回
+
+Scheduler 根据 model name 查找已加载的 Runner：
+
+- 如果模型已加载且空闲 → 直接复用 Runner
+- 如果模型已加载但繁忙 → 加入该 Runner 的等待队列
+- 如果模型未加载 → 触发新 Runner 启动流程
+
+### 并发模型管理
+
+Ollama 支持同时运行多个不同的模型，但受限于内存预算。Scheduler 维护一个全局模型表 (model table)：
+
+```
+ModelTable = Map<ModelName, RunnerInstance>
+```
+
+当新请求到达时，Scheduler 执行以下逻辑：
+
+1. **查表** — 检查目标模型是否已在 ModelTable 中
+2. **内存检查** — 如果未加载，计算加载所需内存（权重 + 预估 KV Cache）
+3. **驱逐策略** — 如果内存不足，执行 LRU (Least Recently Used) 驱逐：卸载最久未使用的模型
+4. **加载模型** — 启动新 Runner 子进程，等待健康检查通过后加入 ModelTable
+
+LRU 驱逐策略确保高频使用的模型常驻内存，低频模型按需加载。用户可通过环境变量 `OLLAMA_MAX_LOADED_MODELS` 限制同时加载的模型数量（默认为 1，即单模型模式）。
+
+## Runner 生命周期
+
+每个 Runner 进程都是一个状态机，在 Scheduler 的控制下经历以下五个状态：
+
+<RunnerLifecycle client:visible />
+
+### 状态转换详解
+
+#### 1. Idle → Loading
+
+Scheduler 接收到首个请求时，触发 Runner 启动流程：
+
+- Fork 子进程并执行 `ollama-runner` 二进制
+- Runner 通过 mmap 加载 GGUF 文件（零拷贝，节省内存）
+- 根据内存预算决定层分配策略：优先 GPU VRAM，不足时降级到 CPU RAM
+- 初始化 KV Cache（预分配固定大小的显存块）
+
+加载耗时取决于模型大小和存储速度，通常 8B 模型需要 2-5 秒。
+
+#### 2. Loading → Ready
+
+加载完成后，Runner 执行健康检查：
+
+- 发送测试推理请求（如 "Hello" → 生成 1 个 token）
+- 验证 GPU kernel 正常工作、KV Cache 读写无错
+- 向 Scheduler 汇报健康状态（通过 gRPC `HealthCheck` RPC）
+
+Scheduler 收到健康信号后，将 Runner 标记为 Ready，允许处理用户请求。
+
+#### 3. Ready → Busy
+
+当 Scheduler 分配推理任务给 Runner 时，状态转为 Busy：
+
+- Runner 接收 prompt 并执行 Prefill（首次 forward pass，填充 KV Cache）
+- 进入 Decode 循环，逐 token 生成直到满足停止条件
+- GPU 利用率接近 100%，VRAM 稳定消耗（权重 + 动态 KV Cache）
+
+Busy 期间 Runner 拒绝新请求，Scheduler 会将同模型的后续请求加入等待队列。
+
+#### 4. Busy → Ready
+
+推理完成后，Runner 返回 Ready 状态：
+
+- KV Cache 保留（支持下一次请求复用，尤其是对话场景）
+- GPU 空闲，CPU 占用降低
+- Scheduler 检查等待队列，如有请求则立即调度
+
+#### 5. Ready → Unloading
+
+如果 Runner 在 Ready 状态超过 `OLLAMA_KEEP_ALIVE` 时长（默认 5 分钟）未收到新请求，Scheduler 触发卸载：
+
+- 释放 KV Cache 显存
+- 关闭 mmap 文件句柄
+- 优雅终止子进程（SIGTERM）
+- 从 ModelTable 中移除
+
+卸载后，下次请求该模型时需重新经历 Idle → Loading 流程。
+
+### 环境变量配置
+
+- **`OLLAMA_KEEP_ALIVE`** — Runner 空闲超时时间（默认 `5m`，可设置为 `0` 禁用自动卸载）
+- **`OLLAMA_MAX_LOADED_MODELS`** — 最大同时加载模型数（默认 `1`）
+- **`OLLAMA_NUM_PARALLEL`** — 单 Runner 并发推理请求数（实验性功能）
+
+## 模型热加载与卸载
+
+Ollama 的热加载机制允许用户无需手动管理模型生命周期，Scheduler 自动按需加载和驱逐模型。以下动画展示了典型的多模型调度场景：
+
+<MultiModelScheduler client:visible />
+
+### 调度决策分析
+
+#### t=0s: 冷启动加载
+
+User A 请求 `llama3-8B`，Scheduler 发现该模型未加载，触发 Load 操作：
+
+- 启动新 Runner 进程
+- mmap GGUF 文件，分配 GPU VRAM（约 5 GB）
+- 初始化 KV Cache（预分配 2 GB）
+- 健康检查通过后进入 Ready 状态
+
+#### t=1s: 首次推理
+
+User A 的 prompt 被分配给 `llama3-8B` Runner，进入 Busy 状态进行推理。
+
+#### t=3s: 多模型场景
+
+User B 请求 `qwen3-8B`，这是一个不同的模型：
+
+- Scheduler 检查内存预算（假设总 VRAM 16 GB）
+- `llama3-8B` 占用 7 GB，剩余 9 GB 足够加载 `qwen3-8B`
+- 启动第二个 Runner，加载 `qwen3-8B`（5 GB 权重 + 2 GB KV Cache）
+
+此时内存中同时运行两个模型，总占用约 14 GB VRAM。
+
+#### t=4s: 并发推理
+
+User B 在 `qwen3-8B` 上推理，User A 的 `llama3-8B` 此时空闲（Ready 状态）。
+
+#### t=6s: 模型复用
+
+User C 请求 `llama3-8B`，Scheduler 发现该模型已在内存中：
+
+- 无需重新加载，直接复用现有 Runner
+- 节省 2-5 秒的冷启动时间
+- 标记为 Reuse 操作
+
+这是 Ollama 调度的核心优势：频繁访问的模型常驻内存，实现秒级响应。
+
+#### t=7s: 队列处理
+
+User C 的推理请求在 `llama3-8B` Runner 上执行。
+
+#### t=9s: LRU 驱逐
+
+`qwen3-8B` 自 t=4s 完成推理后空闲超过 5 分钟（`OLLAMA_KEEP_ALIVE` 默认值），Scheduler 执行 Unload：
+
+- 释放 7 GB VRAM
+- 终止 `qwen3-8B` Runner 子进程
+- 腾出空间供后续模型加载
+
+如果后续有新请求 `qwen3-8B`，需重新 Load。
+
+## 内存管理
+
+Ollama 的内存预算计算决定了模型的放置策略（GPU vs CPU）以及是否需要驱逐现有模型。核心公式为：
+
+$$
+\text{Total Memory} = \text{Model Weights} + \text{KV Cache} + \text{Overhead}
+$$
+
+其中：
+
+- **Model Weights** — GGUF 文件大小（如 Q4_K_M 量化后的 8B 模型约 4.7 GB）
+- **KV Cache** — 上下文长度决定的缓存大小，公式为：
+  $$
+  \text{KV Size} = 2 \times L \times H \times T \times \text{precision}
+  $$
+  - $L$ = 层数 (num_layers)
+  - $H$ = 隐藏维度 (hidden_size)
+  - $T$ = 上下文长度 (context_length)
+  - precision = 2 bytes (FP16)
+- **Overhead** — Cublas workspace、临时缓冲区等（约 500 MB）
+
+### GPU / CPU 放置策略
+
+Scheduler 在加载模型前执行内存预算计算：
+
+1. **尝试全 GPU 放置** — 检查 GPU VRAM 是否足够容纳权重 + KV Cache
+2. **降级到混合模式** — 如果 VRAM 不足，将部分层卸载到 CPU RAM（通过 `--n-gpu-layers` 参数控制）
+3. **纯 CPU 模式** — 如果 VRAM 完全不足，所有层都在 CPU 上运行（速度显著下降）
+
+以下交互式计算器演示了不同硬件配置下的模型放置结果：
+
+<MemoryBudgetCalculator client:visible />
+
+### 实战案例
+
+假设用户有 8 GB VRAM 的 GPU 和 16 GB 系统 RAM，尝试加载以下模型（context_length=2048）：
+
+- **Qwen3-4B Q4_K_M** — 权重 2.6 GB + KV Cache 0.1 GB = 2.7 GB → 放入 GPU ✅
+- **Llama3-8B Q4_K_M** — 权重 4.7 GB + KV Cache 0.16 GB = 4.86 GB → 放入 GPU ✅
+- **Qwen3-14B Q4_K_M** — 权重 8.2 GB + KV Cache 0.25 GB = 8.45 GB → 超出 VRAM，降级到 CPU ⚠️
+- **Llama3-70B Q4_K_M** — 权重 40 GB + KV Cache 0.8 GB = 40.8 GB → 超出 RAM，无法加载 ❌
+
+用户可通过调整 context_length 或使用更激进的量化（如 Q3_K_S）来降低内存需求。
+
+## 为什么不一样：Ollama vs 生产级服务
+
+Ollama 的调度设计与生产级推理服务（如 vLLM、TGI）存在显著差异，体现了不同的设计目标权衡：
+
+### vs vLLM
+
+**vLLM** 是高性能推理引擎，专为生产环境设计：
+
+- **PagedAttention** — 动态分页的 KV Cache 管理，支持高并发 batch 推理
+- **Continuous Batching** — 不同请求的 token 混合在同一 batch 中推理，最大化 GPU 利用率
+- **请求调度** — 支持动态优先级队列、抢占式调度、请求取消
+
+Ollama 采用静态 KV Cache 预分配，每个请求独立推理（无 batching），牺牲了吞吐量换取简单性和低延迟（单请求场景）。
+
+### vs TGI (Text Generation Inference)
+
+**TGI** 是 HuggingFace 推出的高性能服务框架：
+
+- **Continuous Batching** — 类似 vLLM，支持动态 batch 和请求流式返回
+- **Tensor Parallelism** — 支持多 GPU 并行推理大模型（如 70B/175B）
+- **Flash Attention 集成** — 使用 Flash Attention 2 优化 Prefill 阶段
+
+Ollama 目前不支持 Tensor Parallelism，70B 模型需在单 GPU 或 CPU 上运行（速度慢）。其调度器也不支持 continuous batching，并发性能不如 TGI。
+
+### Ollama 的设计权衡
+
+Ollama 的核心目标是 **本地部署易用性**，而非生产级高吞吐：
+
+- **优点**：
+  - 极简部署（单二进制 + 命令行）
+  - 内存占用可控（按需加载/卸载）
+  - 适合个人用户和边缘设备
+  - 支持多模型快速切换
+
+- **缺点**：
+  - 并发吞吐低（无 batching）
+  - 大模型推理慢（无 Tensor Parallelism）
+  - 调度策略简单（FIFO + LRU）
+
+对于企业级高并发场景，建议使用 vLLM 或 TGI；对于个人开发和快速原型验证，Ollama 是理想选择。
+
+## 总结
+
+Ollama Server 的调度层通过精心设计的 Scheduler + Runner 架构，在有限的硬件资源下实现了多模型按需加载、热复用和自动卸载。其核心特性包括：
+
+1. **状态机管理** — Runner 的 Idle / Loading / Ready / Busy / Unloading 五状态转换
+2. **LRU 驱逐策略** — 自动卸载低频模型，释放内存供新模型使用
+3. **内存预算计算** — 动态决定 GPU/CPU 放置策略，最大化硬件利用率
+4. **简单可靠** — 无复杂 batching 或并行化逻辑，专注于单用户低延迟场景
+
+理解 Ollama 的调度机制，有助于优化本地部署配置（如合理设置 `OLLAMA_KEEP_ALIVE`、`OLLAMA_MAX_LOADED_MODELS`）并预测不同硬件下的性能表现。
+
+## 延伸阅读
+
+- [Ollama Architecture](./ollama-architecture) — Ollama 整体架构与组件交互
+- [KV Cache 调度](./ollama-kv-cache-scheduling) — KV Cache 内存管理与优化
+- [vLLM PagedAttention 论文](https://arxiv.org/abs/2309.06180) — 高性能推理调度机制
+- [Ollama FAQ - Model Management](https://github.com/ollama/ollama/blob/main/docs/faq.md) — 官方模型管理文档
