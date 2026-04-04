@@ -1,0 +1,198 @@
+---
+title: "CUDA 编程模型 — 从代码到硬件"
+slug: cuda-programming-model
+locale: zh
+tags: [gpu, cuda, programming, simt, simd, intel, sycl]
+prerequisites: [gpu-architecture]
+difficulty: intermediate
+created: "2026-04-04"
+updated: "2026-04-04"
+references:
+  - type: website
+    title: "CUDA C++ Programming Guide"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/"
+  - type: website
+    title: "NVIDIA Kernel Profiling Guide — Memory Coalescing"
+    url: "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/"
+  - type: website
+    title: "Intel oneAPI GPU Optimization Guide"
+    url: "https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/"
+  - type: website
+    title: "CUDA Occupancy Calculator"
+    url: "https://docs.nvidia.com/cuda/cuda-occupancy-calculator/"
+  - type: website
+    title: "SYCL 2020 Specification"
+    url: "https://registry.khronos.org/SYCL/specs/sycl-2020/"
+---
+
+import SimdVsSimtAnimation from '../../../components/interactive/SimdVsSimtAnimation.tsx';
+import ExecutionModelCompare from '../../../components/interactive/ExecutionModelCompare.tsx';
+import ThreadBlockGridViz from '../../../components/interactive/ThreadBlockGridViz.tsx';
+import IndexCalculation from '../../../components/interactive/IndexCalculation.tsx';
+import BlockToSmMapping from '../../../components/interactive/BlockToSmMapping.tsx';
+import SharedMemoryBanks from '../../../components/interactive/SharedMemoryBanks.tsx';
+import MemoryCoalescingDemo from '../../../components/interactive/MemoryCoalescingDemo.tsx';
+import BarrierTimeline from '../../../components/interactive/BarrierTimeline.tsx';
+import OccupancyCalculator from '../../../components/interactive/OccupancyCalculator.tsx';
+import CudaSyclCodeCompare from '../../../components/interactive/CudaSyclCodeCompare.tsx';
+
+在 [GPU Architecture](/zh/articles/gpu-architecture) 文章中，我们了解了 SM 内部结构 — 四个 Processing Block、Warp Scheduler、各类计算单元和内存层次。在 [矩阵加速单元](/zh/articles/matrix-acceleration) 文章中，我们看到了 Tensor Core 和 XMX 的 warp 级协作操作。
+
+现在的问题是：**程序员如何控制这些硬件？** 本文从 CUDA 编程模型出发，理解 GPU 编程的核心抽象 — 线程层级、内存模型、同步机制，以及这些抽象如何映射到物理硬件。
+
+## Section 1: SIMD vs SIMT — 两种并行执行模型
+
+GPU 并行计算有两种主要模型，理解它们的区别是理解 CUDA 编程的起点。
+
+**SIMD (Single Instruction Multiple Data)**：一条指令操作一个向量。程序员必须知道向量宽度（8/16/32），用 intrinsic 或编译器向量化来利用硬件。Intel iGPU 的 EU 内部就是 SIMD 驱动。
+
+**SIMT (Single Instruction Multiple Threads)**：程序员写标量代码（看起来像单线程），硬件自动把 32 个线程打包成 warp 一起执行。程序员不需要管向量宽度。NVIDIA GPU 用的就是 SIMT。
+
+<SimdVsSimtAnimation client:visible />
+
+关键区别在于 **分支处理**：SIMT 对分支更友好 — warp divergence 只是效率损失，不需要程序员手动管理 mask。SIMD 的分支需要显式 mask 或 blend 指令。
+
+<ExecutionModelCompare />
+
+Intel iGPU 是一个有趣的混合体：底层硬件是 SIMD 驱动（EU Thread 执行 8/16-wide 向量操作），但 SYCL/OpenCL 编程层提供了接近 SIMT 的 work-item 抽象。Sub-group 操作暴露了底层 SIMD 宽度，是 Intel GPU 编程的关键工具。
+
+---
+
+## Section 2: Thread → Block → Grid
+
+CUDA 用三级线程层级组织并行计算：
+
+- **Thread（线程）**：最小执行单元，每个线程执行相同的 kernel 代码，但处理不同的数据
+- **Block（线程块）**：一组线程，共享 Shared Memory，可通过 `__syncthreads()` 同步
+- **Grid（网格）**：所有 Block 的集合，由一次 kernel launch 产生
+
+每个线程通过 `threadIdx`（Block 内位置）和 `blockIdx`（Grid 内 Block 位置）确定自己的身份，配合 `blockDim`（Block 尺寸）计算全局数据位置。
+
+<ThreadBlockGridViz client:visible />
+
+Block 和 Grid 支持 1D/2D/3D 维度 — 二维索引映射到矩阵操作更自然（`threadIdx.x` 对应列，`threadIdx.y` 对应行）。
+
+### 全局索引计算
+
+最基本的 CUDA 编程模式：每个线程计算自己负责的全局数据位置。
+
+<IndexCalculation client:visible />
+
+```c
+// 向量加法 kernel — 最简单的 CUDA 程序
+__global__ void vecadd(float* a, float* b, float* c, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) c[i] = a[i] + b[i];
+}
+// Launch: vecadd<<<(n+255)/256, 256>>>(d_a, d_b, d_c, n);
+```
+
+---
+
+## Section 3: 逻辑到物理映射
+
+Thread → Block → Grid 是**逻辑**结构。程序员定义它，但不控制它如何映射到物理硬件。
+
+<BlockToSmMapping client:visible />
+
+关键要点：
+- **Block 到 SM 的分配由 runtime 决定** — 顺序不确定，程序不应假设任何执行顺序
+- **一个 SM 可以同时容纳多个 Block** — 受限于 register 用量、shared memory 用量、warp 数量
+- **Block 内的 Thread 被硬件打包为 Warp** — thread 0-31 = warp 0, thread 32-63 = warp 1, ...
+- **blockDim 应该是 32 的倍数** — 否则最后一个 warp 有空闲线程，浪费计算资源
+
+---
+
+## Section 4: Shared Memory
+
+`__shared__` 声明的内存是 Block 级别的快速存储（在 SM 的 L1/SRAM 中），Block 内所有线程共享，Block 结束时释放。
+
+用途：
+- **线程间通信**：一个线程写，其他线程读
+- **数据预加载**：从 HBM 加载一次到 shared memory，block 内多个线程复用
+
+### Bank 结构
+
+Shared memory 被分为 **32 个 bank**，连续 4 字节映射到连续 bank。一个 warp 的 32 个线程同时访问不同 bank 时可以一拍完成；访问同一 bank 的不同地址时会产生 **bank conflict**，必须串行化。
+
+<SharedMemoryBanks client:visible />
+
+避免 bank conflict 的最简单方法：stride=1 的顺序访问天然无冲突。当 stride 是 2 的幂时容易冲突，可用 padding 技巧（`tile[32][33]` 而非 `tile[32][32]`）打破对齐。
+
+---
+
+## Section 5: Memory Coalescing
+
+全局内存（HBM）访问以 32 字节或 128 字节 transaction 为单位。一个 warp 的 32 个线程访问连续地址时，硬件可以合并为最少的 transaction — 这就是 **memory coalescing**。
+
+<MemoryCoalescingDemo client:visible />
+
+实际影响：
+- **行优先访问矩阵的同一行**：`M[row][tid]` — 地址连续，天然 coalesced
+- **列优先访问矩阵**：`M[tid][col]` — stride = 行宽，严重 uncoalesced
+- 这是为什么矩阵乘法需要 **tiling 到 shared memory** — 先 coalesced 加载到 shared memory，再在 shared memory 中任意 stride 访问（shared memory 的 bank conflict 比 HBM 的 uncoalesced access 便宜得多）
+
+---
+
+## Section 6: 同步与 Barrier
+
+`__syncthreads()` 是 Block 内的 barrier：所有线程都到达这个点后才能继续执行。
+
+<BarrierTimeline />
+
+典型使用场景：写 shared memory → `__syncthreads()` → 读 shared memory。没有 barrier 的话，快速 warp 可能读到慢速 warp 还没写完的数据 — **race condition**。
+
+注意事项：
+- 所有线程**必须执行到同一个 `__syncthreads()`** — 不能在 if/else 分支中不对称调用（否则死锁）
+- Warp 内线程是硬件锁步执行的，隐式同步 — 但显式用 `__syncwarp()` 更安全（未来架构可能改变锁步保证）
+- `__syncthreads()` 只同步 Block 内 — **Block 之间没有直接同步机制**（这是 GPU 编程模型的核心约束）
+
+---
+
+## Section 7: Occupancy
+
+**Occupancy** = SM 中活跃 warp 数 / SM 最大 warp 数。更高的 occupancy 意味着更多 warp 可以在内存延迟时切换执行，更好地隐藏延迟。
+
+Occupancy 受三个因素限制：
+
+1. **Warp 数量**：blockDim / 32 个 warp per block × blocks per SM
+2. **Register 用量**：每线程用越多 register，SM 能容纳的 block 越少
+3. **Shared memory 用量**：每 block 用越多 shared memory，SM 能容纳的 block 越少
+
+<OccupancyCalculator client:visible />
+
+高 occupancy 不总是更好 — 有时低 occupancy + 高数据复用（大 tile 占满 shared memory 和 register）反而更快。但通常 occupancy 是一个好的优化起点。
+
+编译时用 `--ptxas-options=-v` 可以查看 kernel 的 register 和 shared memory 使用量。
+
+---
+
+## Section 8: Intel iGPU 编程要点
+
+CUDA 是 NVIDIA 专有的。Intel GPU 用 **SYCL / DPC++**，基于标准 C++，概念上与 CUDA 一一对应：
+
+<CudaSyclCodeCompare />
+
+核心术语映射：
+- **work-item** ≈ thread — 最小执行单元
+- **work-group** ≈ block — 线程组，共享 SLM
+- **sub-group** ≈ warp — 但宽度可能是 8/16/32（不固定为 32）
+- **SLM (Shared Local Memory)** ≈ shared memory — 用法类似
+
+Sub-group 是 Intel GPU 编程的关键 — 它直接暴露了底层 SIMD 宽度。`sub_group::shuffle` 和 `sub_group::reduce` 对应 NVIDIA 的 warp shuffle 操作。
+
+XMX 矩阵操作通过 SYCL `joint_matrix` API 或低层 ESIMD `dpas` 指令访问，对应 NVIDIA 的 `wmma` / `mma.sync`（详见 [矩阵加速单元](/zh/articles/matrix-acceleration) 文章）。
+
+---
+
+## 总结
+
+CUDA 编程模型的核心抽象：
+
+1. **SIMT 执行模型** — 写标量代码，硬件并行。Warp divergence 是效率问题而非正确性问题
+2. **三级线程层级** — Thread → Block → Grid，Block 是资源分配和同步的基本单位
+3. **内存层级** — Register（私有）→ Shared Memory（Block 共享，快）→ Global/HBM（全局，慢）
+4. **Coalescing + Bank** — 全局内存要连续访问，shared memory 要避免 bank conflict
+5. **Occupancy** — warp 数量 × 数据复用 = 性能，三种资源（warp / register / shared memory）中最紧的决定上限
+
+下一篇文章将把这些概念付诸实践 — GEMM 优化，从 Naive 实现到 Tensor Core GEMM，逐步将矩阵乘法性能推到接近硬件峰值。
