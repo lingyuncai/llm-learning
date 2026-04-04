@@ -1,0 +1,362 @@
+---
+title: "硬件后端"
+slug: "ollama-hardware-backends"
+locale: "zh"
+tags: ["ggml", "cuda", "metal", "vulkan", "hardware-backend"]
+prerequisites: ["ollama-compute-graph"]
+difficulty: "advanced"
+created: "2026-04-04"
+updated: "2026-04-04"
+references:
+  - type: "repo"
+    title: "GGML Backend API"
+    url: "https://github.com/ggerganov/ggml"
+  - type: "website"
+    title: "CUDA Programming Guide"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/"
+  - type: "website"
+    title: "Metal Shading Language"
+    url: "https://developer.apple.com/metal/"
+  - type: "website"
+    title: "Vulkan Compute"
+    url: "https://www.khronos.org/vulkan/"
+---
+
+import BackendArchitecture from '../../../components/interactive/BackendArchitecture.tsx';
+import DeviceSplitVisualizer from '../../../components/interactive/DeviceSplitVisualizer.tsx';
+import BackendPerformanceCompare from '../../../components/interactive/BackendPerformanceCompare.tsx';
+
+## 简介
+
+GGML/llama.cpp 最引人注目的特性之一是**跨平台硬件支持**:同一套代码可以在 NVIDIA GPU (CUDA)、Apple Silicon (Metal)、AMD GPU (Vulkan)、甚至纯 CPU 上运行,而无需用户手动切换框架。这种能力源于 GGML 的多后端架构 (multi-backend architecture)。
+
+本文将深入讲解:
+- GGML 如何通过统一的计算图抽象支持多种硬件后端
+- 每个后端 (CUDA / Metal / Vulkan / CPU) 的核心优化技术
+- 设备分割 (device split) 的工作机制与性能影响
+- llama.cpp 与 CUDA-only 框架 (如 vLLM / TensorRT-LLM) 的本质差异
+
+## 多后端架构
+
+GGML 的后端系统采用**统一计算图 + 调度器 + 多后端实现**的分层设计:
+
+<BackendArchitecture client:visible />
+
+### 设计原理
+
+1. **统一计算图**: 所有 tensor 操作 (matmul / rope / rms_norm 等) 都在 GGML 计算图中以统一的 `ggml_tensor` 和 `ggml_op` 表示,与底层硬件无关。
+
+2. **后端抽象**: GGML 定义了标准的 Backend API (`ggml_backend_interface`),包括:
+   - `init()` / `free()`: 后端初始化与释放
+   - `buffer_alloc()`: 分配硬件内存 (GPU VRAM / 统一内存 / 系统 RAM)
+   - `set_tensor()` / `get_tensor()`: host-device 数据传输
+   - `graph_compute()`: 执行计算图
+
+3. **调度器角色**: `ggml_backend_sched` 负责:
+   - 分析计算图依赖关系
+   - 为每个 op 选择最优后端 (根据 tensor 位置和后端能力)
+   - 插入必要的数据传输 (如 GPU → CPU 拷贝)
+   - 并行执行无依赖的 op
+
+这种设计让上层应用 (llama.cpp) 完全无需关心硬件细节,只需构建计算图并调用 `ggml_backend_sched_graph_compute()`。
+
+## CUDA 后端
+
+CUDA 后端是 llama.cpp 性能最强的后端,充分利用 NVIDIA GPU 的计算能力。
+
+### 核心优化技术
+
+**1. Quantized MatMul 内核**
+
+CUDA 后端为每种量化格式 (Q4_K_M / Q5_K_S / Q8_0 等) 实现了专门的融合内核:
+```cpp
+// dequantize + matmul + accumulate 融合在单个 CUDA kernel 中
+// 伪代码: 实际实现在 ggml-cuda/mmq.cu
+__global__ void mul_mat_q4_K(...) {
+  // warp-level 协作: 每个 warp 处理 weight 的 32 列
+  // 片上反量化: 直接从 int4 解码为 fp16,避免全局内存开销
+  // 使用 wmma (Tensor Core) 或 dp4a (INT8 DP) 加速
+}
+```
+
+**2. FlashAttention 融合**
+
+llama.cpp 集成了 FlashAttention-2 的 CUDA 实现,将 Q×K^T → softmax → ×V 的三步操作融合为单个 kernel,减少 HBM 访问:
+```cpp
+// ggml-cuda/fattn.cu
+// 块级 tiling: 每个 block 处理 query 的一部分
+// 在线 softmax: 增量计算 max/sum,避免多次扫描
+```
+
+**3. Tensor Core 加速**
+
+在 Turing+ 架构 (RTX 20/30/40 系列) 上,GGML 自动使用 Tensor Core 执行 FP16 矩阵乘法:
+- INT4 weight 在寄存器中反量化为 FP16
+- 使用 `wmma::mma_sync()` (CUDA C++ API) 或 PTX 的 `mma.sync` 指令
+- 理论算力: RTX 4090 达 1321 TFLOPS (FP16 Tensor Core)
+
+**4. Stream 并行**
+
+CUDA 后端使用多个 CUDA stream 实现计算与数据传输的重叠:
+```cpp
+// 伪代码
+cudaMemcpyAsync(layer_i_input, ..., stream_copy);
+matmul_kernel<<<..., stream_compute>>>(layer_i);
+cudaMemcpyAsync(layer_i_output, ..., stream_copy);
+```
+
+## Metal 后端
+
+Metal 后端专为 Apple Silicon 优化,充分利用统一内存架构 (Unified Memory Architecture)。
+
+### 核心特性
+
+**1. 统一内存优势**
+
+Apple Silicon 的 CPU 和 GPU 共享同一物理内存,无需 PCIe 传输:
+```swift
+// 伪代码: Metal Shading Language (MSL)
+// CPU 分配的内存可直接被 GPU 访问,零拷贝
+MTLBuffer *buffer = [device newBufferWithBytesNoCopy:ptr length:len];
+```
+
+这使得 Metal 后端在小 batch 推理时延迟极低 (避免了 CUDA 的 cudaMemcpy 开销)。
+
+**2. Compute Pipeline + MSL**
+
+Metal 使用 Compute Shader (计算着色器) 执行 GPGPU 任务:
+```metal
+// ggml-metal.metal 中的 MatMul kernel (简化版)
+kernel void kernel_mul_mat_q4_K(
+    device const uchar *src0, device const float *src1,
+    device float *dst, uint3 tgpig [[threadgroup_position_in_grid]]) {
+  // threadgroup (workgroup) 优化: 利用 32KB 共享内存
+  threadgroup float shared[...];
+  // SIMD-group (warp) 级别的 reduction
+}
+```
+
+**3. Threadgroup 优化**
+
+Metal 的 threadgroup 类似 CUDA 的 thread block,llama.cpp 针对 Apple GPU 的特性优化 threadgroup 大小:
+- M1/M2: 每个 threadgroup 512-1024 threads
+- 充分利用 32KB 的 threadgroup memory (类似 CUDA shared memory)
+
+**4. 全系列支持**
+
+Metal 后端支持所有 Apple Silicon 芯片:
+- M1 (8-core GPU): ~2.6 TFLOPS FP32
+- M3 Max (40-core GPU): ~14.2 TFLOPS FP32
+- M4 Max: 进一步提升的动态缓存与带宽
+
+## Vulkan 后端
+
+Vulkan 后端提供**跨平台 GPU 计算**能力,支持 AMD / Intel / 移动 GPU。
+
+### 实现原理
+
+**1. SPIR-V Compute Shader**
+
+Vulkan 使用 SPIR-V (Standard Portable Intermediate Representation) 字节码执行计算:
+```glsl
+// 原始 GLSL compute shader (编译为 SPIR-V)
+#version 450
+layout(local_size_x = 256) in;
+layout(binding = 0) buffer Input { float data[]; } input;
+layout(binding = 1) buffer Output { float data[]; } output;
+
+void main() {
+  uint idx = gl_GlobalInvocationID.x;
+  output.data[idx] = input.data[idx] * 2.0;
+}
+```
+
+llama.cpp 在运行时加载预编译的 SPIR-V 模块,并通过 Vulkan API 提交到 GPU。
+
+**2. 跨平台兼容性**
+
+Vulkan 后端的主要优势是**广泛的硬件支持**:
+- **AMD GPU**: RX 6000 / 7000 系列 (RDNA 2/3 架构)
+- **Intel Arc**: A750 / A770 (Alchemist 架构)
+- **移动 GPU**: Adreno (Qualcomm) / Mali (ARM)
+- **跨操作系统**: Windows / Linux / Android
+
+**3. 生态挑战**
+
+相比 CUDA,Vulkan 的 GPGPU 生态仍在成熟中:
+- 编译器优化 (SPIR-V → 硬件指令) 不如 NVIDIA 的 PTX → SASS 成熟
+- 缺乏类似 Tensor Core 的专用 AI 加速单元 (AMD RDNA 3 引入了 AI accelerator,但软件栈尚不完善)
+- 驱动质量差异较大 (尤其是 AMD 在 Linux 上的 Vulkan 驱动)
+
+## CPU 后端
+
+CPU 后端是 llama.cpp 的**通用后备**,确保在任何硬件上都能运行。
+
+### 优化策略
+
+**1. SIMD 指令集**
+
+CPU 后端针对不同架构使用对应的 SIMD 指令:
+- **x86-64**: AVX2 (256-bit) / AVX-512 (512-bit)
+- **ARM**: NEON (128-bit) / SVE (可变长度向量)
+
+示例:使用 AVX2 加速 FP32 向量点积:
+```cpp
+// ggml.c 中的实现
+__m256 sum = _mm256_setzero_ps();
+for (int i = 0; i < n; i += 8) {
+  __m256 a = _mm256_loadu_ps(&x[i]);
+  __m256 b = _mm256_loadu_ps(&y[i]);
+  sum = _mm256_fmadd_ps(a, b, sum); // FMA: a*b + sum
+}
+```
+
+**2. INT4/INT8 直接计算**
+
+CPU 后端直接在 SIMD 寄存器中处理量化权重,无需完整反量化:
+```cpp
+// AVX2 的 INT8 点积 (使用 _mm256_maddubs_epi16)
+// 输入: int8 activation, int4 weight (解包为 int8)
+// 输出: int32 accumulated result → 缩放为 fp32
+```
+
+AVX-512 引入了 `VPDPBUSD` 指令 (INT8×UINT8 + INT32),进一步加速量化推理。
+
+**3. 多线程并行**
+
+CPU 后端使用 OpenMP 并行化矩阵乘法:
+```cpp
+#pragma omp parallel for collapse(2)
+for (int i = 0; i < rows; i++) {
+  for (int j = 0; j < cols; j++) {
+    // 每个线程处理输出矩阵的一部分
+  }
+}
+```
+
+现代高端 CPU (如 i9-14900K: 24 核 32 线程) 可达到可观的推理速度。
+
+**4. 无 GPU 即可运行**
+
+CPU 后端的最大价值是**零依赖**:
+- 无需安装 CUDA / ROCm / Vulkan 驱动
+- 适用于云服务器 (无 GPU 的虚拟机)、嵌入式设备、老旧硬件
+
+## 设备分割
+
+当 GPU 显存不足以容纳完整模型时,llama.cpp 支持**设备分割 (device split)**:将部分 layer 放在 GPU,其余放在 CPU。
+
+<DeviceSplitVisualizer client:visible />
+
+### 工作机制
+
+**Layer-by-Layer 分割**
+
+llama.cpp 按 Transformer layer 为单位分配设备:
+```bash
+# 命令行示例: 将前 20 层放 GPU,其余放 CPU
+ollama run qwen:8b --gpu-layers 20
+```
+
+调度器在执行计算图时:
+1. GPU 执行前 20 层的所有 op (attention + FFN)
+2. 将第 20 层的输出从 GPU 传输到 CPU (通过 PCIe)
+3. CPU 执行剩余 12 层
+4. 最终输出在 CPU 上
+
+**PCIe 瓶颈**
+
+每个 token 的 decode 都需要跨 PCIe 传输中间激活:
+- 激活张量大小: ~hidden_size × sizeof(fp16) = 4096 × 2 = 8 KB (per token per layer boundary)
+- PCIe 3.0 x16 带宽: ~16 GB/s (实际有效带宽 ~12 GB/s)
+- 对于 batch_size=1 的交互式推理,PCIe 延迟 (而非带宽) 是主要瓶颈
+
+**性能影响**
+
+从上方的可视化可以看到:
+- **全 GPU** (VRAM 充足): 最佳性能,无额外传输开销
+- **混合模式** (部分 GPU + 部分 CPU): 性能介于纯 GPU 和纯 CPU 之间,每跨一次 PCIe 边界约损失 2-5 tok/s
+- **纯 CPU** (VRAM 为 0): 性能完全依赖 CPU 算力和内存带宽
+
+## 性能对比
+
+下图对比了同一模型 (Qwen3-8B Q4_K_M) 在四个后端上的实际推理速度:
+
+<BackendPerformanceCompare client:visible />
+
+### 性能分析
+
+**1. CUDA 的绝对优势**
+
+RTX 4090 的 115 tok/s 是 CPU 的近 10 倍,得益于:
+- 超高算力: 1321 TFLOPS (FP16 Tensor Core) vs CPU ~1 TFLOPS
+- 高内存带宽: 1008 GB/s (GDDR6X) vs CPU ~80 GB/s (DDR5-5600)
+- 高度优化的 CUDA kernel (NVIDIA 投入数十年)
+
+**2. Metal 的统一内存优势**
+
+M3 Max 虽然算力低于 RTX 4090,但在小 batch 推理时表现出色:
+- 统一内存避免 PCIe 传输,延迟更低
+- 适合交互式对话场景 (batch_size=1)
+- 功耗远低于 RTX 4090 (整机 &lt;100W vs 450W+)
+
+**3. Vulkan 的追赶之路**
+
+RX 7900 XTX 的硬件规格与 RTX 4090 接近 (96 CU, 24GB),但性能仅约 1/3,主要原因:
+- AMD 缺乏类似 Tensor Core 的 AI 加速单元 (RDNA 3 的 AI accelerator 软件支持不足)
+- Vulkan 编译器优化不如 CUDA 成熟
+- llama.cpp 的 Vulkan 后端开发较晚,优化深度不及 CUDA
+
+**4. CPU 的基准线**
+
+i9-14900K 的 12 tok/s 代表纯 CPU 推理的基准水平:
+- 足够支撑简单对话 (人类阅读速度 ~5 tok/s)
+- 对于长文本生成,体验明显不如 GPU
+- 但对于无 GPU 环境,这是唯一选择
+
+## 为什么不一样
+
+### llama.cpp vs CUDA-only 框架
+
+许多生产级 LLM 推理框架 (如 vLLM / TensorRT-LLM / DeepSpeed-Inference) 只支持 NVIDIA GPU,与 llama.cpp 的多后端架构形成鲜明对比:
+
+**vLLM / TensorRT-LLM 的选择**:
+- **纯 CUDA 优化**: 深度利用 CUDA 特性 (如 CUDA Graph / Cooperative Groups / Hopper 的 TMA)
+- **PagedAttention**: vLLM 的核心创新,需要 CUDA 的细粒度内存管理
+- **动态 batch**: 需要 CUDA kernel 的灵活调度
+- **生产场景**: 云端部署通常标配 NVIDIA GPU,跨平台需求较弱
+
+**llama.cpp 的权衡**:
+- **跨平台优先**: 单一代码库支持所有硬件,牺牲部分极致性能
+- **桌面友好**: 支持 MacBook (Metal) / 游戏本 (CUDA) / 老旧笔记本 (CPU)
+- **嵌入式部署**: 可运行在 Raspberry Pi / Android 手机
+- **开发效率**: 无需为每个平台维护独立代码
+
+### 抽象的代价
+
+多后端架构的统一抽象带来灵活性,但也引入额外开销:
+1. **运行时调度**: `ggml_backend_sched` 需要在每次推理时分析计算图,决定 op 分配
+2. **通用 kernel**: GGML 的 CUDA kernel 需兼顾多种量化格式和 tensor shape,无法像 TensorRT 针对特定模型极致优化
+3. **特性同步**: 新技术 (如 FlashAttention-3) 需要适配所有后端,开发周期更长
+
+但对于 llama.cpp 的目标用户 (本地部署、快速实验、教育学习),这些代价是值得的。
+
+## 总结
+
+GGML 的多后端架构通过**统一计算图 + 后端抽象 + 调度器**实现了一套代码跨所有硬件,核心要点:
+
+- **CUDA 后端**: 性能最强,深度利用 Tensor Core / FlashAttention / Stream 并行
+- **Metal 后端**: 统一内存架构,低延迟,适合 Apple Silicon
+- **Vulkan 后端**: 跨平台 GPU,生态仍在成熟,性能追赶中
+- **CPU 后端**: 通用后备,SIMD 优化,无 GPU 也能运行
+- **设备分割**: 显存不足时自动分配 layer 到 GPU/CPU,需注意 PCIe 瓶颈
+
+这种设计让 Ollama/llama.cpp 成为本地 LLM 推理的首选工具,无论你的硬件是 RTX 4090 还是老旧笔记本,都能获得可用的推理体验。
+
+## 延伸阅读
+
+- **GGML 源码**: [ggml-backend.c](https://github.com/ggerganov/ggml/blob/master/src/ggml-backend.c) — 后端接口定义
+- **CUDA kernel 实现**: [ggml-cuda/](https://github.com/ggerganov/llama.cpp/tree/master/ggml/src/ggml-cuda) — 包含 mmq.cu / fattn.cu 等
+- **Metal shader**: [ggml-metal.metal](https://github.com/ggerganov/llama.cpp/blob/master/ggml/src/ggml-metal.metal) — MSL 计算着色器
+- **Vulkan 后端**: [ggml-vulkan.cpp](https://github.com/ggerganov/llama.cpp/blob/master/ggml/src/ggml-vulkan.cpp) — SPIR-V 与 Vulkan API 交互
+- **vLLM PagedAttention**: [原始论文](https://arxiv.org/abs/2309.06180) — 对比纯 CUDA 框架的设计
