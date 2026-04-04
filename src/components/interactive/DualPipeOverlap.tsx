@@ -138,30 +138,30 @@ const steps = [
       <StepSvg>
         <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Dual-Pipe: 当前层 GEMM 与上一层 Act/Norm 重叠执行
+          Dual-Pipe: 不同 micro-batch 的 GEMM 与 Act/Norm 重叠执行
         </text>
 
         <TrackLabel x={88} y={60} label="Tensor Core" />
         <TrackLabel x={88} y={100} label="CUDA Core" />
         <TimeAxis x={94} y={130} w={380} label="time" />
 
-        {/* Layer 1 GEMM */}
+        {/* Batch A GEMM */}
         <Bar x={100} y={44} w={120} h={30}
-          label="GEMM Layer 1" color={GEMM_COLOR} bg={GEMM_BG} />
+          label="GEMM (batch A)" color={GEMM_COLOR} bg={GEMM_BG} />
         <Bar x={100} y={84} w={120} h={30}
-          label="(无前序 Act)" color="#94a3b8" bg={IDLE_BG} />
+          label="(无前序 batch)" color="#94a3b8" bg={IDLE_BG} />
 
-        {/* Layer 2 GEMM + Layer 1 Act overlapped */}
+        {/* Batch B GEMM + Batch A Act overlapped */}
         <Bar x={224} y={44} w={120} h={30}
-          label="GEMM Layer 2" color={GEMM_COLOR} bg={GEMM_BG} />
+          label="GEMM (batch B)" color={GEMM_COLOR} bg={GEMM_BG} />
         <Bar x={224} y={84} w={60} h={30}
-          label="Act/Norm L1" color={ELEM_COLOR} bg={ELEM_BG} />
+          label="Act/Norm (A)" color={ELEM_COLOR} bg={ELEM_BG} />
 
-        {/* Layer 3 GEMM + Layer 2 Act overlapped */}
+        {/* Batch C GEMM + Batch B Act overlapped */}
         <Bar x={348} y={44} w={120} h={30}
-          label="GEMM Layer 3" color={GEMM_COLOR} bg={GEMM_BG} />
+          label="GEMM (batch C)" color={GEMM_COLOR} bg={GEMM_BG} />
         <Bar x={348} y={84} w={60} h={30}
-          label="Act/Norm L2" color={ELEM_COLOR} bg={ELEM_BG} />
+          label="Act/Norm (B)" color={ELEM_COLOR} bg={ELEM_BG} />
 
         {/* Overlap highlight */}
         <rect x={224} y={40} width={120} height={80} rx={4}
@@ -184,11 +184,11 @@ const steps = [
           fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
         <text x={280} y={194} textAnchor="middle" fontSize="9" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          前提条件: 两组操作之间没有数据依赖（Layer N 的 Act/Norm 用 Layer N 的 GEMM 输出）
+          关键: 不同 micro-batch 之间无数据依赖 — batch B 的 GEMM 和 batch A 的 Act/Norm 操作不同数据
         </text>
         <text x={280} y={210} textAnchor="middle" fontSize="8" fill="#64748b"
           fontFamily={FONTS.sans}>
-          Layer N+1 的 GEMM 用 Layer N 的 Act/Norm 输出 → 无依赖冲突，可以重叠
+          Tensor Core 和 CUDA Core 是独立功能单元，可同时处理不同 batch 的不同阶段
         </text>
       </StepSvg>
     ),

@@ -131,7 +131,7 @@ function PeGrid({ cycle, showResult }: { cycle: number; showResult?: boolean }) 
   );
 }
 
-function Legend({ cycle, label }: { cycle: number; label: string }) {
+function Legend({ label }: { label: string }) {
   const items = [
     { color: COLORS.orange, text: '当前活跃 (MAC)' },
     { color: COLORS.primary, text: '已完成部分累加' },
