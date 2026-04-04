@@ -1,0 +1,109 @@
+---
+title: "量化方案"
+slug: "ollama-quantization"
+locale: "zh"
+tags: ["quantization", "llama-cpp", "gguf", "inference-optimization"]
+prerequisites: ["gguf-format"]
+difficulty: "advanced"
+created: "2026-04-04"
+updated: "2026-04-04"
+references:
+  - type: "repo"
+    title: "llama.cpp Quantization Types"
+    url: "https://github.com/ggerganov/llama.cpp/blob/master/ggml/include/ggml.h"
+  - type: "repo"
+    title: "K-quant PR"
+    url: "https://github.com/ggerganov/llama.cpp/pull/1684"
+  - type: "paper"
+    title: "GPTQ: Accurate Post-Training Quantization"
+    url: "https://arxiv.org/abs/2210.17323"
+  - type: "paper"
+    title: "AWQ: Activation-aware Weight Quantization"
+    url: "https://arxiv.org/abs/2306.00978"
+---
+
+import QuantizationProcess from '../../../components/interactive/QuantizationProcess.tsx';
+import KQuantMixedPrecision from '../../../components/interactive/KQuantMixedPrecision.tsx';
+import QuantizationTradeoff from '../../../components/interactive/QuantizationTradeoff.tsx';
+
+## 为什么量化
+
+当你尝试在本地运行 Llama 3.1 8B 模型时，会发现即使使用 FP16 精度，模型权重也需要约 16 GB 显存 (8B 参数 × 2 bytes/param)。对于 70B 模型，这个数字飙升到 140 GB，超过绝大多数消费级 GPU 的容量。即便显存足够，权重读取的带宽瓶颈也会严重限制推理速度——每生成一个 token，模型需要从显存读取全部权重矩阵进行矩阵乘法，而现代 LLM 的推理性能往往受限于 memory bandwidth 而非计算能力 (memory-bound)。
+
+量化 (Quantization) 通过降低权重的数值精度来解决这个问题。核心思想是用更少的比特数表示权重值：FP16 (16 bits) → INT8 (8 bits) → INT4 (4 bits)，甚至更低。这带来三重收益：显存占用减少 2-4 倍，内存带宽压力降低，推理速度提升。代价是精度损失——量化后的权重无法完全还原原始值，会产生误差。如何在精度 (Precision)、速度 (Speed)、显存 (Memory) 三者之间找到最佳平衡点，是量化技术的核心挑战。
+
+llama.cpp 的量化方案专为本地推理优化，采用 post-training quantization (训练后量化)，无需重新训练模型，仅对权重进行数值转换和编码。这与 GPTQ、AWQ 等需要校准数据 (calibration data) 的方法不同，llama.cpp 的方案更简单、更通用，但在极低比特率 (如 2-bit) 时精度略逊一筹。其核心设计理念是 **per-block quantization** (分块量化) 和 **mixed-precision** (混合精度)：将权重矩阵分成小块，每块独立量化以保留局部分布特征；对模型不同层和模块使用不同精度，将有限的比特预算分配给对输出质量最敏感的部分。
+
+## 基本量化 Q8_0/Q4_0/Q4_1
+
+llama.cpp 最早实现的量化类型是 **Q8_0**、**Q4_0** 和 **Q4_1**，它们采用 per-block symmetric quantization (对称量化)。基本思路是将权重矩阵分成固定大小的 block (Q4_0/Q4_1 的 block size = 32, Q8_0 = 32)，每个 block 内的权重值共享一个 scale factor (缩放因子)，通过以下公式量化：
+
+$$
+q_i = \text{round}\left(\frac{w_i}{\text{scale}}\right), \quad \text{scale} = \frac{\max(|w_i|)}{Q_{\text{max}}}
+$$
+
+其中 $q_i$ 是量化后的整数值，$w_i$ 是原始 FP16 权重，$Q_{\text{max}}$ 是量化范围的最大值 (INT4 signed: 7, INT8: 127)。反量化时简单地乘回 scale：$w'_i = q_i \times \text{scale}$。这种方法的优点是计算简单、内存布局紧凑，缺点是对非对称分布的权重 (如偏向正值或负值) 会产生较大误差。
+
+**Q4_0** 和 **Q4_1** 的区别在于是否使用 zero-point (零点偏移)。Q4_0 是纯对称量化，假设权重分布关于零点对称；Q4_1 在每个 block 额外存储一个 FP16 的 min 值作为 zero-point，支持非对称分布，代价是每 block 多 2 bytes 存储开销。Q4_1 的反量化公式变为：$w'_i = q_i \times \text{scale} + \text{min}$。实践中发现，Transformer 模型的权重分布通常接近对称，Q4_1 的额外精度提升有限，因此后续的 K-quant 方案放弃了 zero-point，统一使用对称量化。
+
+下面是 Q4_0 量化的完整过程演示，展示从 FP16 权重到 INT4 量化值，再到反量化和误差分析的每一步：
+
+<QuantizationProcess client:visible />
+
+从演示可以看到，Q4_0 将 32 个 FP16 值 (64 bytes) 压缩成 32 个 INT4 值 (16 bytes) + 1 个 FP16 scale (2 bytes) = 18 bytes，压缩比 3.56x。量化误差通常在 0.01-0.1 之间，对于 8B 模型的最终输出质量影响有限 (perplexity 增加 < 0.2)。这种 block-wise 的设计是关键：如果整个权重矩阵只用一个全局 scale，误差会大得多；32 这个 block size 是性能和精度的折衷点——更小的 block 精度更高但 scale 的存储开销增加，更大的 block 则无法捕捉权重的局部分布变化。
+
+## K-quant 混合精度
+
+**K-quant** (K 系列量化) 是 llama.cpp 在 2023 年 5 月引入的改进方案 ([PR #1684](https://github.com/ggerganov/llama.cpp/pull/1684))，核心思想是 **sensitivity-aware mixed-precision**：对模型不同层和子模块使用不同的量化精度，将高比特数分配给对输出质量敏感的部分 (如 Attention 层的 Q/K/V projections)，低比特数分配给鲁棒性强的部分 (如 FFN 的 Gate/Up/Down projections)。这种策略基于观察：Transformer 模型的 Attention 机制对权重扰动非常敏感，量化误差会破坏注意力分数的相对大小关系；而 FFN 层的激活函数 (SwiGLU/GELU) 具有平滑效应，能部分抵消量化噪声。
+
+K-quant 引入 **super-block** 结构：将 256 个权重值 (8 个 32-block) 组成一个 super-block，super-block 内进一步分层编码——高精度部分用 6-bit 量化，低精度部分用 4-bit 甚至 3-bit，通过复杂的打包方案 (bit packing) 和多级 scale 实现混合精度存储。例如 **Q4_K_M** (Medium) 方案中，Q/K/V projections 使用 Q6_K (6.56 bpw)，O projection 和 FFN 的 Gate/Up/Down 使用 Q4_K (4.5 bpw)，整体平均约 4.84 bpw，比纯 Q4_0 (4.5 bpw) 略高，但 perplexity 显著更低 (接近 Q5_0 的水平)。
+
+下面的交互演示展示了 K-quant 不同方案 (Q4_K_S/M, Q5_K_M, Q6_K) 对 Transformer Block 各子模块的精度分配策略：
+
+<KQuantMixedPrecision client:visible />
+
+从图中可以看到，**Q4_K_S** (Small) 激进地对所有模块使用 4-bit 量化，追求最小显存占用；**Q4_K_M** (Medium) 选择性地为 Q/K/V projections 保留 6-bit 精度，平衡了质量和大小；**Q5_K_M** 进一步为 O projection 和 FFN 提升到 5-bit，适合对输出质量要求较高的场景；**Q6_K** 则接近无损，所有层使用 6-bit 或更高精度，perplexity 几乎等于 FP16。这种混合精度策略的关键在于 **per-layer sensitivity profiling**：通过在验证集上测试不同层量化后的 perplexity 变化，识别出最敏感的 10-20% 权重，优先为它们分配高精度预算。
+
+K-quant 的实现复杂度显著高于 Q4_0，涉及多级 scale、非均匀 bit packing、以及运行时的条件分支 (根据 quantization type 选择不同的 dequant kernel)。但这种复杂性被 SIMD 指令 (AVX2/AVX512/NEON) 高度优化的 kernel 所掩盖，实际推理速度与 Q4_0 相当，甚至在某些硬件上因为更好的 cache locality 而略快。这体现了 llama.cpp 的设计哲学：用编译时和加载时的复杂性换取运行时的性能。
+
+## I-quant 重要性量化
+
+**I-quant** (Importance Quantization) 系列 (IQ1_S, IQ2_XXS, IQ2_XS, IQ3_XXS 等) 是 llama.cpp 在 2024 年引入的极低比特率方案，目标是将平均精度压到 2-3 bpw，甚至更低 (IQ1_S 约 1.56 bpw)。在这种极端压缩下，传统的 scalar quantization (标量量化) 已经无法工作——4-bit 只能表示 16 个离散值，无法捕捉权重分布的细微差异。I-quant 采用 **vector quantization** (矢量量化) 和 **codebook** (码本) 技术：预先训练一个包含 256 或 512 个典型权重模式的 codebook，量化时将每个 weight block 映射到 codebook 中最接近的模式 (codeword)，存储其索引而非原始值。
+
+I-quant 的核心是 **importance matrix**：为每个权重分配一个重要性分数 (importance score)，基于该权重对模型输出的 Hessian 矩阵的贡献度计算 (二阶导数信息)。重要性高的权重使用更多比特或更精细的 codebook 子集，重要性低的权重可以极度压缩甚至归零。这种方法需要少量校准数据 (通常 128-512 个样本) 来估计 Hessian 矩阵，因此不再是纯粹的 post-training quantization，而是介于 PTQ 和 QAT (quantization-aware training) 之间的混合方案。
+
+实践中，I-quant 的 perplexity 在 2-3 bpw 时显著优于同等比特率的 Q2_K，但代价是量化时间长 (需要运行校准数据前向传播)、模型加载慢 (需要解码 codebook)、以及推理速度略慢 (vector dequantization 比 scalar 复杂)。另一个限制是 codebook 的泛化性：针对 Llama 模型训练的 codebook 可能不适用于 Qwen 或 Mistral 架构，需要为不同模型族分别训练。因此 I-quant 主要用于显存极度受限的场景 (如在 8GB 显存的 GPU 上运行 70B 模型)，而非日常推理的首选。
+
+llama.cpp 的 I-quant 实现高度优化，使用 SIMD 指令加速 codebook lookup 和 bit unpacking，在 AVX-512 硬件上 IQ2_XS 的速度可以达到 Q4_K_M 的 70-80%。但对于没有高级 SIMD 支持的硬件 (如老旧 CPU 或某些 ARM 芯片)，I-quant 的速度劣势会更明显。因此是否使用 I-quant，需要根据硬件能力、显存约束和质量要求综合权衡。
+
+## 精度-性能-显存三角
+
+选择量化方案时，需要在三个维度之间权衡：**精度 (Perplexity)**、**速度 (Tokens/s)**、**显存 (VRAM GB)**。没有绝对最优的方案，只有最适合特定场景的方案。下面的交互图表展示了 Qwen3-8B 模型在 RTX 4090 上不同量化类型的实测数据 (估算值，仅供参考)：
+
+<QuantizationTradeoff client:visible />
+
+从数据中可以总结出几个经验规律：**Q4_K_M** 是平衡点——4.5 bpw 下 perplexity 增加仅 0.08，速度提升 2.5x (115 vs 45 tokens/s)，显存降低 70% (4.9 vs 16 GB)，适合绝大多数场景。**Q5_K_M** 适合对质量要求较高的生产环境，perplexity 增加 < 0.05，接近无损，但显存和速度优势略逊。**Q6_K** 和 **Q8_0** 适合显存充足但需要最高质量的场景 (如长上下文推理、代码生成)，perplexity 几乎等于 FP16。**Q4_K_S** 和 **Q4_0** 适合显存极度受限的场景 (如 4GB 显卡运行 7B 模型)，但 perplexity 增加较明显 (0.10-0.15)，可能影响复杂任务的输出质量。
+
+一个常被忽视的因素是 **batch size** 和 **context length** 的影响。在 batch size = 1、context < 2048 的情况下，推理是 memory-bound，量化带来的速度提升主要来自带宽节省。但当 batch size 增大或 context 超过 4096 时，计算逐渐成为瓶颈 (compute-bound)，量化的速度优势会减弱。此时 Q6_K 或 Q8_0 可能是更好的选择——显存占用仍比 FP16 低 50-60%，但质量几乎无损，且 INT8 的 GEMM kernel 在现代 GPU 上有高度优化的实现 (Tensor Core 支持)。
+
+另一个实践建议是 **混合部署**：将同一模型的不同量化版本部署在不同场景——延迟敏感的在线服务使用 Q4_K_M，离线批处理使用 Q5_K_M 或 Q6_K，本地开发测试使用 Q4_K_S。llama.cpp 和 Ollama 都支持动态切换模型量化类型，无需重新下载完整模型，只需下载对应的 quantized weights 文件。这种灵活性使得量化不再是一次性的不可逆决策，而是可以根据运行时需求动态调整的配置参数。
+
+## 为什么不一样
+
+llama.cpp 的量化方案与训练框架 (PyTorch/Transformers) 常用的量化方法有显著差异，主要对比 **GPTQ**、**AWQ** 和 **FP8**：
+
+**GPTQ** (Accurate Post-Training Quantization) 是基于 Hessian 矩阵的 layer-wise calibration-based 量化方法。核心思想是将量化过程建模为二次优化问题，通过 Hessian 矩阵的逆 (inverse Hessian) 来补偿量化误差——当某个权重被量化时，将其误差分散到同一层的其他权重上，使得整体输出误差最小化。GPTQ 需要约 128-512 个校准样本的前向传播，量化一个 7B 模型需要 5-10 分钟 (单 GPU)。优点是 3-4 bit 时的精度高于 llama.cpp 的 Q4_K_M，适合需要极致压缩的场景；缺点是量化过程慢、需要校准数据、模型加载时间长 (需要解码 GPTQ 格式)，且推理速度未必更快 (kernel 优化不如 llama.cpp 成熟)。
+
+**AWQ** (Activation-aware Weight Quantization) 更进一步，不仅考虑权重的 Hessian 重要性，还考虑 activation 的分布——通过分析前向传播中 activation 的统计特性 (均值、方差、峰度)，识别出对输出影响最大的 1-5% 权重通道 (salient channels)，对这些通道保留 FP16 精度或使用更高 bit-width，其余部分激进量化。AWQ 在 3-4 bit 时的 perplexity 通常比 GPTQ 更低，但量化时间和校准数据需求更多 (需要分析 activation，计算量更大)。另一个限制是 AWQ 的混合精度模式对推理引擎的要求更高——需要支持 per-channel 甚至 per-token 的动态精度切换，这在 CPU 和移动端硬件上实现成本较高。
+
+**FP8** (8-bit Floating Point) 是 NVIDIA 为 H100/H200 GPU 引入的新数据类型 (E4M3 和E5M2 两种格式)，由硬件原生支持，无需 dequantization overhead。FP8 的优势在于保留了浮点数的动态范围 (exponent + mantissa)，比 INT8 更适合表示权重和 activation 的非均匀分布，且 Tensor Core 对 FP8 的 GEMM 有极致优化 (吞吐量是 FP16 的 2x)。但 FP8 目前仅限于 NVIDIA 最新硬件，AMD 和 Intel 的 GPU、以及所有 CPU 都不支持；且 FP8 的精度介于 Q8_0 和 Q6_K 之间，不如 K-quant 的混合精度策略灵活。对于需要跨平台部署的场景，llama.cpp 的 INT4/INT8 方案仍是更通用的选择。
+
+llama.cpp 选择不支持 GPTQ/AWQ 的主要原因是 **简单性和通用性**：post-training scalar quantization 无需校准数据、量化过程快 (几秒到几十秒)、模型加载即用、跨硬件兼容性好 (CPU/GPU/Metal/Vulkan 都支持)。代价是极低比特率 (2-3 bit) 时精度略逊，但对于 4-6 bit 的常用范围，K-quant 的质量已经足够接近 GPTQ/AWQ，而速度和易用性显著更优。这种设计选择体现了 llama.cpp 的目标受众——本地推理用户和边缘设备，而非云端大规模部署。对于后者，GPTQ/AWQ 在 A100/H100 集群上的优势会更明显，但那是 vLLM/TensorRT-LLM 等专业推理引擎的战场，不是 llama.cpp 的核心场景。
+
+## 延伸阅读
+
+- [GGML Quantization Types](https://github.com/ggerganov/llama.cpp/blob/master/ggml/include/ggml.h) — llama.cpp 支持的 30+ 种量化类型的完整定义和 bit-level 编码格式
+- [K-quant Design Document](https://github.com/ggerganov/llama.cpp/pull/1684) — K-quant 的设计动机、super-block 结构和 benchmark 结果
+- [Quantization Benchmark](https://github.com/ggerganov/llama.cpp/discussions/2094) — 社区维护的不同模型、不同量化类型的 perplexity 和速度对比
+- [GPTQ Paper](https://arxiv.org/abs/2210.17323) — 基于 Hessian 矩阵的 layer-wise 量化算法
+- [AWQ Paper](https://arxiv.org/abs/2306.00978) — activation-aware 混合精度量化策略
