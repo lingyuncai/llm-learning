@@ -1,0 +1,339 @@
+---
+title: "计算图与推理引擎"
+slug: "ollama-compute-graph"
+locale: "zh"
+tags: ["ggml", "compute-graph", "inference-engine", "operator-fusion"]
+prerequisites: ["ollama-quantization"]
+difficulty: "advanced"
+created: "2026-04-04"
+updated: "2026-04-04"
+references:
+  - type: "repo"
+    title: "GGML"
+    url: "https://github.com/ggerganov/ggml"
+  - type: "repo"
+    title: "llama.cpp"
+    url: "https://github.com/ggerganov/llama.cpp"
+  - type: "paper"
+    title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+    url: "https://arxiv.org/abs/2205.14135"
+---
+
+import GGMLGraphBuilder from '../../../components/interactive/GGMLGraphBuilder.tsx';
+import OperatorFusion from '../../../components/interactive/OperatorFusion.tsx';
+import DualRunnerComparison from '../../../components/interactive/DualRunnerComparison.tsx';
+
+## GGML 计算图
+
+**GGML (Georgi Gerganov Machine Learning)** 是一个专为在 CPU 和 GPU 上高效运行 LLM 推理而设计的张量库，它是 llama.cpp 的核心。与 PyTorch 等训练框架不同，GGML 完全面向推理场景优化，核心特点包括:
+
+**核心概念:**
+- **Tensor (张量)**: 多维数组，支持 F32、F16、Q4_0、Q8_0 等多种量化类型
+- **Graph (计算图)**: 由操作节点 (Op Node) 和数据依赖边组成的有向无环图 (DAG)
+- **Context (上下文)**: 内存池，所有 tensor 从同一个 context 分配，统一管理生命周期
+- **Backend (后端)**: 抽象层，支持 CPU、CUDA、Metal、Vulkan 等多种硬件
+
+**Lazy Evaluation (惰性求值):**
+
+GGML 采用"先构建图，后执行"的两阶段模式。当你调用 `ggml_mul_mat(A, B)` 时，GGML 并不立即计算，而是:
+1. 创建一个 MatMul 节点
+2. 记录输入 A 和 B 的依赖关系
+3. 返回一个"尚未计算"的输出 tensor
+
+只有当调用 `ggml_graph_compute()` 时，整个图才会被调度执行。这种设计有两大好处:
+- **全局优化**: 可以在执行前分析整个图，进行算子融合、内存复用等优化
+- **跨设备调度**: 可以根据硬件能力，将不同节点分配到 CPU/GPU/NPU
+
+**Static vs Dynamic Graph:**
+
+GGML 的计算图是 **半静态 (Semi-Static)** 的:
+- **静态结构**: 模型架构 (层数、维度) 固定后，图的拓扑结构不变
+- **动态输入**: 每次推理时，输入 token 数量 (seq_len) 可以变化，KV Cache 也会动态扩展
+
+这与 PyTorch (完全动态图) 和 TensorRT (完全静态图) 都不同。GGML 在保持灵活性的同时，允许对固定模式进行优化。
+
+## 图构建过程
+
+以 **Qwen3-8B** 的一个 Transformer Block 为例，我们来看 GGML 如何逐步构建计算图。模型配置:
+- hidden_size: 4096
+- num_attention_heads: 32 (Q)
+- num_key_value_heads: 8 (K/V, GQA)
+- intermediate_size: 11008 (FFN)
+- 激活函数: SwiGLU
+
+**伪代码:**
+
+```c
+// 1. 创建输入 tensor (假设 seq_len=10)
+struct ggml_tensor* input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4096, 10);
+
+// 2. Attention 前的 RMSNorm
+struct ggml_tensor* attn_norm = ggml_rms_norm(ctx, input);
+
+// 3. QKV Projection (GQA: Q=4096, K/V=512)
+struct ggml_tensor* Q = ggml_mul_mat(ctx, wq, attn_norm); // (10, 4096)
+struct ggml_tensor* K = ggml_mul_mat(ctx, wk, attn_norm); // (10, 512)
+struct ggml_tensor* V = ggml_mul_mat(ctx, wv, attn_norm); // (10, 512)
+
+// 4. RoPE 位置编码
+Q = ggml_rope_inplace(ctx, Q, freq_base, freq_scale);
+K = ggml_rope_inplace(ctx, K, freq_base, freq_scale);
+
+// 5. FlashAttention (融合 QK^T, softmax, ×V)
+struct ggml_tensor* attn_out = ggml_flash_attn(ctx, Q, K, V, true);
+
+// 6. Attention Output Projection
+attn_out = ggml_mul_mat(ctx, wo, attn_out);
+
+// 7. 残差连接
+struct ggml_tensor* h = ggml_add(ctx, input, attn_out);
+
+// 8. FFN 前的 RMSNorm
+struct ggml_tensor* ffn_norm = ggml_rms_norm(ctx, h);
+
+// 9. SwiGLU: (Gate × Up) 融合
+struct ggml_tensor* gate = ggml_mul_mat(ctx, w_gate, ffn_norm);
+struct ggml_tensor* up = ggml_mul_mat(ctx, w_up, ffn_norm);
+struct ggml_tensor* ffn_hidden = ggml_mul(ctx, ggml_silu(ctx, gate), up);
+
+// 10. FFN Down Projection + 残差
+struct ggml_tensor* ffn_out = ggml_mul_mat(ctx, w_down, ffn_hidden);
+struct ggml_tensor* output = ggml_add(ctx, h, ffn_out);
+```
+
+**可视化构建过程:**
+
+<GGMLGraphBuilder client:visible />
+
+每个蓝色/橙色方框代表一个 GGML 操作节点，灰色箭头表示数据依赖。注意:
+- **RMSNorm** 是 Qwen3 使用的归一化方式 (替代 LayerNorm)
+- **GQA** (Grouped Query Attention): Q 有 32 heads，K/V 只有 8 heads，节省 KV Cache 内存
+- **残差连接** (蓝色节点): 将输入直接加到输出，防止梯度消失
+
+## 算子融合
+
+构建完图后，GGML 会进行 **Operator Fusion (算子融合)** 优化。传统方式下，每个操作都需要:
+1. 从 HBM (High Bandwidth Memory) 读取输入
+2. 在 GPU/CPU 上计算
+3. 将结果写回 HBM
+
+当多个操作连续执行时，中间结果会反复读写 HBM，造成巨大的内存带宽瓶颈。算子融合将多个操作合并为一个内核 (Kernel)，中间结果留在寄存器或 SRAM 中，大幅减少内存访问。
+
+**常见融合模式:**
+
+<OperatorFusion client:visible />
+
+**1. FlashAttention Fusion:**
+
+原始 Attention 需要 5 个独立步骤:
+```python
+scores = Q @ K.T          # (seq, seq) 矩阵乘法
+scores = scores / sqrt(d) # Scale
+scores = scores + mask    # Causal Mask
+attn = softmax(scores)    # Softmax
+output = attn @ V         # 最终矩阵乘
+```
+
+FlashAttention 将所有步骤融合为单个 CUDA kernel，并且:
+- **分块计算**: 一次只处理一小块 (tile)，减少 SRAM 占用
+- **在线 softmax**: 不需要存储完整的 scores 矩阵
+- **IO 优化**: 中间结果不写回 HBM
+
+结果: **内存访问量从 O(N²) 降到 O(N)**, 速度提升 2-4 倍。
+
+**2. RMSNorm + MatMul Fusion:**
+
+在 Attention/FFN 之前，总是先做归一化再做线性变换:
+```c
+x = rms_norm(x, weight_norm);
+x = matmul(weight_proj, x);
+```
+
+融合后，可以在 MatMul 的同时完成归一化，省去一次全局读写。
+
+**3. SwiGLU Fusion:**
+
+SwiGLU 激活函数涉及 4 个操作:
+```python
+gate = linear_gate(x)
+up = linear_up(x)
+activated = silu(gate) * up
+```
+
+融合后的 `fused_swiglu(x, w_gate, w_up)` 在单个 kernel 内完成所有计算，避免 3 次中间结果的存储。
+
+**模式匹配 (Pattern Matching):**
+
+GGML 通过 **Graph Optimizer** 自动识别可融合的模式。例如:
+- 检测到 `rms_norm → mul_mat` 序列 → 替换为 `fused_rmsnorm_matmul`
+- 检测到 `rope → rope → flash_attn` → 将 RoPE 内联到 FlashAttention
+
+这个过程在 `ggml_graph_compute()` 之前完成，对用户透明。
+
+## ollamarunner vs llamarunner
+
+Ollama 支持两种推理引擎，它们构建计算图的方式完全不同:
+
+<DualRunnerComparison client:visible />
+
+**ollamarunner (Go 原生, 新方向):**
+
+- **语言**: Go，最小化 CGo 调用
+- **图构建**: 在 Go 中手写每个模型架构的 `Forward()` 方法，直接调用 GGML C API
+- **执行模式**: Pipeline 异步执行，prefill 和 decode 可以并行
+- **支持架构**: 约 21 种 (Llama 3, Qwen3, Gemma 2, Mistral, ...)
+- **优势**: 性能优化空间大，减少 CGo overhead，可以做更激进的 batching
+- **劣势**: 每个新架构需要手写 Go 代码
+
+**llamarunner (C++ 绑定, 后备方案):**
+
+- **语言**: C++，通过 CGo 绑定 llama.cpp 的 C API
+- **图构建**: 完全依赖 llama.cpp 的 `llama_decode()`，黑盒调用
+- **执行模式**: 同步执行，等待当前 batch 完成才能提交下一个
+- **支持架构**: 约 120+ 种 (覆盖 llama.cpp 支持的所有模型)
+- **优势**: 兼容性最强，不需要 Ollama 团队维护模型代码
+- **劣势**: CGo 调用开销大，难以做自定义优化
+
+**为什么需要两个 runner?**
+
+Ollama 的策略是:
+1. **ollamarunner 优先**: 对于主流模型 (Llama, Qwen, Mistral)，手写 Go 实现，追求极致性能
+2. **llamarunner 后备**: 对于长尾模型 (Phi, CodeLlama, 各种微调模型)，依赖 llama.cpp 的广泛支持
+
+用户无需关心使用哪个 runner，Ollama 会根据模型文件的 `architecture` 字段自动选择。两个 runner 最终都提交计算图给同一个 **GGML Backend**，因此硬件加速 (CUDA、Metal、Vulkan) 的实现是共享的。
+
+**架构演进:**
+
+- **v0.1.x - v0.2.x**: 只有 llamarunner，完全依赖 llama.cpp
+- **v0.3.x**: 引入 ollamarunner，支持 Llama 3/3.1
+- **v0.4.x**: ollamarunner 支持 Qwen3、Gemma 2、Phi 等
+- **未来**: 计划将更多模型迁移到 ollamarunner，甚至实现自己的 backend (脱离 GGML)
+
+## 后端调度
+
+构建完计算图并完成算子融合后，GGML 的 **Scheduler (调度器)** 负责将操作分配到不同的硬件后端执行。
+
+**Backend 抽象:**
+
+GGML 定义了统一的 Backend 接口:
+```c
+struct ggml_backend {
+    const char* name;          // "CPU", "CUDA", "Metal"
+    ggml_backend_buffer_t (*alloc_buffer)(size_t);
+    void (*compute_graph)(ggml_backend_t, struct ggml_cgraph*);
+    bool (*supports_op)(enum ggml_op);
+};
+```
+
+每个后端实现三个核心功能:
+1. **内存分配**: 在 CPU RAM / GPU VRAM 中分配 tensor 存储
+2. **图执行**: 遍历图节点，调用对应的内核实现 (cuBLAS, cuDNN, Metal Performance Shaders, ...)
+3. **能力查询**: 报告支持哪些操作 (例如 CPU 不支持 FlashAttention)
+
+**设备分配 (Device Assignment):**
+
+Ollama 支持三种模式:
+- **CPU Only**: 所有操作在 CPU 上，使用 AVX2/AVX-512 SIMD 指令
+- **GPU Only**: 所有操作在 GPU 上 (CUDA/Metal/Vulkan)
+- **Hybrid**: 模型层分布在多个设备
+
+Hybrid 模式下，GGML 会根据内存容量自动分配:
+```plaintext
+Layer  0 -  10: GPU 0
+Layer 11 -  20: GPU 1
+Layer 21 -  32: CPU
+```
+
+**跨设备数据传输 (Cross-Device Transfer):**
+
+当一个节点的输入来自不同设备时，GGML 自动插入传输节点:
+```c
+// Layer 10 (GPU) → Layer 11 (GPU)
+tensor_gpu = ggml_mul_mat(gpu_backend, w10, x10);
+
+// Layer 11 (GPU) → Layer 12 (CPU)
+tensor_cpu = ggml_backend_copy(gpu_backend, cpu_backend, tensor_gpu);
+x12 = ggml_mul_mat(cpu_backend, w12, tensor_cpu);
+```
+
+传输使用:
+- **CUDA → CPU**: cudaMemcpyAsync + pinned memory
+- **CPU → CUDA**: cudaMemcpyAsync + page-locked memory
+- **GPU → GPU**: NVLink (if available) 或 PCIe
+
+**Multi-GPU 调度:**
+
+在多 GPU 环境下，GGML 支持两种并行策略:
+1. **Tensor Parallelism (张量并行)**: 将单个 MatMul 切分到多个 GPU
+   ```plaintext
+   Q @ K^T  →  [Q1 @ K1^T] GPU0
+               [Q2 @ K2^T] GPU1
+   ```
+2. **Pipeline Parallelism (流水线并行)**: 不同层分配到不同 GPU
+   ```plaintext
+   Layer 0-15: GPU 0
+   Layer 16-31: GPU 1
+   ```
+
+Ollama 默认使用 **Pipeline Parallelism**，因为它实现简单且通信开销小。
+
+## 为什么不一样
+
+GGML 的设计哲学与其他主流框架有显著差异，让我们对比分析:
+
+**vs PyTorch (动态图训练框架):**
+
+| 特性 | GGML | PyTorch |
+|------|------|---------|
+| **图类型** | 半静态 (结构固定，输入可变) | 完全动态 (Eager Execution) |
+| **目标场景** | 推理 (Inference) | 训练 + 推理 |
+| **内存管理** | Context 池化分配，生命周期确定 | 动态分配 + GC，需要引用计数 |
+| **算子融合** | 编译期自动融合 | 需要手动使用 TorchScript/torch.jit |
+| **量化支持** | 原生支持 Q4/Q8 推理 | 需要 ONNX Runtime 或第三方库 |
+| **硬件支持** | CPU 优化极致 (AVX-512, Neon) | CPU 性能一般，主要优化 GPU |
+
+PyTorch 优势在于灵活性 (动态控制流、即时调试)，但推理性能不如 GGML。典型对比:
+- **Llama 3-8B 推理 (CPU, 1 thread)**: GGML ~15 tok/s, PyTorch ~3 tok/s
+- **内存占用 (Q4_K_M)**: GGML ~4.5GB, PyTorch (FP16) ~16GB
+
+**vs TensorRT (NVIDIA 推理引擎):**
+
+| 特性 | GGML | TensorRT |
+|------|------|---------|
+| **图类型** | 半静态 | 完全静态 (编译后固定) |
+| **部署流程** | 直接加载 GGUF → 运行 | 导出 ONNX → 编译 → 序列化 → 运行 |
+| **硬件依赖** | 跨平台 (CPU/CUDA/Metal/...) | 仅 NVIDIA GPU |
+| **量化粒度** | Per-tensor 或 per-channel | Per-channel + INT8 calibration |
+| **优化层次** | 算子融合 + kernel 选择 | 算子融合 + kernel tuning + layer fusion + precision calibration |
+
+TensorRT 在 NVIDIA GPU 上性能最强 (专门优化 Tensor Core)，但:
+- **编译时间长**: 首次运行需要 5-30 分钟
+- **不支持动态输入**: batch_size 和 seq_len 必须提前固定
+- **部署复杂**: 需要 ONNX 导出 + calibration dataset
+
+GGML 牺牲了部分性能，换取:
+- **即开即用**: 无需编译，直接加载模型推理
+- **跨平台**: 同一个 GGUF 文件在 Mac/Windows/Linux 都能跑
+- **灵活输入**: 任意长度的输入序列
+
+**vs ONNX Runtime (跨框架推理):**
+
+| 特性 | GGML | ONNX Runtime |
+|------|------|---------|
+| **模型格式** | GGUF (自定义二进制) | ONNX (Protobuf) |
+| **量化方式** | GGML 原生量化 (Q4_K_M, IQ3_XS, ...) | INT8/INT4 PTQ + QDQ 节点 |
+| **后端选择** | 编译期固定 (CPU/CUDA/Metal) | 运行时选择 (EP: CPU/CUDA/TensorRT/OpenVINO/...) |
+| **内存优化** | KV Cache 复用 + prefix cache | 依赖后端实现 |
+
+ONNX Runtime 的优势是 **通用性** (支持 100+ 后端)，但在 LLM 推理上不如 GGML 专注。例如:
+- ONNX Runtime 的 INT4 量化需要导出 per-channel scales，而 GGML 支持更复杂的 block-wise 量化
+- ONNX Runtime 的 KV Cache 管理需要用户手动实现，GGML 内置
+
+**总结:**
+
+GGML 的核心竞争力在于:
+1. **极致的 CPU 性能**: 在没有 GPU 的环境下依然可用
+2. **量化与推理的深度结合**: GGUF 格式天然支持低比特推理
+3. **简单的部署流程**: 一个文件 + 一个命令，无需复杂的编译/优化
+
+这使得 GGML (和 Ollama) 成为 **边缘设备** 和 **本地部署** 场景的最佳选择。如果追求极致性能，TensorRT 或 vLLM 可能更合适；如果需要训练和推理一体化，PyTorch 是更好的选择。但如果目标是"在任意设备上轻松运行 LLM"，GGML 目前无可替代。
