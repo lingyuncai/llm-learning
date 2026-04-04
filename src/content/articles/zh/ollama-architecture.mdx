@@ -1,0 +1,100 @@
+---
+title: "Ollama + llama.cpp 架构总览"
+slug: "ollama-architecture"
+locale: "zh"
+tags: ["ollama", "llama-cpp", "architecture", "inference"]
+difficulty: "intermediate"
+created: "2026-04-04"
+updated: "2026-04-04"
+references:
+  - type: "repo"
+    title: "Ollama GitHub"
+    url: "https://github.com/ollama/ollama"
+  - type: "repo"
+    title: "llama.cpp GitHub"
+    url: "https://github.com/ggerganov/llama.cpp"
+  - type: "repo"
+    title: "GGML GitHub"
+    url: "https://github.com/ggerganov/ggml"
+---
+
+import OllamaArchitectureOverview from '../../../components/interactive/OllamaArchitectureOverview.tsx';
+import DualEngineSelector from '../../../components/interactive/DualEngineSelector.tsx';
+import FrameworkComparison from '../../../components/interactive/FrameworkComparison.tsx';
+
+## 为什么需要 Ollama + llama.cpp
+
+在大模型应用开发中,调用 OpenAI、Anthropic 等云端 API 是最快速的起步方式。但当你需要处理敏感数据、在无网络环境运行、或希望降低长期成本时,本地推理 (local inference) 就成为刚需。然而,直接使用原始推理引擎门槛很高:需要手动管理模型下载、配置硬件加速、处理并发请求、应对各种架构差异等繁琐工作。
+
+Ollama 的诞生就是为了解决这一痛点。它可以被理解为「LLM 界的 Docker」:只需一行命令 `ollama run llama3.2`,就能自动完成模型下载、量化选择、硬件适配和服务启动。开发者无需关心底层细节,获得开箱即用的本地推理能力。无论是个人开发者在笔记本上实验,还是企业在边缘设备部署隐私敏感应用,Ollama 都提供了统一、简洁的使用体验。
+
+而 Ollama 的核心推理能力来自 llama.cpp 和 GGML 这两个 C/C++ 底层引擎。llama.cpp 最初专为 LLaMA 模型优化,后来扩展支持 120+ 主流架构,成为社区最活跃的本地推理引擎。GGML 则是 llama.cpp 的计算基础,提供跨平台 tensor 运算和硬件后端调度。通过 Go 服务层 + C/C++ 计算引擎的双层架构,Ollama 在易用性和性能之间找到了理想平衡点。
+
+## 双层架构
+
+Ollama 采用分层设计:上层是 Go 编写的服务层,负责 HTTP API、模型生命周期管理、请求调度和并发控制;下层是 C/C++ 编写的推理引擎层,负责高性能的 tensor 计算和硬件加速。这种设计充分发挥了两种语言的优势:Go 的并发模型 (goroutines) 和网络库 (Gin) 让服务端开发简洁高效,而 C/C++ 的底层控制能力和 SIMD 优化让计算性能逼近硬件极限。
+
+两层之间通过进程隔离:Ollama 主进程启动 runner 子进程,双方通过 localhost HTTP 通信传递推理请求和响应。这种设计带来两个好处:一是推理崩溃不会影响主服务稳定性,二是可以灵活切换不同推理引擎实现。当前 Ollama 支持两种 runner:纯 Go 实现的 ollamarunner 和 llama.cpp CGo 绑定的 llamarunner,系统会根据模型架构自动选择最优方案。
+
+下图展示了完整的组件调用链:从 HTTP 请求到达 Server,经过 Scheduler 排队和资源分配,由 LLM Runner Manager 启动对应的 runner 子进程,最终调用 GGML Backend 在 CUDA/Metal/Vulkan/CPU 上执行计算。点击任意模块查看详细说明。
+
+<OllamaArchitectureOverview client:visible />
+
+## 核心组件地图
+
+**HTTP Server** 是系统入口,基于 Gin 框架实现 RESTful API。主要端点包括 `/api/generate` (单次生成)、`/api/chat` (多轮对话)、`/api/pull` (模型下载) 和 `/api/push` (模型上传)。Server 负责解析请求参数、验证权限、返回流式响应等前端交互逻辑。
+
+**Scheduler** 是调度中枢,管理模型加载和请求排队。它维护全局模型缓存 (基于 LRU 策略),决定何时加载新模型或卸载旧模型。当 GPU 内存不足时,Scheduler 会根据请求优先级和内存预算进行智能调度,确保系统稳定运行。
+
+**LLM Runner Manager** 负责 runner 子进程的生命周期管理。它根据模型格式和架构决定启动哪个 runner,监控子进程健康状态,并在异常时自动重启。Manager 还实现了推理请求的负载均衡,当多个请求并发到达时,可以复用同一模型实例。
+
+**ollamarunner / llamarunner** 是实际执行推理的双引擎。ollamarunner 是纯 Go 实现,支持约 21 种主流架构,采用 pipeline 并行执行 (prefill 和 decode 分离),性能优于同步方式。llamarunner 是 llama.cpp 的 CGo 绑定,支持 120+ 架构,作为兼容性后备方案。
+
+**GGML Backend** 是底层计算库,提供 tensor 操作原语 (matmul、add、mul、softmax 等) 和计算图构建。GGML 的关键特性是多后端抽象:同一份计算图代码可以自动调度到 CUDA (NVIDIA GPU)、Metal (Apple GPU)、Vulkan (跨平台 GPU) 或 CPU (SIMD 优化) 执行,无需开发者手动适配。
+
+数据流方向是自上而下:请求从 Server 流入 Scheduler,再由 LLM Manager 分配给 runner,runner 通过 GGML 调用硬件后端完成计算,结果沿原路返回。控制流则相对灵活:Scheduler 可以主动卸载模型,Manager 可以重启故障 runner,形成自适应的闭环系统。
+
+## 双引擎设计
+
+Ollama 在推理层维护两套引擎实现,这种冗余设计源于一个现实权衡:性能 vs 兼容性。ollamarunner 是 Ollama 团队纯 Go 重写的推理引擎,目前支持 21 种主流架构 (如 LLaMA、Mistral、Qwen、Gemma)。由于避免了 CGo 跨语言调用开销,ollamarunner 的 pipeline 执行模式可以让 prefill (处理 prompt) 和 decode (生成 token) 阶段并行运行,理论吞吐更高。
+
+但 LLM 架构的创新速度远超任何单一团队的适配能力。llama.cpp 作为社区驱动项目,支持超过 120 种架构变体,覆盖从 GPT-2 到最新研究模型的广泛场景。因此 Ollama 保留了 llamarunner (llama.cpp 的 CGo 绑定) 作为兼容性后备:当遇到 ollamarunner 不支持的架构时,自动降级到 llamarunner,确保用户无感切换。
+
+选择逻辑非常直接:当加载 GGUF 模型时,系统调用 `model.NewTextProcessor` 尝试初始化 ollamarunner。如果成功 (说明架构已支持),则使用纯 Go 路径;如果失败 (架构未实现或解析错误),则回退到 llamarunner。整个过程对用户透明,只在日志中可见 runner 类型。
+
+下图展示了这一决策流程:GGUF 模型输入后,通过架构检测分流到两个 runner,但最终都调用同一个 GGML Backend 完成计算,保证了执行语义的一致性。
+
+<DualEngineSelector client:visible />
+
+从长期路线看,Ollama 团队正在逐步扩展 ollamarunner 的架构支持,目标是未来大部分请求走纯 Go 路径,降低 CGo 维护成本。但 llamarunner 的存在保证了过渡期的稳定性,也为小众模型和实验性架构留出了空间。
+
+## 和主流推理框架的对比
+
+在 LLM 推理领域,不同框架针对不同场景优化。**vLLM** 是学术界和工业界广泛使用的高性能服务器引擎,其核心创新 PagedAttention 通过内存分页大幅提升 KV Cache 利用率,特别适合大 batch 高并发场景。但 vLLM 强依赖 CUDA,必须运行在 NVIDIA GPU 上,且需要 Python 运行时和大量依赖,部署门槛较高。
+
+**TensorRT-LLM** 是 NVIDIA 官方推理引擎,基于 TensorRT 编译器对 CUDA kernel 进行深度融合和量化优化,性能逼近硬件峰值。但它的代价是部署复杂度:模型需要预编译成引擎文件,且编译过程与 GPU 型号绑定,灵活性受限。此外,TensorRT-LLM 只支持 NVIDIA 硬件,无法用于 AMD、Apple 或 CPU 环境。
+
+**TGI (Text Generation Inference)** 是 HuggingFace 推出的生产级推理服务,集成了 Flash Attention v2、GPTQ/AWQ 量化和流式输出等现代特性。TGI 用 Rust 重写核心逻辑,性能优于纯 Python 实现,但仍主要面向服务器部署,对 CUDA 有强依赖,且需要 Docker 容器化运行。
+
+相比之下,**Ollama + llama.cpp** 的定位是「桌面端和边缘设备的本地推理解决方案」。其独特优势包括:
+
+1. **硬件兼容性**:支持 CUDA (NVIDIA)、Metal (Apple)、Vulkan (跨平台 GPU) 和 CPU (SIMD 优化),覆盖从高端服务器到笔记本的全场景
+2. **单二进制分发**:无需 Python 环境或 Docker,一个可执行文件即可运行,降低部署和维护成本
+3. **离线优先**:所有依赖静态链接,模型和权重本地存储,完全支持无网络环境
+4. **GGUF 格式**:模型文件自包含量化参数和 tokenizer,无需额外配置文件,分享和迁移极为便捷
+
+下表对比了四种框架的核心特性:
+
+<FrameworkComparison client:visible />
+
+总结来说,如果你需要部署在云端 GPU 服务器、追求极致吞吐,vLLM 或 TensorRT-LLM 是更好选择;如果需要在笔记本、边缘设备或 CPU 环境运行,或希望简化部署流程,Ollama 是不二之选。框架的选择本质是场景和约束的匹配,没有绝对优劣,只有适不适合。
+
+## 技术选型的深层逻辑
+
+Ollama 的几个核心设计决策都源于「降低本地推理门槛」这一目标。首先是 **Go + C/C++ 混合架构**:为什么不像 vLLM 一样全用 Python,或像 llama.cpp 一样全用 C++?答案是 Go 的并发模型和网络库比 Python 高效,比 C++ 易维护,而 C/C++ 的计算性能和硬件控制能力无可替代。这种混合在工程上是合理的中间路线。
+
+其次是 **mmap 内存映射加载模型**:传统做法是把模型权重完整读入内存,但这会导致启动慢、内存占用高。mmap 让进程直接将文件映射到虚拟地址空间,按需分页加载,既加速了启动,又让多进程可以共享同一模型副本,节省物理内存。这对个人电脑的多模型切换场景尤为重要。
+
+最后是 **单二进制分发**:不依赖 Python 虚拟环境、不需要 Docker 镜像,所有依赖静态编译到一个可执行文件中。这种分发方式让 Ollama 可以像传统软件一样安装和升级,对非技术用户极其友好。虽然牺牲了一定灵活性 (无法动态安装 Python 插件),但对本地推理场景这是正确的取舍。
+
+这些技术选型的背后是清晰的产品定位:Ollama 不是为了取代 vLLM 在数据中心的地位,而是让每个开发者都能在笔记本上轻松运行 LLM,就像使用 Docker 运行数据库一样自然。架构的每一层设计都围绕这一愿景展开,技术服务产品,产品服务用户,形成了完整的闭环。
