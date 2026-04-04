@@ -14,3 +14,4 @@ articles:
   - gqa-mqa
   - attention-variants
   - positional-encoding
+  - mixture-of-experts
