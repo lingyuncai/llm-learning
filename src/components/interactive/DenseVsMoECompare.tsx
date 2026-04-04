@@ -92,7 +92,7 @@ export default function DenseVsMoECompare() {
 
       {/* Stats */}
       <text x={rightX + 120} y={215} textAnchor="middle" fontSize="8" fontWeight="600"
-        fill={COLORS.dark} fontFamily={FONTS.sans}>Total params >> Active params</text>
+        fill={COLORS.dark} fontFamily={FONTS.sans}>Total params &gt;&gt; Active params</text>
       <text x={rightX + 120} y={230} textAnchor="middle" fontSize="8"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
         例: Mixtral 47B total → ~13B active (top-2 of 8)
