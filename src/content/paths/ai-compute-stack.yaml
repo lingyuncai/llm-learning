@@ -9,3 +9,4 @@ level: intermediate
 articles:
   - ai-compute-stack
   - gpu-architecture
+  - matrix-acceleration
