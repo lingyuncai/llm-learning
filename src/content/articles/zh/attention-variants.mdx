@@ -1,0 +1,125 @@
+---
+title: "Attention 变体：从 Sliding Window 到 MLA"
+slug: attention-variants
+locale: zh
+difficulty: advanced
+tags: [transformer, attention, mla, sliding-window, cross-attention]
+prerequisites: [multi-head-attention, gqa-mqa, flash-attention]
+created: "2026-04-04"
+updated: "2026-04-04"
+references:
+  - type: paper
+    title: "Mistral 7B"
+    url: "https://arxiv.org/abs/2310.06825"
+  - type: paper
+    title: "Gemma 2 Technical Report"
+    url: "https://arxiv.org/abs/2408.00118"
+  - type: paper
+    title: "Jamba: A Hybrid Transformer-Mamba Language Model"
+    url: "https://arxiv.org/abs/2403.19887"
+  - type: paper
+    title: "Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer (T5)"
+    url: "https://arxiv.org/abs/1910.10683"
+  - type: paper
+    title: "Flamingo: a Visual Language Model for Few-Shot Learning"
+    url: "https://arxiv.org/abs/2204.14198"
+  - type: paper
+    title: "DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model"
+    url: "https://arxiv.org/abs/2405.04434"
+---
+
+import SlidingWindowVsFullMask from '../../../components/interactive/SlidingWindowVsFullMask.tsx';
+import HybridLayerStack from '../../../components/interactive/HybridLayerStack.tsx';
+import CrossVsSelfAttention from '../../../components/interactive/CrossVsSelfAttention.tsx';
+import MLACompression from '../../../components/interactive/MLACompression.tsx';
+import MLADataFlow from '../../../components/interactive/MLADataFlow.tsx';
+import AttentionVariantComparison from '../../../components/interactive/AttentionVariantComparison.tsx';
+
+标准的 Multi-Head Attention 面临三大瓶颈：$O(n^2)$ 计算复杂度、KV cache 显存占用、长上下文处理。前面我们已经看过 [GQA/MQA](/zh/articles/gqa-mqa) 如何通过共享 KV head 来减少缓存，这里进一步介绍其他重要的 attention 变体。
+
+三个优化方向：
+- **稀疏化**：减少每个 token 需要 attend 的范围（Sliding Window Attention）
+- **压缩 KV**：减少每个位置存储的信息量（MLA）
+- **混合架构**：不同层用不同策略，取长补短（Hybrid Attention）
+
+## Sliding Window Attention
+
+核心思想：每个 token 只 attend 前 $w$ 个 token，而非整个序列。
+
+$$\text{Attention}(q_i, K, V) = \text{softmax}\left(\frac{q_i \cdot K_{[i-w+1:i]}^T}{\sqrt{d_k}}\right) V_{[i-w+1:i]}$$
+
+这将复杂度从 $O(n^2)$ 降到 $O(nw)$。看起来损失了全局信息？其实不然 — 多层堆叠后，第 $L$ 层的有效感受野为 $L \times w$。例如 Mistral 7B 有 32 层、窗口 $w=4096$，理论感受野覆盖 $32 \times 4096 = 131072$ 个 token。
+
+<SlidingWindowVsFullMask client:visible />
+
+**采用者：** Mistral 7B ($w=4096$), Mixtral 8x7B ($w=4096$), Gemma 2（交替层使用）。
+
+Sliding Window 还能和 [Flash Attention](/zh/articles/flash-attention) 完美结合 — 窗口内的计算用 Flash Attention 的 tiling 策略高效完成，窗口外的直接跳过。
+
+## Hybrid Attention
+
+不是所有层都需要 full attention — 将不同类型的 attention 混合使用，让每种类型发挥特长。
+
+常见做法：
+- **Gemma 2**：偶数层 full attention + 奇数层 sliding window attention
+- **Jamba** (AI21)：Attention 层 + Mamba (SSM) 层交替，1:3 的比例
+- **Command-R** (Cohere)：部分层 full attention + 部分层 local attention
+
+<HybridLayerStack />
+
+设计选择的关键问题：full attention 层放哪里？比例怎么定？经验表明：靠近输出的层更需要全局信息（全局层放上面），靠近输入的层局部模式就够了。
+
+## Cross Attention
+
+前面的 attention 变体都是 self-attention（Q/K/V 来自同一序列）。Cross attention 的核心区别是 **Q 来自一个序列，K/V 来自另一个序列**。
+
+<CrossVsSelfAttention client:visible />
+
+### 典型场景
+
+**Encoder-Decoder 架构**（翻译、摘要）：
+- Decoder 的 hidden state 作为 Q
+- Encoder 的输出作为 K 和 V
+- 每个 decoder token "查询" encoder 的完整输入，决定关注输入的哪些部分
+- **采用者**：T5, BART
+
+**多模态架构**（图文理解）：
+- 文本 decoder 的 token 作为 Q
+- Vision encoder 输出的图像 token 作为 K 和 V
+- 文本 token "查询" 图像 token，融合视觉信息
+- **采用者**：Flamingo, LLaVA
+
+和 self-attention 相比，cross attention 的 KV cache 行为不同：KV 来自 encoder 的固定输出，不会随着生成增长。
+
+## Multi-Latent Attention (MLA)
+
+GQA 通过 **共享 KV head** 减少缓存，那能不能更激进？MLA 的思路是对 KV cache 做 **低秩压缩**，不存完整的 K 和 V，而是存一个低维的 compressed latent $c_{KV}$。
+
+**压缩过程：**
+
+$$c_{KV} = W_{DKV} \cdot h \quad \text{（h 是 hidden state, } d_{model} \to d_c \text{）}$$
+
+$$K = W_{UK} \cdot c_{KV}, \quad V = W_{UV} \cdot c_{KV} \quad \text{（解压：} d_c \to d_k, d_v \text{）}$$
+
+只需缓存 $c_{KV}$（维度远小于 K+V）。推理时再用 $W_{UK}$、$W_{UV}$ 解压。更妙的是，$W_{UK}$ 可以吸收进 $W_Q$ 的矩阵乘法中，避免显式解压。
+
+<MLADataFlow />
+
+下面的计算器可以对比不同配置下 MHA、GQA、MLA 的 KV cache 大小：
+
+<MLACompression client:visible />
+
+以 DeepSeek-V2 为例（$d_{model}=5120$, 128 heads, $d_c=512$）：MLA 的 KV cache 只有标准 MHA 的约 **5%**。
+
+**采用者：** DeepSeek-V2, DeepSeek-V3, DeepSeek-R1
+
+## 对比总结
+
+<AttentionVariantComparison client:visible />
+
+**选型指南：**
+- 长上下文 + 低延迟 → Sliding Window（Mistral 方案）
+- 极致 KV cache 压缩 → MLA（DeepSeek 方案）
+- 跨模态 / Encoder-Decoder → Cross Attention
+- 平衡方案 → Hybrid（Gemma 2 方案）
+- 通用 KV 节省 → GQA（目前最主流的折中选择）
