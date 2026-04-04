@@ -26,6 +26,9 @@ import PermutationInvariance from '../../../components/interactive/PermutationIn
 import SinusoidalHeatmap from '../../../components/interactive/SinusoidalHeatmap.tsx';
 import RoPERotationAnimation from '../../../components/interactive/RoPERotationAnimation.tsx';
 import EncodingComparison from '../../../components/interactive/EncodingComparison.tsx';
+import RoPEFrequencyBands from '../../../components/interactive/RoPEFrequencyBands.tsx';
+import RoPEComplexPlane from '../../../components/interactive/RoPEComplexPlane.tsx';
+import RoPEExtrapolation from '../../../components/interactive/RoPEExtrapolation.tsx';
 
 Transformer 的 Self-Attention 机制有一个常被忽视但极其关键的特性：**置换不变性（Permutation Invariance）**。打乱输入 token 的顺序，Attention 的输出不会改变 — 换句话说，原始的 Attention 完全不知道 token 的位置。这意味着没有位置编码的 Transformer 分不清 "狗咬人" 和 "人咬狗"。
 
@@ -121,6 +124,19 @@ RoPE 的核心思想极其优雅：**把每对相邻维度 $(d_{2i}, d_{2i+1})$ 
 
 <RoPERotationAnimation client:visible />
 
+### 维度对频率分解
+
+每对维度 $(d_{2i}, d_{2i+1})$ 对应基础角度 $\theta_i = 10000^{-2i/d}$。这个公式的含义是：
+
+- **低维度**（小 $i$）= **高频旋转**：位置变化一点，角度就大幅变化 → 捕捉**局部关系**
+- **高维度**（大 $i$）= **低频旋转**：位置变化很多，角度才明显变化 → 捕捉**远距离关系**
+
+这和 Sinusoidal 编码的多频率思想一脉相承，只是用旋转来实现。
+
+<RoPEFrequencyBands client:visible />
+
+热力图中左侧（低维度）颜色变化剧烈 — 高频信号；右侧（高维度）颜色变化缓慢 — 低频信号。这种多频率编码让模型同时感知近距离和远距离的位置关系。
+
 ### 数学推导
 
 对每对维度 $(2i, 2i+1)$，定义旋转矩阵：
@@ -143,14 +159,34 @@ $$
 
 这是因为旋转矩阵的性质 $R(\alpha)^T R(\beta) = R(\beta - \alpha)$。
 
+### 复数视角
+
+RoPE 有一个等价的复数表示，更直观也更高效：把每对维度 $(q_{2i}, q_{2i+1})$ 看作复数 $q_{2i} + q_{2i+1} \cdot j$。
+
+旋转就是复数乘法：
+
+$$\tilde{q} = q \cdot e^{im\theta}$$
+
+关键推导 — 旋转后的内积只依赖相对位置：
+
+$$\tilde{q}_m \cdot \overline{\tilde{k}_n} = q \cdot \bar{k} \cdot e^{i(m-n)\theta}$$
+
+实现层面，这意味着不需要矩阵乘法，只需 element-wise 的 cos/sin 操作 — 非常高效。
+
+<RoPEComplexPlane client:visible />
+
 ### 长度外推问题
 
-RoPE 训练时的位置角度范围是有限的。当推理序列超过训练长度时，角度值超出训练分布，模型性能会下降。
+RoPE 训练时的位置角度范围是有限的。当推理序列超过训练长度时，高频分量的角度值超出训练时见过的范围，导致 attention score 异常，模型性能下降。
 
 目前主流的解决方案：
 
-- **NTK-aware scaling：** 修改频率基数，把高频分量"压缩"到训练范围内
-- **YaRN（Yet another RoPE extensioN）：** 混合策略 — 对不同频率分量使用不同的缩放因子
+- **NTK-aware scaling：** 修改频率基数 $b' = b \cdot s^{d/(d-2)}$（$s$ 为缩放比），把高频分量"压缩"到训练范围内
+- **YaRN（Yet another RoPE extensioN）：** 混合策略 — 对不同频率分量使用不同的缩放因子。高频保持不变（局部关系不需要外推），低频做缩放（远距离关系需要适配更长上下文）
+
+下面的可视化展示了不同缩放方法如何把超出范围的角度压回训练区间：
+
+<RoPEExtrapolation client:visible />
 
 这些方法能将 RoPE 的有效长度从训练长度扩展数倍甚至数十倍，使得 LLaMA 等模型可以处理 100K+ token 的长文本。
 
