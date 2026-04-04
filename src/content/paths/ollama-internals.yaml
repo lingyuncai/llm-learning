@@ -1,0 +1,18 @@
+id: ollama-internals
+title:
+  zh: "Ollama + llama.cpp 深度解析"
+  en: "Ollama + llama.cpp Deep Dive"
+description:
+  zh: "深入 Ollama 和 llama.cpp 的内部实现、架构设计和优化原理。从双层架构到量化引擎，从计算图到多后端调度，系统掌握本地推理技术栈。"
+  en: "Deep dive into Ollama and llama.cpp internals — architecture, quantization, compute graphs, hardware backends, and serving infrastructure."
+level: advanced
+articles:
+  - ollama-architecture
+  - ollama-inference-journey
+  - gguf-format
+  - ollama-quantization
+  - ollama-compute-graph
+  - ollama-kv-cache-scheduling
+  - ollama-hardware-backends
+  - ollama-server-scheduling
+  - ollama-model-ecosystem
