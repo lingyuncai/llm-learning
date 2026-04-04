@@ -17,7 +17,7 @@
 
 ## 内容
 
-目前包含 14 篇中文文章、67 个交互式可视化组件，按学习路径组织：
+目前包含 16 篇中文文章、90 个交互式可视化组件，按学习路径组织：
 
 ### Transformer Core (Transformer 核心)
 
@@ -38,6 +38,8 @@
 12. **AI Compute Stack 全景** — 从推理框架到硬件 ISA 的七层结构
 13. **GPU Architecture** — 从晶体管到线程，SM 内部结构详解
 14. **矩阵加速单元** — Tensor Core 与 XMX，Systolic Array 原理
+15. **CUDA 编程模型** — 从代码到硬件，Thread/Block/Grid 映射
+16. **GEMM 优化** — 从 Naive 到极致，Tiling/Thread Tile/Tensor Core
 
 每篇文章包含交互式可视化组件、数学公式推导和参考文献。
 
@@ -76,7 +78,7 @@ src/
 ├── content/paths/          # 学习路径定义 (YAML)
 ├── content/resources/      # 外部资源 (YAML)
 ├── components/
-│   ├── interactive/        # 交互式可视化组件 (67 个)
+│   ├── interactive/        # 交互式可视化组件 (90 个)
 │   ├── primitives/         # 通用基础组件
 │   ├── layout/             # 布局组件
 │   └── common/             # 通用 UI 组件
