@@ -1,0 +1,457 @@
+---
+title: "模型生态"
+slug: "ollama-model-ecosystem"
+locale: "zh"
+tags: ["ollama", "registry", "modelfile", "lora", "multimodal"]
+prerequisites: ["ollama-architecture", "gguf-format"]
+difficulty: "intermediate"
+created: "2026-04-04"
+updated: "2026-04-04"
+references:
+  - type: "github"
+    title: "Ollama Modelfile"
+    url: "https://github.com/ollama/ollama/blob/main/docs/modelfile.md"
+  - type: "github"
+    title: "Ollama API"
+    url: "https://github.com/ollama/ollama/blob/main/docs/api.md"
+  - type: "paper"
+    title: "LLaVA: Visual Instruction Tuning"
+    url: "https://arxiv.org/abs/2304.08485"
+---
+
+import RegistryPullFlow from '../../../components/interactive/RegistryPullFlow.tsx';
+import ModelfileBuilder from '../../../components/interactive/ModelfileBuilder.tsx';
+import MultimodalPipeline from '../../../components/interactive/MultimodalPipeline.tsx';
+
+## 简介
+
+Ollama 不仅是一个推理引擎,更构建了完整的模型生态系统。从模型分发到自定义配置,从 LoRA 微调到多模态支持,Ollama 提供了一整套工具链来管理和扩展本地 LLM 应用。
+
+本文将深入探讨 Ollama 的模型生态系统,包括:
+- **Ollama Registry**: Docker 风格的模型注册中心和分发机制
+- **Layer 去重技术**: 如何通过 content-addressable storage 节省存储空间
+- **Modelfile 系统**: 声明式模型配置和自定义
+- **Prompt Template**: 灵活的对话格式系统
+- **LoRA/Adapter 支持**: 低成本模型定制
+- **多模态能力**: 视觉-语言模型集成
+- **新架构扩展**: 如何将新模型架构集成到 Ollama
+
+## Ollama Registry: Docker 风格的模型分发
+
+Ollama 借鉴了 Docker 的设计理念,构建了自己的模型注册中心 (registry)。模型命名遵循 `namespace/model:tag` 格式:
+
+```
+library/qwen3:latest    # 官方模型,默认 namespace 可省略
+myuser/custom-model:v1  # 用户自定义模型
+llama3:8b               # 等价于 library/llama3:8b
+```
+
+当你执行 `ollama pull qwen3` 时,底层经历了一个完整的 pull 流程:
+
+<RegistryPullFlow client:visible />
+
+这个过程与 Docker image pull 高度相似,但针对 LLM 模型做了专门优化。Registry API 返回的 manifest 不仅包含权重文件,还包含 tokenizer、chat template、license 等元数据,每个文件都作为独立的 layer 进行管理。
+
+## Layer 去重: Content-Addressable Storage
+
+Ollama 使用 **content-addressable storage** (内容寻址存储) 来管理模型文件。每个 layer 通过 SHA256 digest 唯一标识:
+
+```
+sha256:a1b2c3d4...  → blobs/sha256/a1/b2/a1b2c3d4...
+```
+
+这带来了几个关键优势:
+
+### 1. 跨模型去重
+不同模型可以共享相同的 layer。例如:
+- `qwen3:8b` 和 `qwen3:4b` 共享相同的 tokenizer
+- 多个模型可能使用相同的 Apache 2.0 license 文件
+- 基于相同基座的微调模型共享 base 权重
+
+当你下载第二个 Qwen 模型时,Ollama 会检测到已有的 tokenizer layer,直接跳过下载,节省带宽和存储空间。
+
+### 2. 增量更新
+模型更新时,只需下载变化的 layer。如果只是更新了 chat template 而权重未变,下载量从 GB 级别降到 KB 级别。
+
+### 3. 完整性验证
+下载完成后,Ollama 会验证 SHA256 digest,确保文件未损坏或被篡改:
+
+```go
+// 伪代码
+func verifyBlob(path string, expectedDigest string) error {
+    h := sha256.New()
+    io.Copy(h, file)
+    actualDigest := hex.EncodeToString(h.Sum(nil))
+    if actualDigest != expectedDigest {
+        return ErrDigestMismatch
+    }
+    return nil
+}
+```
+
+所有 blob 存储在本地的 `~/.ollama/models/blobs/` 目录,manifest 记录了模型到 blob 的映射关系。
+
+## Modelfile: 声明式模型配置
+
+Modelfile 是 Ollama 的模型配置系统,灵感来自 Dockerfile。它允许你通过声明式语法定制模型行为:
+
+<ModelfileBuilder client:visible />
+
+### 核心指令
+
+**FROM**: 指定基础模型
+```
+FROM qwen3:8b
+FROM ./path/to/local/model.gguf
+```
+
+**PARAMETER**: 设置推理参数
+```
+PARAMETER temperature 0.8       # 采样温度
+PARAMETER top_p 0.9             # nucleus sampling
+PARAMETER top_k 40              # top-k sampling
+PARAMETER repeat_penalty 1.1    # 重复惩罚
+PARAMETER num_ctx 4096          # context 窗口大小
+PARAMETER num_predict 128       # 最大生成 token 数
+```
+
+**SYSTEM**: 设置系统提示词
+```
+SYSTEM """
+你是一个专业的 Python 编程助手。
+- 代码风格遵循 PEP 8
+- 优先使用类型注解
+- 注重代码可读性和可维护性
+"""
+```
+
+**TEMPLATE**: 自定义 prompt template (下一节详述)
+
+**ADAPTER**: 加载 LoRA adapter (后续章节详述)
+
+**MESSAGE**: 预设 few-shot 示例
+```
+MESSAGE user 什么是递归?
+MESSAGE assistant 递归是函数调用自身的编程技术...
+```
+
+**LICENSE**: 指定 license 文件
+
+### 创建自定义模型
+
+```bash
+# 1. 编写 Modelfile
+cat > Modelfile <<EOF
+FROM qwen3:8b
+PARAMETER temperature 0.7
+SYSTEM "你是一个技术文档写作助手。"
+EOF
+
+# 2. 创建模型
+ollama create tech-writer -f Modelfile
+
+# 3. 使用自定义模型
+ollama run tech-writer
+```
+
+Modelfile 不仅用于创建新模型,也是模型配置的文档化方式,方便团队共享和版本控制。
+
+## Prompt Template 系统: 灵活的对话格式
+
+不同的 LLM 有不同的 prompt 格式要求。Llama3 使用 `<|begin_of_text|>`,Qwen 使用 `<|im_start|>`,ChatML 又是另一套格式。Ollama 通过 **template 系统** 统一处理这些差异。
+
+### Template 存储位置
+
+Prompt template 有两个来源:
+
+1. **GGUF metadata**: 存储在 `tokenizer.chat_template` 字段 (Jinja2 格式)
+2. **Modelfile TEMPLATE 指令**: 覆盖 GGUF 中的默认模板
+
+### Go Template 语法
+
+Ollama 使用 Go template 语法定义 prompt 格式:
+
+```go
+// Qwen2 template 示例
+{{- if .System }}
+<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}
+{{- range .Messages }}
+<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end }}
+<|im_start|>assistant
+```
+
+关键变量:
+- `.System`: 系统提示词
+- `.Messages`: 对话历史数组
+- `.Role`: 消息角色 (system/user/assistant)
+- `.Content`: 消息内容
+
+### 从 GGUF 到 Ollama Template
+
+如果 GGUF 文件包含 Jinja2 格式的 `chat_template`,Ollama 会自动转换为 Go template:
+
+```python
+# GGUF 中的 Jinja2 template
+{% for message in messages %}
+{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n'}}
+{% endfor %}
+```
+
+转换为 Ollama Go template:
+
+```go
+{{- range .Messages }}
+<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end }}
+```
+
+这一转换在模型加载时自动完成,用户通常无需关心底层细节。
+
+### 自定义 Template
+
+如果需要定制对话格式,可以在 Modelfile 中显式指定:
+
+```
+FROM llama3:8b
+
+TEMPLATE """
+{{- if .System }}System: {{ .System }}
+
+{{ end -}}
+{{- range .Messages }}
+{{ .Role | upper }}: {{ .Content }}
+
+{{ end -}}
+Assistant: 
+"""
+```
+
+这种灵活性使得 Ollama 可以支持任意对话格式,包括自定义或实验性的 prompt 结构。
+
+## LoRA / Adapter 支持: 低成本定制
+
+**LoRA** (Low-Rank Adaptation) 是一种参数高效的微调技术,通过训练低秩矩阵来定制模型,而不修改原始权重。Ollama 原生支持 LoRA adapter 加载。
+
+### Adapter 文件格式
+
+Ollama 支持 GGUF 格式的 LoRA adapter。这些文件通常只有几 MB 到几十 MB,远小于完整模型:
+
+```
+base-model.gguf         2.6 GB   (基座模型)
+lora-adapter.gguf       15 MB    (LoRA 权重)
+```
+
+### Modelfile 中使用 Adapter
+
+```
+FROM qwen3:8b
+ADAPTER ./my-lora.gguf
+PARAMETER temperature 0.7
+```
+
+创建并运行:
+
+```bash
+ollama create custom-model -f Modelfile
+ollama run custom-model
+```
+
+### 多 Adapter 叠加
+
+Ollama 支持加载多个 adapter:
+
+```
+FROM llama3:8b
+ADAPTER ./domain-knowledge.gguf
+ADAPTER ./style-adapter.gguf
+```
+
+这些 adapter 会按顺序应用到基座模型上,实现多维度定制。
+
+### Adapter 的底层实现
+
+在 llama.cpp 层面,LoRA 通过修改矩阵乘法实现:
+
+```c
+// 原始: Y = W * X
+// LoRA: Y = (W + A * B) * X
+//      = W * X + A * (B * X)
+```
+
+其中 $A \in \mathbb{R}^{d \times r}$ 和 $B \in \mathbb{R}^{r \times k}$ 是低秩矩阵 ($r \ll d, k$)。在推理时,只需额外计算 `A * (B * X)` 并加到原始输出上,计算开销极小。
+
+## 多模态支持: 视觉-语言模型
+
+Ollama 支持多模态模型,如 **LLaVA** (Large Language and Vision Assistant)、**BakLLaVA**、**Obsidian** 等。这些模型可以同时处理图像和文本输入。
+
+### 多模态推理数据流
+
+<MultimodalPipeline client:visible />
+
+关键步骤:
+
+1. **图像预处理** (Ollama Go 层):
+   - 解码图像文件 (JPEG/PNG)
+   - Resize 到模型要求的分辨率 (通常 336×336 或 448×448)
+   - 归一化到 [-1, 1] 或 [0, 1] 范围
+   - 转换为 NCHW 格式的张量
+
+2. **Vision Encoder** (GGML 执行):
+   - 通常是 CLIP ViT (Vision Transformer)
+   - 输入: 图像张量
+   - 输出: 图像 embedding 序列,如 `[CLS] token + 576 个 patch embeddings`
+
+3. **Embedding 合并** (Ollama 协调):
+   - 文本通过 tokenizer 转为 text embedding
+   - 图像 embedding 和 text embedding 拼接成统一序列
+   - 例如: `[<image> tokens, user text tokens]`
+
+4. **Transformer Decoder** (GGML 执行):
+   - 对合并后的序列进行自回归生成
+   - 使用与纯文本模型相同的 decoder 架构
+
+### 使用多模态模型
+
+```bash
+# 下载 LLaVA 模型
+ollama pull llava:7b
+
+# 命令行使用
+ollama run llava:7b "描述这张图片" --image photo.jpg
+
+# API 使用
+curl http://localhost:11434/api/generate -d '{
+  "model": "llava:7b",
+  "prompt": "这张图片里有什么?",
+  "images": ["<base64-encoded-image>"]
+}'
+```
+
+### GGUF 中的多模态 Metadata
+
+多模态模型的 GGUF 文件包含额外的 metadata:
+
+```
+llava.projector.type: "mlp"          # 投影层类型
+llava.image_size: 336                # 输入图像尺寸
+vision.encoder: "clip_vit_large"     # vision encoder 类型
+```
+
+Ollama 读取这些 metadata 来正确配置图像预处理和 embedding 投影。
+
+### 多模态的工程挑战
+
+1. **图像预处理开销**: 图像解码和 resize 在 CPU 上执行,可能成为瓶颈
+2. **内存占用**: 图像 embedding 序列很长 (通常 576+ tokens),显著增加 KV cache 需求
+3. **模型大小**: vision encoder 增加了额外的参数量 (通常 300M-400M)
+
+## 新架构支持: 扩展 Ollama
+
+Ollama 的架构设计使得添加新模型相对简单。主要步骤:
+
+### 1. llama.cpp 层面支持
+
+首先需要在 llama.cpp 中实现新架构的计算图:
+
+```cpp
+// 在 llama.cpp 中添加新架构
+enum llm_arch {
+    LLM_ARCH_LLAMA,
+    LLM_ARCH_QWEN,
+    LLM_ARCH_DEEPSEEK,  // 新架构
+};
+
+// 实现 build_graph 函数
+static struct ggml_cgraph * llm_build_deepseek(...) {
+    // 定义 forward pass 计算图
+    // ...
+}
+```
+
+### 2. GGUF 转换脚本
+
+编写 Python 脚本将原始权重转为 GGUF:
+
+```python
+# convert-hf-to-gguf-deepseek.py
+def convert_deepseek_to_gguf(model_path, output_path):
+    # 加载 HuggingFace 权重
+    model = AutoModelForCausalLM.from_pretrained(model_path)
+    
+    # 写入 GGUF metadata
+    gguf_writer.add_architecture("deepseek")
+    gguf_writer.add_context_length(4096)
+    gguf_writer.add_embedding_length(4096)
+    # ...
+    
+    # 转换权重张量
+    for name, tensor in model.state_dict().items():
+        gguf_name = convert_tensor_name(name)
+        gguf_writer.add_tensor(gguf_name, tensor.numpy())
+```
+
+### 3. Ollama Registry 集成
+
+将转换后的模型上传到 Ollama registry:
+
+```bash
+# 创建 Modelfile
+cat > Modelfile <<EOF
+FROM ./deepseek-v2.gguf
+PARAMETER temperature 0.7
+EOF
+
+# 创建本地模型
+ollama create deepseek:v2 -f Modelfile
+
+# (可选) 推送到公共 registry
+ollama push myuser/deepseek:v2
+```
+
+### 4. 测试和验证
+
+```bash
+ollama run deepseek:v2
+
+# 运行 benchmark
+ollama run deepseek:v2 --verbose < prompts.txt
+
+# 验证输出质量
+```
+
+### 社区贡献流程
+
+Ollama 社区欢迎新架构的贡献:
+
+1. 在 llama.cpp 提交 PR 实现计算图
+2. 提交 GGUF 转换脚本
+3. 提供测试用例和 benchmark 结果
+4. 更新文档说明新架构的特性
+
+许多流行架构 (Gemma、Qwen、DeepSeek、Phi 等) 都是通过社区贡献集成的。
+
+## 总结
+
+Ollama 的模型生态系统通过以下机制提供了完整的模型管理能力:
+
+1. **Registry**: Docker 风格的模型分发,支持版本管理和去重存储
+2. **Modelfile**: 声明式配置系统,实现模型定制和文档化
+3. **Template**: 灵活的 prompt 格式系统,支持任意对话结构
+4. **LoRA**: 参数高效的微调,低成本实现模型定制
+5. **多模态**: 视觉-语言模型集成,扩展 LLM 应用边界
+6. **可扩展性**: 清晰的架构分层,方便添加新模型支持
+
+这些能力使 Ollama 不仅是一个推理引擎,更是一个完整的本地 LLM 应用平台。无论是使用现有模型还是定制专属模型,Ollama 都提供了简洁而强大的工具链。
+
+## 延伸阅读
+
+- [Ollama Library](https://ollama.com/library) — 官方模型库
+- [GGUF Specification](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md) — GGUF 格式规范
+- [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685) — LoRA 原始论文
+- [LLaVA: Visual Instruction Tuning](https://arxiv.org/abs/2304.08485) — LLaVA 多模态模型
+- [llama.cpp Architecture Guide](https://github.com/ggerganov/llama.cpp/blob/master/docs/architecture.md) — llama.cpp 架构文档
