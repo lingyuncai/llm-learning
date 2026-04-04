@@ -1,0 +1,113 @@
+---
+title: "一次推理的完整旅程"
+slug: "ollama-inference-journey"
+locale: "zh"
+tags: ["ollama", "llama-cpp", "inference", "pipeline"]
+prerequisites: ["ollama-architecture"]
+difficulty: "intermediate"
+created: "2026-04-04"
+updated: "2026-04-04"
+references:
+  - type: "repo"
+    title: "Ollama GitHub"
+    url: "https://github.com/ollama/ollama"
+  - type: "paper"
+    title: "Qwen3 Technical Report"
+    url: "https://arxiv.org/abs/2505.09388"
+  - type: "repo"
+    title: "llama.cpp GitHub"
+    url: "https://github.com/ggerganov/llama.cpp"
+---
+
+import InferenceJourney from '../../../components/interactive/InferenceJourney.tsx';
+import PrefillVsDecode from '../../../components/interactive/PrefillVsDecode.tsx';
+
+## 核心设计说明
+
+当我们在终端执行 `ollama run qwen3 "解释量子计算"` 时，这个简单的命令背后触发了一条完整的推理链路，从 CLI 输入到最终的流式文本输出，跨越了 Ollama 和 llama.cpp 两个技术栈。本文以 Qwen3-8B 模型为例，追踪一次推理请求的完整生命周期，展示每个阶段的核心操作、数据流动和层级边界。
+
+理解这条推理旅程对于优化推理性能、诊断问题和深入掌握 LLM 系统架构至关重要。我们将看到 Ollama 如何提供用户友好的接口和调度逻辑，llama.cpp 如何执行底层的计算密集型张量操作，以及两者如何通过进程边界和 HTTP 协议高效协作。特别值得关注的是 Prefill 和 Decode 两个阶段的本质区别——前者是计算密集型的并行处理，后者是带宽密集型的串行生成——这两个阶段的特性差异直接影响了硬件选型、批处理策略和延迟优化方案。
+
+此外，我们还会探讨 Prefix Cache 机制如何通过复用已计算的 KV Cache 来大幅减少重复计算。在多轮对话或相似前缀的请求场景下，这项优化能够节省高达 60-70% 的 Prefill 计算量，显著降低首字延迟 (Time To First Token, TTFT)。
+
+<InferenceJourney client:visible />
+
+## Prompt 输入
+
+推理旅程从用户在命令行输入提示词开始。Ollama CLI 首先解析命令参数，提取模型名称 `qwen3` 和用户消息 `"解释量子计算"`。CLI 层面会进行基本的参数校验，例如检查模型名称格式、消息长度限制等。如果用户指定了额外的运行时参数（如温度、top_p、上下文窗口大小），这些配置也会在此阶段被解析并打包。
+
+接下来，CLI 将这些信息构造成一个标准的 HTTP POST 请求，发送到本地运行的 Ollama Server（默认监听 `http://localhost:11434`）。请求路径为 `/api/chat`，请求体是 JSON 格式，包含模型标识符、消息列表、采样参数等字段。这种设计使得 Ollama 可以同时支持 CLI 和 Web API 两种交互方式，并且易于与第三方工具集成。
+
+Server 端接收到请求后，由 Gin Web 框架的路由器将请求分发到 `ChatHandler`。此时仍然处于 Ollama 的 Go 代码范围内，Handler 会执行一系列中间件逻辑：身份验证（如果启用）、请求日志记录、并发控制（限制同时处理的请求数量以防止内存溢出）、模型查找（将用户指定的模型名称解析为本地存储的 GGUF 文件路径）。这个阶段的所有操作都是轻量级的，主要是元数据查询和请求预处理，为后续的模型加载和推理做准备。
+
+## 模型加载
+
+当 ChatHandler 确认请求有效且模型存在后，下一步是将模型从磁盘加载到内存。Ollama 使用自己的 blob 存储机制管理模型文件，每个模型被拆分为多个 layer（基础权重、LoRA 适配器、系统提示等），这些 layer 以内容寻址的方式存储在 `~/.ollama/models/blobs` 目录下。Ollama 会首先定位到主权重文件（通常是一个 GGUF 格式的文件），获取文件句柄和元数据。
+
+此时控制权开始从 Ollama 转移到 llama.cpp。Ollama 通过 CGo 调用 llama.cpp 的 C++ 函数，将 GGUF 文件路径传递给 llama.cpp 的加载逻辑。llama.cpp 首先使用 `mmap` 系统调用将整个 GGUF 文件映射到虚拟内存空间，这种零拷贝技术避免了显式的文件读取操作，让操作系统按需加载数据页。mmap 的优势在于它可以让多个进程共享同一份模型数据，并且在内存紧张时自动换出未使用的页面。
+
+接下来是 Tensor 分配阶段。llama.cpp 会读取 GGUF 文件头中的模型架构信息（层数、注意力头数、隐藏维度、词表大小等），根据这些参数计算每个 Tensor 的大小和布局。然后，llama.cpp 根据当前的硬件配置（可用 GPU 显存、CPU 内存、是否启用 Metal/CUDA/ROCm）决定哪些层放在 GPU 上、哪些层留在 CPU 上。对于 Qwen3-8B 这样的 8B 参数模型，如果 GPU 显存充足（例如 16GB 以上），通常会将所有 32 层 Transformer Block 都加载到 GPU；如果显存不足，则会将前 N 层放在 GPU，剩余层放在 CPU，这种混合执行模式会引入 CPU-GPU 数据传输开销，但能够在有限硬件上运行更大的模型。
+
+## Runner 启动
+
+模型加载完成后，Ollama 需要启动一个独立的 Runner 子进程来执行推理任务。Ollama 采用了主进程-子进程架构，主进程负责接收 HTTP 请求、管理模型生命周期、调度并发任务，而真正的推理计算运行在子进程中。这种设计有几个好处：首先，子进程崩溃不会影响主进程的稳定性；其次，可以针对不同的后端（CPU、CUDA、Metal、ROCm）启动不同的 Runner 二进制，避免主进程依赖多个后端的动态库；最后，可以通过资源限制（cgroup、ulimit）隔离每个 Runner 的内存和 CPU 使用。
+
+Ollama 使用 `exec.Command` 启动 Runner 子进程（在 macOS 上是 `ollamarunner`，在 Linux/Windows 上是 `llamarunner`），并通过命令行参数传递模型路径、端口号、并行槽位数等配置。子进程启动后，会在本地绑定一个随机端口，并向主进程报告这个端口号。主进程随后通过 HTTP 与子进程通信，发送推理请求、接收流式输出。
+
+子进程启动的第一步是初始化推理基础设施。这包括构建 GGML 计算图（Computation Graph）——GGML 是 llama.cpp 使用的张量运算引擎，它用有向无环图 (DAG) 表示神经网络的前向传播过程，每个节点是一个算子（矩阵乘法、RoPE 位置编码、RMSNorm 归一化、SiLU 激活等），边表示数据依赖关系。计算图在第一次推理时被构建，后续推理可以复用同一个图结构，只需更新输入节点的数据。
+
+初始化的另一个关键任务是分配 KV Cache 缓冲区。KV Cache 是存储每个 Transformer Layer 中 Key 和 Value 矩阵的内存区域，大小取决于最大上下文长度、批大小、头数和隐藏维度。对于 Qwen3-8B（32 层、32 个 Attention 头、8 个 KV 头、上下文长度 32768），KV Cache 的大小约为 `2 × 32 层 × 32768 token × 8 头 × (4096 / 32) 维度 × 2 字节 (FP16) ≈ 16GB`。实际使用时，上下文长度会根据请求动态调整，但需要预留足够的缓冲区以支持长对话。
+
+## Prefill 阶段
+
+Runner 初始化完成后，进入推理的第一个阶段：Prefill。这个阶段的输入是用户的 Prompt（"解释量子计算"），输出是所有 Prompt Token 的 KV Cache 和最后一个 Token 的 logits（用于生成第一个输出 Token）。
+
+首先是 Tokenization。Ollama 调用模型配套的 Tokenizer（Qwen3 使用的是基于 BPE 的 Tiktoken Tokenizer），将中文字符串 "解释量子计算" 转换为 Token ID 序列，例如 `[99134, 76890, 43521, 12098]`（实际 Token ID 会因 Tokenizer 版本而异）。中文文本的 Token 压缩率通常低于英文，一个汉字可能对应 1-2 个 Token。
+
+接下来，llama.cpp 将这些 Token ID 组装成一个 Batch。在 Prefill 阶段，Batch 包含所有 N 个 Prompt Token（在这个例子中 N=4），它们可以并行处理。Batch 的数据结构包含 Token ID 数组、位置索引数组（`[0, 1, 2, 3]`，用于 RoPE 位置编码）、Sequence ID 数组（用于区分多个并发请求）。
+
+有了 Batch 数据，llama.cpp 开始执行前向传播。首先是 Embedding 层，将 Token ID 映射为 4096 维的词向量。然后依次通过 32 个 Transformer Layer，每层包含 Multi-Head Attention (MHA)、Feed-Forward Network (FFN) 和 RMSNorm 归一化。在 Attention 层，Query、Key、Value 矩阵通过线性投影计算得到，然后计算 Attention Score 并与 Value 加权求和。此时，计算出的 Key 和 Value 被存储到 KV Cache 中，供后续 Decode 阶段复用。
+
+Prefill 阶段的计算特点是高度并行、计算密集。GPU 可以同时对 N 个 Token 的所有位置执行相同的操作（例如矩阵乘法、激活函数），充分利用 SIMD 和张量核心的算力。对于 Qwen3-8B 在 A100 GPU 上，处理 128 Token 的 Prefill 延迟约为 20-30ms，吞吐量可达 5000-8000 tokens/s。这个阶段的瓶颈是 GPU 计算能力，而非内存带宽。
+
+## Prefill vs Decode 的本质区别
+
+<PrefillVsDecode client:visible />
+
+## Decode 阶段
+
+Prefill 阶段完成后，系统已经拥有了完整的 Prompt 上下文，KV Cache 被填充，现在可以开始逐个生成输出 Token。Decode 阶段是一个循环过程，每次迭代生成一个 Token，直到遇到结束符（EOS）或达到最大生成长度。
+
+每轮 Decode 的第一步是 Sampling（采样）。模型在上一步（Prefill 或前一轮 Decode）输出了一个 logits 向量，维度等于词表大小（Qwen3 的词表约 152K）。Sampling 模块根据用户指定的采样策略（temperature、top_p、top_k）对 logits 进行变换和过滤，然后从概率分布中抽取一个 Token ID。例如，如果 temperature=0.7、top_p=0.9，Sampling 会先将 logits 除以 0.7 使分布更平滑，然后筛选出累积概率达到 90% 的 Token 集合，最后从这个集合中随机抽样。temperature 越低，输出越确定性；temperature 越高，输出越多样化。
+
+采样得到的 Token ID 被立即通过 HTTP Chunked Response 流式返回给 Ollama 主进程，主进程再将其转发给 CLI 或 API 客户端。这种流式输出机制让用户能够实时看到生成进度，而不必等待整个回复完成。在流式返回的同时，Token ID 也被追加到当前 Sequence 的末尾，准备进入下一轮 Decode。
+
+下一轮 Decode 的输入是刚生成的 Token ID，组装成一个 batch_size=1 的 Batch（只有一个 Token）。这个 Batch 再次通过 32 层 Transformer Layer，但与 Prefill 不同的是，此时的 Attention 计算需要读取 KV Cache 中存储的所有历史 Key 和 Value（包括 Prompt 的 N 个 Token 和之前生成的 M 个 Token），计算新 Token 与所有历史 Token 的 Attention Score。计算完成后，新 Token 的 Key 和 Value 被追加到 KV Cache 的末尾，供下一轮使用。
+
+Decode 阶段的计算特点是串行、带宽密集。每次只处理一个 Token，无法像 Prefill 那样并行化。计算量很小（相比 Prefill 减少了 N 倍），但需要从显存中读取大量的 KV Cache 数据。对于长上下文场景（例如 32K Token），KV Cache 的读取成为主要瓶颈，GPU 的算力被浪费，延迟主要受限于显存带宽。这就是为什么 Decode 阶段的吞吐量（以 tokens/s 衡量）远低于 Prefill，对于 A100 GPU，Decode 的典型吞吐量约为 100-200 tokens/s。
+
+循环继续，直到采样出 EOS Token（表示模型认为回复结束）或达到 `max_tokens` 限制。此时 Runner 子进程向主进程发送结束信号，主进程关闭 HTTP Stream，整个推理请求完成。
+
+## Prefix Cache 命中
+
+在真实的应用场景中，用户的多轮对话或不同请求之间往往存在相同的前缀。例如，用户先问 "解释量子计算"，然后问 "解释量子纠缠"，这两个请求的前两个 Token（"解释量子"）是相同的。如果每次请求都重新计算这些重复 Token 的 KV Cache，会造成严重的计算浪费。
+
+Prefix Cache 机制通过缓存和复用已计算的 KV Cache 来解决这个问题。llama.cpp 在 Prefill 阶段计算 KV Cache 时，会将每个 Token 位置的 KV 值与其 Token ID 关联存储。当下一个请求到来时，llama.cpp 会比较新请求的 Token 序列与已缓存的序列，找到最长公共前缀。对于公共前缀部分，直接从缓存中加载对应的 KV 值，跳过重复计算；只有前缀之后的新 Token 需要执行 Prefill。
+
+在上述例子中，"解释量子计算" 的 KV Cache 已经在第一次请求中计算并缓存。第二次请求 "解释量子纠缠" 时，llama.cpp 检测到前两个 Token 匹配，直接复用已有的 KV Cache，只需要对第三个 Token "纠缠" 执行 Prefill。这节省了 2/3 的 Prefill 计算量，对应约 67% 的延迟优化。
+
+Prefix Cache 的有效性取决于请求模式的相似性。在对话系统中，系统提示 (System Prompt) 通常是所有请求的公共前缀，可以被所有用户共享；在 RAG (Retrieval-Augmented Generation) 场景中，知识库的上下文片段也可能在多次查询中重复出现。Ollama 和 llama.cpp 都实现了自动的 Prefix Cache 管理，无需用户干预，只要缓存容量足够且 LRU (Least Recently Used) 淘汰策略合理，就能获得显著的性能提升。
+
+值得注意的是，Prefix Cache 只能加速 Prefill 阶段，对 Decode 阶段无影响。但由于 Prefill 的计算量远大于单步 Decode，减少 Prefill 的计算量能够大幅降低首字延迟 (TTFT)，这对于用户体验至关重要。
+
+## 总结
+
+从 CLI 输入到流式输出，一次 Ollama + llama.cpp 的推理请求经历了多层架构的协作：Ollama 提供用户接口、调度和进程管理，llama.cpp 执行底层的模型加载、计算图构建和张量运算。Prefill 和Decode 两个阶段的性能特性截然不同——前者受限于 GPU 算力，后者受限于显存带宽——这要求我们在硬件选型和优化策略上做出权衡。Prefix Cache 机制通过复用计算结果，在多轮对话和高相似度请求场景下提供了显著的延迟优化。
+
+理解这条推理旅程的每个环节，有助于我们诊断性能瓶颈、优化资源配置、设计更高效的推理服务。无论是调整批大小、选择量化精度、配置 KV Cache 容量，还是优化系统提示以提高 Prefix Cache 命中率，都需要建立在对完整推理链路的深刻理解之上。
+
+## 延伸阅读
+
+- [Ollama 架构设计](ollama-architecture) - 深入理解 Ollama 的整体架构
+- [KV Cache 优化技术](https://arxiv.org/abs/2211.05102) - PagedAttention 和分页 KV Cache
+- [量化与 GGUF 格式](https://github.com/ggerganov/llama.cpp/blob/master/docs/GGUF.md) - llama.cpp 的模型格式规范
