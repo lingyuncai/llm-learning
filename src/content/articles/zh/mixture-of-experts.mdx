@@ -1,0 +1,119 @@
+---
+title: "Mixture of Experts：稀疏激活的大模型架构"
+slug: mixture-of-experts
+locale: zh
+difficulty: advanced
+tags: [transformer, moe, routing, deepseek, mixtral]
+prerequisites: [transformer-overview]
+created: "2026-04-04"
+updated: "2026-04-04"
+references:
+  - type: paper
+    title: "Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity"
+    url: "https://arxiv.org/abs/2101.03961"
+  - type: paper
+    title: "Mixtral of Experts"
+    url: "https://arxiv.org/abs/2401.04088"
+  - type: paper
+    title: "DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model"
+    url: "https://arxiv.org/abs/2405.04434"
+  - type: paper
+    title: "DeepSeek-V3 Technical Report"
+    url: "https://arxiv.org/abs/2412.19437"
+  - type: paper
+    title: "GShard: Scaling Giant Models with Conditional Computation and Automatic Sharding"
+    url: "https://arxiv.org/abs/2006.16668"
+---
+
+import MoEBasicFlow from '../../../components/interactive/MoEBasicFlow.tsx';
+import DenseVsMoECompare from '../../../components/interactive/DenseVsMoECompare.tsx';
+import RoutingStrategyCompare from '../../../components/interactive/RoutingStrategyCompare.tsx';
+import LoadBalanceViz from '../../../components/interactive/LoadBalanceViz.tsx';
+import DeepSeekMoEArchitecture from '../../../components/interactive/DeepSeekMoEArchitecture.tsx';
+import ExpertParallelismDiagram from '../../../components/interactive/ExpertParallelismDiagram.tsx';
+import MoEModelComparison from '../../../components/interactive/MoEModelComparison.tsx';
+
+Dense model 的核心矛盾：**参数量和计算量线性绑定**。想要更强的模型就需要更多参数，但更多参数意味着每个 token 的计算量也线性增长。
+
+Mixture of Experts (MoE) 打破了这个绑定：**参数量大，但每个 token 只激活一小部分** — 解耦参数量和计算量。
+
+关键数字：Mixtral 8x7B 有 47B 总参数，但每个 token 只用 ~13B active 参数的计算量 — 相当于用 7B 模型的推理成本，获得接近 47B 模型的能力。
+
+## Sparse MoE 基本原理
+
+标准 Transformer 中，每个 token 经过同一个 FFN 层。MoE 将这个 FFN 替换为 **N 个并行的 expert**（每个 expert 就是一个小 FFN），加上一个 **router** 决定每个 token 送给哪些 expert。
+
+<DenseVsMoECompare />
+
+每个 token 只被送到 Top-K 个 expert（通常 $K=1$ 或 $K=2$），输出加权求和：
+
+$$y = \sum_{i \in \text{TopK}} g_i \cdot E_i(x), \quad g = \text{softmax}(W_g \cdot x)$$
+
+下面的动画展示了完整的 MoE 前向流程：
+
+<MoEBasicFlow client:visible />
+
+## Router 机制
+
+Router 的设计直接决定了 MoE 的效果。主要有两种思路：
+
+<RoutingStrategyCompare client:visible />
+
+**Token-choice routing**（主流做法）：每个 token 选 top-K expert。简单高效，但负载可能不均 — 某些 "热门" expert 被大量 token 选中，其他 expert 闲置。
+
+**Expert-choice routing**：反过来，每个 expert 选 top-K token。负载天然均匀，但某些 token 可能不被任何 expert 选中而被丢弃。
+
+实践中 token-choice 更常用：Mixtral (top-2), Switch Transformer (top-1), DeepSeek-V3 (top-8)。
+
+## Load Balancing
+
+没有约束时，router 倾向于把大部分 token 集中到少数 expert — **rich-get-richer** 现象（又叫 expert collapse）。这显然不是我们想要的。
+
+解决方案是添加 **auxiliary loss**，鼓励 expert 负载均匀：
+
+$$L_{aux} = \alpha \cdot N \sum_i f_i \cdot P_i$$
+
+其中 $f_i$ 是 expert $i$ 实际接收的 token 比例，$P_i$ 是 router 分配给 expert $i$ 的平均概率。$\alpha$ 越大，均衡效果越强，但也可能影响模型质量（强制均匀不一定自然）。
+
+调整下面的滑块，观察 $\alpha$ 对 expert 负载分布的影响：
+
+<LoadBalanceViz client:visible />
+
+另一个手段是 **expert capacity**：限定每个 expert 每 batch 最多处理 $C$ 个 token，溢出的 token 走 residual 直接跳过。
+
+## DeepSeek 的创新
+
+DeepSeek 在 MoE 上做了两个关键改进：
+
+<DeepSeekMoEArchitecture />
+
+### Shared Expert
+
+部分 expert **所有 token 必经**（不经过 routing）。这些 shared expert 负责 "兜底" — 保证基础能力（通用知识、语法、常识）不会因为 routing 分散而丢失。
+
+### Fine-Grained Expert
+
+使用更多但更小的 expert，实现更细粒度的专业化。DeepSeek-V2 用 160 个 routed expert（对比 Mixtral 只有 8 个），每个 expert 更小但更专精。
+
+具体配置：
+- **DeepSeek-V2**: 160 routed + 2 shared, top-6
+- **DeepSeek-V3**: 256 routed + 1 shared, top-8
+
+## Expert Parallelism
+
+256 个 expert 放不进一张 GPU — 需要 **Expert Parallelism (EP)**：不同 expert 分布在不同 GPU 上。
+
+<ExpertParallelismDiagram />
+
+这带来了 **All-to-All 通信**：每个 GPU 上的 token 需要发送到对应 expert 所在的 GPU（dispatch），expert 计算完后结果再发回原 GPU（combine）。
+
+Expert Parallelism 通常和 Tensor Parallelism (TP)、Pipeline Parallelism (PP) 组合使用：
+- **TP**: 切分单个 expert 的矩阵到多卡
+- **EP**: 不同 expert 放不同卡
+- **PP**: 不同 layer 放不同卡
+
+expert 越多、GPU 越多，all-to-all 通信越重 — 这是 MoE 部署的主要挑战。
+
+## 模型对比总结
+
+<MoEModelComparison />
