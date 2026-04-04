@@ -137,7 +137,6 @@ const C = [
 ];
 
 const EMPTY = '#f8fafc';
-const ACTIVE = '#dbeafe';
 const DONE = '#dcfce7';
 const TC_DONE = '#e8d5f5';
 
@@ -357,14 +356,14 @@ Core component. StepNavigator animation showing a 4×4 PE grid performing matrix
 - Total cycles: 0 through 9 (10 cycles for 4×4 × 4×4)
 
 **Input matrices (small integers for clarity):**
-- A = [[2,1,0,1],[1,2,1,0],[0,1,2,1],[1,0,1,2]]
-- B = [[1,0,1,0],[0,1,0,1],[1,0,1,0],[0,1,0,1]]
+- A = [[2,1,0,1],[1,3,1,0],[0,1,2,1],[1,0,1,3]]
+- B = [[1,0,2,1],[2,1,0,0],[0,3,1,2],[1,0,0,1]]
 
 **Show selected cycles as steps (not all 10):**
 - Step 0: Intro — empty grid + matrices
 - Step 1: Cycle 0 — PE(0,0) active
 - Step 2: Cycle 1 — 2 PEs active
-- Step 3: Cycle 3 — maximum diagonal (4 PEs)
+- Step 3: Cycle 3 — 10 PEs active, wavefront peak
 - Step 4: Cycle 5 — middle phase
 - Step 5: Cycle 9 — last PE finishes
 - Step 6: Result — all PEs show final C values
@@ -409,12 +408,6 @@ function partialSumAt(i: number, j: number, upToCycle: number): number {
     }
   }
   return sum;
-}
-
-// Check if PE(i,j) is active at cycle t
-function isActiveAt(i: number, j: number, t: number): boolean {
-  const k = t - i - j;
-  return k >= 0 && k < N;
 }
 
 // PE grid layout
@@ -514,25 +507,24 @@ function PeGrid({ cycle, showResult }: { cycle: number; showResult?: boolean }) 
 }
 
 function Legend({ cycle, label }: { cycle: number; label: string }) {
+  const items = [
+    { color: COLORS.orange, text: '当前活跃 (MAC)' },
+    { color: COLORS.primary, text: '已完成部分累加' },
+    { color: '#cbd5e1', text: '空闲' },
+  ];
   return (
     <g>
       <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="600"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
         {label}
       </text>
-      <text x={W / 2} y={SVG_H - 12} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily={FONTS.sans}>
-        {[
-          { color: COLORS.orange, label: '当前活跃 (MAC)' },
-          { color: COLORS.primary, label: '已完成部分累加' },
-          { color: '#cbd5e1', label: '空闲' },
-        ].map((item, idx) => `■ ${item.label}`).join('    ')}
-      </text>
-      {/* Colored legend squares */}
-      {[COLORS.orange, COLORS.primary, '#cbd5e1'].map((color, idx) => (
-        <rect key={idx}
-          x={W / 2 - 160 + idx * 120} y={SVG_H - 20}
-          width={8} height={8} rx={1} fill={color} />
+      {items.map((item, idx) => (
+        <g key={idx}>
+          <rect x={W / 2 - 160 + idx * 120} y={SVG_H - 20}
+            width={8} height={8} rx={1} fill={item.color} />
+          <text x={W / 2 - 148 + idx * 120} y={SVG_H - 12} fontSize="8"
+            fill="#94a3b8" fontFamily={FONTS.sans}>{item.text}</text>
+        </g>
       ))}
     </g>
   );
@@ -1001,7 +993,7 @@ export default function TensorCorePrecisionTimeline() {
       {/* Trend arrow annotation */}
       <text x={W / 2} y={H - 8} textAnchor="middle" fontSize="8" fill="#94a3b8"
         fontFamily={FONTS.sans}>
-        趋势: 精度越来越低 → 吞吐量越来越高 (FP16: 990 TFLOPS → FP8: 1979 TFLOPS → FP4: 3958 TFLOPS on H100/B200)
+        趋势: 精度越来越低 → 吞吐量越来越高（每降一级精度，吞吐量约翻倍）
       </text>
     </svg>
   );
@@ -1045,6 +1037,7 @@ const SVG_H = 280;
 function StepSvg({ children }: { children: React.ReactNode }) {
   return (
     <svg viewBox={`0 0 ${W} ${SVG_H}`} className="w-full" role="img">
+      <ArrowDefs />
       {children}
     </svg>
   );
@@ -1093,6 +1086,23 @@ function Fragment({ x, y, w, h, label, sublabel, color, bg }: {
 }
 
 // Arrow with label
+// Arrow marker defs — rendered once in StepSvg, not per FlowArrow
+const ARROW_COLORS = [COLORS.primary, COLORS.green, COLORS.orange, COLORS.purple];
+
+function ArrowDefs() {
+  return (
+    <defs>
+      {ARROW_COLORS.map(color => (
+        <marker key={color} id={`mma-arrow-${color.replace('#', '')}`}
+          viewBox="0 0 10 10" refX="9" refY="5"
+          markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
+        </marker>
+      ))}
+    </defs>
+  );
+}
+
 function FlowArrow({ x1, y1, x2, y2, label, color }: {
   x1: number; y1: number; x2: number; y2: number; label?: string; color: string;
 }) {
@@ -1100,13 +1110,6 @@ function FlowArrow({ x1, y1, x2, y2, label, color }: {
   const my = (y1 + y2) / 2;
   return (
     <g>
-      <defs>
-        <marker id={`mma-arrow-${color.replace('#', '')}`}
-          viewBox="0 0 10 10" refX="9" refY="5"
-          markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
-        </marker>
-      </defs>
       <line x1={x1} y1={y1} x2={x2} y2={y2}
         stroke={color} strokeWidth={1.5}
         markerEnd={`url(#mma-arrow-${color.replace('#', '')})`} />
@@ -1218,7 +1221,7 @@ const steps = [
           fill="#1a1a2e" stroke="none" />
         <text x={280} y={250} textAnchor="middle" fontSize="8" fill="#a5f3fc"
           fontFamily={FONTS.mono}>
-          mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 d, a, b, c;
+          wmma::mma_sync(frag_d, frag_a, frag_b, frag_c);  // m16n16k16
         </text>
       </StepSvg>
     ),
@@ -2041,7 +2044,7 @@ Tensor Core 和 XMX 的具体实现是厂商机密，但本质都是 systolic ar
 Tensor Core 的核心操作是矩阵乘累加：**D = A × B + C**
 
 - 原始概念尺寸是 4×4，但从 Volta 到 Blackwell，实际支持的块尺寸越来越大
-- Hopper (4th gen) 常用尺寸：`m16n8k16` — 即 A(16×16) × B(16×8) → D(16×8)
+- Hopper (4th gen) wmma API 常用尺寸：`m16n16k16` — 即 A(16×16) × B(16×16) → D(16×16)；PTX 层面有更小的 `m16n8k16`
 - 每个 SM 有 **4 个 Tensor Core**（每个 Processing Block 一个）
 
 ### 精度支持演进
@@ -2061,7 +2064,7 @@ Tensor Core 操作不是单个线程发起的 — 它是 **warp 级协作操作*
 关键要点：
 - **Fragment** 是矩阵块在 32 个线程寄存器中的分布式表示 — 每个线程只持有一部分
 - `wmma::load_matrix_sync` 从内存加载到 fragment，`wmma::mma_sync` 执行矩阵乘，`wmma::store_matrix_sync` 写回内存
-- PTX 层面的指令：`mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32`
+- wmma API 操作 m16n16k16 块；底层 PTX 指令 `mma.sync.aligned.m16n8k16` 操作更小的块，由编译器拆分
 
 ---
 
