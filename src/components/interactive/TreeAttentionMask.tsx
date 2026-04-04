@@ -5,13 +5,13 @@ const H = 320;
 
 const N = 7;
 const CELL = 28;
-const TOKENS = ['The', 'cat', 'sat', 'cat', 'is', 'sat', 'on'];
+const TOKENS = ['The', 'cat', 'sat', 'on', 'is', 'dog', 'ran'];
 
 const CAUSAL: boolean[][] = Array.from({ length: N }, (_, i) =>
   Array.from({ length: N }, (_, j) => j <= i)
 );
 
-const TREE_LABELS = ['The', 'cat', 'sat', 'on', 'is', 'dog', 'ran'];
+const TREE_LABELS = TOKENS;
 const TREE_MASK: boolean[][] = [
   [true, false, false, false, false, false, false],
   [true, true, false, false, false, false, false],

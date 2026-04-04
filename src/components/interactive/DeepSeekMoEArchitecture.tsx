@@ -5,11 +5,11 @@ const H = 280;
 
 export default function DeepSeekMoEArchitecture() {
   const numRouted = 8; // showing 8 of 256 for visual clarity
-  const inputY = 240;
-  const sharedY = 140;
-  const routedY = 140;
-  const routerY = 105;
-  const mergeY = 60;
+  const inputY = 45;
+  const routerY = 95;
+  const sharedY = 130;
+  const routedY = 130;
+  const mergeY = 200;
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full my-6">
@@ -37,7 +37,7 @@ export default function DeepSeekMoEArchitecture() {
         fill={COLORS.primary} fontFamily={FONTS.sans}>Token x</text>
 
       {/* Shared expert path (left) */}
-      <line x1={W / 2 - 30} y1={inputY} x2={100} y2={sharedY + 45}
+      <line x1={W / 2 - 30} y1={inputY + 25} x2={100} y2={sharedY}
         stroke={COLORS.green} strokeWidth={1.5} markerEnd="url(#ds-arr)" />
 
       <rect x={40} y={sharedY} width={120} height={45} rx={6}
@@ -48,7 +48,7 @@ export default function DeepSeekMoEArchitecture() {
         fill={COLORS.mid} fontFamily={FONTS.sans}>所有 token 必经</text>
 
       {/* Router */}
-      <line x1={W / 2 + 30} y1={inputY} x2={W / 2 + 30} y2={routerY + 18}
+      <line x1={W / 2 + 30} y1={inputY + 25} x2={W / 2 + 30} y2={routerY}
         stroke="#94a3b8" strokeWidth={1.5} markerEnd="url(#ds-arr)" />
 
       <rect x={W / 2 - 10} y={routerY} width={80} height={18} rx={9}
@@ -86,9 +86,9 @@ export default function DeepSeekMoEArchitecture() {
       })}
 
       {/* Merge */}
-      <line x1={100} y1={sharedY} x2={W / 2} y2={mergeY + 25}
+      <line x1={100} y1={sharedY + 45} x2={W / 2} y2={mergeY}
         stroke={COLORS.green} strokeWidth={1.5} markerEnd="url(#ds-arr)" />
-      <line x1={320} y1={routedY} x2={W / 2} y2={mergeY + 25}
+      <line x1={320} y1={routedY + 45} x2={W / 2} y2={mergeY}
         stroke={COLORS.orange} strokeWidth={1.5} markerEnd="url(#ds-arr)" />
 
       <rect x={W / 2 - 50} y={mergeY} width={100} height={25} rx={6}
