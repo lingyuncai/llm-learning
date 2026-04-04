@@ -16,7 +16,7 @@ const prereqArticles = prerequisites
     <ul class="space-y-1">
       {prereqArticles.map(article => (
         <li>
-          <a href={`/zh/articles/${article!.data.slug}`}
+          <a href={`${import.meta.env.BASE_URL}zh/articles/${article!.data.slug}`}
              class="text-sm text-primary-600 hover:text-primary-800">
             {article!.data.title}
           </a>

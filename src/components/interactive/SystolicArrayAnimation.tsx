@@ -244,7 +244,7 @@ const steps = selectedCycles.map(({ cycle, label }) => ({
         </g>
       ) : (
         <g>
-          <Legend cycle={cycle} label={label} />
+          <Legend label={label} />
           <PeGrid cycle={Math.min(cycle, 9)} showResult={cycle > 9} />
         </g>
       )}

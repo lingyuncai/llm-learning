@@ -27,7 +27,7 @@ const pathArticles = learningPath.articles
     <ol class="list-none space-y-4 pl-0">
       {pathArticles.map((article, index) => (
         <li>
-          <a href={`/zh/articles/${article!.data.slug}`}
+          <a href={`${import.meta.env.BASE_URL}zh/articles/${article!.data.slug}`}
              class="flex items-start gap-4 p-4 border border-gray-200 rounded-lg hover:border-primary-400 hover:shadow-sm transition-all">
             <span class="flex items-center justify-center w-8 h-8 rounded-full bg-primary-100 text-primary-700 text-sm font-bold shrink-0">
               {index + 1}

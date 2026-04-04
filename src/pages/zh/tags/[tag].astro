@@ -25,7 +25,7 @@ const { articles } = Astro.props;
 
     <div class="space-y-3">
       {articles.map(article => (
-        <a href={`/zh/articles/${article.data.slug}`}
+        <a href={`${import.meta.env.BASE_URL}zh/articles/${article.data.slug}`}
            class="block p-4 border border-gray-100 rounded hover:border-primary-300 transition-colors">
           <div class="flex items-center gap-3">
             <span class={`text-xs px-2 py-0.5 rounded ${difficultyColor[article.data.difficulty]}`}>

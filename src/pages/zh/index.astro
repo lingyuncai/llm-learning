@@ -15,7 +15,7 @@ const allTags = [...new Set(articles.flatMap(a => a.data.tags))].sort();
     <h2 class="text-2xl font-bold mb-6">学习路径</h2>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
       {paths.map(p => (
-        <a href={`/zh/paths/${p.id}`}
+        <a href={`${import.meta.env.BASE_URL}zh/paths/${p.id}`}
            class="block p-6 border border-gray-200 rounded-lg hover:border-primary-400 hover:shadow-md transition-all">
           <div class="flex items-center justify-between mb-2">
             <h3 class="text-lg font-semibold">{p.title.zh}</h3>
@@ -35,7 +35,7 @@ const allTags = [...new Set(articles.flatMap(a => a.data.tags))].sort();
     <h2 class="text-2xl font-bold mb-6">按标签浏览</h2>
     <div class="flex flex-wrap gap-2">
       {allTags.map(tag => (
-        <a href={`/zh/tags/${tag}`}
+        <a href={`${import.meta.env.BASE_URL}zh/tags/${tag}`}
            class="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm hover:bg-primary-100 hover:text-primary-700 transition-colors">
           {tag}
         </a>
@@ -48,7 +48,7 @@ const allTags = [...new Set(articles.flatMap(a => a.data.tags))].sort();
     <h2 class="text-2xl font-bold mb-6">全部文章</h2>
     <div class="space-y-3">
       {articles.map(article => (
-        <a href={`/zh/articles/${article.data.slug}`}
+        <a href={`${import.meta.env.BASE_URL}zh/articles/${article.data.slug}`}
            class="block p-4 border border-gray-100 rounded hover:border-primary-300 transition-colors">
           <div class="flex items-center gap-3">
             <span class={`text-xs px-2 py-0.5 rounded ${difficultyColor[article.data.difficulty]}`}>

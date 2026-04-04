@@ -35,8 +35,8 @@ function Block({ x, y, w, h, label, sub, color, bg, fontSize = 10 }: BlockProps)
 function SystolicGrid({ x, y, rows, cols, label }: {
   x: number; y: number; rows: number; cols: number; label: string;
 }) {
-  const cellSize = 14;
-  const gap = 2;
+  const cellSize = 8;
+  const gap = 1;
   const gridW = cols * (cellSize + gap) - gap;
   const gridH = rows * (cellSize + gap) - gap;
 
@@ -99,7 +99,7 @@ export default function XmxArchitectureDiagram() {
         color={COLORS.primary} bg="#dbeafe" fontSize={9} />
 
       {/* Right side: XMX engines (8, shown as 2×4 grid of systolic arrays) */}
-      <rect x={170} y={74} width={380} height={180} rx={6}
+      <rect x={170} y={74} width={345} height={192} rx={6}
         fill="none" stroke={COLORS.purple} strokeWidth={1.5} strokeDasharray="4 2" />
       <text x={360} y={90} textAnchor="middle" fontSize="10" fontWeight="700"
         fill={COLORS.purple} fontFamily={FONTS.sans}>
@@ -110,8 +110,8 @@ export default function XmxArchitectureDiagram() {
       {Array.from({ length: 2 }).map((_, row) =>
         Array.from({ length: 4 }).map((_, col) => (
           <SystolicGrid key={`${row}-${col}`}
-            x={195 + col * 90} y={110 + row * 70}
-            rows={4} cols={8}
+            x={195 + col * 78} y={112 + row * 78}
+            rows={8} cols={8}
             label={`XMX ${row * 4 + col}`} />
         ))
       )}
