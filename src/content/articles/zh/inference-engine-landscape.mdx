@@ -1,0 +1,106 @@
+---
+title: "LLM 推理引擎全景：vLLM、SGLang、Ollama 与 TensorRT-LLM"
+slug: inference-engine-landscape
+locale: zh
+tags: [inference, vllm, sglang, ollama, tensorrt-llm]
+difficulty: intermediate
+created: "2026-04-05"
+updated: "2026-04-05"
+references:
+  - type: paper
+    title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    url: "https://arxiv.org/abs/2309.06180"
+  - type: paper
+    title: "SGLang: Efficient Execution of Structured Language Model Programs"
+    url: "https://arxiv.org/abs/2312.07104"
+  - type: website
+    title: "NVIDIA TensorRT-LLM Documentation"
+    url: "https://nvidia.github.io/TensorRT-LLM/"
+  - type: website
+    title: "Ollama GitHub Repository"
+    url: "https://github.com/ollama/ollama"
+---
+
+import InferenceEngineRadar from '../../../components/interactive/InferenceEngineRadar.tsx';
+import DesignPhilosophyMap from '../../../components/interactive/DesignPhilosophyMap.tsx';
+import RequestLifecycleCompare from '../../../components/interactive/RequestLifecycleCompare.tsx';
+import StaticVsDynamicBatching from '../../../components/interactive/StaticVsDynamicBatching.tsx';
+import TechEvolutionTimeline from '../../../components/interactive/TechEvolutionTimeline.tsx';
+import EngineDecisionTree from '../../../components/interactive/EngineDecisionTree.tsx';
+
+## 为什么需要推理引擎
+
+直接用 `transformers.generate()` 跑 LLM 推理有三个致命瓶颈：
+
+1. **内存浪费**：为每个请求预分配 max_seq_len 的 KV Cache，实际使用往往不到一半
+2. **无法并发**：一个请求占满 GPU，其他请求只能排队
+3. **吞吐量低**：没有批处理优化，GPU 算力大部分时间在空转
+
+推理引擎的核心任务就是解决这三个问题：高效管理内存、智能调度请求、最大化 GPU 利用率。
+
+## 四大引擎与设计哲学
+
+当前主流的四大 LLM 推理引擎各有侧重：
+
+**vLLM** (UC Berkeley, 2023)：以 PagedAttention 起家，核心目标是最大化 serving 吞吐量。借鉴操作系统虚拟内存的思想管理 KV Cache，消除内存碎片。生态最成熟，社区最大，OpenAI 兼容 API 使其成为云端部署的默认选择。
+
+**SGLang** (LMSYS, 2023)：强调可编程性与高性能的结合。RadixAttention 提供比 vLLM 更灵活的前缀缓存，独创的 DSL 编程模型支持复杂的多步推理流水线，Compressed FSM 实现最快的结构化输出。适合需要精确格式控制的复杂 LLM 应用。
+
+**Ollama + llama.cpp**：本地优先、易用优先。一行命令安装运行，GGUF 量化格式支持 CPU 和消费级 GPU。牺牲极致吞吐换取开箱即用的体验，是个人开发者和本地实验的首选。
+
+**TensorRT-LLM** (NVIDIA)：NVIDIA 硬件生态的深度绑定。FP8 量化、inflight batching、custom kernels，在 H100/B200 上榨取最后一滴性能。代价是灵活性低、学习曲线陡、仅支持 NVIDIA GPU。
+
+<InferenceEngineRadar client:visible />
+
+这四个引擎的设计哲学可以用一个三角形来理解：吞吐量、可编程性、易用性——任何引擎都无法同时在三个维度上做到极致。
+
+<DesignPhilosophyMap />
+
+## 请求处理流程对比
+
+三种引擎的请求处理流程反映了它们各自的设计优先级：
+
+<RequestLifecycleCompare client:visible />
+
+**vLLM** 的流程以 Scheduler 为核心，所有优化都围绕"同一时刻塞进更多请求"展开。**Ollama** 的流程最短最直接，单请求模型适合交互式使用。**SGLang** 的流程多了 IR 编排和约束解码两个环节——它不仅在优化推理速度，还在优化"程序员怎么使用 LLM"。
+
+## 关键技术概览
+
+这些引擎的性能差异来自底层的关键技术创新。我们先建立全局认知，后续文章会逐个深入：
+
+| 技术 | 核心思想 | 首创 | 详解文章 |
+|------|----------|------|----------|
+| **PagedAttention** | 虚拟内存分页管理 KV Cache | vLLM | [下一篇](./paged-attention) |
+| **Continuous Batching** | 请求完成即释放，动态填入新请求 | Orca | [下一篇](./paged-attention) |
+| **RadixAttention** | Radix Tree 管理前缀缓存 | SGLang | [前缀缓存](./prefix-caching) |
+| **Constrained Decoding** | FSM 约束 + jump-forward 加速 | SGLang | [SGLang 编程模型](./sglang-programming-model) |
+| **Chunked Prefill** | 长 prompt 分块混合调度 | Sarathi | [调度与抢占](./inference-scheduling) |
+
+**Static vs Continuous Batching** 是理解所有引擎的基础——静态批处理必须等最慢的请求完成，GPU 大量空闲；continuous batching 则逐请求释放、逐请求填入：
+
+<StaticVsDynamicBatching client:visible />
+
+## 技术演进时间线
+
+从 2022 年 Orca 开创 continuous batching 到今天，推理引擎领域经历了爆发式创新。各引擎从独立创新走向互相吸收——vLLM 加入了前缀缓存，SGLang 优化了批处理调度，TensorRT-LLM 也支持了 PagedAttention。
+
+<TechEvolutionTimeline client:visible />
+
+## 选型指南
+
+不知道该选哪个？回答几个简单问题：
+
+<EngineDecisionTree client:visible />
+
+当然，这只是粗略指南。实际选型还需要考虑：模型大小、请求模式（长/短上下文）、SLA 要求、团队技术栈、硬件预算等因素。最稳妥的策略是先用 vLLM（生态最成熟），遇到瓶颈再评估 SGLang（结构化输出）或 TensorRT-LLM（极致性能）。
+
+## 总结
+
+推理引擎是 LLM 从"能跑"到"能用"的关键基础设施。理解它们的设计哲学和核心技术，是做好 LLM 工程的必备知识。接下来我们将深入每个关键技术：从 PagedAttention 的内存管理开始，逐步理解现代推理引擎的完整技术栈。
+
+## 延伸阅读
+
+- 想深入 KV Cache 内存管理？阅读 [PagedAttention 与 Continuous Batching](./paged-attention)
+- 想了解调度策略？阅读 [调度与抢占](./inference-scheduling)
+- 想了解前缀缓存？阅读 [前缀缓存与 RadixAttention](./prefix-caching)
+- 想了解结构化输出？阅读 [SGLang 编程模型](./sglang-programming-model)
