@@ -9,6 +9,7 @@
 - [x] MoE (Mixture of Experts) 专题 (来源: 2026-03-31) — 完成: mixture-of-experts (7 组件)
 - [ ] Mamba / 状态空间模型专题 (来源: 2026-03-31)
 - [ ] MTP (Multi-Token Prediction) 专题 (来源: 2026-03-31)
+- [ ] Reinforcement Learning (RLHF/GRPO/PPO) 专题 (来源: 2026-04-05)
 - [x] GPU 编程实现 LLM 专题，含 GEMM/MatMul 分块算法详细动画讲解 (来源: 2026-03-31, 2026-04-01) — 完成: gemm-optimization + cuda-programming-model
 - [x] Ollama 相关内容 (来源: 2026-03-31) — 完成: ollama-internals 学习路径 (9 篇文章, 25 组件)
 - [x] Speculative Decoding 文章补充：EAGLE3、Draft Tree 详解（树状推测结构 + 并行验证机制） (来源: 2026-04-03) — 完成: speculative-decoding 扩充 (+4 组件)
