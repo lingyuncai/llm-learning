@@ -7,7 +7,7 @@
 ## 未来内容
 - [x] Positional Encoding 专题文章（含 RoPE 旋转向量详细动画）(来源: 2026-04-01) — 完成: positional-encoding (含 RoPEFrequencyBands, RoPEComplexPlane, RoPEExtrapolation)
 - [x] MoE (Mixture of Experts) 专题 (来源: 2026-03-31) — 完成: mixture-of-experts (7 组件)
-- [ ] Mamba / 状态空间模型专题 (来源: 2026-03-31)
+- [x] Mamba / 状态空间模型专题 (来源: 2026-03-31) — 完成: state-space-models + hybrid-architectures (10 组件)
 - [ ] MTP (Multi-Token Prediction) 专题 (来源: 2026-03-31)
 - [ ] Reinforcement Learning (RLHF/GRPO/PPO) 专题 (来源: 2026-04-05)
 - [x] GPU 编程实现 LLM 专题，含 GEMM/MatMul 分块算法详细动画讲解 (来源: 2026-03-31, 2026-04-01) — 完成: gemm-optimization + cuda-programming-model
