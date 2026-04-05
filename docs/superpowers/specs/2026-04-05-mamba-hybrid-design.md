@@ -21,19 +21,19 @@
 title: "状态空间模型与 Mamba"
 slug: "state-space-models"
 locale: "zh"
-tags: ["ssm", "mamba", "state-space-model", "selective-scan", "sequence-modeling"]
-difficulty: "advanced"
+tags: [ssm, mamba, state-space-model, selective-scan, sequence-modeling]
+difficulty: advanced
 created: "2026-04-05"
 updated: "2026-04-05"
-prerequisites: ["attention-computation"]
+prerequisites: [attention-computation]
 references:
-  - type: "paper"
+  - type: paper
     title: "Efficiently Modeling Long Sequences with Structured State Spaces (S4)"
     url: "https://arxiv.org/abs/2111.00396"
-  - type: "paper"
+  - type: paper
     title: "Mamba: Linear-Time Sequence Modeling with Selective State Spaces"
     url: "https://arxiv.org/abs/2312.00752"
-  - type: "paper"
+  - type: paper
     title: "Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality"
     url: "https://arxiv.org/abs/2405.21060"
 ```
@@ -97,7 +97,7 @@ references:
 - **功能**: 同一个 SSM 的两种计算视角
   - 左侧 Recurrence：逐步箭头链 $x_0 → x_1 → x_2 → ... → x_n$，每步标注 $\bar{A}$ 和 $\bar{B}u_k$
   - 右侧 Convolution：输入序列 $u$ 与 kernel $\bar{K}$ 的卷积，标注 FFT 加速
-  - 底部标注复杂度：Recurrence O(N) sequential / Convolution O(N log N) parallel
+  - 底部标注复杂度：Recurrence O(1) per step, O(N) total sequential / Convolution O(N log N) parallel
 - **交互**: 点击按钮切换两种视图，切换时高亮等价关系
 
 #### SelectiveScanViz
@@ -136,25 +136,25 @@ references:
 title: "Hybrid 架构：Mamba 与 Attention 的融合"
 slug: "hybrid-architectures"
 locale: "zh"
-tags: ["hybrid", "mamba", "jamba", "zamba", "hymba", "architecture"]
-difficulty: "advanced"
+tags: [hybrid, mamba, jamba, zamba, hymba, architecture]
+difficulty: advanced
 created: "2026-04-05"
 updated: "2026-04-05"
-prerequisites: ["state-space-models", "mixture-of-experts"]
+prerequisites: [state-space-models, mixture-of-experts]
 references:
-  - type: "paper"
+  - type: paper
     title: "Jamba: A Hybrid Transformer-Mamba Language Model"
     url: "https://arxiv.org/abs/2403.19887"
-  - type: "website"
+  - type: website
     title: "Zamba2-Small: A Hybrid SSM-Transformer Model"
     url: "https://www.zyphra.com/post/zamba2-small"
-  - type: "paper"
+  - type: paper
     title: "Hymba: A Hybrid-head Architecture for Small Language Models"
     url: "https://arxiv.org/abs/2411.13676"
-  - type: "paper"
+  - type: paper
     title: "An Empirical Study of Mamba-based Language Models"
     url: "https://arxiv.org/abs/2406.07887"
-  - type: "paper"
+  - type: paper
     title: "Repeat After Me: Transformers are Better than State Space Models at Copying"
     url: "https://arxiv.org/abs/2402.01032"
 ```
