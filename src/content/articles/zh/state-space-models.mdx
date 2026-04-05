@@ -1,0 +1,144 @@
+---
+title: "状态空间模型与 Mamba"
+slug: "state-space-models"
+locale: "zh"
+tags: [ssm, mamba, state-space-model, selective-scan, sequence-modeling]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [attention-computation]
+references:
+  - type: paper
+    title: "Efficiently Modeling Long Sequences with Structured State Spaces (S4)"
+    url: "https://arxiv.org/abs/2111.00396"
+  - type: paper
+    title: "Mamba: Linear-Time Sequence Modeling with Selective State Spaces"
+    url: "https://arxiv.org/abs/2312.00752"
+  - type: paper
+    title: "Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality"
+    url: "https://arxiv.org/abs/2405.21060"
+---
+
+import SSMStateRecurrence from '../../../components/interactive/SSMStateRecurrence.tsx';
+import RecurrenceConvDuality from '../../../components/interactive/RecurrenceConvDuality.tsx';
+import SelectiveScanViz from '../../../components/interactive/SelectiveScanViz.tsx';
+import MambaBlockDiagram from '../../../components/interactive/MambaBlockDiagram.tsx';
+import SSDAttentionEquivalence from '../../../components/interactive/SSDAttentionEquivalence.tsx';
+
+## 引言
+
+标准 Attention 的计算复杂度为 $O(n^2)$，推理时 KV cache 随序列长度线性增长。在 100K+ token 的长上下文场景下，Attention 的显存和计算成本成为关键瓶颈。有没有一种序列建模方法，能在 **线性时间** 内处理任意长度的序列，同时保持固定大小的推理缓存？
+
+**状态空间模型 (State Space Model, SSM)** 正是这样一种方案。SSM 源自控制论和信号处理领域，核心思想是用一个 **固定大小的状态向量** 压缩序列的全部历史信息，每处理一个新 token 只需更新状态而非回看全部历史。
+
+---
+
+## 1. 连续状态空间模型
+
+SSM 的数学基础是一个连续时间的线性动态系统：
+
+$$
+\dot{x}(t) = Ax(t) + Bu(t), \quad y(t) = Cx(t) + Du(t)
+$$
+
+其中 $u(t)$ 是输入信号，$x(t) \in \mathbb{R}^N$ 是隐状态，$y(t)$ 是输出。矩阵 $A \in \mathbb{R}^{N \times N}$ 控制状态的演化规律，$B \in \mathbb{R}^{N \times 1}$ 控制输入如何写入状态，$C \in \mathbb{R}^{1 \times N}$ 控制如何从状态读出输出。
+
+直觉：**状态 $x$ 是"压缩的历史摘要"**。与 Attention 不同——Attention 每步都回看完整的 token 序列——SSM 只维护一个固定大小的状态，所有历史信息都被压缩到这 $N$ 个维度中。这就像一个"带记忆的滤波器"：输入信号经过系统，被状态记住、混合、然后输出。
+
+<SSMStateRecurrence client:visible />
+
+---
+
+## 2. 离散化：从连续到序列
+
+语言模型处理的是离散 token 序列，需要将连续 SSM 离散化。使用 Zero-Order Hold (ZOH) 方法，步长为 $\Delta$：
+
+$$
+\bar{A} = e^{\Delta A}, \quad \bar{B} = (\Delta A)^{-1}(e^{\Delta A} - I) \cdot \Delta B
+$$
+
+离散化后的递推公式：
+
+$$
+x_k = \bar{A} x_{k-1} + \bar{B} u_k, \quad y_k = C x_k
+$$
+
+步长 $\Delta$ 的物理含义：它控制系统的"时间分辨率"。**大 $\Delta$** 意味着每步跨越更长的时间，系统更关注远距离依赖；**小 $\Delta$** 让系统关注近距离细节。在后续的 Mamba 模型中，$\Delta$ 将变成一个依赖输入的可学习参数，这是选择性机制的关键。
+
+---
+
+## 3. Recurrence 与 Convolution 的对偶性
+
+离散 SSM 有一个优雅的性质：同一个模型可以用两种完全不同的方式计算。
+
+**Recurrence 模式**：逐步递推 $x_k = \bar{A}x_{k-1} + \bar{B}u_k$，每步 $O(1)$ 计算。适合 **推理**——每个新 token 只需一次状态更新。
+
+**Convolution 模式**：将递推展开，得到 $y = \bar{K} * u$，其中卷积核 $\bar{K} = (C\bar{B}, C\bar{A}\bar{B}, C\bar{A}^2\bar{B}, ...)$。整个序列可以用 FFT 在 $O(N \log N)$ 时间内并行计算。适合 **训练**——所有 token 同时处理。
+
+<RecurrenceConvDuality client:visible />
+
+这个对偶性是 S4 (Structured State Spaces for Sequence Modeling) 的核心贡献：训练时用 convolution 充分利用 GPU 并行性，推理时切换为 recurrence 实现 $O(1)$ 增量推理。
+
+---
+
+## 4. Mamba 的选择性机制
+
+S4 等早期 SSM 有一个根本限制：参数 $A$, $B$, $C$ 是 **固定的**（与输入无关）。这意味着系统对所有输入 token 一视同仁——无论是关键内容词还是噪声填充词，SSM 都用相同的方式处理。
+
+**Mamba** (Gu & Dao, 2023) 的核心创新是 **选择性 (Selectivity)**：让关键参数依赖于当前输入。
+
+- **选择性 $B$**：$B_k = \text{Linear}(u_k)$ — 控制"写入什么到状态"
+- **选择性 $C$**：$C_k = \text{Linear}(u_k)$ — 控制"从状态读出什么"
+- **选择性 $\Delta$**：$\Delta_k = \text{softplus}(\text{Linear}(u_k))$ — 控制"遗忘速度"
+
+$\Delta$ 是最直观的：对于重要 token（如内容词 "cat", "mat"），模型学会输出大 $\Delta$，让信息 **被记住**；对于噪声 token（如 "the", "on"），输出小 $\Delta$，让旧信息 **快速遗忘** 新输入。
+
+<SelectiveScanViz client:visible />
+
+选择性的代价：参数依赖输入后，SSM 不再是时不变系统 (LTI)，卷积核 $\bar{K}$ 随输入变化，无法再用 FFT 加速。Mamba 用 **硬件感知的 parallel scan 算法** 替代——在 GPU 的 SRAM 中进行 scan 操作，避免 HBM 读写，实现接近 convolution 的训练效率。
+
+### Mamba Block 架构
+
+Mamba 用一种比 Transformer block 更简洁的结构替代了传统的 Attention + MLP：
+
+<MambaBlockDiagram />
+
+整个 block 没有 Attention 层，也没有独立的 MLP 层。输入先通过 linear projection 扩展维度，然后分两条路径：一条经过 Conv1d + SSM 处理序列信息，另一条作为 gate。两路相乘后收缩维度输出。
+
+---
+
+## 5. Mamba-2: State Space Duality
+
+**Mamba-2** (Dao & Gu, ICML 2024) 建立了 SSM 和 Attention 之间的深层数学联系——**State Space Duality (SSD)**。
+
+核心发现：将 SSM 递推展开为矩阵形式 $Y = M \cdot U$，矩阵 $M$ 是一个 **semiseparable matrix**（半可分矩阵）。而标准 Attention 的计算 $Y = \text{softmax}(QK^T) \cdot V$ 中，score matrix $QK^T$ 是一个 **dense matrix**。
+
+<SSDAttentionEquivalence client:visible />
+
+换句话说：**SSM 是一种加了结构约束的 Attention**。Semiseparable 结构 = 因果 mask + 指数衰减，这种结构使得矩阵乘法可以用 chunk-wise 算法在 $O(N)$ 时间完成——类似 Flash Attention 的分块策略。
+
+实际意义：Mamba-2 比 Mamba-1 快 **2-8×**，同时引入了 **multi-head SSM**（类似 multi-head attention），使得模型的表达能力更强。
+
+---
+
+## 总结
+
+SSM 提供了一种根本不同于 Attention 的序列建模范式：
+
+| | Attention | SSM |
+|---|---|---|
+| 训练复杂度 | $O(N^2)$ | $O(N)$ 或 $O(N \log N)$ |
+| 推理缓存 | $O(N)$ (KV cache) | $O(1)$ (固定状态) |
+| 历史访问 | 精确（任意 token） | 压缩（固定维度） |
+| 核心瓶颈 | 长序列显存/计算 | Copying / ICL 能力 |
+
+SSM 的优势在于线性复杂度和常数推理缓存，但固定大小的状态向量意味着信息必然被压缩——当需要精确回忆远处特定 token 时（如 copying、in-context learning），SSM 力不从心。
+
+这个根本局限引出了下一篇文章的主题：**Hybrid 架构** 如何结合 Attention 的精确检索和 SSM 的高效摘要，取长补短。
+
+## 延伸阅读
+
+- [Attention 计算](./attention-computation) — 理解标准 Attention 的计算流程
+- [Flash Attention](./flash-attention) — 另一种优化 Attention 效率的方法
+- [Attention 变体](./attention-variants) — Sliding Window、MLA 等 Attention 优化
+- [Hybrid 架构](./hybrid-architectures) — Mamba 与 Attention 的融合
