@@ -1,0 +1,122 @@
+---
+title: "推理时量化：KV Cache 与 Activation 量化"
+slug: "inference-time-quantization"
+locale: "zh"
+tags: ["quantization", "kv-cache", "activation-quantization", "fp8", "inference-optimization"]
+difficulty: "advanced"
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: ["quantization-fundamentals", "kv-cache"]
+references:
+  - type: "paper"
+    title: "KVQuant: Towards 10 Million Context Length LLM Inference with KV Cache Quantization"
+    url: "https://arxiv.org/abs/2401.18079"
+  - type: "paper"
+    title: "KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache"
+    url: "https://arxiv.org/abs/2402.02750"
+  - type: "paper"
+    title: "FP8 Formats for Deep Learning"
+    url: "https://arxiv.org/abs/2209.05433"
+---
+
+import KVCacheMemoryCalculator from '../../../components/interactive/KVCacheMemoryCalculator.tsx';
+import KVQuantSensitivity from '../../../components/interactive/KVQuantSensitivity.tsx';
+import ActivationOutlierViz from '../../../components/interactive/ActivationOutlierViz.tsx';
+import E2EQuantStackDiagram from '../../../components/interactive/E2EQuantStackDiagram.tsx';
+
+## 简介
+
+权重量化解决了模型存储与加载问题，但在实际推理时，内存瓶颈往往来自 **动态生成的中间数据**：KV cache 和 activation tensors。对于长上下文推理，KV cache 可能占用数十 GB 显存；对于高吞吐场景，activation memory 的带宽消耗成为关键限制因素。
+
+**推理时量化** 专注于这些运行时数据的压缩，与权重量化互补，共同构成完整的端到端量化方案。
+
+---
+
+## 1. KV Cache 的显存瓶颈
+
+在 autoregressive 生成中，每个 token 的 key 和 value vectors 被缓存。内存占用公式：
+
+$$
+\text{KV size} = 2 \times L \times n_h \times d_h \times S \times \text{bytes}
+$$
+
+以 Llama 3 70B (80 layers, 64 heads, d_head=128) + 128K context 为例：FP16 下 KV cache ≈ 160 GB，远超模型权重（~140 GB）。
+
+<KVCacheMemoryCalculator client:visible />
+
+---
+
+## 2. KV Cache 量化方法
+
+### Per-Token vs Per-Channel
+
+- **Per-token**：每个 token 的 K/V vector 独立计算 scale，适应动态范围
+- **Per-channel**：每个 head dimension 一个 scale，开销小但精度受限
+
+### Key vs Value 的不对称性
+
+Key 参与 $QK^T$ 点积运算，量化误差被放大；Value 参与加权求和 $\text{softmax} \cdot V$，误差被平均。因此 Key 需要更高精度。
+
+<KVQuantSensitivity client:visible />
+
+### KIVI 与 KVQuant
+
+- **KIVI** (ICLR 2024)：Key per-channel INT8 + Value per-token INT2，利用 Key/Value 分布差异
+- **KVQuant**：非均匀量化 + dense-and-sparse 混合方案，少量 outlier 保留 FP16
+
+实验结果：Llama 2 70B + 100K context，KV cache 从 32 GB 降至 8 GB，perplexity 增加 < 0.1。
+
+---
+
+## 3. Activation 量化的挑战
+
+推理时每层的 activation tensors 也需量化以减少 memory bandwidth。但 activation 存在 **系统性 outlier**：少数 channel 的值比其他大 100-1000 倍。
+
+原因：LayerNorm 后分布不均匀；特定 token 在深层触发 outlier；outlier channel 跨 token 一致。
+
+<ActivationOutlierViz client:visible />
+
+解决方案：
+- **Mixed-precision**：outlier channels 保持 FP16，其余 INT8
+- **Per-channel scaling**：每个 channel 独立量化
+- **Smoothing**：SmoothQuant 在训练后调整分布
+
+---
+
+## 4. FP8：硬件友好的低精度浮点
+
+| 格式 | Exponent | Mantissa | 动态范围 | 用途 |
+|------|----------|----------|----------|------|
+| **E4M3** | 4 bit | 3 bit | ±448 | Forward activation (高精度) |
+| **E5M2** | 5 bit | 2 bit | ±57,344 | Gradient (大范围) |
+
+H100 FP8 Tensor Core 吞吐量是 FP16 的 2 倍。FP8 vs INT8：FP8 保留动态范围更适合非均匀分布，INT8 在均匀分布时精度更高。
+
+---
+
+## 5. 端到端量化部署
+
+<E2EQuantStackDiagram client:visible />
+
+**典型配置：**
+- **显存优先**：W4A16 + KV INT8（GPTQ/AWQ weight + per-token KV quant）
+- **速度优先**：W8A8 + KV FP8（SmoothQuant + H100 FP8 Tensor Core）
+- **平衡方案**：W4A16 + KV INT4（AWQ weight + KIVI KV cache）
+
+**工具链**：
+- llama.cpp：`--cache-type-k q4_0` 启用 KV cache 量化
+- vLLM：FP8 KV cache (`--kv-cache-dtype fp8_e4m3`)
+- TensorRT-LLM：端到端 INT4 权重 + FP8 activation
+
+---
+
+## 总结
+
+推理时量化的核心挑战：KV cache 是长上下文的主要显存瓶颈，activation outlier 需要 mixed-precision 或 FP8。量化不是单一决策，是 weight/activation/KV cache 三个维度的联合优化。
+
+## 延伸阅读
+
+- [KV Cache 机制](./kv-cache) — 理解 KV cache 工作原理
+- [量化基础](./quantization-fundamentals) — 对称与非对称量化
+- [训练后量化](./ptq-weight-quantization) — GPTQ/AWQ/SmoothQuant
+- [量化感知训练](./quantization-aware-training) — QAT 与 BitNet
