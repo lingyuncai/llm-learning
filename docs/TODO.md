@@ -9,7 +9,7 @@
 - [x] MoE (Mixture of Experts) 专题 (来源: 2026-03-31) — 完成: mixture-of-experts (7 组件)
 - [x] Mamba / 状态空间模型专题 (来源: 2026-03-31) — 完成: state-space-models + hybrid-architectures (10 组件)
 - [ ] Reinforcement Learning (RLHF/GRPO/PPO) 专题 (来源: 2026-04-05)
-- [ ] vLLM 推理引擎专题 (来源: 2026-04-05)
+- [x] vLLM 推理引擎专题 (来源: 2026-04-05) — 完成: inference-serving 路径 (5 篇文章, 28 组件)
 - [ ] OpenVINO 推理优化路径 (来源: 2026-04-05)
 - [ ] oneDNN 底层计算库路径 (来源: 2026-04-05)
 - [x] GPU 编程实现 LLM 专题，含 GEMM/MatMul 分块算法详细动画讲解 (来源: 2026-03-31, 2026-04-01) — 完成: gemm-optimization + cuda-programming-model
