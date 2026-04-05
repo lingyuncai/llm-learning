@@ -2,6 +2,8 @@
 
 基于 Astro + MDX + React 构建的 LLM 技术知识库网站，以交互式可视化的方式讲解大语言模型核心概念。
 
+> **注意：本项目的所有内容（文章、交互组件、可视化）均由 AI 生成。** 内容可能存在错误、不准确或过时之处。如果你发现任何问题，欢迎到 [GitHub Issues](https://github.com/jonathanding/llm-learning/issues) 反馈。
+
 **在线访问**: https://jonathanding.github.io/llm-learning/
 
 ## 技术栈
