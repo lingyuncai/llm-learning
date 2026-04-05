@@ -1,0 +1,103 @@
+---
+title: "PagedAttention 与 Continuous Batching"
+slug: paged-attention
+locale: zh
+tags: [paged-attention, continuous-batching, vllm, memory-management, kv-cache]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [kv-cache]
+references:
+  - type: paper
+    title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    url: "https://arxiv.org/abs/2309.06180"
+  - type: paper
+    title: "Orca: A Distributed Serving System for Transformer-Based Generative Models"
+    url: "https://arxiv.org/abs/2206.06003"
+  - type: website
+    title: "vLLM: Easy, Fast, and Cheap LLM Serving with PagedAttention"
+    url: "https://blog.vllm.ai/2023/06/20/vllm.html"
+---
+
+import MemoryWasteComparison from '../../../components/interactive/MemoryWasteComparison.tsx';
+import BlockTableMapping from '../../../components/interactive/BlockTableMapping.tsx';
+import FragmentationAnalysis from '../../../components/interactive/FragmentationAnalysis.tsx';
+import CopyOnWriteBeam from '../../../components/interactive/CopyOnWriteBeam.tsx';
+import ContinuousBatchingTimeline from '../../../components/interactive/ContinuousBatchingTimeline.tsx';
+import ThroughputBenchmark from '../../../components/interactive/ThroughputBenchmark.tsx';
+
+## KV Cache 的内存困境
+
+在 [KV Cache 原理](./kv-cache) 中我们知道，推理时需要缓存每一层的 Key 和 Value 张量来避免重复计算。但传统实现有一个严重问题：**为每个请求预分配 max_seq_len 的连续内存**。
+
+假设 max_seq_len = 2048，但用户请求平均只用 512 个 token。这意味着 75% 的 GPU 显存被预分配但从未使用。更糟的是，当多个请求的 KV Cache 在显存中连续分配时，已完成的请求释放的内存会形成碎片（**外部碎片**），导致新请求可能因为找不到足够大的连续空间而无法启动。
+
+<MemoryWasteComparison client:visible />
+
+Kwon et al. (2023) 的实测数据显示，在真实 serving 场景中，**KV Cache 占用了 GPU 显存的 60-80%，但其中超过 60% 被浪费在预分配和碎片上**。
+
+## 操作系统的启示
+
+这个问题和操作系统的内存管理非常相似。早期操作系统为每个进程分配连续的物理内存，导致同样的碎片问题。解决方案是**虚拟内存 + 分页**：每个进程看到连续的虚拟地址空间，但操作系统在背后将虚拟页映射到分散的物理页帧。
+
+PagedAttention 将这个思想引入 KV Cache 管理：
+
+| 操作系统概念 | PagedAttention 对应 |
+|-------------|-------------------|
+| 虚拟页 | 逻辑块（一组连续 token 的 KV） |
+| 物理页帧 | 物理块（GPU 显存中的固定大小区域） |
+| 页表 | Block Table（逻辑块 → 物理块映射） |
+| 按需分配 | 新 token 到来时才分配新物理块 |
+| 页面大小 | Block size（通常 16 tokens） |
+
+## PagedAttention 核心机制
+
+每个请求的 KV Cache 被划分为**逻辑块**，每块存储固定数量的 token（如 16 个）的 Key/Value。逻辑块通过 **Block Table** 映射到 GPU 显存中的**物理块**，物理块无需连续。
+
+<BlockTableMapping client:visible />
+
+关键设计：
+
+1. **按需分配**：不预分配 max_seq_len，而是每生成一个新 token，检查当前块是否还有空间。满了才分配新物理块
+2. **无外部碎片**：物理块大小固定且统一，任何空闲块都可以被任何请求使用
+3. **极小内部碎片**：浪费只发生在每个请求的最后一个块（未填满的部分），平均浪费 &lt; block_size / 2 个 token
+
+<FragmentationAnalysis client:visible />
+
+## Copy-on-Write
+
+Beam search 和 parallel sampling 场景中，多个候选序列共享相同的前缀。PagedAttention 用 **Copy-on-Write (CoW)** 优化：多个序列的 Block Table 可以指向同一个物理块，只在某个序列需要修改该块内容时才复制。
+
+每个物理块维护一个 **ref_count**（引用计数）。当 ref_count > 1 时写入会触发复制。这和 Linux 的 fork() + CoW 机制完全一致。
+
+<CopyOnWriteBeam client:visible />
+
+## Continuous Batching
+
+有了 PagedAttention 高效管理内存后，下一步是优化请求调度。
+
+传统 **Static Batching**（Orca 之前的做法）：将一批请求打包在一起，等所有请求都完成才处理下一批。短请求被长请求"拖后腿"，GPU 在等待期间大量空闲。
+
+**Continuous Batching**（Orca 提出的 iteration-level scheduling）：在每一个 decode iteration 结束后检查，已完成的请求立即释放 slot，等待队列中的新请求立即填入。没有空闲等待，GPU 利用率最大化。
+
+<ContinuousBatchingTimeline client:visible />
+
+## 性能分析
+
+三种批处理策略在不同并发数下的吞吐量差异：
+
+<ThroughputBenchmark client:visible />
+
+核心结论：
+- **低并发**（1-4 请求）：三种策略差异不大，因为 GPU 本身没被充分利用
+- **高并发**（16+ 请求）：continuous batching 的优势呈指数级增长，因为它避免了长尾请求阻塞整个 batch
+- **实测数据**：vLLM 在 PagedAttention + continuous batching 下，吞吐量比 HuggingFace Text Generation Inference 高 **2-4 倍**，比原始 transformers 高 **24 倍**
+
+## 总结
+
+PagedAttention 通过"虚拟内存分页"思想解决了 KV Cache 的内存浪费问题，Continuous Batching 通过"iteration-level 调度"解决了请求间的 GPU 空闲问题。两者结合使得 vLLM 能同时服务更多请求、更高效利用 GPU——这也是为什么 vLLM 成为云端 LLM serving 的事实标准。
+
+## 延伸阅读
+
+- 想了解调度策略和抢占机制？阅读 [调度与抢占](./inference-scheduling)
+- 想了解前缀缓存优化？阅读 [前缀缓存与 RadixAttention](./prefix-caching)
