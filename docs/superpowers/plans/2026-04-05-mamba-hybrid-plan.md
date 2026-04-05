@@ -1454,7 +1454,7 @@ import { useState } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
 const W = 580;
-const H = 480;
+const H = 560;
 
 type Pattern = 'interleaved' | 'parallel' | 'shared';
 
@@ -1674,7 +1674,7 @@ export default function HybridPatternCompare() {
         </g>
       ))}
 
-      <g transform="translate(0, 30)">
+      <g transform="translate(0, 20)">
         {tab === 'interleaved' && <InterleavedView />}
         {tab === 'parallel' && <ParallelView />}
         {tab === 'shared' && <SharedView />}
@@ -1918,29 +1918,12 @@ function Box({ x, y, w, h, label, color, sublabel }: {
   );
 }
 
-function Arrow({ x1, y1, x2, y2, color }: {
-  x1: number; y1: number; x2: number; y2: number; color: string;
-}) {
-  return (
-    <line x1={x1} y1={y1} x2={x2} y2={y2}
-      stroke={color} strokeWidth="1.5" markerEnd={`url(#hymba-arrow-${color.replace('#', '')})`} />
-  );
-}
-
 export default function HymbaParallelHeads() {
   const steps = [
     {
       title: '1. 输入 + Meta Tokens',
       content: (
         <svg viewBox={`0 0 ${W} 220`} className="w-full">
-          <defs>
-            <marker id={`hymba-arrow-${COLORS.primary.replace('#', '')}`} markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-              <polygon points="0 0, 6 3, 0 6" fill={COLORS.primary} />
-            </marker>
-            <marker id={`hymba-arrow-${COLORS.purple.replace('#', '')}`} markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-              <polygon points="0 0, 6 3, 0 6" fill={COLORS.purple} />
-            </marker>
-          </defs>
           <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
             Meta Tokens 拼接到输入序列前
@@ -2229,7 +2212,7 @@ export default function HybridModelBenchmark() {
   const detailY = headerY + (totalRows + 1) * rowH + 10;
 
   return (
-    <svg viewBox={`0 0 ${W} ${hovered !== null ? 420 : 260}`} className="w-full">
+    <svg viewBox={`0 0 ${W} 340`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
         Hybrid 模型对比
