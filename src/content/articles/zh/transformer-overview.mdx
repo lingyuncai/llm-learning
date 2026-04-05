@@ -247,6 +247,28 @@ GPT 系列开创了 Decoder-only 架构，去掉 Encoder 和 Cross-Attention：
 
 > 注：Head 维度 = $H / h$。LLaMA 系列使用 GQA（Grouped-Query Attention），其中 LLaMA-3.1-8B 的 KV head 数为 8（而非 32）。
 
+## 推荐学习资源
+
+如果你想更深入地学习 Transformer 架构，以下是我们精选的资源：
+
+### 经典论文
+- **Vaswani et al.《Attention Is All You Need》** — Transformer 架构奠基论文，提出 self-attention 和 multi-head attention 机制，所有后续工作的源头。
+- **Lilian Weng《The Transformer Family Version 2.0》** — 系统梳理 Transformer 各种变体和改进，涵盖长上下文、高效注意力、自适应建模等方向，引用丰富的综述性参考。
+
+### 视频课程
+- **3Blue1Brown — Attention in Transformers (Neural Networks 系列)** — 以精美数学动画闻名，直觉化解释 attention 机制的几何意义。Chapter 6 专门讲 attention，视觉效果极为出色。
+- **Andrej Karpathy "Neural Networks: Zero to Hero"** — 从零手写 GPT，"Let's build GPT" 一集（约 2 小时）从头实现 Transformer，是理解实现细节的最佳资源。配套 GitHub 代码和 Jupyter Notebook。
+
+### 博客与教程（图文并茂）
+- **Jay Alammar《The Illustrated Transformer》** — **图文并茂的典范之作**。通过数十张精心绘制的示意图逐步拆解 Transformer 架构，包括 encoder-decoder 堆栈、self-attention 的 Q/K/V 计算、multi-head attention、位置编码等。公认的最佳入门图解。
+- **Jay Alammar《Visualizing Neural Machine Translation》** — Illustrated Transformer 的前置阅读，图解 seq2seq + attention 机制的工作原理，帮助理解 attention 的起源。
+- **Harvard NLP《The Annotated Transformer》** — 对原始论文的逐行代码注释实现（PyTorch），将论文公式与代码一一对应，适合想深入理解每一行代码含义的读者。
+
+### 交互实验
+- **Transformer Explainer (Georgia Tech / Polo Club)** — 浏览器内运行 GPT-2 模型，实时观察 attention 计算过程。IEEE VIS 2024 发表，交互体验极佳。(poloclub.github.io/transformer-explainer/)
+- **Brendan Bycroft《LLM Visualization》** — GPT 推理过程的 3D 交互可视化，可以逐层观察数据流动和矩阵运算，视觉效果震撼。(bbycroft.net/llm)
+- **Financial Times《Generative AI Explained》** — FT 数据新闻团队制作的可视化叙事，以精美交互动画展示 LLM 工作原理。(ig.ft.com/generative-ai/)
+
 ## 总结
 
 本文梳理了 Transformer 的整体架构：

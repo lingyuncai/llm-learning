@@ -2,7 +2,7 @@
 
 ## 未来功能
 - [ ] 英文版内容 (来源: 2026-03-31)
-- [ ] 为各学习路径的第一篇文章添加"推荐学习资源"章节（教材/课程/博客/交互教程汇总） (来源: 2026-04-05)
+- [x] 为各学习路径的第一篇文章添加"推荐学习资源"章节（教材/课程/博客/交互教程汇总） (来源: 2026-04-05) — 完成: 7 个路径全部添加（transformer-overview, ai-compute-stack, prefill-vs-decode, quantization-fundamentals, ollama-architecture, inference-engine-landscape, rl-foundations）
 - [x] C 级全交互参数化动画，按需加入 (来源: 2026-03-31) — 已融入日常组件开发（ArithmeticIntensityCalc、ComputeToLoadRatio 等）
 
 ## 未来内容

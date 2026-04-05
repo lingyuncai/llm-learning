@@ -307,6 +307,20 @@ $$
 - **Chunked Prefill**：将长 prompt 分块处理，在 Prefill 的间隙穿插 Decode 步骤，避免长 prompt 的 Prefill 阻塞其他请求的 Decode
 - **Disaggregated Serving（分离式推理）**：将 Prefill 和 Decode 部署到不同的硬件上 — Prefill 用计算密集型 GPU，Decode 用高带宽设备
 
+## 推荐学习资源
+
+如果你想更深入地学习 LLM 推理优化，以下是我们精选的资源：
+
+### 经典论文
+- **Kwon et al.《Efficient Memory Management for Large Language Model Serving with PagedAttention》** — vLLM 核心论文（SOSP 2023），提出用类似 OS 虚拟内存的方式管理 KV Cache，实现近零浪费。是理解现代 LLM serving 内存管理的核心论文。
+- **Lilian Weng《Large Transformer Model Inference Optimization》** — 系统性综述 Transformer 推理优化方法，涵盖蒸馏、量化、剪枝、稀疏化、架构优化等，是推理优化领域的最佳综述之一。
+
+### 博客与教程（图文并茂）
+- **kipply《Transformer Inference Arithmetic》** — **推理性能分析的经典博文**。从第一性原理推导 LLM 推理延迟，详解 KV Cache 机制、模型并行、batch size 影响、FLOPS 计算、memory bandwidth bound vs compute bound 的判断方法。
+- **Patrick von Platen / Hugging Face《Optimizing your LLM in production》** — 涵盖低精度推理（8-bit/4-bit）、Flash Attention、KV Cache 优化（MQA/GQA）、位置编码等，包含详细的内存计算和加速比数据，实操性强。
+- **Anyscale《How continuous batching enables 23x throughput in LLM inference》** — 详解 continuous batching 机制，对比 static batching 的吞吐量差异（高达 23 倍），benchmark 了 HF TGI、vLLM、Ray Serve 等框架的实际性能。
+- **Finbarr Timbers《How is LLaMa.cpp possible?》** — 分析 LLM 在消费级硬件上推理的可行性原理。通过数学推导展示 memory bandwidth 是瓶颈、量化如何大幅降低内存需求。含不同设备（A100/M1/M2）的性能计算对比。
+
 ## 总结
 
 | 概念 | 说明 |

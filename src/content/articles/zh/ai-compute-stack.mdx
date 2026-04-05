@@ -377,6 +377,24 @@ ggml 和 cuDNN/oneDNN/MPS **是同一层的东西** — 都是算子库。区别
 
 ---
 
+## 推荐学习资源
+
+如果你想更深入地理解 GPU 计算栈，以下是我们精选的资源：
+
+### 官方文档
+- **NVIDIA CUDA C++ Programming Guide** — CUDA 编程权威参考，涵盖编程模型、线程层次、内存层次、kernel 执行等核心概念。最全面的一手资料。
+- **NVIDIA GPU Performance Background User's Guide** — 深度学习性能系列文档，详解 GPU 架构基础（SM、内存层次）、arithmetic intensity 与 roofline 分析框架、DNN 操作分类。理解 compute-bound vs memory-bound 的必读材料。
+
+### 视频课程
+- **NVIDIA DLI "Fundamentals of Accelerated Computing with CUDA C/C++"** — NVIDIA 官方 CUDA 入门课程，实操为主，配有 GPU 云实验环境。
+
+### 博客与教程（图文并茂）
+- **NVIDIA "CUDA Refresher" 系列** — NVIDIA 开发者博客上的 CUDA 基础概念刷新系列，包括 GPU 计算起源、编程模型、线程层次、内存层次等，配有清晰的架构图和层次示意图。
+- **Simon Boehm《How to Optimize a CUDA Matmul Kernel for cuBLAS-like Performance》** — 从 naive kernel 到接近 cuBLAS 性能（94%）的完整优化日志。覆盖内存合并、shared memory、block-tiling、warp 级并行、roofline 分析等。虽非纯入门，但展示了 GPU 优化的真实过程，含丰富性能分析图表。
+
+### 工具
+- **NVIDIA Nsight Compute** — 官方 GPU kernel 性能分析工具，内置 roofline 图表、内存带宽分析、occupancy 分析等可视化功能。理解 compute stack 性能瓶颈的实操工具。
+
 ## 总结
 
 AI/GPU 软件栈可以清晰地分为 7 层，每层解决一个明确的问题：

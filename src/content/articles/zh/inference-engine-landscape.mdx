@@ -94,6 +94,23 @@ import EngineDecisionTree from '../../../components/interactive/EngineDecisionTr
 
 当然，这只是粗略指南。实际选型还需要考虑：模型大小、请求模式（长/短上下文）、SLA 要求、团队技术栈、硬件预算等因素。最稳妥的策略是先用 vLLM（生态最成熟），遇到瓶颈再评估 SGLang（结构化输出）或 TensorRT-LLM（极致性能）。
 
+## 推荐学习资源
+
+如果你想更深入地理解 LLM 推理引擎，以下是我们精选的资源：
+
+### 经典论文
+- **Kwon et al.《Efficient Memory Management for Large Language Model Serving with PagedAttention》** — vLLM 核心论文（SOSP 2023），提出 PagedAttention 算法，借鉴 OS 虚拟内存与分页机制管理 KV Cache，实现 2-4 倍吞吐量提升。
+- **Zheng et al.《SGLang: Efficient Execution of Structured Language Model Programs》** — SGLang 论文，提出 RadixAttention 实现 KV Cache 前缀复用，以及压缩有限状态机加速结构化输出解码，在多种任务上实现高达 6.4 倍吞吐量提升。
+
+### 博客与教程（图文并茂）
+- **vLLM 官方博文《Easy, Fast, and Cheap LLM Serving with PagedAttention》** — 用图表直观展示 PagedAttention 的工作原理和性能对比，比论文更易消化的入门版本。(vllm.ai/blog/vllm)
+- **LMSYS《Fast and Expressive LLM Inference with RadixAttention and SGLang》** — SGLang 官方博文，解释 RadixAttention 的 KV Cache 复用机制和前端 DSL 设计，配有架构图和性能对比。(lmsys.org/blog/2024-01-17-sglang/)
+- **Anyscale《How continuous batching enables 23x throughput in LLM inference》** — 详解 continuous batching 机制（vLLM 和 SGLang 都采用），对比 static batching 的吞吐量差异，benchmark 多个框架。
+
+### 官方文档与源码
+- **vLLM GitHub 仓库 & 文档** — 涵盖 PagedAttention、continuous batching、CUDA graph、多种量化方法、多机分布式推理等特性。(github.com/vllm-project/vllm / docs.vllm.ai)
+- **SGLang GitHub 仓库 & 文档** — 包含 RadixAttention、prefill-decode disaggregation、speculative decoding、多种并行策略等特性。支持 NVIDIA/AMD/Intel/TPU 多硬件后端。(github.com/sgl-project/sglang / docs.sglang.ai)
+
 ## 总结
 
 推理引擎是 LLM 从"能跑"到"能用"的关键基础设施。理解它们的设计哲学和核心技术，是做好 LLM 工程的必备知识。接下来我们将深入每个关键技术：从 PagedAttention 的内存管理开始，逐步理解现代推理引擎的完整技术栈。

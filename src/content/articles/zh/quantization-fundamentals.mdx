@@ -122,6 +122,27 @@ $$\hat{x} = s \cdot (q - z)$$
 
 经验分界线：**8-bit PTQ 足够，4-bit PTQ 优先，3-bit 以下需要 QAT**。后续文章将深入每条路线的算法细节。
 
+## 推荐学习资源
+
+如果你想更深入地学习 LLM 量化技术，以下是我们精选的资源：
+
+### 经典论文
+- **Frantar et al.《GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers》** — GPTQ 论文（ICLR 2023），提出基于近似二阶信息的 one-shot 量化方法，可将 LLM 压缩至 3-4 bit 且精度损失极小。PTQ 领域的里程碑工作。
+- **Lin et al.《AWQ: Activation-aware Weight Quantization for LLM Compression and Acceleration》** — AWQ 论文（MLSys 2024 Best Paper），发现保护仅 1% 的显著权重即可大幅降低量化误差，通过激活值统计识别重要权重通道。
+
+### 视频课程
+- **DeepLearning.AI + Hugging Face "Quantization Fundamentals with Hugging Face"** — 免费短课程（约 1 小时），讲解线性量化基础、BFloat16 downcasting 等，配有代码实操，适合入门。
+- **DeepLearning.AI + Hugging Face "Quantization in Depth"** — 上述课程的进阶版，深入讲解量化技术细节。
+
+### 博客与教程（图文并茂）
+- **Maarten Grootendorst《A Visual Guide to Quantization》** — **量化领域最佳图文并茂资源**。包含 50+ 张定制插图，覆盖浮点数表示、symmetric/asymmetric 量化、PTQ、GPTQ、GGUF、QAT、BitNet 等。从基础到前沿，视觉化解释极为出色。
+- **Hugging Face Quantization 概念指南** — Optimum 文档中的量化理论指南，系统讲解 float32→int8 的量化原理、affine/symmetric 方案、per-tensor/per-channel 粒度、校准方法。
+- **Hugging Face Transformers Quantization Overview** — 支持的所有量化方法一览表（GPTQ、AWQ、bitsandbytes、GGUF、torchao 等 18+ 种），包含硬件兼容性矩阵和精度支持对比。
+
+### 交互工具
+- **GGUF Space (Hugging Face)** — 在线将 Hugging Face 模型转换为 GGUF 格式，零代码体验量化流程。(huggingface.co/spaces/ggml-org/gguf-my-repo)
+- **Bitsandbytes Space (Hugging Face)** — 在线使用 bitsandbytes 对模型进行 4-bit/8-bit 量化。(huggingface.co/spaces/bnb-community/bnb-my-repo)
+
 ## 总结
 
 量化的核心是用离散整数近似连续浮点——通过 scale factor 和 zero-point 建立映射，粒度越细误差越小。硬件决定了量化收益的上限：有原生低精度支持时，量化不仅省存储还加速计算；没有时，主要收益是带宽节省。实际部署采用混合精度，通过 sensitivity analysis 为不同层分配不同精度。接下来将深入 PTQ 和 QAT 两条路线的具体算法。
