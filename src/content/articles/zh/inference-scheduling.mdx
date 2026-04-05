@@ -1,0 +1,96 @@
+---
+title: "调度与抢占：推理引擎的 Scheduler"
+slug: inference-scheduling
+locale: zh
+tags: [scheduling, preemption, chunked-prefill, vllm, inference]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [paged-attention]
+references:
+  - type: paper
+    title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    url: "https://arxiv.org/abs/2309.06180"
+  - type: paper
+    title: "Sarathi: Efficient LLM Inference by Piggybacking Decodes with Chunked Prefills"
+    url: "https://arxiv.org/abs/2308.16369"
+  - type: paper
+    title: "Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve"
+    url: "https://arxiv.org/abs/2403.02310"
+---
+
+import SchedulerStateMachine from '../../../components/interactive/SchedulerStateMachine.tsx';
+import SchedulingPolicyGantt from '../../../components/interactive/SchedulingPolicyGantt.tsx';
+import PreemptionCompare from '../../../components/interactive/PreemptionCompare.tsx';
+import ChunkedPrefillTimeline from '../../../components/interactive/ChunkedPrefillTimeline.tsx';
+import SchedulingTradeoffSlider from '../../../components/interactive/SchedulingTradeoffSlider.tsx';
+
+## Scheduler：推理引擎的大脑
+
+在 [上一篇](./paged-attention) 中我们解决了内存管理问题（PagedAttention）和批处理问题（Continuous Batching）。但还有一个关键问题：**当 GPU 资源不够同时服务所有请求时，谁先谁后？谁该被暂停？**
+
+这就是 Scheduler 的职责。它是推理引擎的"大脑"，每一个 decode iteration 都做一次决策：哪些请求继续运行、哪些新请求可以加入、哪些正在运行的请求需要被抢占让路。
+
+## 请求状态机
+
+每个请求在 Scheduler 中有四种状态：
+
+<SchedulerStateMachine client:visible />
+
+- **Waiting**：请求到达，排队等待 GPU slot
+- **Running**：正在 GPU 上执行 prefill 或 decode
+- **Swapped**：被抢占，KV Cache 搬到 CPU 或已丢弃，等待恢复
+- **Finished**：生成了 EOS token 或达到 max_length，释放所有资源
+
+核心转换：`Waiting → Running`（调度）、`Running → Swapped`（抢占）、`Swapped → Running`（恢复）。每次 iteration 结束后 Scheduler 重新评估所有请求的状态。
+
+## 调度策略
+
+最基本的策略是 **FCFS**（先到先服务），但它不考虑请求的重要性。生产环境中通常需要更复杂的策略：
+
+<SchedulingPolicyGantt client:visible />
+
+**FCFS**：简单公平，但 VIP 用户的请求可能被大量普通请求堵在后面。
+
+**优先级调度**：为不同请求分配优先级（如 VIP 用户、付费用户、免费用户），高优先级请求优先获得 GPU slot。缺点是低优先级请求可能被"饿死"。
+
+**短作业优先 (SJF)**：预估请求长度，短请求优先执行，最小化平均完成时间。但长请求可能被不断推迟。
+
+## 抢占机制
+
+当显存不够时，Scheduler 必须从 Running 请求中选择一个或多个进行**抢占** (preemption)，释放其 KV Cache 占用的显存。有两种策略：
+
+<PreemptionCompare client:visible />
+
+**如何选择？** vLLM 的默认策略是：如果请求已经生成了很多 token（KV Cache 很大），优先用 **Swap**（搬运成本高但不浪费计算）；如果请求刚开始（KV Cache 较小），优先用 **Recompute**（重算成本低且避免 PCIe 传输）。
+
+## Chunked Prefill
+
+长 prompt 会带来另一个问题：prefill 阶段需要一次性处理数千个 token，这期间 GPU 被独占，正在 decode 的请求全部被阻塞。用户体验直接表现为"卡顿"——已经开始流式输出的对话突然停顿。
+
+**Chunked Prefill** (Sarathi, 2023) 的解决方案是将长 prompt 切成固定大小的 chunk，每个 chunk 只占用一个 iteration，剩余 iteration 留给 decode 请求：
+
+<ChunkedPrefillTimeline />
+
+Sarathi-Serve 进一步优化：在每个 iteration 中，将 prefill chunk 和 decode 请求**混合执行** (piggybacking)——利用 prefill 是 compute-bound、decode 是 memory-bound 的互补特性，两者混合可以同时最大化 GPU 的计算单元和显存带宽利用率。
+
+## 调度的 Trade-off
+
+吞吐量、延迟和公平性——三者不可兼得。Scheduler 的配置本质上是在这个三角形中选择一个位置：
+
+<SchedulingTradeoffSlider client:visible />
+
+实际系统中，这些参数通常可以通过配置调整：
+- `max_num_seqs`：最大并发请求数（大 → 高吞吐，小 → 低延迟）
+- `enable_chunked_prefill`：是否启用分块 prefill（开 → 低延迟，关 → 高吞吐）
+- `preemption_mode`：抢占策略选择（swap / recompute）
+- `scheduling_policy`：调度算法选择
+
+## 总结
+
+Scheduler 是推理引擎中最"工程化"的部分——没有统一最优解，需要根据场景调参。但核心原则清晰：**状态机管理请求生命周期，抢占机制处理资源不足，chunked prefill 消除长 prompt 阻塞，trade-off 三角引导配置选择**。
+
+## 延伸阅读
+
+- 想了解前缀缓存如何进一步优化？阅读 [前缀缓存与 RadixAttention](./prefix-caching)
+- 想了解 SGLang 的编程模型？阅读 [SGLang 编程模型](./sglang-programming-model)
