@@ -1,0 +1,128 @@
+---
+title: "Policy Gradient：直接优化策略"
+slug: policy-gradient
+locale: zh
+tags: [policy-gradient, reinforce, baseline, variance-reduction, advantage]
+difficulty: intermediate
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [rl-foundations]
+references:
+  - type: paper
+    title: "Simple Statistical Gradient-Following Algorithms for Connectionist Reinforcement Learning (Williams, 1992)"
+    url: "https://link.springer.com/article/10.1007/BF00992696"
+  - type: paper
+    title: "Policy Gradient Methods for Reinforcement Learning with Function Approximation (Sutton et al., 1999)"
+    url: "https://proceedings.neurips.cc/paper/1999/hash/464d828b85b0bed98e80ade0a5c43b0f-Abstract.html"
+  - type: blog
+    title: "Policy Gradient Algorithms — Lilian Weng"
+    url: "https://lilianweng.github.io/posts/2018-04-08-policy-gradient/"
+  - type: course
+    title: "UC Berkeley CS285 Lectures 5-6: Policy Gradient"
+    url: "http://rail.eecs.berkeley.edu/deeprlcourse/"
+  - type: website
+    title: "OpenAI Spinning Up: Vanilla Policy Gradient"
+    url: "https://spinningup.openai.com/en/latest/algorithms/vpg.html"
+---
+
+import PolicyGradientIntuition from '../../../components/interactive/PolicyGradientIntuition.tsx';
+import REINFORCETrajectory from '../../../components/interactive/REINFORCETrajectory.tsx';
+import VarianceProblem from '../../../components/interactive/VarianceProblem.tsx';
+import BaselineEffect from '../../../components/interactive/BaselineEffect.tsx';
+import AdvantageExplainer from '../../../components/interactive/AdvantageExplainer.tsx';
+import PGAlgorithmFamily from '../../../components/interactive/PGAlgorithmFamily.tsx';
+
+## 为什么直接优化策略
+
+上一篇我们看到，Value-Based 方法（Q-Learning / DQN）的核心是学习 $Q(s,a)$，然后贪心选最大 Q 值的动作。这种方法有几个根本限制：
+
+1. **只能处理离散动作空间**：需要对每个可能的动作计算 Q 值，当动作空间很大（如 LLM 的词汇表 32K+ tokens）或连续时（如机器人控制），这不现实
+2. **无法表达随机策略**：有时最优策略需要随机性（如石头剪刀布），Q-Learning 只能输出确定性策略
+3. **小变化大影响**：Q 值的微小变化可能导致 argmax 翻转，策略突变
+
+**Policy Gradient 的核心思想**：既然 LLM 本身就是一个参数化策略 $\pi_\theta(a|s)$（给定 context，输出 token 概率分布），为什么不直接优化这个策略？
+
+<PolicyGradientIntuition client:visible />
+
+## 策略梯度定理
+
+Policy Gradient 的目标是最大化期望累积回报 $J(\theta) = \mathbb{E}_{\pi_\theta}[\sum_t \gamma^t r_t]$。
+
+**策略梯度定理**给出了 $J(\theta)$ 对参数 $\theta$ 的梯度：
+
+$$\nabla_\theta J(\theta) = \mathbb{E}_{\pi_\theta}\left[\nabla_\theta \log \pi_\theta(a_t|s_t) \cdot G_t\right]$$
+
+其中 $G_t = \sum_{k=0}^{\infty} \gamma^k r_{t+k}$ 是从时间步 $t$ 开始的折扣回报。
+
+**直觉**：
+- $\nabla_\theta \log \pi_\theta(a|s)$ 是让动作 $a$ 概率增加的方向
+- $G_t$ 是这条轨迹的好坏程度
+- 两者相乘：$G_t > 0$ 时推高好动作概率，$G_t < 0$ 时压低坏动作概率
+
+这个公式的美妙之处：**不需要知道环境模型**，只需要采样 trajectory 就能估计梯度。
+
+## REINFORCE 算法
+
+REINFORCE 是最简单的 Policy Gradient 实现：
+
+1. **采样**：用当前策略 $\pi_\theta$ 采样一条完整 trajectory $\tau = (s_0, a_0, r_0, s_1, a_1, r_1, \ldots)$
+2. **计算 Return**：对 trajectory 中每个时间步计算折扣回报 $G_t$
+3. **更新参数**：$\theta \leftarrow \theta + \alpha \sum_t \nabla_\theta \log \pi_\theta(a_t|s_t) \cdot G_t$
+
+<REINFORCETrajectory client:visible />
+
+## 高方差问题
+
+REINFORCE 虽然简单优美，但有一个致命缺陷：**梯度估计的方差极高**。
+
+每次只采样一条 trajectory，这条 trajectory 的 return 受随机性影响很大。同一个策略，两次采样可能得到截然不同的 return——一次碰巧走了好路径得到高 return，另一次走了坏路径得到低 return。
+
+这导致梯度估计非常不稳定，需要大量采样才能得到可靠的梯度方向。
+
+<VarianceProblem client:visible />
+
+## Baseline 与 Advantage
+
+解决高方差的关键洞察：**reward 的绝对值不重要，重要的是"比平均好多少"**。
+
+引入 **Baseline** $b(s)$（通常取 $V(s)$ 的估计），将梯度修改为：
+
+$$\nabla_\theta J(\theta) = \mathbb{E}_{\pi_\theta}\left[\nabla_\theta \log \pi_\theta(a_t|s_t) \cdot (G_t - b(s_t))\right]$$
+
+数学上可以证明：减去任何不依赖于动作的 baseline **不改变梯度期望**（无偏），但**显著降低方差**。
+
+这就引出了 **Advantage Function**：
+
+$$A^\pi(s,a) = Q^\pi(s,a) - V^\pi(s)$$
+
+$A > 0$ 表示这个动作比平均水平好，$A < 0$ 表示比平均差。用 Advantage 替代 raw return，梯度同时具有无偏性和低方差。
+
+<BaselineEffect client:visible />
+
+<AdvantageExplainer client:visible />
+
+## 从 REINFORCE 到 Actor-Critic
+
+REINFORCE + Baseline 仍然需要采样完整 trajectory 才能计算 return。能不能每走一步就更新？
+
+答案是 **Actor-Critic**：用一个神经网络（Critic）来近似 $V(s)$，作为 baseline。这样：
+- **Actor**（策略网络）决定采取什么动作
+- **Critic**（价值网络）评估当前状态有多好
+
+Critic 的 TD 估计可以在每一步提供 Advantage 信号，不需要等 trajectory 结束。这大幅提升了样本效率。
+
+Actor-Critic 是通向 PPO 和 RLHF 的关键跳板，我们将在下一篇深入讲解。
+
+<PGAlgorithmFamily client:visible />
+
+## 总结
+
+本文梳理了 Policy Gradient 的核心思路：
+
+1. **直接优化策略** $\pi_\theta$ 比 Value-Based 方法更适合大动作空间（如 LLM）
+2. **策略梯度定理**提供了不依赖环境模型的梯度估计
+3. **REINFORCE** 是最简单的实现，但方差极高
+4. **Baseline / Advantage** 在保持无偏的同时大幅降低方差
+5. **Actor-Critic** 用神经网络近似 baseline，实现逐步更新
+
+下一篇我们将深入 Actor-Critic 架构和 PPO，理解 RLHF 中最核心的优化算法。
