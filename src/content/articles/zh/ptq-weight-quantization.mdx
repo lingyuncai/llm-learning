@@ -1,0 +1,91 @@
+---
+title: "PTQ 权重量化：从 GPTQ 到 AWQ"
+slug: "ptq-weight-quantization"
+locale: "zh"
+tags: ["quantization", "ptq", "gptq", "awq", "smoothquant"]
+difficulty: "advanced"
+prerequisites: ["quantization-fundamentals"]
+created: "2026-04-05"
+updated: "2026-04-05"
+references:
+  - type: "paper"
+    title: "GPTQ: Accurate Post-Training Quantization for Generative Pre-Trained Transformers"
+    url: "https://arxiv.org/abs/2210.17323"
+  - type: "paper"
+    title: "AWQ: Activation-aware Weight Quantization for LLM Compression and Acceleration"
+    url: "https://arxiv.org/abs/2306.00978"
+  - type: "paper"
+    title: "SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models"
+    url: "https://arxiv.org/abs/2211.10438"
+---
+
+import GPTQErrorPropagation from '../../../components/interactive/GPTQErrorPropagation.tsx';
+import AWQSalientChannels from '../../../components/interactive/AWQSalientChannels.tsx';
+import SmoothQuantTransform from '../../../components/interactive/SmoothQuantTransform.tsx';
+import PTQMethodComparison from '../../../components/interactive/PTQMethodComparison.tsx';
+
+Post-Training Quantization (PTQ，训练后量化) 在模型训练完成后直接对权重进行量化，无需重新训练。相比 QAT 的零训练成本优势——只需少量校准数据和几分钟处理时间——使 PTQ 成为 LLM 部署的首选量化方案。本文深入分析四种主流 PTQ 方法的算法原理和适用场景。
+
+## Round-to-Nearest 的局限
+
+最简单的量化方式是 Round-to-Nearest (RTN)：对每个权重直接取最近的量化值。RTN 在 **8-bit** 时表现尚可——LLaMA2-7B 的 perplexity 从 FP16 的 5.47 仅升至约 5.52。但降到 **4-bit** 时，perplexity 飙升到 7.2 以上。
+
+核心问题：RTN 独立处理每个权重，忽略了权重之间的相关性。当量化一个权重产生误差时，这个误差对模型输出的影响取决于该权重与其他权重的关系 (Hessian 矩阵)。RTN 完全忽略了这种结构化信息。
+
+## GPTQ：Hessian 引导的误差补偿
+
+GPTQ (Frantar et al., 2022) 基于关键洞察：**量化一个权重产生的误差可以通过调整尚未量化的权重来补偿**。
+
+算法的核心是 Optimal Brain Quantization (OBQ) 的高效近似：逐列处理权重矩阵，利用 $H^{-1}$ (Hessian 逆矩阵) 将当前列的量化误差最优分配到后续列。更新公式：
+
+$$\delta_F = -\frac{w_q - w}{[H_F^{-1}]_{qq}} \cdot (H_F^{-1})_{:,q}$$
+
+关键优化：Lazy Batch Updates 每 128 列批量更新一次，减少内存访问。校准需要 128-512 个文本样本的前向传播来估计 Hessian 矩阵。
+
+<GPTQErrorPropagation client:visible />
+
+实际效果：LLaMA2-7B 在 INT4-g128 下 perplexity 仅 5.67，接近 FP16 的 5.47。量化 7B 模型约需 10 分钟和单张 GPU。
+
+## AWQ：激活感知的权重量化
+
+AWQ (Lin et al., 2023) 从另一个角度出发：**不是所有权重同等重要**。观察发现 LLM 的激活中存在约 1% 的显著通道 (salient channels)，这些通道的激活值远大于其他通道。
+
+AWQ 的解决方案是 per-channel scaling：对显著通道的权重乘以较大的 scale factor $s$，使其量化粒度更细。同时激活除以 $s$ 保持数学等价：
+
+$$Y = XW = (X \cdot \text{diag}(s)^{-1}) \cdot (\text{diag}(s) \cdot W)$$
+
+<AWQSalientChannels client:visible />
+
+AWQ 的关键优势：无需反向传播 (量化速度快 ~5 min)、输出标准 INT4 格式 (兼容 vLLM/TRT-LLM)、质量优异 (LLaMA2-7B INT4-g128 perplexity ~5.60)。
+
+与 GPTQ 的本质区别：GPTQ 在量化过程中修改未量化权重来补偿误差 ("事后补救")，AWQ 在量化前调整权重分布使其更易量化 ("事前预防")。两者可以组合使用。
+
+## SmoothQuant：平滑激活离群值
+
+前面的方法聚焦权重量化 (weight-only)，SmoothQuant (Xiao et al., 2022) 解决的是 **W8A8**——同时量化权重和激活，利用 INT8 Tensor Core 加速。
+
+激活量化的难点在于 outlier channels：部分通道值域达其他通道的 100 倍以上，per-tensor INT8 量化无法同时保留大值和小值精度。
+
+SmoothQuant 的核心思想——将量化难度从激活迁移到权重：
+
+$$Y = X \cdot W = (X \cdot \text{diag}(s)^{-1}) \cdot (\text{diag}(s) \cdot W) = X' \cdot W'$$
+
+平滑因子 $s_j = \max(|X_j|)^\alpha$，$\alpha = 0.5$ 是经验最优值。变换后 $X'$ 各通道动态范围接近，$W'$ 值虽略增但仍可控，两者都可用 per-tensor INT8 量化。
+
+<SmoothQuantTransform client:visible />
+
+SmoothQuant 在数据中心场景最具价值：W8A8 直接利用 GPU 的 INT8 Tensor Core (A100/H100)，吞吐量相比 FP16 提升 1.5-2 倍。
+
+## 方法对比与选型
+
+<PTQMethodComparison client:visible />
+
+**选型建议：**
+- **消费级 GPU 部署** (RTX 3090/4090)：选 AWQ 或 GPTQ 的 INT4-g128，用 vLLM 或 ExLlamaV2
+- **数据中心高吞吐** (A100/H100)：选 SmoothQuant 的 W8A8，用 TensorRT-LLM
+- **快速评估**：先用 RTN INT8 验证，再切换更精细方法
+- **极低比特** (2-3 bit)：GPTQ 支持但质量损失较大，需评估是否需要 QAT
+
+## 总结
+
+PTQ 权重量化已发展出成熟工具链。GPTQ 通过 Hessian 误差补偿实现高质量逐列量化，AWQ 利用激活感知 per-channel scaling 保护关键通道，SmoothQuant 通过数学变换让 W8A8 成为可能。三者各有侧重，实际部署应根据硬件条件和精度需求选择。
