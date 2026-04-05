@@ -1,0 +1,134 @@
+---
+title: "RLHF：从人类反馈中学习"
+slug: rlhf
+locale: zh
+tags: [rlhf, reward-model, alignment, instruct-gpt, kl-divergence]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [ppo-actor-critic]
+references:
+  - type: paper
+    title: "Training language models to follow instructions with human feedback (Ouyang et al., 2022)"
+    url: "https://arxiv.org/abs/2203.02155"
+  - type: paper
+    title: "Deep Reinforcement Learning from Human Preferences (Christiano et al., 2017)"
+    url: "https://arxiv.org/abs/1706.03741"
+  - type: paper
+    title: "Fine-Tuning Language Models from Human Preferences (Ziegler et al., 2019)"
+    url: "https://arxiv.org/abs/1909.08593"
+  - type: blog
+    title: "RLHF: Reinforcement Learning from Human Feedback — Chip Huyen"
+    url: "https://huyenchip.com/2023/05/02/rlhf.html"
+  - type: blog
+    title: "RLHF 系列 — Nathan Lambert (interconnects.ai)"
+    url: "https://www.interconnects.ai/"
+  - type: blog
+    title: "Reward Hacking in Reinforcement Learning — Lilian Weng"
+    url: "https://lilianweng.github.io/posts/2024-11-28-reward-hacking/"
+---
+
+import RLHFPipeline from '../../../components/interactive/RLHFPipeline.tsx';
+import PreferenceLabeling from '../../../components/interactive/PreferenceLabeling.tsx';
+import RewardModelTraining from '../../../components/interactive/RewardModelTraining.tsx';
+import KLPenaltyViz from '../../../components/interactive/KLPenaltyViz.tsx';
+import RewardHackingDemo from '../../../components/interactive/RewardHackingDemo.tsx';
+import AlignmentMethodTimeline from '../../../components/interactive/AlignmentMethodTimeline.tsx';
+
+## 为什么需要对齐
+
+预训练语言模型有一个根本问题：它的训练目标是"预测下一个 token"，而不是"成为一个有帮助、诚实、无害的助手"。这意味着：
+
+- 模型可能**生成有害内容**（训练数据中包含有害文本）
+- 模型**不遵循指令**（它学的是补全文本，不是回答问题）
+- 模型会**编造事实**（它不理解"真实"，只理解"看起来合理"）
+- 模型的**格式和风格**不符合用户期望
+
+**对齐（Alignment）**的目标是让模型的行为符合人类的期望和价值观。挑战在于：**"有帮助且安全"无法直接编码为一个 loss function**。我们需要某种方式将人类偏好转化为优化信号——这就是 RLHF 的核心动机。
+
+## RLHF 三阶段流程
+
+InstructGPT (2022) 确立了 RLHF 的标准三阶段 pipeline：
+
+<RLHFPipeline client:visible />
+
+**阶段 1：SFT (Supervised Fine-Tuning)**
+用人工编写的高质量 (prompt, response) 数据对预训练模型做监督微调。这让模型学会"遵循指令"的基本格式和能力。
+
+**阶段 2：Reward Model 训练**
+收集人类偏好数据——对同一个 prompt 的两个回答，标注哪个更好——训练一个 Reward Model 将人类偏好量化为标量分数。
+
+**阶段 3：PPO 策略优化**
+用 Reward Model 作为 reward 信号，PPO 优化 LLM 策略，使其生成的回答获得更高的 RM score。同时加入 KL 惩罚防止偏离。
+
+## Reward Model 训练
+
+Reward Model 的训练是 RLHF 最关键的一环。它需要将模糊的"人类偏好"转化为精确的数学信号。
+
+<PreferenceLabeling client:visible />
+
+训练数据是偏好对 $(y_w, y_l)$：对同一个 prompt $x$，人类标注者选择 $y_w$（赢家）优于 $y_l$（输家）。
+
+**Bradley-Terry 模型**将偏好建模为概率：
+
+$$P(y_w \succ y_l | x) = \sigma(r_\phi(x, y_w) - r_\phi(x, y_l))$$
+
+训练损失函数：
+
+$$\mathcal{L}(\phi) = -\mathbb{E}_{(x, y_w, y_l)}\left[\log \sigma(r_\phi(x, y_w) - r_\phi(x, y_l))\right]$$
+
+<RewardModelTraining client:visible />
+
+## PPO 对齐优化
+
+有了 Reward Model，我们可以用 PPO 优化 LLM。优化目标是：
+
+$$\max_\theta \; \mathbb{E}_{x \sim D, \; y \sim \pi_\theta(\cdot|x)}\left[r_\phi(x, y) - \beta \cdot KL(\pi_\theta \| \pi_{ref})\right]$$
+
+其中 $\pi_{ref}$ 是 SFT 模型（作为参考策略），$\beta$ 是 KL 惩罚系数。
+
+这个目标函数的含义：**最大化 RM score，但不要偏离预训练模型太远**。
+
+## KL 约束的重要性
+
+KL 散度 $KL(\pi_\theta \| \pi_{ref})$ 衡量新策略和参考策略之间的"距离"。$\beta$ 控制着这个约束的强度。
+
+<KLPenaltyViz client:visible />
+
+没有 KL 惩罚会怎样？模型会发现 RM 的弱点并疯狂利用——这就是 **Reward Hacking**。
+
+<RewardHackingDemo client:visible />
+
+## RLHF 的局限
+
+虽然 RLHF 取得了巨大成功（InstructGPT、ChatGPT），但它也有明显的局限：
+
+1. **Reward Model 是瓶颈**
+   - RM 的质量直接限制了对齐效果的天花板
+   - 人类偏好不一致（不同标注者可能给出相反判断）
+   - RM 容易被 exploit（reward hacking）
+
+2. **训练复杂度高**
+   - 需要同时运行 4 个模型：policy、reference policy、reward model、critic
+   - PPO 训练不稳定，超参数敏感
+   - 计算资源需求大
+
+3. **标注成本高**
+   - 需要大量高质量偏好数据
+   - 人类标注有噪音和偏见
+
+这些局限催生了 DPO 和 GRPO 等替代方案——在下一篇文章中详述。
+
+<AlignmentMethodTimeline client:visible />
+
+## 总结
+
+本文完整介绍了 RLHF 的三阶段流程：
+
+1. **SFT** 让模型学会遵循指令的基本能力
+2. **Reward Model** 将人类偏好量化为标量分数（Bradley-Terry 模型）
+3. **PPO** 优化策略使 LLM 对齐，KL 惩罚防止 reward hacking
+4. **Reward Hacking** 是没有 KL 约束时的主要风险
+5. RLHF 虽成功但复杂 → 催生了 DPO、GRPO 等更简洁的方案
+
+下一篇我们将深入 DPO 和 GRPO，看如何跳过 Reward Model 直接从偏好数据优化策略。
