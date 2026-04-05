@@ -1,0 +1,16 @@
+id: reinforcement-learning
+title:
+  zh: "强化学习：从基础到 LLM 对齐与推理"
+  en: "Reinforcement Learning: From Foundations to LLM Alignment & Reasoning"
+description:
+  zh: "从 MDP 到 Policy Gradient，从 RLHF 到 GRPO，从 Reward 设计到 Test-Time Scaling，系统理解强化学习如何驱动大语言模型的对齐、优化与推理能力。"
+  en: "From MDP to Policy Gradient, from RLHF to GRPO, from Reward Modeling to Test-Time Scaling — a systematic guide to how reinforcement learning drives LLM alignment, optimization, and reasoning."
+level: advanced
+articles:
+  - rl-foundations
+  - policy-gradient
+  - ppo-actor-critic
+  - rlhf
+  - direct-preference-optimization
+  - reward-modeling
+  - test-time-scaling
