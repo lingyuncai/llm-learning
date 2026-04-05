@@ -1,0 +1,158 @@
+---
+title: Quantization-Aware Training (QAT)：训练时量化感知
+slug: quantization-aware-training
+locale: zh
+tags: [量化, QAT, Straight-Through Estimator, BitNet, LoRA]
+difficulty: advanced
+created: 2026-04-05
+updated: 2026-04-05
+prerequisites: [quantization-fundamentals]
+references:
+  - type: paper
+    title: "Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference"
+    url: https://arxiv.org/abs/1712.05877
+  - type: paper
+    title: "BitNet: Scaling 1-bit Transformers for Large Language Models"
+    url: https://arxiv.org/abs/2310.11453
+  - type: paper
+    title: "QLoRA: Efficient Finetuning of Quantized LLMs"
+    url: https://arxiv.org/abs/2305.14314
+  - type: paper
+    title: "LQ-LoRA: Low-rank Plus Quantized Matrix Decomposition for Efficient Language Model Finetuning"
+    url: https://arxiv.org/abs/2311.12023
+---
+
+import FakeQuantForwardBackward from '../../../components/interactive/FakeQuantForwardBackward.tsx';
+import BitNetArithmetic from '../../../components/interactive/BitNetArithmetic.tsx';
+import QATvsPTQBoundary from '../../../components/interactive/QATvsPTQBoundary.tsx';
+
+## 核心问题：为什么 Post-Training Quantization 不够？
+
+在 [Quantization Fundamentals](/zh/articles/quantization-fundamentals) 中我们学习了 PTQ (Post-Training Quantization) 的基本原理：训练完成后直接对权重进行量化映射。这种方法简单高效，但在极低比特场景（≤4 bit）会遇到精度灾难性下降：
+
+- **量化噪声累积**：每层的量化误差会在深层网络中累积放大
+- **激活分布不匹配**：模型训练时假设 FP32 精度，量化后激活值分布偏移
+- **梯度消失**：round() 操作导数恒为 0，无法通过微调恢复精度
+
+**Quantization-Aware Training (QAT)** 的核心思想是在训练过程中模拟量化噪声，让模型学会适应低精度表示，从而在极低比特下也能保持精度。
+
+## QAT 核心机制：Fake Quantization + Straight-Through Estimator
+
+QAT 的训练流程引入了两个关键技术：
+
+1. **Fake Quantization (伪量化)**：前向传播时插入量化-反量化操作，模拟推理时的精度损失
+2. **Straight-Through Estimator (STE)**：反向传播时让梯度"穿过"不可导的 round() 操作
+
+<FakeQuantForwardBackward client:visible />
+
+### 数学表达
+
+标准量化函数（不可导）：
+
+$$
+Q(x) = \text{round}\left(\frac{x}{s}\right) \cdot s
+$$
+
+STE 近似梯度（Bengio et al. 2013）：
+
+$$
+\frac{\partial Q(x)}{\partial x} \approx \begin{cases}
+1 & \text{if } |x| < \text{clip\_range} \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+训练时保持 FP32 Master Weight $W$，前向传播使用 $Q(W)$，反向传播梯度直接更新 $W$：
+
+$$
+W_{t+1} = W_t - \eta \cdot \frac{\partial L}{\partial Q(W)} \quad (\text{梯度近似为} \frac{\partial L}{\partial W})
+$$
+
+## LoRA-QAT vs QLoRA：量化 + 微调的两条路线
+
+在 LLM 时代，QAT 与 LoRA (Low-Rank Adaptation) 结合产生了两种不同的技术路线：
+
+### 路线 1: QLoRA (先量化后微调)
+
+QLoRA (Dettmers et al. 2023) 采用 PTQ 量化预训练模型，然后在 FP16 LoRA adapters 上微调：
+
+```python
+# QLoRA 流程 (简化示例)
+base_model = quantize_to_4bit(pretrained_model)  # PTQ 量化基座
+lora_adapter = LoRA(rank=16, dtype=fp16)         # FP16 低秩适配器
+
+for batch in dataloader:
+    out = base_model(batch) + lora_adapter(batch)  # 量化权重 + FP16 adapter
+    loss.backward()  # 只更新 LoRA 参数
+```
+
+**优势**：内存高效（4-bit 基座 + 小 adapter），无需重新训练基座  
+**劣势**：基座权重已量化为 4-bit，无法通过训练适应量化噪声
+
+### 路线 2: LoRA-QAT (训练时量化感知)
+
+LQ-LoRA (Han et al. 2023) 在 LoRA 微调时对基座权重应用 Fake Quantization：
+
+```python
+# LoRA-QAT 流程 (简化示例)
+base_model = pretrained_model  # 保持 FP32
+lora_adapter = LoRA(rank=16, dtype=fp16)
+
+for batch in dataloader:
+    W_q = fake_quantize(base_model.weight, bits=4)  # 伪量化
+    out = matmul(W_q, batch) + lora_adapter(batch)
+    loss.backward()  # 通过 STE 更新基座和 adapter
+```
+
+**优势**：基座权重在训练时感知量化噪声，最终精度更高  
+**劣势**：需在微调阶段插入 Fake Quant 节点，训练成本略高
+
+## 极限案例：BitNet 的 1.58-bit QAT
+
+BitNet (Wang et al. 2023) 通过 QAT 将 Transformer 权重量化为 **{-1, 0, +1}** 三值，实现极致压缩：
+
+### 三值量化的计算优势
+
+<BitNetArithmetic client:visible />
+
+BitNet 的核心是 **absmean quantization**：
+
+$$
+W_{\text{ternary}} = \text{sign}(W) \cdot \mathbb{1}_{|W| > \alpha \cdot \text{mean}(|W|)}
+$$
+
+其中 $\alpha \approx 0.5$ 是阈值超参数，控制稀疏度。
+
+### 训练策略
+
+1. **直接训练三值权重**（非 PTQ）：初始化为 FP32，每步前向前量化为 {-1,0,+1}
+2. **使用 STE 梯度**：$\frac{\partial \text{sign}(x)}{\partial x} \approx \mathbb{1}_{|x| \leq 1}$
+3. **激活保持 8-bit**：权重 1.58-bit + 激活 8-bit 平衡精度与效率
+
+实验结果（LLaMA 架构）：
+- **3B 模型**：BitNet 与 FP16 perplexity 差距 <3%
+- **内存 & 能耗**：推理能耗降低 71%，吞吐提升 2.7×
+
+## QAT vs PTQ 的精度边界
+
+<QATvsPTQBoundary />
+
+实验数据来自 Jacob et al. (2018) 在 ResNet-50/ImageNet 上的对比：
+
+| Bit Width | PTQ Top-1 Acc | QAT Top-1 Acc | Gap   |
+|-----------|---------------|---------------|-------|
+| 8-bit     | 76.1%         | 76.5%         | +0.4% |
+| 4-bit     | 68.3%         | 74.8%         | +6.5% |
+| 3-bit     | 42.1%         | 71.2%         | **+29.1%** |
+| 2-bit     | 12.5%         | 65.4%         | **+52.9%** |
+
+**关键结论**：
+- **≥4 bit**：PTQ 已足够，QAT 收益递减
+- **≤3 bit**：PTQ 精度崩溃，QAT 成为刚需
+- **工程权衡**：QAT 需重新训练，但在极低比特场景下是唯一可行方案
+
+## 延伸阅读
+
+- [Quantization Fundamentals](/zh/articles/quantization-fundamentals) — PTQ 的基础原理
+- [INT8 Training 技术](https://arxiv.org/abs/1805.08170) — 训练时的完整 INT8 量化
+- [Mixed-Precision Training](https://arxiv.org/abs/1710.03740) — 结合 FP16 与 FP32 的梯度累积策略
