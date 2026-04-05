@@ -55,6 +55,7 @@
 3. **EU 内部结构** — Vector Engine（SIMD ALU）、XMX（矩阵加速）、寄存器文件（GRF）、线程槽位。与 CUDA core / SM 的概念映射
 4. **内存层次** — GRF → SLM（Shared Local Memory）→ L1 → L2 → 系统内存（LPDDR5x）。带宽和延迟特征，与独显的关键差异（统一内存 vs VRAM）
 5. **Lunar Lake 与 Panther Lake 规格对比** — 具体规格表（EU 数、XMX 吞吐、SLM 大小、内存带宽），对 AI 推理负载的影响
+6. **推荐学习资源** — Intel 官方文档（Xe2 ISA Guide、oneAPI spec）、视频课程、博客教程的汇总推荐（无额外组件，MDX 列表）
 
 ### 组件（5 个）
 
@@ -229,8 +230,8 @@
 | 组件名 | 类型 | 说明 |
 |--------|------|------|
 | IGpuRoofline | 交互 | Xe2 iGPU Roofline 图：横轴 arithmetic intensity，纵轴性能。可添加不同 kernel 的数据点（MatMul/Conv/Softmax），显示其位于 roofline 的什么位置 |
-| BottleneckPatterns | 交互 | 瓶颈模式识别：选择一种症状（高延迟/低吞吐/GPU 利用率低…），显示对应的瓶颈类型、诊断方法和优化建议 |
-| OptimizationDecisionTree | 交互 | 优化决策树：从"性能不达标"开始，逐步回答诊断问题（GPU 利用率？内存带宽？kernel 延迟？），引导到具体优化策略 |
+| BottleneckDiagnosisTree | 交互 | 瓶颈诊断决策树：从"性能不达标"开始，逐步回答诊断问题（GPU 利用率？内存带宽？kernel 延迟？功耗限制？），引导到瓶颈类型和对应优化策略 |
+| VTuneGpuProfile | 静态 | VTune GPU Profiling 视图解读：标注 GPU 时间线中的关键指标（EU Active/Stall/Idle、L3 Bandwidth、SLM 使用率），说明每个指标的含义和调优方向 |
 | BenchmarkDashboard | 静态 | OpenVINO benchmark_app 输出解读图：标注输出中的关键指标（latency percentiles、throughput、first inference time），说明每个数字的含义和优化方向 |
 
 ---
@@ -244,7 +245,7 @@
 
 ### 内容结构
 
-1. **Intel NPU 架构概览** — NPU 的硬件结构（Neural Compute Engine、DMA、SHAVE DSP）、与 iGPU 的定位差异：NPU 专注推理效率（低功耗、固定功能），iGPU 通用计算
+1. **Intel NPU 架构概览** — NPU 的硬件结构（Neural Compute Engine / NCE 阵列、DMA 引擎、片上 SRAM）、与 iGPU 的定位差异：NPU 专注推理效率（低功耗、固定精度管线），iGPU 通用计算
 2. **NPU vs iGPU 适用场景** — NPU 擅长：持续推理、低功耗、固定模型。iGPU 擅长：灵活计算、大模型、动态 shape。两者的吞吐/延迟/功耗特征对比
 3. **OpenVINO Device Plugin 体系** — AUTO（自动选设备）、MULTI（多设备并行）、HETERO（异构 fallback）。每种模式的调度逻辑和适用场景
 4. **AUTO Plugin 详解** — 设备发现 → 能力查询 → 模型兼容性检查 → 性能 benchmark → 设备选择。如何处理 NPU 不支持的算子（fallback 到 GPU）
@@ -266,8 +267,8 @@
 
 共 **38 个组件**（5+5+5+5+5+5+4+4），其中：
 - StepNavigator 类型：7 个（SimtVsSimd、CompilationPipeline、LevelZeroDispatch、PrimitiveLifecycle、GemmTilingHierarchy、GraphOptPasses、DevicePluginSelector）
-- 交互组件：27 个
-- 静态组件：4 个（XeVsCudaMapping、OpDataTypeMatrix、SpirvVsPtx、BenchmarkDashboard）
+- 交互组件：26 个
+- 静态组件：5 个（XeVsCudaMapping、OpDataTypeMatrix、SpirvVsPtx、VTuneGpuProfile、BenchmarkDashboard）
 
 ### 组件设计约定
 
