@@ -27,16 +27,14 @@ const siteUrl = Astro.url.href;
     <meta property="og:locale" content="zh_CN" />
   </head>
   <body class="min-h-screen bg-white">
+    <div class="bg-amber-50 border-b border-amber-200 px-4 py-2 text-center text-sm text-amber-800">
+      本站内容由 AI 生成，可能存在错误。如发现问题，欢迎到
+      <a href="https://github.com/jonathanding/llm-learning/issues" class="font-medium text-amber-900 underline hover:text-amber-700" target="_blank" rel="noopener noreferrer">GitHub Issues</a>
+      反馈。
+    </div>
     <Navigation />
     <main class="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <slot />
     </main>
-    <footer class="border-t border-gray-200 mt-16 py-8 text-center text-sm text-gray-500">
-      <p>
-        本站内容由 AI 生成，可能存在错误或不准确之处。如发现问题，欢迎到
-        <a href="https://github.com/jonathanding/llm-learning/issues" class="text-blue-600 hover:underline" target="_blank" rel="noopener noreferrer">GitHub Issues</a>
-        反馈。
-      </p>
-    </footer>
   </body>
 </html>
