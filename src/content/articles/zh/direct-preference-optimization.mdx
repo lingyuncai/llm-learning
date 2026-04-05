@@ -1,0 +1,131 @@
+---
+title: "从 DPO 到 GRPO：直接偏好优化"
+slug: direct-preference-optimization
+locale: zh
+tags: [dpo, grpo, ipo, preference-optimization, offline-rl]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [rlhf]
+references:
+  - type: paper
+    title: "Direct Preference Optimization: Your Language Model is Secretly a Reward Model (Rafailov et al., 2023)"
+    url: "https://arxiv.org/abs/2305.18290"
+  - type: paper
+    title: "A General Theoretical Paradigm to Understand Learning from Human Feedback (Azar et al., 2023)"
+    url: "https://arxiv.org/abs/2310.12036"
+  - type: paper
+    title: "KTO: Model Alignment as Prospect Theoretic Optimization (Ethayarajh et al., 2024)"
+    url: "https://arxiv.org/abs/2402.01306"
+  - type: paper
+    title: "DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models (Shao et al., 2024)"
+    url: "https://arxiv.org/abs/2402.03300"
+  - type: website
+    title: "Hugging Face TRL Documentation: DPO Trainer"
+    url: "https://huggingface.co/docs/trl/dpo_trainer"
+  - type: website
+    title: "Preference Tuning LLMs — Lilian Weng"
+    url: "https://lilianweng.github.io/posts/2024-11-28-reward-hacking/"
+---
+
+import RLHFvsDPOArchitecture from '../../../components/interactive/RLHFvsDPOArchitecture.tsx';
+import DPOLossViz from '../../../components/interactive/DPOLossViz.tsx';
+import OfflineVsOnline from '../../../components/interactive/OfflineVsOnline.tsx';
+import GRPOGroupSampling from '../../../components/interactive/GRPOGroupSampling.tsx';
+import MethodEvolution from '../../../components/interactive/MethodEvolution.tsx';
+import TrainingCostCompare from '../../../components/interactive/TrainingCostCompare.tsx';
+
+## RLHF 的痛点
+
+上一篇我们完整介绍了 RLHF 的三阶段 pipeline。虽然它成功推动了 ChatGPT 的诞生，但也暴露了几个核心痛点：
+
+1. **训练复杂度高**：需要同时运行 4 个模型（policy, reference, RM, critic），PPO 训练不稳定
+2. **Reward Model 是瓶颈**：RM 质量直接限制对齐效果天花板，且容易被 exploit
+3. **超参数敏感**：PPO 的 clip epsilon、learning rate、KL penalty β 等参数需要精心调优
+
+能不能**跳过 RM 和 PPO**，直接从偏好数据优化策略？这就是 DPO 的核心动机。
+
+<RLHFvsDPOArchitecture client:visible />
+
+## DPO 核心推导
+
+DPO 的关键洞察是：**在 RLHF 框架中，最优策略和 reward function 之间存在 closed-form 关系**。
+
+从 RLHF 的 KL 约束优化目标出发：
+
+$$\max_\pi \mathbb{E}[r(x,y)] - \beta \cdot KL(\pi \| \pi_{ref})$$
+
+可以推导出最优策略为：
+
+$$\pi^*(y|x) = \frac{1}{Z(x)} \pi_{ref}(y|x) \exp\left(\frac{1}{\beta} r(x,y)\right)$$
+
+反过来，reward 可以用策略表示：
+
+$$r(x,y) = \beta \log \frac{\pi^*(y|x)}{\pi_{ref}(y|x)} + \beta \log Z(x)$$
+
+将这个关系代入 Bradley-Terry 模型后，$Z(x)$ 项消除，得到 **DPO Loss**：
+
+$$\mathcal{L}_{DPO}(\theta) = -\mathbb{E}\left[\log \sigma\left(\beta \left(\log \frac{\pi_\theta(y_w|x)}{\pi_{ref}(y_w|x)} - \log \frac{\pi_\theta(y_l|x)}{\pi_{ref}(y_l|x)}\right)\right)\right]$$
+
+<DPOLossViz client:visible />
+
+## DPO 的优势与问题
+
+**优势：**
+- 去掉了 Reward Model 和 PPO，只需要 2 个模型（policy + reference）
+- 训练过程和 SFT 一样简单（前向传播 + 反向传播）
+- 不需要在线采样，直接在离线偏好数据上训练
+
+**问题：**
+- **Offline 数据分布偏移**：训练数据来自旧策略，随着模型更新，数据和当前策略不匹配
+- **对数据质量敏感**：偏好对中的噪音会直接影响优化方向
+- **容易过拟合**：在小数据集上特别明显
+
+## IPO 与 KTO
+
+为了解决 DPO 的问题，研究者提出了多种变体：
+
+**IPO (Identity Preference Optimization)**：加入正则项防止过拟合，让模型不需要将偏好对的 margin 推到无穷大。
+
+**KTO (Kahneman-Tversky Optimization)**：最大的创新是**不需要配对偏好数据**——只需要知道每个回答是"好"还是"坏"，大大降低了数据标注成本。
+
+## GRPO：DeepSeek 的方案
+
+**GRPO (Group Relative Policy Optimization)** 来自 DeepSeek，核心创新是**去掉 Critic 网络**：
+
+1. 对同一个 prompt，采样一组（G 个）回答
+2. 用 reward function（可以是规则或 RM）给每个回答打分
+3. 用组内相对排序计算 Advantage：$A_i = \frac{r_i - \text{mean}(r)}{\text{std}(r)}$
+4. 用 PPO-style 的 clipped objective 更新策略
+
+<GRPOGroupSampling client:visible />
+
+GRPO 的优势是不需要 Critic 网络（省一个大模型的 GPU 内存），而且在线采样避免了分布偏移。DeepSeek-R1 用 GRPO + 规则 reward 训练出了涌现 thinking 能力的模型。
+
+<OfflineVsOnline client:visible />
+
+## 方法选型
+
+<MethodEvolution client:visible />
+
+没有完美的对齐方法。选择取决于你的约束条件：
+
+| 维度 | RLHF | DPO | GRPO |
+|------|------|-----|------|
+| 训练复杂度 | 高（4 模型） | 低（2 模型） | 中（2 模型 + 在线生成） |
+| 数据需求 | 偏好对 + prompts | 偏好对 | Prompts + reward rule |
+| 训练稳定性 | PPO 不稳定 | 稳定如 SFT | 较稳定 |
+| 性能天花板 | 高（在线优化） | 中（offline 限制） | 高（在线 + 涌现） |
+| 适用场景 | 追求最佳对齐 | 快速迭代、资源有限 | 数学/推理任务 |
+
+<TrainingCostCompare client:visible />
+
+## 总结
+
+1. **DPO** 用 closed-form 关系消除了 RM 和 PPO，让对齐训练简单如 SFT
+2. **IPO** 加正则防过拟合，**KTO** 去除配对数据依赖
+3. **GRPO** 去掉 Critic 用组采样计算 Advantage，兼顾效率和在线优化
+4. 选择方法需权衡：训练资源 / 数据质量 / 性能需求
+5. DeepSeek-R1 展示了 GRPO 在 reasoning 任务上的巨大潜力
+
+下一篇我们将深入 Reward 设计：ORM vs PRM、reward hacking 的深层原因、以及 reward model 如何进化为 verifier。
