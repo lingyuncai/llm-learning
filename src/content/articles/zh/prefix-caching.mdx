@@ -1,0 +1,115 @@
+---
+title: "前缀缓存与 RadixAttention"
+slug: prefix-caching
+locale: zh
+tags: [prefix-caching, radix-attention, sglang, vllm, kv-cache]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [paged-attention]
+references:
+  - type: paper
+    title: "SGLang: Efficient Execution of Structured Language Model Programs"
+    url: "https://arxiv.org/abs/2312.07104"
+  - type: website
+    title: "vLLM Automatic Prefix Caching"
+    url: "https://docs.vllm.ai/en/latest/automatic_prefix_caching/apc.html"
+  - type: paper
+    title: "Trie Memory"
+    url: "https://dl.acm.org/doi/10.1145/367390.367400"
+---
+
+import PrefixReuseMotivation from '../../../components/interactive/PrefixReuseMotivation.tsx';
+import HashPrefixCaching from '../../../components/interactive/HashPrefixCaching.tsx';
+import RadixTreeViz from '../../../components/interactive/RadixTreeViz.tsx';
+import RadixTreeEviction from '../../../components/interactive/RadixTreeEviction.tsx';
+import CacheHitHeatmap from '../../../components/interactive/CacheHitHeatmap.tsx';
+import PrefixCachingCompare from '../../../components/interactive/PrefixCachingCompare.tsx';
+
+## 前缀复用的动机
+
+在 [PagedAttention](./paged-attention) 中，我们解决了 KV Cache 的**内存管理**问题。但还有一个被忽视的性能瓶颈：**重复计算**。
+
+考虑多轮对话场景：每一轮都需要处理完整的 system prompt + 所有历史消息 + 新消息。随着对话轮次增加，重复的 prefill 计算量线性增长——第 10 轮对话中可能 90% 的 token 是前 9 轮已经计算过的。
+
+<PrefixReuseMotivation client:visible />
+
+类似的情况在 few-shot prompting（所有请求共享相同 examples）、self-consistency（同一个 prompt 并行采样多次）、tree-of-thought（共享推理前缀）中都普遍存在。
+
+核心思想很直接：**如果两个请求的前缀相同，已经计算好的 KV Cache 不要丢掉，缓存起来给后续请求复用**。
+
+## vLLM 的 Automatic Prefix Caching
+
+vLLM 的方案优雅而简单——借鉴了文件系统中 **content-addressable storage** 的思路：
+
+<HashPrefixCaching client:visible />
+
+具体来说：
+1. 将 token 序列按 block_size 分块（通常 16 tokens）
+2. 对每个块计算 hash：`hash(block_i) = SHA256(layer_id, tokens[0..i*block_size], prefix_hash)`
+3. 在全局 Hash Table 中查找：命中则直接复用对应的物理 KV 块，未命中则计算并插入
+
+**关键设计**：hash 值包含了前面所有块的信息（通过 `prefix_hash` 链式传递），确保只有**完全相同的前缀**才会匹配。这避免了错误匹配，但也意味着：
+- 两个序列即使只有第一个 token 不同，后续所有块的 hash 都不同
+- 无法匹配非前缀位置的共享（如中间段相同但开头不同）
+
+## RadixAttention 核心思想
+
+SGLang 选择了不同的路径——用 **Radix Tree**（基数树）管理所有已缓存的 KV 前缀。
+
+Radix Tree 是 Trie 的压缩版本：把只有一个子节点的路径合并为单个节点，大幅减少树的深度。在 RadixAttention 中，每个节点存储一段 token 序列对应的 KV Cache 块。
+
+<RadixTreeViz client:visible />
+
+树结构天然表达了序列之间的**共享关系**：
+- **根节点**通常是 system prompt 的 KV Cache——几乎所有请求都会复用
+- **内部节点**是对话历史的各个片段——多轮对话共享前几轮
+- **叶节点**是每个请求独有的新增部分
+
+查找过程就是从根节点出发做**最长前缀匹配** (Longest Prefix Match)：沿着树逐节点比较 token 序列，直到遇到分叉或匹配结束。匹配到的部分直接复用 KV Cache，只需计算未匹配的尾部。
+
+## LRU 淘汰
+
+GPU 显存有限，不可能缓存所有历史 KV。当显存不足时，RadixAttention 使用 **LRU 策略从叶节点开始淘汰**：
+
+<RadixTreeEviction client:visible />
+
+为什么从叶节点开始？因为叶节点通常是最**特化**的序列尾部，复用概率最低。而根节点和内部节点是共享前缀，被多个序列引用，淘汰它们会影响更多后续请求。
+
+LRU 的实现也很自然：每个节点记录最后一次被访问的时间戳，淘汰时选择最久未被访问的叶节点。当一个叶节点被淘汰后，如果其父节点变成了新的叶节点（无其他子节点），下一轮可能淘汰父节点——这形成了一种**自底向上的渐进淘汰**。
+
+## 多场景复用效果
+
+不同的使用模式下，前缀缓存的效果差异很大：
+
+<CacheHitHeatmap client:visible />
+
+观察规律：
+- **单轮独立请求**：几乎无缓存命中（每个请求的 prompt 都不同）
+- **多轮对话**：命中率随轮次递增（累积的共享前缀越来越长）
+- **Few-shot**：从第 2 个请求起就稳定在高命中率（所有请求共享相同 examples）
+- **Tree-of-thought**：命中率波动（取决于分支点的位置和探索路径）
+
+这说明前缀缓存不是万能的——它的收益完全取决于请求之间的前缀重叠程度。
+
+## vLLM vs SGLang 缓存对比
+
+两种方案各有优劣：
+
+<PrefixCachingCompare client:visible />
+
+实际选择取决于场景：
+- **高并发 API 服务**（大量独立请求）：vLLM 的 hash-based 方案更简单高效
+- **多轮对话/复杂 pipeline**（大量前缀共享）：SGLang 的 RadixAttention 能更灵活地复用
+- **混合场景**：两者的性能差距在逐渐缩小，vLLM 也在实验 tree-based caching
+
+## 总结
+
+前缀缓存的核心是一个简单直觉：**避免重复计算已经算过的 KV Cache**。vLLM 用 hash table 实现了简洁高效的精确匹配，SGLang 用 radix tree 实现了灵活的最长前缀匹配。两者都选择 LRU 淘汰策略来管理有限显存。
+
+从更大的视角看，前缀缓存是推理引擎从"单次请求优化"走向"跨请求优化"的关键一步——它让引擎能够利用**请求之间的计算冗余**，这在实际部署中（多轮对话、batch processing、pipeline）带来的收益远比单纯优化 PagedAttention 更大。
+
+## 延伸阅读
+
+- 想了解 SGLang 如何利用前缀缓存构建可编程推理？阅读 [SGLang 编程模型](./sglang-programming-model)
+- 想回顾 KV Cache 的内存管理基础？阅读 [PagedAttention 与 Continuous Batching](./paged-attention)
