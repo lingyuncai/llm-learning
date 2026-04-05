@@ -1,0 +1,123 @@
+---
+title: "Actor-Critic 与 PPO：稳定的策略优化"
+slug: ppo-actor-critic
+locale: zh
+tags: [actor-critic, ppo, gae, advantage, clipping, trust-region]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [policy-gradient]
+references:
+  - type: paper
+    title: "Proximal Policy Optimization Algorithms (Schulman et al., 2017)"
+    url: "https://arxiv.org/abs/1707.06347"
+  - type: paper
+    title: "High-Dimensional Continuous Control Using Generalized Advantage Estimation (Schulman et al., 2016)"
+    url: "https://arxiv.org/abs/1506.02438"
+  - type: paper
+    title: "Trust Region Policy Optimization (Schulman et al., 2015)"
+    url: "https://arxiv.org/abs/1502.05477"
+  - type: blog
+    title: "Policy Gradient Algorithms — Lilian Weng"
+    url: "https://lilianweng.github.io/posts/2018-04-08-policy-gradient/"
+  - type: course
+    title: "UC Berkeley CS285 Lectures 7-9"
+    url: "http://rail.eecs.berkeley.edu/deeprlcourse/"
+  - type: course
+    title: "Hugging Face Deep RL Course: PPO"
+    url: "https://huggingface.co/learn/deep-rl-course/unit8/introduction"
+---
+
+import ActorCriticArchitecture from '../../../components/interactive/ActorCriticArchitecture.tsx';
+import GAELambdaSlider from '../../../components/interactive/GAELambdaSlider.tsx';
+import TrustRegionViz from '../../../components/interactive/TrustRegionViz.tsx';
+import PPOClipExplainer from '../../../components/interactive/PPOClipExplainer.tsx';
+import PPOvsVanillaPG from '../../../components/interactive/PPOvsVanillaPG.tsx';
+import PPOForLLM from '../../../components/interactive/PPOForLLM.tsx';
+
+## Actor-Critic 架构
+
+上一篇我们看到 REINFORCE + Baseline 的思路：用 $V(s)$ 作为 baseline 来降低方差。但 REINFORCE 仍然需要采样完整 trajectory 才能更新。
+
+**Actor-Critic** 更进一步：用一个独立的神经网络（Critic）来学习 $V(s)$，这样每走一步就可以计算 TD error 作为 Advantage 信号：
+
+$$\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$$
+
+这个 $\delta_t$ 就是 **Advantage 的一步估计**：如果实际获得的 reward + 下一状态价值比预期的当前状态价值高，说明这个动作"比预期好"。
+
+<ActorCriticArchitecture client:visible />
+
+两个网络各司其职：
+- **Actor** $\pi(a|s;\theta)$：策略网络，决定采取什么动作
+- **Critic** $V(s;w)$：价值网络，评估状态好坏
+
+## GAE：平衡偏差与方差
+
+一步 TD error $\delta_t$ 偏差大但方差小；Monte Carlo return 偏差小但方差大。**GAE（Generalized Advantage Estimation）**用参数 $\lambda$ 在两者之间平滑插值：
+
+$$\hat{A}_t^{GAE(\gamma,\lambda)} = \sum_{l=0}^{\infty} (\gamma\lambda)^l \delta_{t+l}$$
+
+- $\lambda = 0$：只用一步 TD error（高偏差、低方差）
+- $\lambda = 1$：等价于 Monte Carlo return（低偏差、高方差）
+- 实践中 $\lambda = 0.95 \sim 0.97$ 效果最好
+
+<GAELambdaSlider client:visible />
+
+## Trust Region 问题
+
+Policy Gradient 有一个致命的实际问题：**步长太大策略会崩溃，步长太小收敛太慢**。
+
+普通梯度下降无法保证策略更新后性能不会骤降。一个看似合理的梯度方向，如果步长过大，可能让策略跳到完全不同的行为模式，导致性能灾难性崩溃。
+
+**TRPO (Trust Region Policy Optimization)** 的解决方案是：在每次更新时添加 KL 散度约束，确保新旧策略"足够接近"：
+
+$$\max_\theta \hat{\mathbb{E}}\left[\frac{\pi_\theta(a|s)}{\pi_{\theta_{old}}(a|s)} \hat{A}\right] \quad \text{s.t. } KL(\pi_{\theta_{old}} \| \pi_\theta) \leq \delta$$
+
+<TrustRegionViz client:visible />
+
+## PPO：简单有效的信任域方法
+
+TRPO 虽然理论优美，但带约束优化计算复杂。**PPO（Proximal Policy Optimization）**用一个巧妙的 clip 操作实现了类似效果：
+
+$$L^{CLIP}(\theta) = \hat{\mathbb{E}}\left[\min\left(r_t(\theta)\hat{A}_t, \; \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t\right)\right]$$
+
+其中 $r_t(\theta) = \frac{\pi_\theta(a_t|s_t)}{\pi_{\theta_{old}}(a_t|s_t)}$ 是新旧策略的概率比。
+
+**Clip 的直觉**：
+- 当 $\hat{A} > 0$（好动作）：ratio 超过 $1+\epsilon$ 后 objective 不再增长，阻止过度增大概率
+- 当 $\hat{A} < 0$（坏动作）：ratio 低于 $1-\epsilon$ 后 objective 不再减小，阻止过度减小概率
+
+这种"pessimistic"策略确保每次更新都在安全范围内。
+
+<PPOClipExplainer client:visible />
+
+<PPOvsVanillaPG client:visible />
+
+## PPO 在 LLM 中的角色
+
+当 PPO 遇到 LLM，RL 的概念发生了有趣的对应：
+
+| 游戏 RL | LLM RLHF |
+|---------|----------|
+| 环境状态 $s$ | Prompt + 已生成的 tokens |
+| 动作 $a$ | 下一个 token |
+| 策略 $\pi(a|s)$ | LLM 的 next-token 分布 |
+| Trajectory | 一个完整回答 |
+| Reward | RM score - β·KL penalty |
+| Episode 结束 | 生成 EOS token |
+
+**KL 惩罚** $\beta \cdot KL(\pi_\theta \| \pi_{ref})$ 是 LLM RLHF 的关键补充：它防止 LLM 偏离预训练分布太远，避免 reward hacking（后续文章详述）。
+
+<PPOForLLM client:visible />
+
+## 总结
+
+本文介绍了从 Actor-Critic 到 PPO 的演进：
+
+1. **Actor-Critic** 用 Critic 网络提供逐步 Advantage 信号，告别完整 trajectory 依赖
+2. **GAE** 用 λ 参数在偏差和方差之间优雅权衡
+3. **Trust Region** 解决策略更新步长问题，防止性能崩溃
+4. **PPO** 用 clip 操作简化信任域约束，成为最实用的策略优化算法
+5. **PPO + LLM** 将 token 生成映射为 RL 动作序列，加上 KL 惩罚防止偏离
+
+PPO 是 RLHF 的核心引擎。下一篇我们将完整介绍 RLHF pipeline：SFT → Reward Model → PPO，看 PPO 如何在实际中对齐 LLM。
