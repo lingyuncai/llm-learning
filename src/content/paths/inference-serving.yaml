@@ -1,0 +1,14 @@
+id: inference-serving
+title:
+  zh: "vLLM + SGLang 推理引擎深度解析"
+  en: "vLLM + SGLang Inference Engine Deep Dive"
+description:
+  zh: "从 PagedAttention 到 RadixAttention，从调度抢占到结构化输出，系统理解现代 LLM 推理引擎的核心算法与设计哲学。"
+  en: "From PagedAttention to RadixAttention, from scheduling preemption to structured output — a systematic guide to modern LLM inference engine algorithms and design philosophy."
+level: advanced
+articles:
+  - inference-engine-landscape
+  - paged-attention
+  - inference-scheduling
+  - prefix-caching
+  - sglang-programming-model
