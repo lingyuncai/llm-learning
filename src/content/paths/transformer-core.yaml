@@ -20,3 +20,5 @@ articles:
   - sampling-and-decoding
   - speculative-decoding
   - mixture-of-experts
+  - state-space-models
+  - hybrid-architectures
