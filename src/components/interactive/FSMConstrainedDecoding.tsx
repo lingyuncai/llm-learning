@@ -100,7 +100,7 @@ export default function FSMConstrainedDecoding() {
         }}>重置</button>
       </div>
 
-      <svg width={W} height={280} style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
+      <svg viewBox={`0 0 ${W} 280`} className="w-full" style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
         {/* FSM States */}
         {STATES.map(s => {
           const isCurrent = s.id === currentState;

@@ -89,7 +89,7 @@ export default function PrefixReuseMotivation() {
         </label>
       </div>
 
-      <svg width={W} height={H} style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
         {/* Left: Token blocks */}
         <text x={LEFT_X} y={20} fontSize={13} fontWeight={600} fill={COLORS.dark} fontFamily={FONTS.sans}>
           输入 Token 序列

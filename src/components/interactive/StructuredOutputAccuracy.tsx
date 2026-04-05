@@ -69,7 +69,7 @@ export default function StructuredOutputAccuracy() {
         ))}
       </div>
 
-      <svg width={W} height={H} style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
         <text x={W / 2} y={25} fontSize={13} fontWeight={600} fill={COLORS.dark}
           fontFamily={FONTS.sans} textAnchor="middle">
           {metric === 'accuracy' ? '结构化输出合规率对比' : '生成速度对比'}

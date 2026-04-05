@@ -91,7 +91,7 @@ export default function RadixTreeEviction() {
         </svg>
       </div>
 
-      <svg width={W} height={H} style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
         {/* Edges */}
         {EDGES.map(([from, to]) => {
           const f = nodeMap[from];

@@ -104,7 +104,7 @@ export default function SGLangExecutionFlow() {
       </div>
 
       {/* Right: Flow visualization */}
-      <svg width={W - 260} height={H} style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
+      <svg viewBox={`0 0 ${W - 260} ${H}`} className="w-full" style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
         {/* Edges */}
         {FLOW_EDGES.map(([from, to]) => {
           const f = nodeMap[from];

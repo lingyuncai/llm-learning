@@ -1,7 +1,7 @@
 import StepNavigator from '../primitives/StepNavigator';
 import { COLORS, FONTS } from './shared/colors';
 
-const W = 560;
+const W = 580;
 
 function NaiveGeneration() {
   const tokens = ['{', '"', 'n', 'a', 'm', 'e', '"', ':', ' ', '"', 'A', 'l', 'i', 'c', 'e', '"', '}'];

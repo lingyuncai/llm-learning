@@ -52,7 +52,7 @@ export default function CacheHitHeatmap() {
 
   return (
     <div style={{ fontFamily: FONTS.sans }}>
-      <svg width={W} height={H} style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
         {/* Title */}
         <text x={W / 2} y={22} fontSize={13} fontWeight={600} fill={COLORS.dark}
           fontFamily={FONTS.sans} textAnchor="middle">
