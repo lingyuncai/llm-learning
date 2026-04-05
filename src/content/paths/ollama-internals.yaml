@@ -10,7 +10,7 @@ articles:
   - ollama-architecture
   - ollama-inference-journey
   - gguf-format
-  - ollama-quantization
+  - llama-cpp-quantization
   - ollama-compute-graph
   - ollama-kv-cache-scheduling
   - ollama-hardware-backends
