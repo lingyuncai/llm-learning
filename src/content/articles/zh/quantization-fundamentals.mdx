@@ -1,0 +1,127 @@
+---
+title: "量化基础"
+slug: "quantization-fundamentals"
+locale: "zh"
+tags: ["quantization", "data-types", "mixed-precision", "inference-optimization"]
+prerequisites: []
+difficulty: "intermediate"
+created: "2026-04-05"
+updated: "2026-04-05"
+references:
+  - type: "paper"
+    title: "A Survey of Quantization Methods for Efficient Neural Network Inference"
+    url: "https://arxiv.org/abs/2103.13630"
+  - type: "paper"
+    title: "Integer Quantization for Deep Learning Inference: Principles and Empirical Evaluation"
+    url: "https://arxiv.org/abs/2004.09602"
+  - type: "paper"
+    title: "FP8 Formats for Deep Learning"
+    url: "https://arxiv.org/abs/2209.05433"
+---
+
+import DataTypeBitLayout from '../../../components/interactive/DataTypeBitLayout.tsx';
+import QuantizationMapping from '../../../components/interactive/QuantizationMapping.tsx';
+import GranularityCompare from '../../../components/interactive/GranularityCompare.tsx';
+import HardwareComputePath from '../../../components/interactive/HardwareComputePath.tsx';
+
+量化 (Quantization) 是 LLM 推理优化的核心技术——通过降低权重和激活值的数值精度 (如 FP16 → INT4)，实现 2-4 倍的显存节省和推理加速。本文从数据类型基础出发，建立量化的完整理论框架：量化的数学本质是什么？对称和非对称有什么区别？粒度选择如何影响精度？硬件是否支持原生低精度计算？这些基础概念是理解后续 PTQ、QAT、KV Cache 量化等高级话题的前提。
+
+## 数据类型全景
+
+LLM 推理涉及的数据类型跨越 32 位到 4 位，每种类型在表示范围 (dynamic range) 和精度 (precision) 之间做不同的权衡。理解它们的 bit 级结构是量化的第一步。
+
+浮点类型 (FP32, FP16, BF16, FP8) 由 sign + exponent + mantissa 三部分组成，exponent 决定动态范围，mantissa 决定精度。关键对比：
+
+- **FP16 vs BF16**: BF16 ("Brain Floating Point") 保留了 FP32 的 8-bit exponent，动态范围相同 ($\pm 3.4 \times 10^{38}$)，但 mantissa 仅 7 位 (精度约 2.4 位有效数字)。FP16 的 5-bit exponent 限制了范围 ($\pm 65504$)，但 10-bit mantissa 精度更高。实践中 BF16 更适合训练 (不会 overflow)，FP16 更适合需要精度的推理场景。
+- **FP8 的两种格式**: E4M3 (4-bit exponent + 3-bit mantissa) 精度更高，用于前向传播的 weight 和 activation；E5M2 (5-bit exponent + 2-bit mantissa) 范围更大，用于反向传播的 gradient。NVIDIA H100/H200 原生支持两种格式。
+
+整数类型 (INT8, INT4) 没有 exponent/mantissa 之分，所有 bit 表示一个精确整数值。优点是计算简单、硬件实现高效；缺点是无法表示浮点数的非均匀分布——需要配合 scale factor 使用。
+
+<DataTypeBitLayout client:visible />
+
+## 量化的数学本质
+
+量化的核心操作是将连续浮点值映射到离散整数：
+
+$$q = \text{clip}\left(\text{round}\left(\frac{x}{s}\right) + z, \; q_{\min}, \; q_{\max}\right)$$
+
+其中 $s$ 是 scale factor (缩放因子)，$z$ 是 zero-point (零点偏移)，$q_{\min}$ 和 $q_{\max}$ 是量化值的范围。反量化 (dequantization) 将离散值还原回浮点近似：
+
+$$\hat{x} = s \cdot (q - z)$$
+
+量化误差有两个来源：**rounding error** (round 操作将精确商截断到最近整数) 和 **clipping error** (clip 操作将超出范围的值截断到边界)。
+
+### 对称 vs 非对称量化
+
+- **对称量化**: $z = 0$，$s = \max(|x|) / q_{\max}$。映射关于零对称，float 的 0 精确映射到 int 的 0。优点是简单高效 (无需存储 zero-point)；缺点是对偏移分布 (如 ReLU activation，全正值) 浪费一半量化范围。
+- **非对称量化**: $z \neq 0$，$s = (\max(x) - \min(x)) / (q_{\max} - q_{\min})$。映射可偏移，充分利用量化范围。每组额外存储一个 zero-point。
+
+经验法则：权重分布通常近似对称 → 用对称量化。Activation 常有偏移 (特别是 ReLU 后全正值) → 用非对称量化。
+
+下面的交互组件演示了量化→反量化的完整过程，可以切换对称/非对称模式观察差异：
+
+<QuantizationMapping client:visible />
+
+## 量化粒度
+
+量化粒度决定"多大范围的权重共享一个 scale"：
+
+- **Per-tensor**: 整个权重张量用一个 scale。最简单但误差最大——如果某些 channel 值域是其他 channel 的 10 倍，正常 channel 的精度被 outlier 拉低。
+- **Per-channel**: 每个 output channel 有独立 scale。主流推理框架 (TensorRT, ONNX Runtime) 的默认选择，精度和开销平衡好。
+- **Per-group**: 每 $g$ 个权重共享一个 scale。llama.cpp 使用 group size = 32 (称为 "block")。比 per-channel 更细粒度，适合低 bit-width (4-bit) 场景。
+- **Per-block**: 进一步细化的分组策略。llama.cpp 的 K-quant 使用 super-block (256 weights) + sub-block (32 weights) 的两级结构。
+
+粒度越细，每组有独立的 scale/zero-point，量化误差越小，但 metadata 存储开销越大。llama.cpp 选择 block size = 32 是精度与开销的经验折衷——32 个 INT4 值 (16 bytes) + 1 个 FP16 scale (2 bytes) = 18 bytes，有效精度 4.5 bpw (bits per weight)。
+
+<GranularityCompare client:visible />
+
+## 反量化 vs 原生低精度计算
+
+量化后的推理有两条路径，取决于硬件支持：
+
+**Dequant 路径 (兼容模式)**：权重存储为 INT4/INT8 → 推理时 dequantize 到 FP16 → 用 FP16 做矩阵乘法 → FP16 输出。大多数 CPU 和老 GPU 走这条路。好处是兼容性好 (任何支持 FP16 的硬件)；代价是 dequant 有性能开销，吞吐量不如原始 FP16 快多少 (主要收益是带宽节省)。
+
+**原生低精度路径 (加速模式)**：INT8 weight × INT8 activation → INT32 累加 → FP16 输出。无需 dequant，硬件直接执行整数乘加。支持的硬件：
+- **NVIDIA Tensor Core** (A100/H100): INT8 和 FP8 GEMM，吞吐量是 FP16 的 2 倍
+- **Apple ANE** (Apple Neural Engine): INT8 和部分 INT4 支持
+- **Intel VNNI/AMX**: INT8 向量/矩阵运算加速
+
+关键认知：量化的收益不仅是"存储变小"。在有原生支持的硬件上，量化还能直接加速计算——这是 W8A8 (weight INT8 + activation INT8) 方案 (如 SmoothQuant) 的核心价值。
+
+<HardwareComputePath />
+
+## 混合精度实践
+
+真实部署中，模型的不同层和操作使用不同精度。典型的混合精度配置：
+
+| 模块 | 常用精度 | 原因 |
+|------|----------|------|
+| Embedding | FP16/FP32 | 词表查找不是瓶颈，精度敏感 |
+| Attention QKV Projection | INT8/INT4 | 参数量大，量化收益高 |
+| Attention Score ($QK^T$) | FP16 | softmax 对精度极敏感 |
+| FFN Weight | INT4/INT8 | 参数量最大 (占 ~2/3)，SwiGLU 有平滑效应 |
+| LayerNorm | FP32 | 累加和均值计算需要高精度 |
+| Output Head | FP16 | 影响最终 logit 分布 |
+
+决策依据是 **per-layer sensitivity analysis**：逐层量化，测量每层量化后 perplexity 的变化。对 perplexity 贡献最大的层 (通常是 Attention Q/K/V projection 和第一/最后几层) 保留高精度，其余层激进量化。llama.cpp 的 K-quant 混合精度策略就是这一思想的工程实现。
+
+## PTQ vs QAT 概览
+
+量化方法分两大路线：
+
+**训练后量化 (Post-Training Quantization, PTQ)**：模型训练完成后直接量化，不修改权重。
+- **Round-to-Nearest (RTN)**: 最简单，直接 round。8-bit 可用，4-bit 精度崩溃。
+- **GPTQ**: 利用 Hessian 矩阵做误差补偿，4-bit 精度接近 FP16。
+- **AWQ**: 识别重要 channel 保护性量化，比 GPTQ 更高效。
+- **SmoothQuant**: 平滑 activation outlier，实现 W8A8 推理加速。
+
+**量化感知训练 (Quantization-Aware Training, QAT)**：训练时模拟量化，模型学会适应低精度。
+- **Fake Quantization + STE**: 在训练图中插入伪量化节点。
+- **LoRA-QAT**: 用低秩适配器补偿量化损失，低成本近似 QAT。
+- **BitNet**: 三值权重 {-1, 0, 1}，1.58-bit 极端量化，矩阵乘法退化为加减法。
+
+经验分界线：**8-bit PTQ 足够，4-bit PTQ 优先，3-bit 以下需要 QAT**。后续文章将深入每条路线的算法细节。
+
+## 总结
+
+量化的核心是用离散整数近似连续浮点——通过 scale factor 和 zero-point 建立映射，粒度越细误差越小。硬件决定了量化收益的上限：有原生低精度支持时，量化不仅省存储还加速计算；没有时，主要收益是带宽节省。实际部署采用混合精度，通过 sensitivity analysis 为不同层分配不同精度。接下来将深入 PTQ 和 QAT 两条路线的具体算法。
