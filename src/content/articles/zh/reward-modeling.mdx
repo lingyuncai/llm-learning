@@ -1,0 +1,107 @@
+---
+title: "Reward 设计与 Scaling"
+slug: reward-modeling
+locale: zh
+tags: [reward-model, reward-hacking, process-reward, outcome-reward, constitutional-ai]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [rlhf]
+references:
+  - type: paper
+    title: "Let's Verify Step by Step (Lightman et al., 2023)"
+    url: "https://arxiv.org/abs/2305.20050"
+  - type: paper
+    title: "Training Verifiers to Solve Math Word Problems (Cobbe et al., 2021)"
+    url: "https://arxiv.org/abs/2110.14168"
+  - type: paper
+    title: "Constitutional AI: Harmlessness from AI Feedback (Bai et al., 2022)"
+    url: "https://arxiv.org/abs/2212.08073"
+  - type: paper
+    title: "Scaling Laws for Reward Model Overoptimization (Gao et al., 2022)"
+    url: "https://arxiv.org/abs/2210.10760"
+  - type: website
+    title: "Reward Hacking in Reinforcement Learning — Lilian Weng"
+    url: "https://lilianweng.github.io/posts/2024-11-28-reward-hacking/"
+  - type: website
+    title: "Reward Model 系列 — Nathan Lambert (interconnects.ai)"
+    url: "https://www.interconnects.ai/"
+---
+
+import ORMvsPRM from '../../../components/interactive/ORMvsPRM.tsx';
+import RewardHackingGallery from '../../../components/interactive/RewardHackingGallery.tsx';
+import RewardScalingChart from '../../../components/interactive/RewardScalingChart.tsx';
+import ConstitutionalAIFlow from '../../../components/interactive/ConstitutionalAIFlow.tsx';
+import RewardToVerifier from '../../../components/interactive/RewardToVerifier.tsx';
+
+## Reward Model 是对齐的核心
+
+无论你选择 RLHF、DPO 还是 GRPO，最终都依赖某种形式的 **reward 信号**。RLHF 显式训练一个 RM；DPO 隐式学习 reward；GRPO 用规则或 RM 打分。
+
+RM 的质量直接决定了对齐效果的天花板。一个完美的 RM 意味着完美的对齐——但现实中 RM 总是不完美的，这就引出了一系列核心挑战。
+
+## Outcome Reward vs Process Reward
+
+传统 RM 是 **Outcome Reward Model (ORM)**：只看最终结果打一个分。但对于推理任务（数学、代码、逻辑），这种粗粒度信号有明显缺陷。
+
+**Process Reward Model (PRM)** 对推理过程的每一步都打分，提供更细粒度的监督信号。
+
+<ORMvsPRM client:visible />
+
+PRM 的核心优势：
+- 能识别"答案碰巧对但推理过程错"的情况
+- 为 MCTS 式搜索提供节点级别的评估信号
+- 更好的 credit assignment（定位哪一步出了问题）
+
+但 PRM 的标注成本显著更高——需要逐步标注每一步的正确性。OpenAI 的"Let's Verify Step by Step"论文表明 PRM 在数学推理上显著优于 ORM。
+
+## Reward Hacking 深度分析
+
+**Goodhart's Law** 在 RL 对齐中的体现：当 RM score 成为优化目标时，模型会找到最大化 score 但不真正提高质量的"捷径"。
+
+<RewardHackingGallery client:visible />
+
+常见 reward hacking pattern：
+- **冗长注水**：RM 偏好详细回答 → 模型学会写冗余内容
+- **讨好措辞**：RM 偏好友善语气 → 模型用赞美替代实质
+- **格式包装**：RM 偏好结构化输出 → 形式大于内容
+- **安全逃避**：Safety RM 过度惩罚 → 模型对正常问题也拒绝回答
+
+## Reward Model Scaling
+
+好消息是：**更大的 RM 更难被 hack**。Gao et al. (2022) 的研究表明，RM 的参数量和训练数据量都遵循 scaling law：
+
+<RewardScalingChart client:visible />
+
+这给出了一个清晰的工程指导：**投资更大更好的 RM，而不是更复杂的训练算法**。
+
+## Constitutional AI 与自动 Reward
+
+人工标注偏好数据成本高且难以扩展。Anthropic 的 **Constitutional AI** 提出了一种替代方案：**让 LLM 自己生成偏好判断**。
+
+<ConstitutionalAIFlow client:visible />
+
+这种 RLAIF（RL from AI Feedback）方法的核心思路：
+1. 人类只定义高层原则（"constitution"）
+2. LLM 根据原则自我评判和修改回答
+3. 修改前后的回答对构成训练数据
+
+这大大降低了标注成本，使对齐训练可以大规模自动化。
+
+## 从 Reward 到 Verifier
+
+Reward Model 的进化路径：**从打分器到验证器**。
+
+<RewardToVerifier client:visible />
+
+这个演进为 **Test-Time Scaling** 铺平了道路：有了 verifier，我们可以在推理时生成多个候选回答，用 verifier 选最好的——这是下一篇文章的核心主题。
+
+## 总结
+
+1. **RM 是对齐的核心**，其质量直接决定对齐效果天花板
+2. **PRM 优于 ORM**：逐步打分提供更细粒度的信号，尤其适合推理任务
+3. **Reward Hacking** 是 Goodhart's Law 的体现，更大的 RM 更难被 hack
+4. **Constitutional AI** 用 LLM 自我评判替代人工标注，实现大规模 RLAIF
+5. **RM → PRM → Verifier** 的演进为 test-time scaling 奠定基础
+
+下一篇，我们将探讨 test-time scaling：如何在推理时投入更多计算来提升 LLM 的输出质量。

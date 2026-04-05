@@ -14,7 +14,7 @@ const articles = defineCollection({
     created: z.string(),
     updated: z.string(),
     references: z.array(z.object({
-      type: z.enum(['paper', 'website', 'video', 'repo']),
+      type: z.enum(['paper', 'website', 'video', 'repo', 'book', 'course', 'blog']),
       title: z.string(),
       url: z.string().url(),
     })).min(1),

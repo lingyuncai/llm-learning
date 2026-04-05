@@ -1,0 +1,126 @@
+import { COLORS, FONTS } from './shared/colors';
+import StepNavigator from '../primitives/StepNavigator';
+
+const W = 580;
+
+export default function ConstitutionalAIFlow() {
+  const steps = [
+    {
+      title: '人类写 Principles',
+      content: (
+        <svg viewBox={`0 0 ${W} 180`} className="w-full" style={{ fontFamily: FONTS.sans }}>
+          <text x={W / 2} y={20} textAnchor="middle" fontSize={13} fontWeight={700} fill={COLORS.dark}>
+            Step 1: 人类定义宪法原则
+          </text>
+          {[
+            '原则 1: 回答应该是有帮助的、诚实的、无害的',
+            '原则 2: 不要帮助用户做危险或非法的事情',
+            '原则 3: 承认不确定性，不要编造事实',
+            '原则 4: 尊重用户隐私和个人信息',
+          ].map((p, i) => (
+            <g key={i}>
+              <rect x={40} y={35 + i * 32} width={500} height={26} rx={4} fill={COLORS.valid} stroke={COLORS.primary} strokeWidth={1} />
+              <text x={50} y={52 + i * 32} fontSize={10} fill={COLORS.primary}>{p}</text>
+            </g>
+          ))}
+          <text x={W / 2} y={170} textAnchor="middle" fontSize={10} fill={COLORS.mid}>
+            人类只需要定义高层原则，不需要逐条标注偏好对
+          </text>
+        </svg>
+      ),
+    },
+    {
+      title: 'LLM 自我评判 (Critique)',
+      content: (
+        <svg viewBox={`0 0 ${W} 180`} className="w-full" style={{ fontFamily: FONTS.sans }}>
+          <text x={W / 2} y={20} textAnchor="middle" fontSize={13} fontWeight={700} fill={COLORS.dark}>
+            Step 2: LLM 根据原则评判自己的回答
+          </text>
+          <rect x={30} y={40} width={240} height={50} rx={6} fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth={1} />
+          <text x={40} y={58} fontSize={10} fontWeight={600} fill={COLORS.dark}>原始回答：</text>
+          <text x={40} y={76} fontSize={10} fill={COLORS.mid}>"这里是如何制作炸弹的步骤..."</text>
+
+          <line x1={275} y1={65} x2={310} y2={65} stroke={COLORS.orange} strokeWidth={2} markerEnd="url(#arrowCAI)" />
+          <defs>
+            <marker id="arrowCAI" viewBox="0 0 10 10" refX={8} refY={5} markerWidth={6} markerHeight={6} orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={COLORS.orange} />
+            </marker>
+          </defs>
+
+          <rect x={315} y={40} width={240} height={50} rx={6} fill={COLORS.waste} stroke={COLORS.red} strokeWidth={1.5} />
+          <text x={325} y={58} fontSize={10} fontWeight={600} fill={COLORS.red}>Critique：</text>
+          <text x={325} y={76} fontSize={10} fill={COLORS.dark}>"违反原则 2：帮助危险行为"</text>
+
+          <rect x={30} y={110} width={520} height={55} rx={6} fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth={1} />
+          <text x={40} y={128} fontSize={10} fontWeight={600} fill={COLORS.orange}>关键：LLM 自己当评判者</text>
+          <text x={40} y={146} fontSize={10} fill={COLORS.mid}>
+            给 LLM 原则 + 自己的回答 → 让它判断是否违反原则 → 自动生成"critique"
+          </text>
+        </svg>
+      ),
+    },
+    {
+      title: '生成改进版本 (Revision)',
+      content: (
+        <svg viewBox={`0 0 ${W} 180`} className="w-full" style={{ fontFamily: FONTS.sans }}>
+          <text x={W / 2} y={20} textAnchor="middle" fontSize={13} fontWeight={700} fill={COLORS.dark}>
+            Step 3: LLM 根据 critique 修改回答
+          </text>
+          <rect x={30} y={40} width={160} height={40} rx={6} fill={COLORS.waste} stroke={COLORS.red} strokeWidth={1} />
+          <text x={110} y={64} textAnchor="middle" fontSize={10} fill={COLORS.red}>原始回答 (有害)</text>
+
+          <text x={200} y={64} fontSize={12} fill={COLORS.mid}>+</text>
+
+          <rect x={215} y={40} width={120} height={40} rx={6} fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth={1} />
+          <text x={275} y={64} textAnchor="middle" fontSize={10} fill={COLORS.orange}>Critique</text>
+
+          <line x1={340} y1={60} x2={385} y2={60} stroke={COLORS.green} strokeWidth={2} markerEnd="url(#arrowCAI)" />
+
+          <rect x={390} y={40} width={160} height={40} rx={6} fill="#d4edda" stroke={COLORS.green} strokeWidth={1.5} />
+          <text x={470} y={64} textAnchor="middle" fontSize={10} fill={COLORS.green}>修改后回答 (安全)</text>
+
+          <rect x={30} y={100} width={520} height={60} rx={6} fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth={1} />
+          <text x={40} y={118} fontSize={10} fontWeight={600} fill={COLORS.dark}>产出：</text>
+          <text x={40} y={138} fontSize={10} fill={COLORS.mid}>
+            (原始回答, 修改后回答) 构成偏好对 → 可以用来训练 RM 或直接做 DPO
+          </text>
+          <text x={40} y={154} fontSize={10} fill={COLORS.mid}>
+            这就是 RLAIF (RL from AI Feedback) — AI 替代人类做标注
+          </text>
+        </svg>
+      ),
+    },
+    {
+      title: 'RLAIF vs RLHF 对比',
+      content: (
+        <svg viewBox={`0 0 ${W} 180`} className="w-full" style={{ fontFamily: FONTS.sans }}>
+          <text x={W / 2} y={20} textAnchor="middle" fontSize={13} fontWeight={700} fill={COLORS.dark}>
+            Step 4: Constitutional AI 的意义
+          </text>
+
+          <rect x={30} y={40} width={250} height={80} rx={8} fill={COLORS.bgAlt} stroke={COLORS.primary} strokeWidth={1} />
+          <text x={155} y={58} textAnchor="middle" fontSize={11} fontWeight={700} fill={COLORS.primary}>RLHF</text>
+          <text x={40} y={78} fontSize={10} fill={COLORS.mid}>标注来源：人类标注者</text>
+          <text x={40} y={94} fontSize={10} fill={COLORS.mid}>成本：高（需要大量人工）</text>
+          <text x={40} y={110} fontSize={10} fill={COLORS.mid}>可扩展性：有限</text>
+
+          <rect x={300} y={40} width={250} height={80} rx={8} fill={COLORS.highlight} stroke={COLORS.green} strokeWidth={1} />
+          <text x={425} y={58} textAnchor="middle" fontSize={11} fontWeight={700} fill={COLORS.green}>RLAIF (Constitutional AI)</text>
+          <text x={310} y={78} fontSize={10} fill={COLORS.mid}>标注来源：LLM 自身</text>
+          <text x={310} y={94} fontSize={10} fill={COLORS.mid}>成本：低（自动化）</text>
+          <text x={310} y={110} fontSize={10} fill={COLORS.mid}>可扩展性：高</text>
+
+          <rect x={30} y={135} width={520} height={36} rx={6} fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth={1} />
+          <text x={40} y={152} fontSize={10} fontWeight={600} fill={COLORS.orange}>
+            核心思路：用少量人类定义的原则 + LLM 的判断能力 → 大规模自动生成对齐数据
+          </text>
+          <text x={40} y={166} fontSize={10} fill={COLORS.mid}>
+            Anthropic (Claude) 使用 Constitutional AI 作为其对齐策略的核心
+          </text>
+        </svg>
+      ),
+    },
+  ];
+
+  return <StepNavigator steps={steps} />;
+}

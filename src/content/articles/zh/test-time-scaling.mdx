@@ -1,0 +1,126 @@
+---
+title: "Test-Time Scaling 与思维强化"
+slug: test-time-scaling
+locale: zh
+tags: [test-time-scaling, chain-of-thought, mcts, deepseek-r1, thinking, verifier]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [reward-modeling]
+references:
+  - type: paper
+    title: "Scaling LLM Test-Time Compute Optimally can be More Effective than Scaling Model Parameters (Snell et al., 2024)"
+    url: "https://arxiv.org/abs/2408.03314"
+  - type: paper
+    title: "DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning (2025)"
+    url: "https://arxiv.org/abs/2501.12948"
+  - type: paper
+    title: "Let's Verify Step by Step (Lightman et al., 2023)"
+    url: "https://arxiv.org/abs/2305.20050"
+  - type: paper
+    title: "AlphaZero-like Tree-Search can Guide Large Language Model Decoding and Training (Feng et al., 2024)"
+    url: "https://arxiv.org/abs/2309.17179"
+  - type: website
+    title: "Hugging Face Deep RL Course"
+    url: "https://huggingface.co/learn/deep-rl-course"
+  - type: website
+    title: "Deep Reinforcement Learning: Pong from Pixels — Andrej Karpathy"
+    url: "https://karpathy.github.io/2016/05/31/rl/"
+---
+
+import ScalingParadigmCompare from '../../../components/interactive/ScalingParadigmCompare.tsx';
+import BestOfNSimulator from '../../../components/interactive/BestOfNSimulator.tsx';
+import MCTSReasoningTree from '../../../components/interactive/MCTSReasoningTree.tsx';
+import DeepSeekR1Pipeline from '../../../components/interactive/DeepSeekR1Pipeline.tsx';
+import EmergentThinking from '../../../components/interactive/EmergentThinking.tsx';
+import ComputeOptimalInference from '../../../components/interactive/ComputeOptimalInference.tsx';
+
+## Train-Time vs Test-Time Scaling
+
+传统的 scaling law 关注 **train-time scaling**：增大模型参数量、增加训练数据和计算量，性能稳步提升。但这条曲线正在趋缓——从 100B 到 1T 参数的收益越来越小。
+
+**Test-Time Scaling** 提出了一个不同的思路：**固定模型大小，在推理时投入更多计算来提升输出质量**。
+
+<ScalingParadigmCompare client:visible />
+
+Snell et al. (2024) 的关键发现：在某些任务上，**增加推理时计算比增大模型更 cost-effective**。一个 14B 模型配合足够的 test-time compute，可以超过 70B 模型的直接输出。
+
+## Chain-of-Thought 的 RL 视角
+
+Chain-of-Thought (CoT) 不仅仅是一个 prompting 技巧。从 RL 的角度看：
+
+- 每一步推理 = 一个 **action**
+- 思维链 = 一条 **trajectory**
+- 最终答案的正确性 = **reward**
+
+这意味着我们可以用 RL 来优化**模型如何思考**——不只是优化最终答案，而是优化整个推理过程。这就是 DeepSeek-R1 的核心思路。
+
+## Best-of-N 与 Rejection Sampling
+
+最简单的 test-time scaling 方法：生成 N 个回答，用 verifier 选最好的。
+
+<BestOfNSimulator client:visible />
+
+Best-of-N 的优势是简单直接，但计算成本与 N 线性增长。对于简单问题，N=1 就够了；对于困难问题，可能需要 N=64 甚至更多。关键是需要一个好的 verifier 来选择最佳答案。
+
+## MCTS + LLM
+
+更高级的 test-time scaling 方法是将推理过程建模为**树搜索**。借鉴 AlphaGo/AlphaZero 的思路：
+
+- 每个节点代表一个推理步骤
+- 用 PRM（Process Reward Model）评估每个节点的"价值"
+- MCTS 策略决定**探索哪些推理路径**
+
+<MCTSReasoningTree client:visible />
+
+MCTS 的四步循环：
+1. **Select**：从根节点出发，用 UCB 公式选择最有潜力的路径
+2. **Expand**：在叶节点展开新的推理步骤
+3. **Evaluate**：用 PRM 评估新步骤的质量
+4. **Backpropagate**：将评估结果回传更新整条路径
+
+这种方法比 Best-of-N 更高效，因为它不是独立采样 N 条路径，而是**智能地探索和剪枝**。
+
+## DeepSeek-R1 式 Thinking
+
+DeepSeek-R1 展示了一种更深刻的 test-time scaling：**用 RL 训练模型学会"思考"**。
+
+<DeepSeekR1Pipeline client:visible />
+
+关键发现：当给模型一个简单的 reward 信号（答案正确性）并用 GRPO 训练时，模型自发涌现了一系列复杂的推理行为：
+
+<EmergentThinking client:visible />
+
+这些涌现行为包括：
+- **分步推理**：自动将复杂问题分解为子步骤
+- **自我验证**：主动检查自己的计算结果
+- **回溯纠错**：发现错误后回退重新推理
+- **策略选择**：尝试不同方法解决同一个问题
+
+没有人显式地教模型这些行为——它们完全是从"答案对不对"这个简单信号中涌现出来的。
+
+## Compute-Optimal Inference
+
+并非所有问题都需要大量推理计算。**"2+2=?"** 不需要 MCTS 搜索，但 **IMO 竞赛题** 值得投入大量搜索。
+
+<ComputeOptimalInference client:visible />
+
+Compute-Optimal 的核心思想是**根据问题难度动态分配推理预算**：
+- **简单问题**：直接回答（1x 计算）
+- **中等问题**：CoT 推理（3-5x 计算）
+- **困难问题**：Best-of-N + Verifier（8-24x 计算）
+- **极难问题**：MCTS 深度搜索（40-60x 计算）
+
+自动判断问题难度并选择合适策略，是 test-time scaling 走向实用的关键。
+
+## 总结
+
+本文介绍了 test-time scaling 的核心思想和方法：
+
+1. **Test-Time Scaling** 是与 train-time scaling 互补的新范式
+2. **Best-of-N** 是最简单的方法，用 verifier 从多个候选中选最优
+3. **MCTS** 将推理过程建模为树搜索，智能探索推理路径
+4. **DeepSeek-R1** 用 GRPO 训练出涌现 thinking 行为，是 test-time scaling 的巅峰体现
+5. **Compute-Optimal** 策略根据问题难度动态分配推理计算
+
+从 MDP 基础到 test-time scaling，我们走完了 RL 在 LLM 领域的完整链条。RL 不仅让 LLM 学会"做正确的事"（对齐），更让它学会"如何思考"（reasoning）——这或许是通向更强 AI 的关键路径。
