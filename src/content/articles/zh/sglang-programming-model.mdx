@@ -1,0 +1,134 @@
+---
+title: "SGLang 编程模型与结构化输出"
+slug: sglang-programming-model
+locale: zh
+tags: [sglang, structured-output, constrained-decoding, fsm, dsl]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [prefix-caching]
+references:
+  - type: paper
+    title: "SGLang: Efficient Execution of Structured Language Model Programs"
+    url: "https://arxiv.org/abs/2312.07104"
+  - type: paper
+    title: "Efficient Guided Generation for Large Language Models"
+    url: "https://arxiv.org/abs/2307.09702"
+  - type: website
+    title: "Fast JSON Decoding for Local LLMs with Compressed Finite State Machine"
+    url: "https://lmsys.org/blog/2024-02-05-compressed-fsm/"
+---
+
+import SGLangExecutionFlow from '../../../components/interactive/SGLangExecutionFlow.tsx';
+import FSMConstrainedDecoding from '../../../components/interactive/FSMConstrainedDecoding.tsx';
+import JumpForwardCompare from '../../../components/interactive/JumpForwardCompare.tsx';
+import TokenMaskGeneration from '../../../components/interactive/TokenMaskGeneration.tsx';
+import StructuredOutputAccuracy from '../../../components/interactive/StructuredOutputAccuracy.tsx';
+
+## 为什么需要编程模型
+
+现实中的 LLM 应用很少是"输入 prompt → 输出文本"这么简单。一个典型的 RAG pipeline 可能是：
+
+1. 用户提问 → LLM 生成搜索 query
+2. 检索文档 → 拼接到上下文
+3. LLM 基于上下文生成答案
+4. 对答案做自我检查（self-consistency：同一问题采样 3 次取多数）
+
+传统做法是多次调用 API，每次手动拼接上下文。问题：
+- **重复计算**：每次调用都要重新处理整个 prompt（包括已经算过的前缀）
+- **串行等待**：即使步骤 4 的三次采样可以并行，也只能逐次调用
+- **格式不可靠**：要求 LLM 输出 JSON，但它经常格式错误
+
+SGLang 的核心洞察：**如果推理引擎能理解应用的执行逻辑，就能端到端优化整个 pipeline**。
+
+## SGLang DSL 核心原语
+
+SGLang 定义了一组简洁的原语来描述 LLM 程序：
+
+| 原语 | 作用 | 示例 |
+|------|------|------|
+| `gen` | 生成文本 | `s = sgl.gen("分析", max_tokens=100)` |
+| `select` | 从选项中选择 | `s = sgl.select("判断", ["正面","负面"])` |
+| `fork` | 并行分支 | `s1, s2 = sgl.fork(s, 2)` |
+| `join` | 汇合分支 | `result = sgl.join([s1, s2])` |
+| `append` | 拼接上下文 | `s = sgl.append("额外信息...")` |
+
+这些原语看起来简单，但组合起来能表达复杂的推理流程：
+
+<SGLangExecutionFlow client:visible />
+
+关键在于：这不只是语法糖。SGLang 的执行引擎会分析 DSL 程序的结构，自动进行优化：
+- **fork** 的两个分支共享前缀 → RadixAttention 自动复用 KV Cache
+- **select** 的所有候选项共享前缀 → batch 化处理
+- **append** 不触发重新计算 → 直接在已有 KV Cache 上追加
+
+## 约束解码的问题
+
+让 LLM 输出结构化数据（如 JSON）是最常见的需求之一。但自由生成的问题很多：
+
+```json
+// 期望的输出
+{"name": "Alice", "age": 30}
+
+// 实际 LLM 可能生成的
+{"name": Alice, "age": "thirty"}   // 缺引号，类型错误
+{"name": "Alice" "age": 30}         // 缺逗号
+{"name": "Alice"}                    // 缺少 required 字段
+```
+
+Prompt engineering 只能缓解但无法根除这个问题——LLM 的 token 采样过程本质上是概率性的，没有结构约束。
+
+## FSM-Guided Generation
+
+SGLang 的解决方案是在 token 采样阶段引入**有限状态机 (FSM)** 约束：
+
+1. **JSON Schema → 正则表达式**：将用户定义的输出格式转化为正则表达式
+2. **正则 → FSM**：编译为有限状态机，每个状态对应解析器的一个位置
+3. **FSM 指导采样**：每步根据当前 FSM 状态，计算合法 token 集合，将非法 token 的 logit 设为 -∞
+
+<FSMConstrainedDecoding client:visible />
+
+结果：**100% 格式合规**。无论 LLM 的"创造力"如何发挥，FSM mask 保证了每个输出 token 都符合目标 schema。
+
+## Token Mask 生成过程
+
+具体来看 FSM 如何在每一步决定合法 token：
+
+<TokenMaskGeneration client:visible />
+
+整个过程是**预编译**的：FSM 在首次加载 schema 时就构建好，运行时只需 O(1) 查表获取当前状态的合法 token 集合，几乎不增加推理延迟。
+
+## Jump-Forward 优化
+
+FSM 约束虽然保证了正确性，但每个 token 仍需走完整的 LLM forward pass——即使某些位置的输出是确定的（如 JSON 的 `{`, `"`, `:` 等结构字符）。
+
+SGLang 的 **Jump-Forward** 优化识别 FSM 中的**确定性状态**（只有一条出边的状态），直接跳过这些位置，不走 LLM：
+
+<JumpForwardCompare client:visible />
+
+对于结构化输出，确定性片段占比通常 40-70%（JSON 的大量结构字符都是确定的），这意味着 Jump-Forward 可以跳过大量 forward pass，实现 **2-5x 加速**。
+
+## 性能对比
+
+综合正确率和速度：
+
+<StructuredOutputAccuracy client:visible />
+
+核心取舍：
+- **无约束**最快但不可靠——适合对格式要求宽松的场景
+- **FSM-guided**几乎完美但略慢——token mask 计算和 vocabulary 扫描有开销
+- **FSM + Jump-Forward**兼顾正确率和速度——是 SGLang 的默认推荐方案
+
+## 总结
+
+SGLang 的编程模型解决了两个核心问题：
+
+1. **执行效率**：通过 DSL 原语（gen/select/fork/join）让引擎理解应用逻辑，配合 RadixAttention 最大化前缀复用
+2. **输出可靠性**：通过 FSM-guided generation + Jump-Forward 优化，实现 100% 格式合规且速度更快
+
+从更大的视角看，SGLang 代表了 LLM 推理引擎从"通用 API 服务"向"可编程推理平台"的演进——它不只是更快地生成文本，而是让推理引擎理解并优化整个 LLM 应用的执行流程。
+
+## 延伸阅读
+
+- 想回顾前缀缓存的基础？阅读 [前缀缓存与 RadixAttention](./prefix-caching)
+- 想了解推理引擎的全景？阅读 [推理引擎全景](./inference-engine-landscape)
