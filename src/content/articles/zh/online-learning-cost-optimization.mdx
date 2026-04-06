@@ -103,7 +103,7 @@ $$
 \max \sum_{i=1}^n \text{quality}(q_i, m_j) \quad \text{s.t.} \quad \sum_{i=1}^n \text{cost}(m_j) \leq B, \, \text{concurrency}(m_j) \leq C
 $$
 
-**Robust Batch-Level LLM Routing (2026)** 提出用整数线性规划 (ILP) 或启发式算法求解批量路由，同时考虑模型性能的不确定性（用置信区间建模）。实验表明，批量路由在严格预算约束下比逐查询路由提升质量 8-15%。
+**Robust Batch-Level LLM Routing (2026)** 提出用整数线性规划 (ILP) 或启发式算法求解批量路由，同时考虑模型性能的不确定性（用置信区间建模）。实验表明，批量路由在严格预算约束下相比逐查询路由可显著提升质量。
 
 <BatchVsQueryRouting client:visible />
 

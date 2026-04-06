@@ -27,7 +27,7 @@ import LLMAsJudgeFlow from '../../../components/interactive/LLMAsJudgeFlow.tsx';
 
 Classifier routing requires constructing preference data and training a separate routing model — cascade routing offers a near-zero-training-cost alternative: **start with the cheapest model and progressively upgrade to stronger models if output quality is insufficient**. The core insight is that roughly 80% of real-world queries are simple enough for a small model to handle; only the remaining difficult queries need expensive models.
 
-FrugalGPT (Chen et al., 2023) was the first to systematically demonstrate the effectiveness of cascade strategies, reducing costs by up to 98% while maintaining GPT-4-level quality. AutoMix (Madaan et al., 2023; NeurIPS 2024) further eliminates the need for external scoring functions by using **few-shot self-verification** to let models evaluate their own outputs, and models the routing decision as a POMDP framework.
+FrugalGPT (Chen et al., 2023) was the first to systematically demonstrate the effectiveness of cascade strategies, achieving up to 98% cost reduction on specific benchmarks (50-73% on others). AutoMix (Madaan et al., 2023; NeurIPS 2024) further eliminates the need for external scoring functions by using **few-shot self-verification** to let models evaluate their own outputs, and models the routing decision as a POMDP framework.
 
 ## §1 FrugalGPT Cascade Chain
 
@@ -54,7 +54,7 @@ The key question is **how to design the scoring function $s$**. FrugalGPT propos
 - Train a lightweight classifier (e.g., DistilBERT) to predict "is this response good enough?"
 - Training data can be generated through strong-weak model comparison: $M_{\text{strong}}$ and $M_{\text{weak}}$ answer the same queries, and annotators label which is better
 
-FrugalGPT experiments demonstrate extremely high cost savings: on GPQA, MATH, TruthfulQA and other benchmarks, the cascade chain (GPT-3.5 → GPT-4) reduces costs by roughly 90% compared to always using GPT-4, while maintaining 95%+ quality. The reason is intuitive: simple queries are "caught" at the first tier, avoiding expensive GPT-4 calls.
+FrugalGPT experiments demonstrate extremely high cost savings: on HEADLINES, OVERRULING, COQA and other benchmarks, the cascade strategy reduces costs by 59-98% (varying by task) compared to always using the strongest model, while maintaining comparable quality. The reason is intuitive: simple queries are "caught" at the first tier, avoiding expensive GPT-4 calls.
 
 <CascadeChainFlow client:visible locale="en" />
 
@@ -87,7 +87,7 @@ The advantage of the POMDP framework is that it **explicitly models uncertainty*
 
 <POMDPDecisionTree client:visible locale="en" />
 
-Experiments show that AutoMix outperforms FrugalGPT on multiple benchmarks: on MMLU and GSM8K, AutoMix achieves quality comparable to GPT-4 while costing only 5–15% of GPT-4. The key advantage is that self-verification requires no additional routing model or labeled data — only a well-designed few-shot prompt.
+Experiments show that AutoMix outperforms FrugalGPT on multiple benchmarks: it maintains quality comparable to the strongest model while reducing computational cost by over 50%. The key advantage is that self-verification requires no additional routing model or labeled data — only a well-designed few-shot prompt.
 
 ## §3 Confidence Threshold Tradeoff
 
@@ -150,7 +150,7 @@ Uses another LLM to evaluate response quality. A typical setup uses GPT-4 as the
 - If the judge itself is the strongest model (e.g., GPT-4), the cascade advantage diminishes
 - Judge models have their own biases (e.g., self-preference bias — tendency to rate their own outputs higher)
 
-Confidence-Driven LLM Router (2025) adopts a hybrid strategy: use the small model's self-verification as an initial filter, calling the judge model only in borderline cases. Experiments show this approach maintains high accuracy while reducing judge calls by 70%.
+Confidence-Driven LLM Router (2025) adopts a hybrid strategy: use the small model's self-verification as an initial filter, calling the judge model only in borderline cases. Experiments show this hybrid approach maintains high accuracy while significantly reducing judge calls.
 
 <LLMAsJudgeFlow client:visible locale="en" />
 

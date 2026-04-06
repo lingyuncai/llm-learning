@@ -18,7 +18,7 @@ references:
     title: "PRISM: Privacy-Sensitive Entity-Level LLM Routing"
     url: "https://arxiv.org/abs/2511.22788"
   - type: paper
-    title: "Router-free RL for Local-Cloud Routing"
+    title: "Bridging On-Device and Cloud LLMs for Collaborative Reasoning"
     url: "https://arxiv.org/abs/2509.24050"
 ---
 
@@ -46,7 +46,7 @@ $$
 \end{cases}
 $$
 
-The key advantage of this strategy is that **it doesn't require predefined task types or difficulty categories**. The reranker model learns end-to-end when to trust the local model's output. Experiments show that in a 3-tier architecture (device → edge → cloud), ConsRoute can keep 85% of simple queries on-device or at the edge, sending only 15% of complex queries to the cloud, while maintaining overall quality comparable to a cloud-only approach.
+The key advantage of this strategy is that **it doesn't require predefined task types or difficulty categories**. The reranker model learns end-to-end when to trust the local model's output. Experiments show that in a 3-tier architecture (device → edge → cloud), ConsRoute can keep most simple queries on-device or at the edge, achieving nearly 40% combined latency and cost reduction while maintaining overall quality comparable to a cloud-only approach.
 
 <CapabilityMatchDiagram client:visible locale="en" />
 
@@ -71,7 +71,7 @@ The interactive component above illustrates a counterintuitive case: running Lla
 - **Hardware capability**: Local inference on M-series Macs is far faster than on phones
 - **Network conditions**: High-bandwidth, low-latency networks (e.g., Wi-Fi 6, 5G) reduce the cloud's disadvantage, while weak networks (e.g., 3G) make local more reliable
 
-Therefore, **a latency-optimized routing strategy cannot simply "prefer local"** — it must dynamically evaluate the current hardware, network, and task characteristics. ConsRoute uses an RL policy in its 3-tier architecture to learn this dynamic balance, reducing measured P95 latency by 35% on edge devices compared to static rules.
+Therefore, **a latency-optimized routing strategy cannot simply "prefer local"** — it must dynamically evaluate the current hardware, network, and task characteristics. ConsRoute uses an RL policy in its 3-tier architecture to learn this dynamic balance, demonstrating significant latency and cost improvements over static rules.
 
 ## Privacy and Offline Scenarios
 
@@ -110,7 +110,7 @@ The advantages of this **router-free** approach are:
 - **End-to-end optimization**, jointly training routing decisions and answer quality
 - **Natural uncertainty expression**, where the model's confidence reflects its true capability boundary
 
-The challenge, however, lies in RL training stability and sample efficiency. Experiments show that Router-free RL requires about 10K labeled samples to converge, whereas an external classifier router can achieve similar performance with just 1K samples. The tradeoff depends on whether you're willing to pay the training cost for a cleaner architecture.
+The challenge, however, lies in RL training stability and sample efficiency. End-to-end RL training typically requires more labeled data than external classifier routers to converge. The tradeoff depends on whether you're willing to pay the training cost for a cleaner architecture.
 
 ## System Architecture Comparison
 

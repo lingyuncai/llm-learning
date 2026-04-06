@@ -12,7 +12,7 @@ references:
     title: "RouteLLM: Learning to Route LLMs with Preference Data"
     url: "https://arxiv.org/abs/2406.18665"
   - type: paper
-    title: "Small Models, Big Decisions: Language Models as Routers"
+    title: "Evaluating Small Language Models for Front-Door Routing"
     url: "https://arxiv.org/abs/2604.02367"
   - type: website
     title: "semantic-router: Superfast Decision-Making Layer"
@@ -33,7 +33,7 @@ import DecisionBoundaryCompare from '../../../components/interactive/DecisionBou
 
 ## §1 偏好数据与 Matrix Factorization
 
-**数据来源**是分类器路由的基础。RouteLLM（Ong et al., 2024）的关键贡献之一是发现 **Chatbot Arena 的人类偏好数据**可以直接用于训练路由器。Chatbot Arena 是一个大规模的匿名对战平台 — 用户提交 query，两个随机模型分别回答，用户投票选出更好的回答。截至 2024 年中，该平台积累了超过 80K 条人类偏好对比数据。
+**数据来源**是分类器路由的基础。RouteLLM（Ong et al., 2024）的关键贡献之一是发现 **Chatbot Arena 的人类偏好数据**可以直接用于训练路由器。Chatbot Arena 是一个大规模的匿名对战平台 — 用户提交 query，两个随机模型分别回答，用户投票选出更好的回答。截至 2024 年中，该平台积累了约 80K 条人类偏好对比数据。
 
 **Matrix Factorization（MF）路由器**的原理借鉴了推荐系统。将每个 query $q$ 和每个 model $m$ 分别映射到同一 $d$ 维向量空间，得到 $\mathbf{q} \in \mathbb{R}^d$ 和 $\mathbf{m} \in \mathbb{R}^d$。路由得分通过内积计算：
 
@@ -41,7 +41,7 @@ $$s(q, m) = \mathbf{q}^\top \mathbf{m} + b_m$$
 
 其中 $b_m$ 是模型偏置项（model bias）。直觉上，$\mathbf{q}$ 编码了"query 需要什么能力"，$\mathbf{m}$ 编码了"模型擅长什么"，内积衡量两者的匹配程度。训练目标是让赢了的模型得分高于输了的模型 — 本质上是 Bradley-Terry 偏好模型的低秩近似。
 
-路由时，计算 $s(q, \text{strong}) - s(q, \text{weak})$，如果差值超过阈值 $\tau$ 则选强模型。RouteLLM 的实验表明：MF router 可以在将 API 调用成本降低超过 85% 的同时，保持约 95% 的 GPT-4 级别质量（Ong et al., 2024）。这个效果之所以惊人，是因为 MF router 本身极其轻量 — 推理时只需一次 embedding lookup 加一个内积运算。
+路由时，计算 $s(q, \text{strong}) - s(q, \text{weak})$，如果差值超过阈值 $\tau$ 则选强模型。RouteLLM 的实验表明：MF router 可以将 API 调用成本降低 2 倍以上（在 MT-Bench 上高达 3.66 倍），同时保持接近 GPT-4 的质量（Ong et al., 2024）。这个效果之所以惊人，是因为 MF router 本身极其轻量 — 推理时只需一次 embedding lookup 加一个内积运算。
 
 <MatrixFactorizationViz client:visible />
 
@@ -63,13 +63,13 @@ $$s(q, m) = \mathbf{q}^\top \mathbf{m} + b_m$$
 
 ## §3 Causal LM Router
 
-2026 年的一个重要进展是用**小型语言模型本身**来做路由判断。Small Models, Big Decisions（2026）提出：既然 1-4B 参数的小语言模型已经具备相当的语义理解能力，为什么不直接让它判断 query 的难度？
+2026 年的一个重要进展是用**小型语言模型本身**来做路由判断。Evaluating Small Language Models for Front-Door Routing（2026）提出：既然 1-4B 参数的小语言模型已经具备相当的语义理解能力，为什么不直接让它判断 query 的难度？
 
 **关键洞察**：将路由判断转化为文本分类任务。给小模型一个 prompt："Given the following query, predict whether a large language model is needed to answer it well. Query: \{q\}. Answer: [YES/NO]"。模型输出 YES 或 NO 的 logit 差值作为路由得分。
 
-这种方法有一个独特的架构优势 — **zero-marginal-cost routing**。如果小语言模型本身就是候选的弱模型之一，那么路由判断可以"顺便"完成：模型在处理 query 的前几个 token 时就能输出路由决策，如果判断自己能处理，则继续生成回答；如果判断需要强模型，则将 query 转发（Small Models as Routers, 2026）。
+这种方法有一个独特的架构优势 — **zero-marginal-cost routing**。如果小语言模型本身就是候选的弱模型之一，那么路由判断可以"顺便"完成：模型在处理 query 的前几个 token 时就能输出路由决策，如果判断自己能处理，则继续生成回答；如果判断需要强模型，则将 query 转发。
 
-**实验结果**：在论文的评估中，4B 参数的小模型达到了 78.3% 的路由准确率。虽然不如精心训练的 BERT router（通常 >85%），但语义理解能力远强于 BERT — 它能理解"请比较 Kant 和 Hegel 的认识论差异"这类需要深层语义分析的 query，而 BERT 可能只能捕捉到关键词层面的信号。
+**实验结果**：在论文的评估中，4B 参数的小模型达到了 78.3% 的路由准确率。虽然不如精心训练的专用分类器，但语义理解能力远强于 BERT — 它能理解"请比较 Kant 和 Hegel 的认识论差异"这类需要深层语义分析的 query，而 BERT 可能只能捕捉到关键词层面的信号。
 
 **与 BERT 的核心 tradeoff**：Causal LM router 的语义理解更强，但推理速度更慢（~50-100ms vs BERT 的 ~15ms）。在 zero-marginal-cost 场景下这个差距消失 — 因为小模型本来就要处理 query。但如果小模型不是候选模型之一，额外的推理开销就需要考量。
 

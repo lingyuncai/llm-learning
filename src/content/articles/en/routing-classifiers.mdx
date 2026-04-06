@@ -12,7 +12,7 @@ references:
     title: "RouteLLM: Learning to Route LLMs with Preference Data"
     url: "https://arxiv.org/abs/2406.18665"
   - type: paper
-    title: "Small Models, Big Decisions: Language Models as Routers"
+    title: "Evaluating Small Language Models for Front-Door Routing"
     url: "https://arxiv.org/abs/2604.02367"
   - type: website
     title: "semantic-router: Superfast Decision-Making Layer"
@@ -33,7 +33,7 @@ The four classifiers below span the full spectrum from "requires abundant prefer
 
 ## §1 Preference Data and Matrix Factorization
 
-**Data sourcing** is the foundation of classifier routing. A key contribution of RouteLLM (Ong et al., 2024) is the discovery that **human preference data from Chatbot Arena** can directly train routers. Chatbot Arena is a large-scale anonymous battle platform — users submit queries, two random models each generate a response, and users vote for the better one. By mid-2024 the platform had accumulated over 80K human preference comparisons.
+**Data sourcing** is the foundation of classifier routing. A key contribution of RouteLLM (Ong et al., 2024) is the discovery that **human preference data from Chatbot Arena** can directly train routers. Chatbot Arena is a large-scale anonymous battle platform — users submit queries, two random models each generate a response, and users vote for the better one. By mid-2024 the platform had accumulated roughly 80K human preference comparisons.
 
 The **Matrix Factorization (MF) router** borrows its principle from recommender systems. Each query $q$ and each model $m$ are mapped into the same $d$-dimensional vector space, yielding $\mathbf{q} \in \mathbb{R}^d$ and $\mathbf{m} \in \mathbb{R}^d$. The routing score is computed via an inner product:
 
@@ -41,7 +41,7 @@ $$s(q, m) = \mathbf{q}^\top \mathbf{m} + b_m$$
 
 where $b_m$ is a model bias term. Intuitively, $\mathbf{q}$ encodes "what capabilities the query demands" and $\mathbf{m}$ encodes "what the model excels at"; the inner product measures how well they match. The training objective is to score the winning model higher than the losing model — essentially a low-rank approximation of the Bradley-Terry preference model.
 
-At routing time, the system computes $s(q, \text{strong}) - s(q, \text{weak})$ and selects the strong model if the difference exceeds a threshold $\tau$. RouteLLM experiments show that the MF router can reduce API call costs by over 85% while retaining roughly 95% of GPT-4-level quality (Ong et al., 2024). This is remarkable because the MF router itself is extremely lightweight — inference requires only one embedding lookup plus one inner product.
+At routing time, the system computes $s(q, \text{strong}) - s(q, \text{weak})$ and selects the strong model if the difference exceeds a threshold $\tau$. RouteLLM experiments show that the MF router can reduce API call costs by over 2x (up to 3.66x on MT-Bench) while maintaining near GPT-4 quality (Ong et al., 2024). This is remarkable because the MF router itself is extremely lightweight — inference requires only one embedding lookup plus one inner product.
 
 <MatrixFactorizationViz client:visible locale="en" />
 
@@ -63,13 +63,13 @@ What if you don't have Chatbot Arena-style preference data? A **BERT classifier 
 
 ## §3 Causal LM Router
 
-A notable 2026 development is using **small language models themselves** for routing. Small Models, Big Decisions (2026) proposes: since 1–4B parameter small LMs already possess considerable semantic understanding, why not have them directly judge query difficulty?
+A notable 2026 development is using **small language models themselves** for routing. Evaluating Small Language Models for Front-Door Routing (2026) proposes: since 1–4B parameter small LMs already possess considerable semantic understanding, why not have them directly judge query difficulty?
 
 **Key insight**: Cast the routing decision as a text classification task. Give the small model a prompt: "Given the following query, predict whether a large language model is needed to answer it well. Query: \{q\}. Answer: [YES/NO]". The logit difference between YES and NO serves as the routing score.
 
-This approach has a unique architectural advantage — **zero-marginal-cost routing**. If the small LM is itself one of the candidate weak models, the routing decision can be made "for free": the model can output a routing decision while processing the first few tokens of the query; if it judges itself capable, it continues generating the answer; otherwise it forwards the query to the strong model (Small Models as Routers, 2026).
+This approach has a unique architectural advantage — **zero-marginal-cost routing**. If the small LM is itself one of the candidate weak models, the routing decision can be made "for free": the model can output a routing decision while processing the first few tokens of the query; if it judges itself capable, it continues generating the answer; otherwise it forwards the query to the strong model.
 
-**Experimental results**: In the paper's evaluation, a 4B parameter small model achieved 78.3% routing accuracy. While lower than a carefully trained BERT router (typically >85%), its semantic understanding is far stronger — it can grasp queries like "compare the epistemological differences between Kant and Hegel" that require deep semantic analysis, whereas BERT might only capture keyword-level signals.
+**Experimental results**: In the paper's evaluation, a 4B parameter small model achieved 78.3% routing accuracy. While lower than a carefully trained dedicated classifier, its semantic understanding is far stronger — it can grasp queries like "compare the epistemological differences between Kant and Hegel" that require deep semantic analysis, whereas BERT might only capture keyword-level signals.
 
 **Core tradeoff vs. BERT**: The Causal LM router has stronger semantic understanding but slower inference (~50–100 ms vs. BERT's ~15 ms). In zero-marginal-cost scenarios this gap vanishes — since the small model would process the query anyway. But if the small model is not one of the candidates, the extra inference overhead must be considered.
 

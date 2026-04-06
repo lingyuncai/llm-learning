@@ -18,7 +18,7 @@ references:
     title: "PRISM: Privacy-Sensitive Entity-Level LLM Routing"
     url: "https://arxiv.org/abs/2511.22788"
   - type: paper
-    title: "Router-free RL for Local-Cloud Routing"
+    title: "Bridging On-Device and Cloud LLMs for Collaborative Reasoning"
     url: "https://arxiv.org/abs/2509.24050"
 ---
 
@@ -46,7 +46,7 @@ $$
 \end{cases}
 $$
 
-这个策略的关键优势在于：**不需要预先定义任务类型或难度分类**。Reranker 模型通过端到端训练学习何时信任本地模型的输出。实验表明，在 3-tier 架构（device → edge → cloud）中，ConsRoute 可以将 85% 的简单查询保留在本地或边缘设备，仅将 15% 的复杂查询上传到云端，同时保持整体质量与纯云端方案相当。
+这个策略的关键优势在于：**不需要预先定义任务类型或难度分类**。Reranker 模型通过端到端训练学习何时信任本地模型的输出。实验表明，在 3-tier 架构（device → edge → cloud）中，ConsRoute 可以将大部分简单查询保留在本地或边缘设备，实现近 40% 的延迟和成本综合降低，同时保持整体质量与纯云端方案相当。
 
 <CapabilityMatchDiagram client:visible />
 
@@ -71,7 +71,7 @@ $$
 - **硬件能力**：M 系列芯片的 Mac 上本地推理远快于手机
 - **网络条件**：高带宽低延迟网络（如 Wi-Fi 6、5G）降低云端劣势，而弱网络（如 3G）则本地更可靠
 
-因此，**延迟优化的路由策略不能简单地"优先本地"**，而需要动态评估当前硬件、网络和任务特征。ConsRoute 在其 3-tier 架构中使用 RL 策略学习这种动态平衡，在 edge 设备上实测比静态规则降低 35% 的 P95 延迟。
+因此，**延迟优化的路由策略不能简单地"优先本地"**，而需要动态评估当前硬件、网络和任务特征。ConsRoute 在其 3-tier 架构中使用 RL 策略学习这种动态平衡，实测相比静态规则有显著的延迟和成本改善。
 
 ## 隐私与离线场景
 
@@ -110,7 +110,7 @@ $$
 - **端到端优化**，路由决策和答案质量联合训练
 - **自然的不确定性表达**，模型的置信度反映其真实能力边界
 
-但挑战在于 RL 训练的稳定性和样本效率。实验表明，Router-free RL 需要约 10K 条标注数据才能收敛，而外部分类器路由器用 1K 条即可达到类似性能。权衡取决于是否愿意为更简洁的架构付出训练成本。
+但挑战在于 RL 训练的稳定性和样本效率。端到端 RL 训练通常需要比外部分类器路由器更多的标注数据才能收敛。权衡取决于是否愿意为更简洁的架构付出训练成本。
 
 ## 系统架构对比
 

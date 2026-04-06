@@ -27,7 +27,7 @@ import LLMAsJudgeFlow from '../../../components/interactive/LLMAsJudgeFlow.tsx';
 
 分类器路由（classifier routing）需要构造偏好数据、训练单独的路由模型 — 而级联路由（cascade routing）提供了一种几乎零训练成本的替代方案：**从最便宜的模型开始尝试，如果输出质量不足再逐级升级到更强模型**。核心洞察是：大约 80% 的实际 query 都足够简单，可以被小模型完成，仅需为剩余的困难 query 调用昂贵模型。
 
-FrugalGPT（Chen et al., 2023）首次系统化地展示了级联策略的有效性，在保持 GPT-4 级别质量的同时将成本降低高达 98%。AutoMix（Madaan et al., 2023; NeurIPS 2024）进一步消除了外部评分函数的需求，通过 **few-shot 自验证**（self-verification）让模型评估自己的输出，并将路由决策建模为 POMDP 框架。
+FrugalGPT（Chen et al., 2023）首次系统化地展示了级联策略的有效性，在特定基准上实现高达 98% 的成本削减（其他任务为 50-73%）。AutoMix（Madaan et al., 2023; NeurIPS 2024）进一步消除了外部评分函数的需求，通过 **few-shot 自验证**（self-verification）让模型评估自己的输出，并将路由决策建模为 POMDP 框架。
 
 ## §1 FrugalGPT 级联链
 
@@ -54,7 +54,7 @@ $$
 - 训练一个轻量分类器（如 DistilBERT）来预测"这个回答是否足够好"
 - 训练数据可以通过强弱模型对比标注：$M_{\text{strong}}$ 和 $M_{\text{weak}}$ 回答相同 query，标注谁更好
 
-FrugalGPT 在实验中展示了极高的成本削减比例：在 GPQA、MATH、TruthfulQA 等数据集上，级联链（GPT-3.5 → GPT-4）相比始终使用 GPT-4，成本降低约 90%，同时保持 95%+ 的质量。原因很直观：简单 query 在第一级就被"拦住了"，避免了昂贵的 GPT-4 调用。
+FrugalGPT 在实验中展示了极高的成本削减比例：在 HEADLINES、OVERRULING、COQA 等数据集上，级联策略相比始终使用最强模型，成本降低 59-98%（因任务而异），同时保持相近的质量。原因很直观：简单 query 在第一级就被"拦住了"，避免了昂贵的 GPT-4 调用。
 
 <CascadeChainFlow client:visible />
 
@@ -87,7 +87,7 @@ POMDP 框架的优势在于：**显式建模不确定性**。我们不知道 que
 
 <POMDPDecisionTree client:visible />
 
-实验表明 AutoMix 在多个数据集上优于 FrugalGPT：在 MMLU 和 GSM8K 上，AutoMix 达到与 GPT-4 相近的质量，同时成本仅为 GPT-4 的 5-15%。关键优势是自验证不需要额外的路由模型或标注数据 — 只需设计合理的 few-shot prompt。
+实验表明 AutoMix 在多个数据集上优于 FrugalGPT：可以在保持与强模型相近质量的前提下，将计算成本降低超过 50%。关键优势是自验证不需要额外的路由模型或标注数据 — 只需设计合理的 few-shot prompt。
 
 ## §3 置信度阈值的 Tradeoff
 
@@ -150,7 +150,7 @@ AutoMix 的核心方法：模型评估自己的输出。
 - 如果 judge 本身就是最强模型（如 GPT-4），级联优势减弱
 - Judge 模型也有偏见（如 self-preference bias — 倾向于评自己的输出更高）
 
-Confidence-Driven LLM Router（2025）采用混合策略：用小模型自验证作为初筛，仅在边界情况下调用 judge 模型。实验表明这种方法可以在保持高准确率的同时，将 judge 调用次数减少 70%。
+Confidence-Driven LLM Router（2025）采用混合策略：用小模型自验证作为初筛，仅在边界情况下调用 judge 模型。实验表明这种混合策略可以在保持高准确率的同时，显著减少 judge 调用次数。
 
 <LLMAsJudgeFlow client:visible />
 

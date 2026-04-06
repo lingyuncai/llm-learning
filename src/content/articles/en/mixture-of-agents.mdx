@@ -38,7 +38,7 @@ Selection pursues efficiency; synthesis pursues quality. Real-world systems ofte
 
 ## Council Mode: Parallel Generation, Centralized Synthesis
 
-Council Mode (2024) is a classic architecture for multi-model collaboration. Its workflow consists of two phases:
+Council Mode (2026) is a representative architecture for multi-model collaboration. Its workflow consists of two phases:
 
 1. **Parallel Generation Phase**: Multiple LLMs (called council members) independently generate answers, unaware of each other's outputs.
 2. **Synthesis Phase**: A synthesizer model collects all answers, analyzes their consensus and divergence, and produces the final answer.
@@ -57,7 +57,7 @@ Three common synthesis strategies:
 
 Simple Council Mode uses a flat structure where all models are equal. More complex systems use a **hierarchical structure**, building decision trees or pyramids.
 
-**HieraMAS** (Hierarchical Multi-Agent System) runs a mini-council at each decision node, where each layer's output becomes the next layer's input. This enables handling complex tasks that require multi-step reasoning.
+A hierarchical multi-agent approach runs a mini-council at each decision node, where each layer's output becomes the next layer's input. This enables handling complex tasks that require multi-step reasoning.
 
 **Pyramid MoA** is an architecture proposed by Together AI, with layers that progressively narrow:
 
@@ -93,10 +93,7 @@ Ensemble is most effective when models have **divergent strengths**: Model A exc
 
 The biggest challenge of multi-model collaboration is **diminishing returns**. Experimental data shows:
 
-- Going from 1 model to 3 models: quality improves by about **+6%**, cost increases **3x**.
-- Going from 3 models to 10 models: quality improves by only **+2%**, cost increases another **3.3x**.
-
-Marginal benefit drops rapidly while marginal cost grows linearly. For most applications, **2-3 models** is the cost-effectiveness sweet spot.
+As the number of participating models increases, quality improvement shows rapidly diminishing marginal returns while costs grow linearly. The first few models typically bring the most significant quality gains, with each additional model contributing progressively less. For most applications, **2-3 models** is the cost-effectiveness sweet spot.
 
 <CostScalingChart client:visible locale="en" />
 
