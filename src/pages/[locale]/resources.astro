@@ -1,7 +1,8 @@
 ---
 import BaseLayout from '../../components/layout/BaseLayout.astro';
-import { getAllResources } from '../../utils/resources';
-import { t, resourceTypeLabel, type Locale } from '../../i18n/utils';
+import { getAllPaths } from '../../utils/paths';
+import { getCollection } from 'astro:content';
+import { t, refTypeLabel, type Locale } from '../../i18n/utils';
 
 export function getStaticPaths() {
   return [
@@ -11,39 +12,117 @@ export function getStaticPaths() {
 }
 
 const locale = Astro.params.locale as Locale;
-const resources = getAllResources();
+const paths = getAllPaths();
+const allArticles = await getCollection('articles');
+const localeArticles = allArticles.filter(a => a.data.locale === locale);
+
+// Build a slug → article map for quick lookup
+const articleMap = new Map(localeArticles.map(a => [a.data.slug, a]));
+
+// For each learning path, collect and deduplicate references
+const pathResources = paths.map(p => {
+  const seen = new Set<string>();
+  const resources: { type: string; title: string; url: string; sourceArticles: { slug: string; title: string }[] }[] = [];
+
+  for (const slug of p.articles) {
+    const article = articleMap.get(slug);
+    if (!article) continue;
+    for (const ref of article.data.references) {
+      if (seen.has(ref.url)) {
+        // Add this article as an additional source
+        const existing = resources.find(r => r.url === ref.url);
+        if (existing && !existing.sourceArticles.some(s => s.slug === slug)) {
+          existing.sourceArticles.push({ slug, title: article.data.title });
+        }
+        continue;
+      }
+      seen.add(ref.url);
+      resources.push({
+        type: ref.type,
+        title: ref.title,
+        url: ref.url,
+        sourceArticles: [{ slug, title: article.data.title }],
+      });
+    }
+  }
+
+  return { path: p, resources };
+}).filter(pr => pr.resources.length > 0);
 
 const typeColor: Record<string, string> = {
-  website: 'bg-blue-100 text-blue-800',
-  interactive: 'bg-green-100 text-green-800',
-  video: 'bg-red-100 text-red-800',
   paper: 'bg-yellow-100 text-yellow-800',
+  website: 'bg-blue-100 text-blue-800',
+  video: 'bg-red-100 text-red-800',
+  interactive: 'bg-green-100 text-green-800',
   repo: 'bg-gray-100 text-gray-800',
+  book: 'bg-purple-100 text-purple-800',
+  course: 'bg-indigo-100 text-indigo-800',
+  blog: 'bg-teal-100 text-teal-800',
 };
+
+const typeEmoji: Record<string, string> = {
+  paper: '📄',
+  website: '🌐',
+  video: '🎬',
+  interactive: '🔮',
+  repo: '💻',
+  book: '📖',
+  course: '🎓',
+  blog: '📝',
+};
+
+function getDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace('www.', '');
+  } catch {
+    return '';
+  }
+}
 ---
 <BaseLayout title={t(locale, 'resources_title')} locale={locale}>
-  <div class="max-w-3xl mx-auto">
+  <div class="max-w-4xl mx-auto">
     <h1 class="text-3xl font-bold mb-3">{t(locale, 'resources_title')}</h1>
-    <p class="text-gray-600 mb-8">{t(locale, 'resources_description')}</p>
+    <p class="text-gray-600 mb-10">{t(locale, 'resources_description')}</p>
 
-    <div class="space-y-4">
-      {resources.map(resource => (
-        <a href={resource.url} target="_blank" rel="noopener noreferrer"
-           class="block p-5 border border-gray-200 rounded-lg hover:border-primary-400 hover:shadow-sm transition-all">
-          <div class="flex items-center gap-3 mb-2">
-            <h3 class="font-semibold">{resource.title}</h3>
-            <span class={`text-xs px-2 py-0.5 rounded ${typeColor[resource.type] || 'bg-gray-100'}`}>
-              {resourceTypeLabel(locale, resource.type)}
+    <div class="space-y-12">
+      {pathResources.map(({ path: p, resources }) => (
+        <section>
+          <div class="flex items-center gap-3 mb-4">
+            <a href={`${import.meta.env.BASE_URL}${locale}/paths/${p.id}`}
+               class="text-2xl font-bold hover:text-primary-600 transition-colors">
+              {p.title[locale]}
+            </a>
+            <span class="text-sm text-gray-400">
+              {resources.length} {t(locale, 'resources_count')}
             </span>
           </div>
-          <p class="text-sm text-gray-500 mb-1">by {resource.author}</p>
-          <p class="text-sm text-gray-700">{resource.description}</p>
-          <div class="flex gap-2 mt-2">
-            {resource.tags.map(tag => (
-              <span class="text-xs text-gray-500">#{tag}</span>
+          <div class="grid gap-3">
+            {resources.map(resource => (
+              <a href={resource.url} target="_blank" rel="noopener noreferrer"
+                 class="block p-4 border border-gray-200 rounded-lg hover:border-primary-400 hover:shadow-sm transition-all">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class={`text-xs px-2 py-0.5 rounded ${typeColor[resource.type] || 'bg-gray-100 text-gray-800'}`}>
+                    {typeEmoji[resource.type] || '📎'} {refTypeLabel(locale, resource.type)}
+                  </span>
+                  <h3 class="font-semibold text-sm">{resource.title}</h3>
+                </div>
+                <div class="flex items-center gap-2 text-xs text-gray-400">
+                  <span>{getDomain(resource.url)}</span>
+                  <span>·</span>
+                  <span>
+                    {t(locale, 'resources_source')}:
+                    {resource.sourceArticles.map((sa, i) => (
+                      <>
+                        {i > 0 && ', '}
+                        <span class="text-gray-500">{sa.title}</span>
+                      </>
+                    ))}
+                  </span>
+                </div>
+              </a>
             ))}
           </div>
-        </a>
+        </section>
       ))}
     </div>
   </div>
