@@ -1,0 +1,179 @@
+---
+title: "级联与自验证：先试便宜的，不行再升级"
+slug: cascade-self-verification
+locale: zh
+tags: [model-routing, cascade, self-verification, pomdp, frugalgpt, automix]
+difficulty: advanced
+prerequisites: [model-routing-landscape]
+created: "2026-04-06"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance"
+    url: "https://arxiv.org/abs/2305.05176"
+  - type: paper
+    title: "AutoMix: Automatically Mixing Language Models"
+    url: "https://arxiv.org/abs/2310.12963"
+  - type: paper
+    title: "Confidence-Driven LLM Router"
+    url: "https://arxiv.org/abs/2502.11021"
+---
+
+import CascadeChainFlow from '../../../components/interactive/CascadeChainFlow.tsx';
+import SelfVerificationDemo from '../../../components/interactive/SelfVerificationDemo.tsx';
+import ConfidenceThresholdSlider from '../../../components/interactive/ConfidenceThresholdSlider.tsx';
+import POMDPDecisionTree from '../../../components/interactive/POMDPDecisionTree.tsx';
+import LLMAsJudgeFlow from '../../../components/interactive/LLMAsJudgeFlow.tsx';
+
+分类器路由（classifier routing）需要构造偏好数据、训练单独的路由模型 — 而级联路由（cascade routing）提供了一种几乎零训练成本的替代方案：**从最便宜的模型开始尝试，如果输出质量不足再逐级升级到更强模型**。核心洞察是：大约 80% 的实际 query 都足够简单，可以被小模型完成，仅需为剩余的困难 query 调用昂贵模型。
+
+FrugalGPT（Chen et al., 2023）首次系统化地展示了级联策略的有效性，在保持 GPT-4 级别质量的同时将成本降低高达 98%。AutoMix（Madaan et al., 2023; NeurIPS 2024）进一步消除了外部评分函数的需求，通过 **few-shot 自验证**（self-verification）让模型评估自己的输出，并将路由决策建模为 POMDP 框架。
+
+## §1 FrugalGPT 级联链
+
+FrugalGPT 的核心机制是一条模型链（model cascade），按成本从低到高排序：
+
+$$
+\text{chain: } M_1 \to M_2 \to \cdots \to M_n
+$$
+
+对于给定 query $q$，系统首先调用 $M_1$（最便宜的模型）生成回答 $a_1$，然后通过评分函数（scoring function）$s(q, a_1)$ 判断质量：
+
+- 如果 $s(q, a_1) > \tau$（置信度阈值），直接返回 $a_1$
+- 否则升级到 $M_2$ 生成 $a_2$，重复判断
+- 最坏情况下到达 $M_n$（最强模型），无条件返回其输出
+
+关键问题是**如何设计评分函数 $s$**。FrugalGPT 提出了几种轻量方法：
+
+**基于统计的评分**：
+- 输出 token 数（过短或过长的回答通常质量不佳）
+- Perplexity（困惑度）或平均 log-probability（模型对自己输出的"置信度"）
+- 多次采样的 self-consistency（同一 query 采样多次，回答越一致说明模型越确定）
+
+**基于小模型的评分**：
+- 训练一个轻量分类器（如 DistilBERT）来预测"这个回答是否足够好"
+- 训练数据可以通过强弱模型对比标注：$M_{\text{strong}}$ 和 $M_{\text{weak}}$ 回答相同 query，标注谁更好
+
+FrugalGPT 在实验中展示了极高的成本削减比例：在 GPQA、MATH、TruthfulQA 等数据集上，级联链（GPT-3.5 → GPT-4）相比始终使用 GPT-4，成本降低约 90%，同时保持 95%+ 的质量。原因很直观：简单 query 在第一级就被"拦住了"，避免了昂贵的 GPT-4 调用。
+
+<CascadeChainFlow client:visible />
+
+## §2 AutoMix 自验证
+
+FrugalGPT 的评分函数引入了额外组件 — 要么是启发式统计，要么是需要训练的分类器。AutoMix（Madaan et al., 2023; NeurIPS 2024）提出了更优雅的方案：**让模型评估自己的输出**。
+
+核心机制是 **few-shot 自验证（self-verification）**：模型生成回答后，用 few-shot prompt 让同一个模型判断"这个回答是否可靠"。
+
+```
+Question: {query}
+Your answer: {answer}
+
+Evaluate if your answer is correct and complete.
+Respond with "Verified: Yes" or "Verified: No".
+```
+
+如果模型自评通过（Verified: Yes），则返回当前回答；否则升级到下一级模型重新回答。
+
+AutoMix 将路由决策建模为 **POMDP（Partially Observable Markov Decision Process，部分可观察马尔可夫决策过程）**：
+
+- **State** $s$：query 的真实难度（不可直接观察）
+- **Action** $a$：选择某个模型或升级到下一级
+- **Observation** $o$：模型的输出和自验证结果
+- **Reward** $r$：正确性减去成本，$r = \mathbb{1}[\text{correct}] - \lambda \cdot \text{cost}$
+
+POMDP 框架的优势在于：**显式建模不确定性**。我们不知道 query 的真实难度（部分可观察），只能通过模型输出和自验证结果间接推断。基于 belief state（信念状态）更新，系统可以做出更 principled 的升级决策。
+
+<SelfVerificationDemo client:visible />
+
+<POMDPDecisionTree client:visible />
+
+实验表明 AutoMix 在多个数据集上优于 FrugalGPT：在 MMLU 和 GSM8K 上，AutoMix 达到与 GPT-4 相近的质量，同时成本仅为 GPT-4 的 5-15%。关键优势是自验证不需要额外的路由模型或标注数据 — 只需设计合理的 few-shot prompt。
+
+## §3 置信度阈值的 Tradeoff
+
+级联路由的核心超参数是置信度阈值 $\tau$，它直接控制成本-质量权衡：
+
+**低阈值（$\tau$ 较小）**：
+- 更多 query 会被升级到更强模型
+- 质量提升，成本增加
+- 适合质量敏感场景（如医疗咨询、法律问答）
+
+**高阈值（$\tau$ 较大）**：
+- 更多 query 在第一级就被返回
+- 成本降低，但风险是错误回答未被拦截
+- 适合成本敏感场景（如大规模 chatbot）
+
+实际部署中，$\tau$ 的选择取决于业务需求。OpenRouter 等商业路由平台允许用户通过 API 参数动态调整阈值：
+
+```python
+response = openrouter.complete(
+    prompt=query,
+    models=["llama-3-8b", "gpt-4"],
+    routing_strategy="cascade",
+    confidence_threshold=0.7  # 可根据场景调整
+)
+```
+
+<ConfidenceThresholdSlider client:visible />
+
+FrugalGPT 实验显示，$\tau$ 的最优值通常在 0.6-0.8 之间 — 过低导致升级过于频繁（失去成本优势），过高导致错误答案被放行（质量下降）。AutoMix 通过 POMDP 框架动态调整决策，避免了固定阈值的局限。
+
+## §4 验证方式对比
+
+级联路由的有效性取决于验证机制的准确性。主流方法包括三种：
+
+### 自验证（Self-Verification）
+
+AutoMix 的核心方法：模型评估自己的输出。
+
+**优势**：
+- 零额外推理成本（只需在 prompt 中增加验证指令）
+- 不需要标注数据或训练单独模型
+- 直接利用模型本身的元认知能力（meta-cognitive ability）
+
+**局限**：
+- 模型可能高估或低估自己（校准问题，calibration）
+- 对于强模型（如 GPT-4）效果较好，弱模型的自我评估往往不可靠
+- 需要精心设计 few-shot prompt 来引导正确评估
+
+### LLM-as-Judge
+
+用另一个 LLM 评估回答质量。典型做法是用 GPT-4 作为 judge，评估小模型的输出。
+
+**优势**：
+- Judge 模型可以独立校准，不受生成模型影响
+- 可以评估复杂维度（事实正确性、完整性、是否遵循指令）
+- 适合多模型比较（如 AlpacaEval、MT-Bench）
+
+**局限**：
+- 增加额外推理成本（调用 judge 模型）
+- 如果 judge 本身就是最强模型（如 GPT-4），级联优势减弱
+- Judge 模型也有偏见（如 self-preference bias — 倾向于评自己的输出更高）
+
+Confidence-Driven LLM Router（2025）采用混合策略：用小模型自验证作为初筛，仅在边界情况下调用 judge 模型。实验表明这种方法可以在保持高准确率的同时，将 judge 调用次数减少 70%。
+
+<LLMAsJudgeFlow client:visible />
+
+### 人类评估（Human Evaluation）
+
+在线路由系统中，人类反馈（如点赞/点踩、后续编辑）是验证质量的金标准。
+
+**优势**：
+- 真实反映用户满意度
+- 可以捕捉模型无法察觉的细微质量问题
+- 为在线学习提供高质量 reward 信号
+
+**局限**：
+- 延迟高（需要等待用户反馈）
+- 成本高（标注人力或用户时间）
+- 覆盖率低（大多数 query 不会收到显式反馈）
+
+实际系统通常采用混合方案：自验证用于实时路由决策，LLM-as-Judge 或人类评估用于离线评估和模型更新。
+
+## 总结
+
+级联路由是 model routing 中最简单、最实用的方法之一 — 不需要偏好数据、不需要训练分类器，只需要一条按成本排序的模型链和一个验证机制。FrugalGPT 系统化地展示了级联策略的有效性，AutoMix 通过自验证和 POMDP 框架进一步减少了工程开销。
+
+核心 tradeoff 在于置信度阈值：低阈值优先质量、高阈值优先成本，实际部署需要根据业务场景调整。验证方式的选择也有权衡：自验证最轻量但可能不准确，LLM-as-Judge 更可靠但增加成本，人类评估最准确但延迟高。
+
+级联路由特别适合流量分布不均的场景 — 如果 80% 的 query 都很简单，级联可以带来数量级的成本节省。但它有一个根本局限：**假设了能力的严格偏序**（小模型能做的，大模型一定也能做），而现实中模型能力往往是互补的（specialized models 在某些任务上比 general models 更好）。下一篇文章将探讨 Hybrid LLM routing — 如何在本地小模型和云端大模型之间路由，这里隐私、延迟和成本的权衡变得更加复杂。
