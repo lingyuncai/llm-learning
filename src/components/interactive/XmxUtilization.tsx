@@ -56,65 +56,46 @@ const XmxUtilization: React.FC = () => {
 
   return (
     <div className="my-6 p-4 border rounded-lg">
-      <svg viewBox="0 0 580 360" className="w-full">
+      {/* HTML controls for interactivity */}
+      <div className="flex flex-wrap gap-4 mb-3">
+        <div>
+          <label className="text-xs text-gray-500 block">M: {M}</label>
+          <input type="range" min={32} max={4096} step={32} value={M}
+            onChange={e => setM(Number(e.target.value))} className="w-36" />
+        </div>
+        <div>
+          <label className="text-xs text-gray-500 block">K: {K}</label>
+          <input type="range" min={32} max={4096} step={32} value={K}
+            onChange={e => setK(Number(e.target.value))} className="w-36" />
+        </div>
+        <div>
+          <label className="text-xs text-gray-500 block">N: {N}</label>
+          <input type="range" min={32} max={4096} step={32} value={N}
+            onChange={e => setN(Number(e.target.value))} className="w-36" />
+        </div>
+        <div>
+          <label className="text-xs text-gray-500 block">数据类型</label>
+          <div className="flex gap-1">
+            {(['fp16', 'bf16', 'int8'] as Dtype[]).map(t => (
+              <button
+                key={t}
+                onClick={() => setDtype(t)}
+                className={`px-2 py-1 text-xs rounded border ${dtype === t ? 'bg-blue-700 text-white border-blue-700' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+              >
+                {t.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <svg viewBox="0 0 580 280" className="w-full">
         {/* Title */}
-        <text x="290" y="25" textAnchor="middle" fontFamily={FONTS.sans} fontSize="16" fontWeight="600" fill={COLORS.dark}>
+        <text x="290" y="20" textAnchor="middle" fontFamily={FONTS.sans} fontSize="16" fontWeight="600" fill={COLORS.dark}>
           XMX 利用率计算器
         </text>
 
-        {/* Controls */}
-        <g>
-          {/* M slider */}
-          <text x="40" y="55" fontFamily={FONTS.mono} fontSize="12" fill={COLORS.dark}>M: {M}</text>
-          <rect x="40" y="62" width="200" height="4" fill={COLORS.light} rx="2" />
-          <rect x="40" y="62" width={(M - 32) / (4096 - 32) * 200} height="4" fill={COLORS.primary} rx="2" />
-          <circle cx={40 + (M - 32) / (4096 - 32) * 200} cy="64" r="6" fill={COLORS.primary} stroke={COLORS.bg} strokeWidth="2" />
-
-          {/* K slider */}
-          <text x="40" y="90" fontFamily={FONTS.mono} fontSize="12" fill={COLORS.dark}>K: {K}</text>
-          <rect x="40" y="97" width="200" height="4" fill={COLORS.light} rx="2" />
-          <rect x="40" y="97" width={(K - 32) / (4096 - 32) * 200} height="4" fill={COLORS.primary} rx="2" />
-          <circle cx={40 + (K - 32) / (4096 - 32) * 200} cy="99" r="6" fill={COLORS.primary} stroke={COLORS.bg} strokeWidth="2" />
-
-          {/* N slider */}
-          <text x="40" y="125" fontFamily={FONTS.mono} fontSize="12" fill={COLORS.dark}>N: {N}</text>
-          <rect x="40" y="132" width="200" height="4" fill={COLORS.light} rx="2" />
-          <rect x="40" y="132" width={(N - 32) / (4096 - 32) * 200} height="4" fill={COLORS.primary} rx="2" />
-          <circle cx={40 + (N - 32) / (4096 - 32) * 200} cy="134" r="6" fill={COLORS.primary} stroke={COLORS.bg} strokeWidth="2" />
-
-          {/* Dtype buttons */}
-          <text x="340" y="65" fontFamily={FONTS.sans} fontSize="12" fill={COLORS.dark}>数据类型:</text>
-          {(['fp16', 'bf16', 'int8'] as Dtype[]).map((t, i) => (
-            <g key={t}>
-              <rect
-                x={340 + i * 70}
-                y={72}
-                width={60}
-                height={28}
-                fill={dtype === t ? COLORS.primary : COLORS.bgAlt}
-                stroke={COLORS.primary}
-                strokeWidth="1.5"
-                rx="4"
-                style={{ cursor: 'pointer' }}
-              />
-              <text
-                x={370 + i * 70}
-                y={90}
-                textAnchor="middle"
-                fontFamily={FONTS.mono}
-                fontSize="12"
-                fontWeight={dtype === t ? '600' : '400'}
-                fill={dtype === t ? COLORS.bg : COLORS.dark}
-                style={{ cursor: 'pointer', pointerEvents: 'none' }}
-              >
-                {t.toUpperCase()}
-              </text>
-            </g>
-          ))}
-        </g>
-
         {/* Utilization bar */}
-        <g transform="translate(0, 160)">
+        <g transform="translate(0, 40)">
           <text x="40" y="0" fontFamily={FONTS.sans} fontSize="13" fontWeight="600" fill={COLORS.dark}>XMX 利用率</text>
           <rect x="40" y="10" width="500" height="30" fill={COLORS.light} stroke={COLORS.mid} strokeWidth="1" rx="4" />
           <rect
@@ -139,7 +120,7 @@ const XmxUtilization: React.FC = () => {
         </g>
 
         {/* Alignment info */}
-        <g transform="translate(0, 220)">
+        <g transform="translate(0, 100)">
           <rect x="40" y="0" width="240" height="120" fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1" rx="4" />
           <text x="160" y="20" textAnchor="middle" fontFamily={FONTS.sans} fontSize="12" fontWeight="600" fill={COLORS.dark}>
             对齐要求
@@ -162,7 +143,7 @@ const XmxUtilization: React.FC = () => {
         </g>
 
         {/* Throughput comparison */}
-        <g transform="translate(290, 220)">
+        <g transform="translate(290, 100)">
           <rect x="0" y="0" width="250" height="120" fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1" rx="4" />
           <text x="125" y="20" textAnchor="middle" fontFamily={FONTS.sans} fontSize="12" fontWeight="600" fill={COLORS.dark}>
             吞吐量对比
@@ -185,7 +166,7 @@ const XmxUtilization: React.FC = () => {
         </g>
 
         {/* Recommendation */}
-        <g transform="translate(40, 350)">
+        <g transform="translate(40, 240)">
           <text x="0" y="0" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
             {metrics.utilization >= 90
               ? `✓ 优秀 — 维度已充分对齐，XMX 利用率高`
