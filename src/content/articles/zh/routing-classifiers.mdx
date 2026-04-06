@@ -1,0 +1,118 @@
+---
+title: "路由分类器：让小模型决定谁来回答"
+slug: routing-classifiers
+locale: zh
+tags: [model-routing, classifier, matrix-factorization, bert, semantic-routing]
+difficulty: advanced
+prerequisites: [model-routing-landscape]
+created: "2026-04-06"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "RouteLLM: Learning to Route LLMs with Preference Data"
+    url: "https://arxiv.org/abs/2406.18665"
+  - type: paper
+    title: "Small Models, Big Decisions: Language Models as Routers"
+    url: "https://arxiv.org/abs/2604.02367"
+  - type: website
+    title: "semantic-router: Superfast Decision-Making Layer"
+    url: "https://github.com/aurelio-labs/semantic-router"
+---
+
+import MatrixFactorizationViz from '../../../components/interactive/MatrixFactorizationViz.tsx';
+import BertRouterFlow from '../../../components/interactive/BertRouterFlow.tsx';
+import CausalLMRouter from '../../../components/interactive/CausalLMRouter.tsx';
+import SemanticRoutingViz from '../../../components/interactive/SemanticRoutingViz.tsx';
+import DecisionBoundaryCompare from '../../../components/interactive/DecisionBoundaryCompare.tsx';
+
+上一篇我们梳理了 model routing 的全景图。本篇聚焦其中最核心也最成熟的一类方法：**分类器路由**（classifier-based routing）。
+
+核心思想极其简洁：训练一个轻量分类器来回答一个二分类问题 — **"这个 query 需要强模型吗？"** 将路由决策转化为标准的分类任务后，我们可以复用整个机器学习工具箱：从矩阵分解到 BERT 微调，再到小语言模型和 embedding 匹配。分类器路由的推理开销极低（通常 ~5-15ms），但需要某种形式的训练数据或预定义模板。
+
+以下四种分类器代表了从"需要大量偏好数据"到"零训练成本"的完整谱系。
+
+## §1 偏好数据与 Matrix Factorization
+
+**数据来源**是分类器路由的基础。RouteLLM（Ong et al., 2024）的关键贡献之一是发现 **Chatbot Arena 的人类偏好数据**可以直接用于训练路由器。Chatbot Arena 是一个大规模的匿名对战平台 — 用户提交 query，两个随机模型分别回答，用户投票选出更好的回答。截至 2024 年中，该平台积累了超过 80K 条人类偏好对比数据。
+
+**Matrix Factorization（MF）路由器**的原理借鉴了推荐系统。将每个 query $q$ 和每个 model $m$ 分别映射到同一 $d$ 维向量空间，得到 $\mathbf{q} \in \mathbb{R}^d$ 和 $\mathbf{m} \in \mathbb{R}^d$。路由得分通过内积计算：
+
+$$s(q, m) = \mathbf{q}^\top \mathbf{m} + b_m$$
+
+其中 $b_m$ 是模型偏置项（model bias）。直觉上，$\mathbf{q}$ 编码了"query 需要什么能力"，$\mathbf{m}$ 编码了"模型擅长什么"，内积衡量两者的匹配程度。训练目标是让赢了的模型得分高于输了的模型 — 本质上是 Bradley-Terry 偏好模型的低秩近似。
+
+路由时，计算 $s(q, \text{strong}) - s(q, \text{weak})$，如果差值超过阈值 $\tau$ 则选强模型。RouteLLM 的实验表明：MF router 可以在将 API 调用成本降低超过 85% 的同时，保持约 95% 的 GPT-4 级别质量（Ong et al., 2024）。这个效果之所以惊人，是因为 MF router 本身极其轻量 — 推理时只需一次 embedding lookup 加一个内积运算。
+
+<MatrixFactorizationViz client:visible />
+
+## §2 BERT Router
+
+如果没有 Chatbot Arena 那样的偏好数据怎么办？**BERT 分类器路由器**提供了一条更直接的路线。
+
+**训练数据构造**：用强模型（如 GPT-4）和弱模型（如 Llama-3-8B）分别回答同一批 query，然后通过人工评估或自动评估（如 LLM-as-Judge）标注每个 query 的 label — "强模型显著更好"标为 1，"弱模型已经足够"标为 0。这样就得到了标准的二分类数据集。
+
+**模型结构**：在预训练 BERT（110M 参数）的 [CLS] token 表征上接一个线性分类头，输出 $P(\text{需要强模型} \mid q)$。微调时冻结 BERT 底层、只训练顶层和分类头，通常几千条样本就能达到不错的效果。
+
+**推理性能**：BERT router 的推理极快 — 在 CPU 上约 15ms 即可完成一次路由判断，远低于任何 LLM 的首 token 延迟。模型体积小（~440MB），可以部署在任何服务器上，甚至可以和业务逻辑放在同一个进程里（RouteLLM, Ong et al., 2024）。
+
+**阈值选择**：分类器输出的是概率值 $p$，而路由决策需要一个二元结果。阈值 $\tau$ 的选择直接决定了质量-成本的 tradeoff。在验证集上绘制 ROC 曲线（Receiver Operating Characteristic），选择使 $F_1$ 最优或在目标成本约束下质量最高的 $\tau$ 值。实践中通常 $\tau \in [0.3, 0.7]$，偏低意味着更多 query 被发送给强模型（质量优先），偏高则更多走弱模型（成本优先）。
+
+**局限性**：BERT 的上下文窗口固定（512 tokens），无法处理长 query；决策边界在训练后就固定了，如果模型能力发生变化（比如弱模型升级了），需要重新训练。
+
+<BertRouterFlow client:visible />
+
+## §3 Causal LM Router
+
+2026 年的一个重要进展是用**小型语言模型本身**来做路由判断。Small Models, Big Decisions（2026）提出：既然 1-4B 参数的小语言模型已经具备相当的语义理解能力，为什么不直接让它判断 query 的难度？
+
+**关键洞察**：将路由判断转化为文本分类任务。给小模型一个 prompt："Given the following query, predict whether a large language model is needed to answer it well. Query: {q}. Answer: [YES/NO]"。模型输出 YES 或 NO 的 logit 差值作为路由得分。
+
+这种方法有一个独特的架构优势 — **zero-marginal-cost routing**。如果小语言模型本身就是候选的弱模型之一，那么路由判断可以"顺便"完成：模型在处理 query 的前几个 token 时就能输出路由决策，如果判断自己能处理，则继续生成回答；如果判断需要强模型，则将 query 转发（Small Models as Routers, 2026）。
+
+**实验结果**：在论文的评估中，4B 参数的小模型达到了 78.3% 的路由准确率。虽然不如精心训练的 BERT router（通常 >85%），但语义理解能力远强于 BERT — 它能理解"请比较 Kant 和 Hegel 的认识论差异"这类需要深层语义分析的 query，而 BERT 可能只能捕捉到关键词层面的信号。
+
+**与 BERT 的核心 tradeoff**：Causal LM router 的语义理解更强，但推理速度更慢（~50-100ms vs BERT 的 ~15ms）。在 zero-marginal-cost 场景下这个差距消失 — 因为小模型本来就要处理 query。但如果小模型不是候选模型之一，额外的推理开销就需要考量。
+
+<CausalLMRouter client:visible />
+
+## §4 Semantic Routing
+
+前三种方法都需要某种形式的训练。**Semantic routing**（语义路由）走了完全不同的路线 — **零训练成本，基于预定义模板匹配**。
+
+**原理**：开发者预先定义一组 route（路由模板），每个 route 包含若干示例 utterance（话语样本）。系统将每个 utterance 和传入的 query 分别编码为 embedding 向量，通过 **cosine 相似度**匹配最近的 route。semantic-router 库（Aurelio Labs）将这个过程优化到了约 5ms 的延迟。
+
+例如，定义两个 route：
+- `simple_tasks`：包含 "今天天气怎么样"、"帮我翻译这句话"、"1+1 等于几" 等示例
+- `complex_tasks`：包含 "分析这篇论文的方法论缺陷"、"帮我重构这段代码的架构"、"比较三种排序算法的时间复杂度" 等示例
+
+新 query 进来时，计算其 embedding 与所有 route 示例的 cosine 相似度，选择平均相似度最高的 route。如果最高相似度低于某个阈值，则走默认路由（通常是强模型）。
+
+**优势**明显：部署极简（只需要一个 embedding 模型），无需训练数据，延迟极低（~5ms），规则可以随时更新（增删 route 示例即可生效）。
+
+**局限性**同样明显：路由质量完全取决于模板的覆盖度。如果用户提出一个与所有模板都不太匹配的 query，semantic router 只能退回默认路由。此外，它本质上是一个最近邻分类器，无法学习复杂的决策边界 — 比如"同样是翻译任务，文学翻译需要强模型而日常翻译不需要"这种细粒度区分，semantic routing 很难捕捉。
+
+**适用场景**：任务类型已知且明确的场景 — 客服系统（意图已知）、特定领域的 chatbot（问题类型有限）、API 网关的请求分流等。
+
+<SemanticRoutingViz client:visible />
+
+## §5 决策边界对比
+
+四种分类器在相同的 query 集上会做出怎样不同的判断？它们的决策边界（decision boundary）反映了各自的设计哲学：
+
+**MF Router** 的决策边界最灵活 — 它从偏好数据中学习到的是 query-model 匹配关系，同一类型的 query 可能因为细微的表述差异而被路由到不同的模型。这种灵活性来自于低维向量空间中的连续表征。
+
+**BERT Router** 的决策边界在训练后固定，表现为特征空间中的一个超平面。它在训练数据覆盖的区域表现良好，但在边界附近（$p \approx \tau$ 的 query）容易犯错。典型的失败模式是：对训练集中少见的 query 类型过于自信地给出"不需要强模型"的判断。
+
+**Causal LM Router** 倾向于更保守的决策 — 由于小语言模型对 query 难度有更深的语义理解，它更容易识别出"看起来简单但实际复杂"的 query（如"解释为什么 0.1 + 0.2 ≠ 0.3"），因此会将更多 query 路由到强模型。这意味着成本略高，但质量上限也更高。
+
+**Semantic Router** 做出最激进的决策 — 由于它基于模板匹配，对于与 simple_tasks 模板相似的 query 会果断选择弱模型。这导致它的弱模型使用率最高，但也意味着在模板覆盖不足的区域，错误率会显著上升。
+
+<DecisionBoundaryCompare client:visible />
+
+## 总结
+
+四种分类器路由方法构成了一个完整的谱系：MF Router 数据驱动、灵活性最强但依赖偏好数据；BERT Router 训练简单、推理极快但决策边界固定；Causal LM Router 语义理解最深但推理成本更高（除非 zero-marginal-cost）；Semantic Router 零训练成本、部署最简但依赖模板覆盖度。
+
+选择哪种方法取决于你的约束条件：有偏好数据选 MF，有标注数据选 BERT，候选模型中有小 LM 选 Causal LM，任务类型明确选 Semantic。实际生产中，混合使用多种路由器（如 Semantic 做粗筛 + BERT 做细分）也是常见的实践。
+
+下一篇将介绍另一类路由策略 — **级联与自验证**（cascade & self-verification）：不是事先判断 query 难度，而是"先让弱模型试试，不行再升级"。
