@@ -1,0 +1,105 @@
+---
+title: "性能分析与瓶颈诊断"
+slug: igpu-performance-analysis
+locale: zh
+tags: [intel, performance, profiling, roofline, vtune, bottleneck]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [onednn-gpu-optimization, openvino-graph-pipeline]
+references:
+  - type: website
+    title: "Intel VTune Profiler — GPU Analysis — Intel"
+    url: "https://www.intel.com/content/www/us/en/docs/vtune-profiler/user-guide/current/gpu-compute-media-hotspots-analysis.html"
+  - type: website
+    title: "OpenVINO Benchmark Tool — Intel"
+    url: "https://docs.openvino.ai/2024/learn-openvino/openvino-samples/benchmark-tool.html"
+  - type: website
+    title: "Intel GPU Top — intel_gpu_top man page"
+    url: "https://manpages.ubuntu.com/manpages/noble/man1/intel_gpu_top.1.html"
+---
+
+import IGpuRoofline from '../../../components/interactive/IGpuRoofline.tsx';
+import BottleneckDiagnosisTree from '../../../components/interactive/BottleneckDiagnosisTree.tsx';
+import VTuneGpuProfile from '../../../components/interactive/VTuneGpuProfile.tsx';
+import BenchmarkDashboard from '../../../components/interactive/BenchmarkDashboard.tsx';
+
+## iGPU 性能分析的特殊挑战
+
+在集成 GPU (iGPU) 上进行性能分析与独立 GPU 有显著差异。iGPU 与 CPU 共享内存和功耗预算，其性能表现受到多个系统级因素的影响：共享的 LPDDR 内存带宽（通常在 50-120 GB/s 之间）、动态功耗分配（CPU 和 GPU 竞争有限的 TDP）、以及温度墙导致的频率降低。这些因素交织在一起，使得性能瓶颈的诊断变得更加复杂。
+
+Intel 的 iGPU 架构（如 Xe、Xe2）在推理场景中常见的瓶颈包括：**内存带宽受限**（Memory-bound，小 batch 或低复用算子如 Softmax、LayerNorm）、**计算受限**（Compute-bound，大矩阵乘法但未充分利用 XMX）、**主机端受限**（Host-bound，过多同步点或小 kernel 频繁调度）、以及**功耗/热限**（Throttling，长时间运行导致降频）。准确识别瓶颈类型是优化的前提，而 Roofline 模型、VTune Profiler 和 OpenVINO Benchmark Tool 是三大核心工具。
+
+性能分析的目标不仅是找到慢在哪里，更重要的是理解**为什么慢**以及**优化空间在哪里**。例如，如果 EU (Execution Unit) 利用率只有 30%，可能是 occupancy 不足（线程数太少）、也可能是频繁的 barrier 导致 stall。只有结合 GPU 架构特性和工具数据，才能制定有效的优化策略。
+
+## 工具链概览
+
+Intel iGPU 性能分析的工具栈由三层组成：**系统级监控**（`intel_gpu_top`，实时查看 GPU 利用率、频率、功耗）、**应用级 profiling**（VTune Profiler，深度分析 EU 活动、内存带宽、XMX 使用率）、以及**推理 benchmark**（OpenVINO `benchmark_app`，端到端延迟和吞吐量测试）。
+
+`intel_gpu_top` 是轻量级的监控工具，类似 `nvidia-smi`，能实时显示 GPU 的 Render、Compute 引擎占用率、当前频率、功耗等。它适合快速确认 GPU 是否在工作、是否降频。VTune Profiler 则是重量级工具，通过采样或 instrumentation 收集硬件计数器数据，能精确定位哪些 kernel 慢、EU 是否 stall、L3 cache 命中率、XMX 忙碌程度等。它的 GPU Compute/Media Hotspots 分析视图是诊断 iGPU 瓶颈的核心。
+
+OpenVINO 的 `benchmark_app` 是推理专用的 benchmark 工具，支持多线程异步推理（通过 `nireq` 参数控制并发请求数）、首次推理预热（消除 kernel 编译开销）、以及详细的延迟统计（Median、Average、Min、Max、P99）。它的输出是端到端性能的黄金标准，也是优化效果验证的基准。三个工具配合使用：`intel_gpu_top` 快速排查系统级问题，VTune 深入分析微架构瓶颈，`benchmark_app` 验证优化效果。
+
+## Roofline 分析在 iGPU 上的应用
+
+Roofline 模型是性能分析的经典方法，它将算子的 **Arithmetic Intensity (AI)** 和实际性能映射到二维图上，通过与理论峰值对比，直观地判断算子是 compute-bound 还是 memory-bound。对于 Intel iGPU，Roofline 有两条计算峰值线：**XMX 峰值**（用于矩阵运算，Xe2 约 2 TOPS FP16）和**向量峰值**（用于非矩阵运算，约为 XMX 的 50-60%）。
+
+内存带宽斜率由 LPDDR 带宽决定（LPDDR5x 约 90 GB/s）。当算子的 AI 较低（如 Softmax 的 AI < 5 FLOP/Byte）时，性能被带宽限制，落在斜率线上；当 AI 较高（如大 MatMul 的 AI > 50）时，性能逼近计算峰值，成为 compute-bound。**Ridge Point** 是两条线的交点（AI = 峰值 TOPS / 带宽 GB/s），它标志着算子从 memory-bound 过渡到 compute-bound 的临界点。
+
+下图展示了 Xe2 iGPU 的 Roofline 模型，以及典型 Transformer 算子的性能分布。可以看到，`MatMul-large` 接近 XMX 峰值，而 `Softmax` 和 `LayerNorm` 受限于带宽。点击切换不同算子，观察它们在 Roofline 上的位置。对于 memory-bound 算子，优化重点是**减少内存访问**（算子融合、blocked format）；对于 compute-bound 算子，优化重点是**提高计算效率**（降低精度、充分利用 XMX）。
+
+<IGpuRoofline client:visible />
+
+Roofline 的局限性在于它假设算子能达到理论峰值，但实际中 occupancy 不足、cache miss、同步开销等都会导致偏离。因此，Roofline 主要用于**初步判断瓶颈类型**，而不是精确的性能预测工具。它告诉我们优化方向，具体优化手段需要结合 profiler 数据。
+
+## 常见瓶颈模式
+
+iGPU 推理性能不佳的根因通常可以归为四类：**Compute-bound**（计算能力不足）、**Memory-bound**（内存带宽不足）、**Host-bound**（CPU 端开销过大）、以及 **Throttling**（功耗或温度限制）。识别瓶颈的起点是 **GPU 利用率**：如果 GPU Busy 超过 80%，瓶颈在 GPU 端（计算或内存）；如果 GPU Busy 低于 50%，瓶颈可能在 CPU 端或系统级。
+
+对于 GPU 端瓶颈，进一步通过 **Arithmetic Intensity** 判断：高 AI 算子（如大 MatMul）通常是 compute-bound，优化方向是降低精度（FP16/INT8）、使用 XMX 矩阵引擎、或算法层面降低计算量（如稀疏化、知识蒸馏）。低 AI 算子（如 Softmax、LayerNorm、小 MatMul）通常是 memory-bound，优化方向是减少内存搬运（算子融合、in-place 操作）、使用 blocked format 提高 cache 命中率、或增加 data reuse（如 shared local memory）。
+
+对于 Host-bound 瓶颈，常见原因是频繁的同步点（`clFinish`、`clEnqueueBarrier`）、小 kernel 的调度开销、或 host-device 数据拷贝过多。优化方法包括：使用异步推理 API（OpenVINO 的 `InferRequest::start_async()`）、batch 多次推理请求、减少不必要的同步、以及避免每次推理都拷贝数据（复用 tensor）。Throttling 问题则需要从系统层面解决：检查功耗配置（确保 turbo 开启）、改善散热、或调整 DVFS 策略。
+
+<BottleneckDiagnosisTree client:visible />
+
+## 优化决策树
+
+上图的决策树展示了从性能问题到具体优化手段的完整路径。实际使用中，建议按以下流程操作：首先运行 `intel_gpu_top` 和 `benchmark_app`，获取 GPU 利用率和端到端延迟；然后根据利用率高低，决定是用 VTune 深入分析 GPU 端（查看 EU Active/Stall/Idle、L3 带宽、XMX 使用率），还是用 perf/strace 分析 CPU 端开销。
+
+如果 VTune 显示 **EU Active 高（>70%）且 L3 带宽接近峰值**，说明是 memory-bound，优先考虑算子融合（如 MatMul+Add+ReLU 融合为单个 kernel）、使用 OneDNN 的 blocked format（`nChw16c`）、或检查是否有冗余的 reorder 操作。如果 **EU Active 高但带宽未饱和**，说明是 compute-bound，检查是否使用了 XMX（VTune 中查看 XMX Busy 指标）、精度是否过高（FP32 改为 FP16）、或算子实现是否高效（对比 OneDNN 优化 kernel vs. 自定义实现）。
+
+如果 **EU Idle 高或 Stall 高**，说明 occupancy 不足或同步过多。检查 thread group size 配置（是否过小导致 EU 闲置）、是否有频繁的 barrier（降低并行度）、或 SLM (Shared Local Memory) 使用是否过度（导致 occupancy 下降）。如果 **GPU Busy 低但 CPU 占比高**，用 VTune 的 Threading Analysis 查看 CPU 端线程活动，定位是推理 API 调用开销（切换到异步）、数据预处理瓶颈（如 OpenCV resize，考虑 GPU 预处理）、还是框架 overhead（如 Python GIL，考虑 C++ API）。
+
+## VTune GPU 分析实操
+
+VTune Profiler 的 **GPU Compute/Media Hotspots** 分析视图是诊断 iGPU 瓶颈的核心工具。运行命令：`vtune -collect gpu-hotspots -result-dir vtune_results -- ./my_app`，然后在 GUI 中打开结果。关键指标包括：**EU Active**（EU 执行有效指令的时间占比，越高越好，目标 >80%）、**EU Stall**（EU 等待数据或同步的时间，高 stall 说明 memory-bound 或同步过多）、**EU Idle**（EU 空闲时间，高 idle 说明 occupancy 不足，可能是 kernel launch 配置不当）。
+
+**L3 Bandwidth** 显示实际内存带宽占峰值的比例。如果接近 100%，说明 memory-bound，需要减少数据搬运。**SLM Usage** 显示 Shared Local Memory 使用量（每个 subslice 64KB）。过度使用 SLM 会降低 occupancy（因为硬件资源有限，无法同时运行更多 thread group）。**XMX Busy** 显示矩阵引擎的利用率，如果矩阵运算占比高但 XMX Busy 低，说明未启用 XMX 或数据类型不支持（只有 FP16/BF16/INT8 才能用 XMX）。
+
+下图模拟了 VTune 的输出视图，展示了各指标的含义和诊断方向。实际使用中，结合 **Bottom-up by GPU Task** 视图（按 kernel 排序）和 **Timeline** 视图（查看 kernel 执行序列），可以精确定位耗时最长的 kernel、识别不必要的同步点、以及发现 CPU-GPU pipeline bubble（GPU 等待 CPU 提交下一个任务）。
+
+<VTuneGpuProfile />
+
+VTune 还支持 **Source View**（需要 debug symbols），可以将 hotspot 定位到具体的代码行。对于 OpenVINO 推理，大部分时间会落在 OneDNN kernel 内部，这时需要对照 OneDNN 的 verbose log（`ONEDNN_VERBOSE=1`）来关联 kernel 名称和算子。例如，如果看到 `brgemm` kernel 耗时长且 XMX Busy 低，说明 MatMul 未使用 XMX，需检查数据类型或 OneDNN primitive hint。
+
+## OpenVINO Benchmark 实操
+
+OpenVINO 的 `benchmark_app` 是推理性能测试的标准工具。基本用法：`benchmark_app -m model.xml -d GPU -niter 1000`。关键参数：`-d GPU` 指定设备，`-niter` 指定迭代次数（至少 1000 次以获得稳定统计），`-nireq N` 设置并发推理请求数（用于异步推理，模拟真实吞吐场景），`-nstreams` 设置 GPU stream 数量（Xe 架构下通常设为 2-4）。
+
+输出中的 **Latency** 是最重要的指标。**Median** 是中位数延迟，最稳定、受异常值影响最小，是性能对比的首选指标。**Average** 是平均延迟，用于计算吞吐量（FPS = 1000 / avg_latency × nireq）。**Min** 是最优情况，但第一次推理通常不是 Min（因为有 kernel 编译开销）。**Max** 是最坏情况，通常出现在首次推理（首次执行 OpenCL kernel 会触发 JIT 编译，耗时 10-100ms），后续推理会使用 cache。
+
+**P99 (99th percentile)** 是 99% 的请求延迟低于该值，它比 Max 更能反映真实的**长尾延迟**，常用于 SLA 保证。如果 P99 远高于 Median（如 Median 10ms、P99 50ms），说明存在偶发的性能尖刺，可能原因是 CPU 调度抖动、thermal throttling、或 cache miss。**Throughput** 是每秒处理的帧数，计算公式：`FPS = 1000 / (avg_latency / nireq)`。提高吞吐量的方法是增加 `nireq`（充分利用 GPU 并行度），但延迟会相应增加。
+
+<BenchmarkDashboard />
+
+首次运行 `benchmark_app` 时，Max 会非常高（因为 OpenCL kernel 编译）。解决方法是使用 **OpenCL kernel cache**：设置环境变量 `CL_CONFIG_USE_PERSISTENT_CACHE=1` 和 `CL_CONFIG_PERSISTENT_CACHE_PATH=/path/to/cache`，首次运行后会生成 cache 文件，后续运行直接加载，消除编译开销。对于生产部署，建议预先生成 cache（warmup 阶段）并随应用分发。
+
+对比不同优化手段的效果时，务必使用**相同的测试条件**：相同的 `niter`、`nireq`、`nstreams`、以及相同的输入数据（避免 cache 效应差异）。多次运行取 Median 的平均值，消除系统噪声。如果优化后 Median 下降 {"<"}5%，可能在误差范围内（需要更多样本或更长测试时间）；如果下降 >20%，说明优化显著有效。
+
+## 总结
+
+iGPU 性能分析是一个系统工程，需要理解硬件架构（EU、XMX、L3、内存带宽）、掌握工具链（Roofline、VTune、benchmark_app）、以及熟悉推理框架（OpenVINO、OneDNN）。本文介绍的方法论是：**先用 Roofline 判断瓶颈类型** → **用 VTune 深入分析微架构指标** → **用 benchmark_app 验证优化效果** → **根据决策树选择优化手段**。
+
+实际优化是迭代过程，而非一蹴而就。首先消除低垂的果实（如启用 FP16、修复 format mismatch、消除冗余 reorder），通常能带来 20-50% 提升。然后针对 hotspot kernel 定向优化（算子融合、SLM 优化、thread group tuning），可能再提升 10-30%。最后是算法层面优化（模型剪枝、蒸馏、稀疏化），这是长期工程。性能分析的价值在于**量化每一步优化的收益**，避免盲目尝试和过早优化。
+
+对于生产环境，建议建立**性能回归测试体系**：每次模型更新或框架升级后，自动运行 `benchmark_app` 并对比历史数据，及时发现性能退化。结合 VTune 的 Command Line Interface（`vtune -collect gpu-hotspots -r result -report summary`），可以将关键指标集成到 CI/CD pipeline 中。最终目标是让性能分析成为开发流程的一部分，而非事后补救。
