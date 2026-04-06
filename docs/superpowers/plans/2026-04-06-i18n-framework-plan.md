@@ -164,18 +164,18 @@ export function getOtherLocale(locale: Locale): Locale {
 }
 
 export function difficultyLabel(locale: Locale, difficulty: string): string {
-  const key = `difficulty_${difficulty}` as TranslationKey;
-  return translations[locale]?.[key] ?? difficulty;
+  const key = `difficulty_${difficulty}`;
+  return (translations[locale] as Record<string, string>)[key] ?? difficulty;
 }
 
 export function refTypeLabel(locale: Locale, type: string): string {
-  const key = `ref_${type}` as TranslationKey;
-  return translations[locale]?.[key] ?? type;
+  const key = `ref_${type}`;
+  return (translations[locale] as Record<string, string>)[key] ?? type;
 }
 
 export function resourceTypeLabel(locale: Locale, type: string): string {
-  const key = `resource_${type}` as TranslationKey;
-  return translations[locale]?.[key] ?? type;
+  const key = `resource_${type}`;
+  return (translations[locale] as Record<string, string>)[key] ?? type;
 }
 ```
 
@@ -599,15 +599,46 @@ function getNavigation(pathObj: typeof paths[0]) {
 </BaseLayout>
 ```
 
-- [ ] **Step 6: Verify build still passes**
+- [ ] **Step 6: Update zh/ page imports (prevents build breakage)**
+
+The three `zh/` page files still import `difficultyLabel` from `constants.ts`, which was just removed. Update them now so the build doesn't break. These files will be deleted in Task 4, but must compile until then.
+
+**`src/pages/zh/index.astro`** — change line 5:
+```typescript
+// FROM:
+import { difficultyLabel, difficultyColor } from '../../utils/constants';
+// TO:
+import { difficultyLabel } from '../../i18n/utils';
+import { difficultyColor } from '../../utils/constants';
+```
+Also update usage: change `{difficultyLabel[p.level]}` to `{difficultyLabel('zh', p.level)}` and `{difficultyLabel[article.data.difficulty]}` to `{difficultyLabel('zh', article.data.difficulty)}`.
+
+**`src/pages/zh/paths/[id].astro`** — change line 5:
+```typescript
+// FROM:
+import { difficultyLabel, difficultyColor } from '../../../utils/constants';
+// TO:
+import { difficultyLabel } from '../../../i18n/utils';
+import { difficultyColor } from '../../../utils/constants';
+```
+Also update usage: change `{difficultyLabel[article!.data.difficulty]}` to `{difficultyLabel('zh', article!.data.difficulty)}`.
+
+**`src/pages/zh/tags/[tag].astro`** — change line 4:
+```typescript
+// FROM:
+import { difficultyLabel, difficultyColor } from '../../../utils/constants';
+// TO:
+import { difficultyLabel } from '../../../i18n/utils';
+import { difficultyColor } from '../../../utils/constants';
+```
+Also update usage: change `{difficultyLabel[article.data.difficulty]}` to `{difficultyLabel('zh', article.data.difficulty)}`.
+
+- [ ] **Step 7: Verify build still passes**
 
 Run: `npm run build`
-Expected: Build succeeds. All components use `locale = 'zh'` default, so behavior is unchanged for existing pages. The removed `difficultyLabel` export from `constants.ts` is no longer imported anywhere (ArticleLayout now imports from `i18n/utils`).
+Expected: Build succeeds. All components use `locale = 'zh'` default, behavior unchanged.
 
-**Important:** If build fails because other files still import `difficultyLabel` from `constants.ts`, search for those imports and update them:
-Run: `grep -r "difficultyLabel" src/pages/ --include="*.astro"` and update any remaining imports to use `import { difficultyLabel } from '../../i18n/utils'` (or appropriate relative path).
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/components/layout/ArticleLayout.astro src/components/common/PrerequisiteHint.astro src/components/common/ReferenceCard.astro src/components/common/TableOfContents.astro src/utils/constants.ts
@@ -722,7 +753,6 @@ import { getCollection, render } from 'astro:content';
 import ArticleLayout from '../../../components/layout/ArticleLayout.astro';
 import BaseLayout from '../../../components/layout/BaseLayout.astro';
 import { t, type Locale } from '../../../i18n/utils';
-import { getAllPaths } from '../../../utils/paths';
 
 export async function getStaticPaths() {
   const allArticles = await getCollection('articles');
@@ -764,18 +794,8 @@ if (article) {
   headings = rendered.headings;
 }
 
-// For Coming Soon, try to get the English title from learning path YAML
-let displayTitle = zhTitle || Astro.params.slug;
-if (comingSoon) {
-  const paths = getAllPaths();
-  for (const p of paths) {
-    if (p.articles.includes(Astro.params.slug as string)) {
-      // Path has English title, but we need article-level title
-      // Fall back to zhTitle which we already have
-      break;
-    }
-  }
-}
+// For Coming Soon, display the Chinese title (no article-level English title available)
+const displayTitle = zhTitle || Astro.params.slug;
 ---
 {article ? (
   <ArticleLayout
