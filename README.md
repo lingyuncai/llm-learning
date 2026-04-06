@@ -1,90 +1,92 @@
+🌐 [中文](README.zh.md) | **English**
+
 # LLM Learning
 
-基于 Astro + MDX + React 构建的 LLM 技术知识库网站，以交互式可视化的方式讲解大语言模型核心概念。
+An interactive knowledge base for LLM technologies, built with Astro + MDX + React. Learn core concepts through interactive visualizations.
 
-> **注意：本项目的所有内容（文章、交互组件、可视化）均由 AI 生成。** 内容可能存在错误、不准确或过时之处。如果你发现任何问题，欢迎到 [GitHub Issues](https://github.com/jonathanding/llm-learning/issues) 反馈。
+> **Note: All content (articles, interactive components, visualizations) on this site is AI-generated.** It may contain errors or inaccuracies. If you find any issues, please report them at [GitHub Issues](https://github.com/jonathanding/llm-learning/issues).
 
-**在线访问**: https://jonathanding.github.io/llm-learning/
+**Live site**: https://jonathanding.github.io/llm-learning/
 
-## 技术栈
+## Tech Stack
 
-- **框架**: Astro 5 (Islands 架构)
-- **内容**: MDX (Markdown + JSX)
-- **交互组件**: React + Motion
-- **数学公式**: KaTeX (remark-math + rehype-katex)
-- **可视化**: D3.js + 自定义 SVG
-- **样式**: Tailwind CSS + @tailwindcss/typography
-- **语言**: TypeScript
-- **部署**: GitHub Pages + GitHub Actions
+- **Framework**: Astro 5 (Islands Architecture)
+- **Content**: MDX (Markdown + JSX)
+- **Interactive Components**: React + Motion
+- **Math Rendering**: KaTeX (remark-math + rehype-katex)
+- **Visualization**: D3.js + custom SVG
+- **Styling**: Tailwind CSS + @tailwindcss/typography
+- **Language**: TypeScript
+- **Deployment**: GitHub Pages + GitHub Actions
 
-## 内容
+## Content
 
-目前包含 16 篇中文文章、90 个交互式可视化组件，按学习路径组织：
+Currently contains 16 Chinese articles, 90+ interactive visualization components, organized into learning paths:
 
-### Transformer Core (Transformer 核心)
+### Transformer Core
 
-1. **Transformer 网络结构总览** — 整体架构与组件介绍
-2. **QKV 的数据结构与直觉** — Query/Key/Value 的几何意义
-3. **Attention 计算详解** — Scaled Dot-Product Attention 的完整推导
-4. **Multi-Head Attention** — 多头注意力的并行计算结构
-5. **MQA 与 GQA** — 多查询/分组查询注意力的优化策略
-6. **KV Cache 原理** — 缓存机制与内存优化
-7. **Prefill vs Decode** — 两阶段推理的计算特性分析
-8. **Flash Attention** — 分块计算与 IO 感知优化
-9. **Positional Encoding** — 位置编码与 RoPE
-10. **Sampling and Decoding** — 采样策略与解码算法
-11. **Speculative Decoding** — 投机解码加速推理
+1. **Transformer Architecture Overview** — Overall structure and components
+2. **QKV Data Structures and Intuition** — Geometric meaning of Query/Key/Value
+3. **Attention Computation Explained** — Complete derivation of Scaled Dot-Product Attention
+4. **Multi-Head Attention** — Parallel computation structure of multi-head attention
+5. **MQA and GQA** — Multi-Query and Grouped-Query Attention optimization strategies
+6. **KV Cache Principles** — Caching mechanism and memory optimization
+7. **Prefill vs Decode** — Computational characteristics of two-phase inference
+8. **Flash Attention** — Block computation and IO-aware optimization
+9. **Positional Encoding** — Position encoding and RoPE
+10. **Sampling and Decoding** — Sampling strategies and decoding algorithms
+11. **Speculative Decoding** — Accelerated inference through speculative decoding
 
-### AI Compute Stack (AI 计算栈)
+### AI Compute Stack
 
-12. **AI Compute Stack 全景** — 从推理框架到硬件 ISA 的七层结构
-13. **GPU Architecture** — 从晶体管到线程，SM 内部结构详解
-14. **矩阵加速单元** — Tensor Core 与 XMX，Systolic Array 原理
-15. **CUDA 编程模型** — 从代码到硬件，Thread/Block/Grid 映射
-16. **GEMM 优化** — 从 Naive 到极致，Tiling/Thread Tile/Tensor Core
+12. **AI Compute Stack Landscape** — Seven-layer structure from inference frameworks to hardware ISA
+13. **GPU Architecture** — From transistors to threads, SM internal structure explained
+14. **Matrix Acceleration Units** — Tensor Core and XMX, Systolic Array principles
+15. **CUDA Programming Model** — From code to hardware, Thread/Block/Grid mapping
+16. **GEMM Optimization** — From naive to optimal, Tiling/Thread Tile/Tensor Core
 
-每篇文章包含交互式可视化组件、数学公式推导和参考文献。
+Each article includes interactive visualization components, mathematical derivations, and references.
 
-## 开发
+## Development
 
 ```bash
-# 安装依赖
+# Install dependencies
 npm install
 
-# 启动开发服务器
+# Start dev server
 npm run dev
 
-# 构建静态站点
+# Build static site
 npm run build
 
-# 内容校验
+# Content validation
 npm run validate
 ```
 
-## 部署
+## Deployment
 
-Push 到 `main` 分支后，GitHub Actions 会自动构建并部署到 GitHub Pages。
+Push to `main` branch and GitHub Actions will automatically build and deploy to GitHub Pages.
 
-如需本地预览构建结果：
+To preview the build locally:
 
 ```bash
 npm run build
 npm run preview
 ```
 
-## 目录结构
+## Directory Structure
 
 ```
 src/
-├── content/articles/zh/   # 中文文章 (MDX)
-├── content/paths/          # 学习路径定义 (YAML)
-├── content/resources/      # 外部资源 (YAML)
+├── content/articles/zh/   # Chinese articles (MDX)
+├── content/paths/          # Learning path definitions (YAML)
+├── content/resources/      # External resources (YAML)
 ├── components/
-│   ├── interactive/        # 交互式可视化组件 (90 个)
-│   ├── primitives/         # 通用基础组件
-│   ├── layout/             # 布局组件
-│   └── common/             # 通用 UI 组件
-├── plugins/                # 自定义 rehype 插件
-├── pages/zh/               # 中文页面路由
-└── styles/                 # 全局样式
+│   ├── interactive/        # Interactive visualization components (90+)
+│   ├── primitives/         # Reusable base components
+│   ├── layout/             # Layout components
+│   └── common/             # Common UI components
+├── plugins/                # Custom rehype plugins
+├── pages/zh/               # Chinese page routing
+└── styles/                 # Global styles
 ```
