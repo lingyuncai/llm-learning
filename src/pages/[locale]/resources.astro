@@ -1,16 +1,17 @@
 ---
 import BaseLayout from '../../components/layout/BaseLayout.astro';
 import { getAllResources } from '../../utils/resources';
+import { t, resourceTypeLabel, type Locale } from '../../i18n/utils';
 
+export function getStaticPaths() {
+  return [
+    { params: { locale: 'zh' } },
+    { params: { locale: 'en' } },
+  ];
+}
+
+const locale = Astro.params.locale as Locale;
 const resources = getAllResources();
-
-const typeLabel: Record<string, string> = {
-  website: '网站',
-  interactive: '交互式',
-  video: '视频',
-  paper: '论文',
-  repo: '代码仓库',
-};
 
 const typeColor: Record<string, string> = {
   website: 'bg-blue-100 text-blue-800',
@@ -20,12 +21,10 @@ const typeColor: Record<string, string> = {
   repo: 'bg-gray-100 text-gray-800',
 };
 ---
-<BaseLayout title="资源推荐">
+<BaseLayout title={t(locale, 'resources_title')} locale={locale}>
   <div class="max-w-3xl mx-auto">
-    <h1 class="text-3xl font-bold mb-3">外部学习资源</h1>
-    <p class="text-gray-600 mb-8">
-      精选的 Transformer / LLM 学习资源，涵盖文章、交互式工具、视频和论文。
-    </p>
+    <h1 class="text-3xl font-bold mb-3">{t(locale, 'resources_title')}</h1>
+    <p class="text-gray-600 mb-8">{t(locale, 'resources_description')}</p>
 
     <div class="space-y-4">
       {resources.map(resource => (
@@ -34,7 +33,7 @@ const typeColor: Record<string, string> = {
           <div class="flex items-center gap-3 mb-2">
             <h3 class="font-semibold">{resource.title}</h3>
             <span class={`text-xs px-2 py-0.5 rounded ${typeColor[resource.type] || 'bg-gray-100'}`}>
-              {typeLabel[resource.type] || resource.type}
+              {resourceTypeLabel(locale, resource.type)}
             </span>
           </div>
           <p class="text-sm text-gray-500 mb-1">by {resource.author}</p>

@@ -1,0 +1,76 @@
+---
+import { getCollection, render } from 'astro:content';
+import ArticleLayout from '../../../components/layout/ArticleLayout.astro';
+import BaseLayout from '../../../components/layout/BaseLayout.astro';
+import { t, type Locale } from '../../../i18n/utils';
+
+export async function getStaticPaths() {
+  const allArticles = await getCollection('articles');
+  const zhArticles = allArticles.filter(a => a.data.locale === 'zh');
+  const enArticles = allArticles.filter(a => a.data.locale === 'en');
+  const enSlugs = new Set(enArticles.map(a => a.data.slug));
+
+  // zh articles → /zh/articles/{slug}
+  const zhPaths = zhArticles.map(a => ({
+    params: { locale: 'zh', slug: a.data.slug },
+    props: { article: a, comingSoon: false },
+  }));
+
+  // en articles that exist → /en/articles/{slug}
+  const enPaths = enArticles.map(a => ({
+    params: { locale: 'en', slug: a.data.slug },
+    props: { article: a, comingSoon: false },
+  }));
+
+  // zh articles without en counterpart → /en/articles/{slug} (Coming Soon)
+  const comingSoonPaths = zhArticles
+    .filter(a => !enSlugs.has(a.data.slug))
+    .map(a => ({
+      params: { locale: 'en', slug: a.data.slug },
+      props: { article: null, comingSoon: true, zhSlug: a.data.slug, zhTitle: a.data.title },
+    }));
+
+  return [...zhPaths, ...enPaths, ...comingSoonPaths];
+}
+
+const locale = Astro.params.locale as Locale;
+const { article, comingSoon, zhSlug, zhTitle } = Astro.props;
+
+let Content: any = null;
+let headings: any[] = [];
+if (article) {
+  const rendered = await render(article);
+  Content = rendered.Content;
+  headings = rendered.headings;
+}
+
+// For Coming Soon, display the Chinese title (no article-level English title available)
+const displayTitle = zhTitle || Astro.params.slug;
+---
+{article ? (
+  <ArticleLayout
+    title={article.data.title}
+    slug={article.data.slug}
+    difficulty={article.data.difficulty}
+    tags={article.data.tags}
+    prerequisites={article.data.prerequisites}
+    references={article.data.references}
+    updated={article.data.updated}
+    headings={headings}
+    locale={locale}
+  >
+    <Content />
+  </ArticleLayout>
+) : (
+  <BaseLayout title={t(locale, 'coming_soon_title')} locale={locale}>
+    <div class="max-w-2xl mx-auto text-center py-20">
+      <h1 class="text-3xl font-bold mb-4 text-gray-400">{displayTitle}</h1>
+      <div class="text-6xl mb-6">🚧</div>
+      <p class="text-lg text-gray-600 mb-8">{t(locale, 'coming_soon_body')}</p>
+      <a href={`${import.meta.env.BASE_URL}zh/articles/${zhSlug}`}
+         class="inline-block px-6 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors">
+        {t(locale, 'coming_soon_link')}
+      </a>
+    </div>
+  </BaseLayout>
+)}

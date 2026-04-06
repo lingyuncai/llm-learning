@@ -1,0 +1,52 @@
+---
+import BaseLayout from '../../../components/layout/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import { difficultyLabel, t, type Locale } from '../../../i18n/utils';
+import { difficultyColor } from '../../../utils/constants';
+
+export async function getStaticPaths() {
+  const allArticles = await getCollection('articles');
+  const locales: Locale[] = ['zh', 'en'];
+  return locales.flatMap(locale => {
+    const articles = allArticles.filter(a => a.data.locale === locale);
+    const tags = [...new Set(articles.flatMap(a => a.data.tags))];
+    return tags.map(tag => ({
+      params: { locale, tag },
+      props: {
+        articles: articles.filter(a => a.data.tags.includes(tag)),
+      },
+    }));
+  });
+}
+
+const locale = Astro.params.locale as Locale;
+const { tag } = Astro.params;
+const { articles } = Astro.props;
+---
+<BaseLayout title={`#${tag}`} description={`${t(locale, 'tag_description_prefix')} #${tag} ${t(locale, 'tag_description_suffix')}`} locale={locale}>
+  <div class="max-w-3xl mx-auto">
+    <h1 class="text-3xl font-bold mb-2">#{tag}</h1>
+    <p class="text-sm text-gray-500 mb-8">{articles.length} {t(locale, 'articles_count')}</p>
+
+    <div class="space-y-3">
+      {articles.map(article => (
+        <a href={`${import.meta.env.BASE_URL}${locale}/articles/${article.data.slug}`}
+           class="block p-4 border border-gray-100 rounded hover:border-primary-300 transition-colors">
+          <div class="flex items-center gap-3">
+            <span class={`text-xs px-2 py-0.5 rounded ${difficultyColor[article.data.difficulty]}`}>
+              {difficultyLabel(locale, article.data.difficulty)}
+            </span>
+            <h3 class="font-medium">{article.data.title}</h3>
+          </div>
+          <div class="flex gap-2 flex-wrap mt-2">
+            {article.data.tags.map(tagName => (
+              <span class={`text-xs ${tagName === tag ? 'text-primary-600 font-medium' : 'text-gray-500'}`}>
+                #{tagName}
+              </span>
+            ))}
+          </div>
+        </a>
+      ))}
+    </div>
+  </div>
+</BaseLayout>

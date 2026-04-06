@@ -1,0 +1,76 @@
+---
+import BaseLayout from '../../../components/layout/BaseLayout.astro';
+import { getAllPaths } from '../../../utils/paths';
+import { getCollection } from 'astro:content';
+import { difficultyLabel, t, type Locale } from '../../../i18n/utils';
+import { difficultyColor } from '../../../utils/constants';
+
+export function getStaticPaths() {
+  const paths = getAllPaths();
+  const locales: Locale[] = ['zh', 'en'];
+  return locales.flatMap(locale =>
+    paths.map(p => ({
+      params: { locale, id: p.id },
+      props: { learningPath: p },
+    }))
+  );
+}
+
+const locale = Astro.params.locale as Locale;
+const { learningPath } = Astro.props;
+const allArticles = (await getCollection('articles')).filter(a => a.data.locale === locale);
+
+const pathArticles = learningPath.articles
+  .map(slug => allArticles.find(a => a.data.slug === slug))
+  .filter(Boolean);
+
+// For en locale, some articles may not exist yet — show them as "Coming Soon"
+const allZhArticles = locale === 'en'
+  ? (await getCollection('articles')).filter(a => a.data.locale === 'zh')
+  : [];
+---
+<BaseLayout title={learningPath.title[locale]} locale={locale}>
+  <div class="max-w-3xl mx-auto">
+    <h1 class="text-3xl font-bold mb-3">{learningPath.title[locale]}</h1>
+    <p class="text-gray-600 mb-8">{learningPath.description[locale]}</p>
+
+    <ol class="list-none space-y-4 pl-0">
+      {learningPath.articles.map((slug, index) => {
+        const article = pathArticles.find(a => a!.data.slug === slug);
+        const zhArticle = !article && locale === 'en'
+          ? allZhArticles.find(a => a.data.slug === slug)
+          : null;
+        const title = article ? article.data.title : (zhArticle ? zhArticle.data.title : slug);
+        const difficulty = article ? article.data.difficulty : (zhArticle ? zhArticle.data.difficulty : 'intermediate');
+        const tags = article ? article.data.tags : (zhArticle ? zhArticle.data.tags : []);
+        const isComingSoon = !article && locale === 'en';
+        return (
+          <li>
+            <a href={`${import.meta.env.BASE_URL}${locale}/articles/${slug}`}
+               class={`flex items-start gap-4 p-4 border border-gray-200 rounded-lg hover:border-primary-400 hover:shadow-sm transition-all ${isComingSoon ? 'opacity-60' : ''}`}>
+              <span class="flex items-center justify-center w-8 h-8 rounded-full bg-primary-100 text-primary-700 text-sm font-bold shrink-0">
+                {index + 1}
+              </span>
+              <div>
+                <div class="flex items-center gap-2 mb-1">
+                  <h3 class="font-semibold">{title}</h3>
+                  <span class={`text-xs px-2 py-0.5 rounded ${difficultyColor[difficulty]}`}>
+                    {difficultyLabel(locale, difficulty)}
+                  </span>
+                  {isComingSoon && (
+                    <span class="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-700">Coming Soon</span>
+                  )}
+                </div>
+                <div class="flex gap-2 flex-wrap">
+                  {tags.map(tag => (
+                    <span class="text-xs text-gray-500">#{tag}</span>
+                  ))}
+                </div>
+              </div>
+            </a>
+          </li>
+        );
+      })}
+    </ol>
+  </div>
+</BaseLayout>
