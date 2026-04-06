@@ -1,10 +1,13 @@
 ---
+import { t, type Locale } from '../../i18n/utils';
+
 interface Props {
   prerequisites: string[];
   allArticles: { data: { slug: string; title: string } }[];
+  locale?: Locale;
 }
 
-const { prerequisites, allArticles } = Astro.props;
+const { prerequisites, allArticles, locale = 'zh' } = Astro.props;
 
 const prereqArticles = prerequisites
   .map(slug => allArticles.find(a => a.data.slug === slug))
@@ -12,11 +15,11 @@ const prereqArticles = prerequisites
 ---
 {prereqArticles.length > 0 && (
   <div class="mb-4">
-    <h4 class="text-sm font-semibold text-gray-900 mb-2">前置知识</h4>
+    <h4 class="text-sm font-semibold text-gray-900 mb-2">{t(locale, 'prerequisites')}</h4>
     <ul class="space-y-1">
       {prereqArticles.map(article => (
         <li>
-          <a href={`${import.meta.env.BASE_URL}zh/articles/${article!.data.slug}`}
+          <a href={`${import.meta.env.BASE_URL}${locale}/articles/${article!.data.slug}`}
              class="text-sm text-primary-600 hover:text-primary-800">
             {article!.data.title}
           </a>

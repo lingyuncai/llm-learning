@@ -2,7 +2,8 @@
 import BaseLayout from '../../../components/layout/BaseLayout.astro';
 import { getAllPaths } from '../../../utils/paths';
 import { getCollection } from 'astro:content';
-import { difficultyLabel, difficultyColor } from '../../../utils/constants';
+import { difficultyLabel } from '../../../i18n/utils';
+import { difficultyColor } from '../../../utils/constants';
 
 export function getStaticPaths() {
   const paths = getAllPaths();
@@ -36,7 +37,7 @@ const pathArticles = learningPath.articles
               <div class="flex items-center gap-2 mb-1">
                 <h3 class="font-semibold">{article!.data.title}</h3>
                 <span class={`text-xs px-2 py-0.5 rounded ${difficultyColor[article!.data.difficulty]}`}>
-                  {difficultyLabel[article!.data.difficulty]}
+                  {difficultyLabel('zh', article!.data.difficulty)}
                 </span>
               </div>
               <div class="flex gap-2 flex-wrap">
