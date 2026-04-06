@@ -1,38 +1,46 @@
 ---
 import Navigation from './Navigation.astro';
+import { t, type Locale } from '../../i18n/utils';
 import '../../styles/global.css';
 
 interface Props {
   title: string;
   description?: string;
+  locale?: Locale;
 }
 
-const { title, description = 'LLM 技术知识库 — 深入理解 Transformer、Attention、KV Cache 等核心技术' } = Astro.props;
+const { title, description, locale = 'zh' } = Astro.props;
+const desc = description || t(locale, 'site_description');
 const fullTitle = `${title} | LLM Learning`;
 const siteUrl = Astro.url.href;
+const htmlLang = locale === 'zh' ? 'zh-CN' : 'en';
+const ogLocale = locale === 'zh' ? 'zh_CN' : 'en_US';
+const currentPath = Astro.url.pathname;
 ---
-<html lang="zh-CN">
+<html lang={htmlLang}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content={description} />
+    <meta name="description" content={desc} />
     <title>{fullTitle}</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>" />
     <link rel="canonical" href={siteUrl} />
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
     <meta property="og:title" content={fullTitle} />
-    <meta property="og:description" content={description} />
+    <meta property="og:description" content={desc} />
     <meta property="og:url" content={siteUrl} />
-    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:locale" content={ogLocale} />
   </head>
   <body class="min-h-screen bg-white">
     <div class="bg-amber-50 border-b border-amber-200 px-4 py-2 text-center text-sm text-amber-800">
-      本站内容由 AI 生成，可能存在错误。如发现问题，欢迎到
-      <a href="https://github.com/jonathanding/llm-learning/issues" class="font-medium text-amber-900 underline hover:text-amber-700" target="_blank" rel="noopener noreferrer">GitHub Issues</a>
-      反馈。
+      {t(locale, 'ai_disclaimer')}
+      <a href="https://github.com/jonathanding/llm-learning/issues" class="font-medium text-amber-900 underline hover:text-amber-700" target="_blank" rel="noopener noreferrer">
+        {t(locale, 'ai_disclaimer_link')}
+      </a>
+      {t(locale, 'ai_disclaimer_suffix')}
     </div>
-    <Navigation />
+    <Navigation locale={locale} currentPath={currentPath} />
     <main class="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <slot />
     </main>

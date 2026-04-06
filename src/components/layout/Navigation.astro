@@ -1,16 +1,46 @@
 ---
+import { t, getOtherLocale, type Locale } from '../../i18n/utils';
+
+interface Props {
+  locale?: Locale;
+  currentPath?: string;
+}
+
+const { locale = 'zh', currentPath = '' } = Astro.props;
+const otherLocale = getOtherLocale(locale);
+
+// Compute the other-locale URL by replacing the locale segment
+const switchPath = currentPath
+  ? currentPath.replace(`/${locale}/`, `/${otherLocale}/`)
+  : `${import.meta.env.BASE_URL}${otherLocale}/`;
 ---
 <nav class="border-b border-gray-200 bg-white sticky top-0 z-50">
   <div class="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8">
     <div class="flex justify-between h-16 items-center">
-      <a href={`${import.meta.env.BASE_URL}zh/`} class="text-xl font-bold text-gray-900">
+      <a href={`${import.meta.env.BASE_URL}${locale}/`} class="text-xl font-bold text-gray-900">
         LLM Learning
       </a>
       <div class="flex items-center gap-6">
-        <a href={`${import.meta.env.BASE_URL}zh/`} class="text-sm text-gray-600 hover:text-gray-900">首页</a>
-        <a href={`${import.meta.env.BASE_URL}zh/resources`} class="text-sm text-gray-600 hover:text-gray-900">资源推荐</a>
-        <span class="text-sm text-gray-400 cursor-not-allowed" title="Coming soon">
-          中文 / <span class="opacity-50">EN</span>
+        <a href={`${import.meta.env.BASE_URL}${locale}/`} class="text-sm text-gray-600 hover:text-gray-900">
+          {t(locale, 'nav_home')}
+        </a>
+        <a href={`${import.meta.env.BASE_URL}${locale}/resources`} class="text-sm text-gray-600 hover:text-gray-900">
+          {t(locale, 'nav_resources')}
+        </a>
+        <span class="text-sm">
+          {locale === 'zh' ? (
+            <>
+              <span class="font-medium text-gray-900">中文</span>
+              <span class="text-gray-400 mx-1">/</span>
+              <a href={switchPath} class="text-gray-500 hover:text-gray-900">EN</a>
+            </>
+          ) : (
+            <>
+              <a href={switchPath} class="text-gray-500 hover:text-gray-900">中文</a>
+              <span class="text-gray-400 mx-1">/</span>
+              <span class="font-medium text-gray-900">EN</span>
+            </>
+          )}
         </span>
       </div>
     </div>
