@@ -6,7 +6,7 @@ An interactive knowledge base for LLM technologies, built with Astro + MDX + Rea
 
 > **Note: All content (articles, interactive components, visualizations) on this site is AI-generated.** It may contain errors or inaccuracies. If you find any issues, please report them at [GitHub Issues](https://github.com/jonathanding/llm-learning/issues).
 
-**Live site**: https://jonathanding.github.io/llm-learning/
+**Live site**: [English](https://jonathanding.github.io/llm-learning/en/) | [中文](https://jonathanding.github.io/llm-learning/zh/)
 
 ## Tech Stack
 
