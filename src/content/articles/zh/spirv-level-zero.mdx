@@ -1,0 +1,153 @@
+---
+title: "SPIR-V 编译与 Level Zero 运行时"
+slug: spirv-level-zero
+locale: zh
+tags: [intel, spirv, level-zero, compiler, runtime, jit, aot]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [xe2-execution-model]
+references:
+  - type: website
+    title: "SPIR-V Specification — Khronos Group"
+    url: "https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html"
+  - type: website
+    title: "oneAPI Level Zero Specification — Intel"
+    url: "https://spec.oneapi.io/level-zero/latest/index.html"
+  - type: repo
+    title: "Intel Graphics Compiler (IGC) — GitHub"
+    url: "https://github.com/intel/intel-graphics-compiler"
+  - type: website
+    title: "SPIR-V Guide — Khronos"
+    url: "https://github.com/KhronosGroup/SPIRV-Guide"
+---
+
+import CompilationPipeline from '../../../components/interactive/CompilationPipeline.tsx';
+import SpirvVsPtx from '../../../components/interactive/SpirvVsPtx.tsx';
+import JitVsAot from '../../../components/interactive/JitVsAot.tsx';
+import LevelZeroDispatch from '../../../components/interactive/LevelZeroDispatch.tsx';
+import MemoryModelViz from '../../../components/interactive/MemoryModelViz.tsx';
+
+## 从源码到 GPU 执行的全链路
+
+在 Intel iGPU 生态中，从开发者编写的 DPC++ 代码到最终在 Xe2 执行单元上运行，经历了一条精心设计的编译与运行时链路。这条链路的核心是两个关键技术：**SPIR-V (Standard Portable Intermediate Representation - V)** 作为跨平台的中间表示，以及 **Level Zero** 作为底层的 GPU 运行时 API。
+
+理解这条编译链路，不仅能帮助开发者优化性能（例如选择 JIT 还是 AOT 编译），还能在遇到问题时快速定位瓶颈所在。与 NVIDIA 的 CUDA 生态不同，Intel 采用开放标准 SPIR-V，这意味着同一份 SPIR-V 代码理论上可以在支持该标准的任何 GPU 上运行——包括 Intel、AMD、ARM，甚至移动端的 Mali GPU。
+
+下面的可视化展示了完整的编译流程：
+
+<CompilationPipeline client:visible />
+
+这条编译链路中，最值得注意的两个阶段是：
+
+1. **SPIR-V 生成**：LLVM IR 通过 SPIR-V Backend 转换为二进制格式，此时代码仍是平台无关的。SPIR-V 模块可以保存到文件（.spv），随应用分发，延迟到运行时再进行硬件特定的编译。
+
+2. **IGC JIT 编译**：在 `zeModuleCreate()` 被调用时，Intel Graphics Compiler (IGC) 实时将 SPIR-V 翻译为当前设备的原生 Xe2 ISA 指令。这个过程发生在运行时，因此可以利用实际硬件的特性（例如具体的 EU 数量、缓存大小）进行激进优化。
+
+## SPIR-V 的设计哲学
+
+SPIR-V 是 Khronos Group 定义的跨 API、跨厂商的 GPU 指令集。与 NVIDIA 的 PTX (Parallel Thread Execution) 类似，它是一种介于高层编程语言和硬件机器码之间的中间层。但 SPIR-V 有两个重要的设计目标，使其与 PTX 有本质区别：
+
+**多厂商中立性**：SPIR-V 不属于任何单一硬件厂商。AMD 的 ROCm、Intel 的 oneAPI、ARM 的 Mali 驱动都可以消费 SPIR-V。相比之下，PTX 是 NVIDIA 专有格式，只能在 NVIDIA GPU 上运行。这种开放性使得开发者可以编写一次代码，部署到不同硬件平台，减少移植成本。
+
+**二进制格式优化分发**：SPIR-V 设计为紧凑的二进制格式，而非文本（PTX 最初是文本格式，虽然现在也有二进制版本）。二进制格式解析速度快，文件体积小，适合嵌入到应用程序中随包分发。对于移动端或嵌入式系统，这能显著减少启动时间和存储开销。
+
+下面的对比展示了 SPIR-V 与 PTX 编译链的异同：
+
+<SpirvVsPtx />
+
+两条编译链在结构上高度相似：都经历了 "源码 → 前端 → LLVM IR → 中间表示 → 硬件汇编" 的阶段。但关键区别在于：
+
+- **SPIR-V 阶段**是 Khronos 标准化的，任何符合 Vulkan 或 OpenCL 规范的 GPU 都必须能够消费 SPIR-V；
+- **PTX 阶段**是 NVIDIA 专有的，仅限自家硬件生态，虽然 PTX 本身已经非常稳定和成熟。
+
+从开发者角度看，SPIR-V 的意义在于：如果你使用 SYCL 或 OpenCL 编写代码，同一个二进制包可以同时支持 Intel iGPU、AMD dGPU 和 ARM Mali，而无需为每个平台重新编译源码。这种"编译一次，到处运行"的模型正是 SPIR-V 的核心价值。
+
+## 编译策略：JIT vs AOT
+
+SPIR-V 模块加载到 GPU 时，有两种主流编译策略：**JIT (Just-In-Time)** 和 **AOT (Ahead-Of-Time)**。选择哪种策略取决于应用场景的性能需求。
+
+**JIT 编译**：在运行时（具体来说是调用 `zeModuleCreate()` 时）动态编译 SPIR-V 到原生 ISA。优点是可以利用运行时信息进行激进优化，例如根据实际设备的缓存大小调整分块策略；缺点是首次执行会有明显的编译延迟（通常数十到数百毫秒）。对于计算密集型任务（如训练一个神经网络），这点启动成本相对可以接受，因为实际计算时间远超编译时间。
+
+**AOT 编译**：在构建阶段提前编译 SPIR-V，生成针对多个目标架构的原生二进制文件（例如同时生成 Xe-LP、Xe-HPG、Xe2-LPG 的 ISA）。优点是应用启动无延迟，缺点是二进制文件体积大，且无法利用运行时特定优化。OpenVINO 的模型缓存就是典型的 AOT 应用场景：推理引擎会将优化后的 IR 编译为设备特定的二进制缓存，后续加载直接使用，避免重复编译开销。
+
+<JitVsAot client:visible />
+
+实践中，许多库采用混合策略：
+
+- **oneDNN (oneAPI Deep Neural Network Library)**：默认使用 JIT，因为深度学习算子对内存布局和数据类型敏感，运行时信息能显著提升优化质量。
+- **OpenVINO**：首次运行时 JIT 编译，然后将编译产物缓存到磁盘（AOT cache），后续启动直接加载缓存，兼顾启动速度和优化深度。
+- **游戏引擎**：通常使用 AOT 预编译 shader，因为玩家不愿意等待启动时的编译卡顿。
+
+选择 JIT 还是 AOT，本质上是在"编译延迟"与"运行时优化潜力"之间权衡。对于 iGPU 这种资源受限的设备，JIT 的动态优化能力尤为重要，因为它可以根据当前 CPU 负载、内存带宽等实时信息调整执行策略。
+
+## Level Zero API 核心抽象
+
+Level Zero 是 Intel oneAPI 的底层 GPU 运行时接口，定位类似于 Vulkan 或 DirectX 12——提供细粒度的硬件控制能力，牺牲易用性换取最大性能。它的设计目标是零抽象开销 (zero abstraction overhead)，因此得名 "Level Zero"。
+
+Level Zero 的核心抽象包括：
+
+1. **Driver & Device**：系统中的物理 GPU 设备抽象。一个 driver 可以管理多个 devices（例如 iGPU + dGPU 混合配置）。
+
+2. **Context**：设备资源的生命周期容器，所有内存分配、模块加载都在某个 context 下进行。Context 之间相互隔离，类似操作系统的进程概念。
+
+3. **Module**：SPIR-V 二进制的加载单元，调用 `zeModuleCreate()` 时触发 JIT 编译。一个 module 可以包含多个 kernels。
+
+4. **Kernel**：从 module 中提取的单个计算函数，设置 work-group 大小和参数后可以提交执行。
+
+5. **Command List & Command Queue**：命令缓冲区和执行队列。开发者将多个操作（kernel 启动、内存拷贝、同步屏障）记录到 command list，然后批量提交到 queue 执行，减少 API 调用开销。
+
+6. **Event & Fence**：同步原语。Event 用于 GPU 内部同步（例如 kernel A 完成后才能启动 kernel B），Fence 用于 CPU-GPU 同步（CPU 等待 GPU 任务完成）。
+
+这些抽象与 Vulkan 的设计非常相似：都强调显式内存管理、命令批处理、细粒度同步。对于熟悉 Vulkan 的开发者，Level Zero 会感觉很自然；但对于习惯 OpenCL 或 CUDA Runtime API 的开发者，Level Zero 的繁琐可能需要适应期。好消息是，大多数情况下你不需要直接使用 Level Zero——SYCL 和 oneDNN 等高层框架已经封装了底层细节。
+
+## Kernel Dispatch 流程
+
+从创建 context 到 kernel 执行完成，完整的 Level Zero 工作流包含六个步骤：
+
+<LevelZeroDispatch client:visible />
+
+这套流程看似复杂，但实际上体现了现代 GPU API 的核心理念：**命令的构建与提交分离**。Command List 的设计允许多线程并行构建命令缓冲区，最后统一提交到 queue，大幅减少了多线程竞争导致的性能损失。这在大型并行任务（如批量图像处理、多模型推理）中尤为重要。
+
+几个关键细节：
+
+- **zeModuleCreate 是性能瓶颈**：这是 JIT 编译发生的地方，可能耗时数十毫秒。如果应用频繁创建/销毁 module，考虑使用 module cache 或 AOT 编译。
+- **Command List 可重用**：构建好的 command list 可以多次提交，避免重复记录命令的开销。对于周期性任务（如视频编码的每一帧），这能显著提升效率。
+- **Fence 不是唯一同步方式**：对于高级用户，Level Zero 提供 Event 机制做细粒度同步。例如可以让 kernel A 写入的数据，通过 event 信号通知 kernel B 立即开始，而 CPU 无需介入。
+
+## 内存管理
+
+iGPU 的最大特点是与 CPU 共享物理内存（LPDDR5x），没有独立显存。Level Zero 针对这种架构提供了三种内存分配模式：
+
+<MemoryModelViz client:visible />
+
+三种模式的本质区别在于**页表管理和缓存策略**：
+
+- **Host 模式**：内存页优先由 CPU 访问，GPU 通过 cache coherence 协议访问。适合 CPU 主导的计算，GPU 只是辅助加速某些步骤（例如 CPU 做预处理，GPU 做推理，CPU 做后处理）。
+
+- **Device 模式**：内存页标记为 GPU 优先，CPU 访问时会触发 page fault 和迁移开销。适合 GPU 密集计算，结果只有少量数据需要 CPU 读取（例如 batch inference 的分类结果）。
+
+- **Shared (USM) 模式**：CPU 和 GPU 共享统一地址空间，运行时的迁移引擎会根据访问模式自动优化页面位置。这是 iGPU 的独特优势——因为没有物理隔离的显存，统一内存访问可以实现真正的零拷贝。
+
+对比 NVIDIA 的 dGPU：由于 CPU 内存和 GPU 显存物理隔离，unified memory (UVM) 需要通过 PCIe 或 NVLink 在两侧同步数据，存在显著的传输延迟。而 iGPU 的 USM 是在同一片物理内存上操作，只需调整虚拟地址映射和缓存属性，开销极低。
+
+这种架构优势使得 iGPU 在某些场景下（如实时推理、频繁的 CPU-GPU 交互）比 dGPU 更高效。当然，iGPU 的劣势也很明显：与 CPU 共享带宽，在高并发场景下会相互竞争内存资源。
+
+## 总结
+
+SPIR-V 和 Level Zero 构成了 Intel oneAPI GPU 编程栈的核心基础设施。SPIR-V 作为 Khronos 标准，提供了跨厂商的可移植性；Level Zero 作为底层 API，提供了细粒度的硬件控制能力。两者结合，既保证了开放性，又不牺牲性能潜力。
+
+对于大多数开发者，直接使用 SYCL、oneDNN 等高层框架即可，无需深入 Level Zero 细节。但理解底层机制能帮助你：
+
+- 诊断性能问题（例如 JIT 编译延迟导致的首次执行卡顿）
+- 选择正确的内存分配策略（Host/Device/Shared）
+- 评估 Intel GPU 与 NVIDIA/AMD 方案的技术差异
+
+iGPU 的统一内存架构是其相对 dGPU 的独特优势，Level Zero 的 USM 设计充分利用了这一特性。在边缘计算、实时推理、轻量级训练等场景下，iGPU 的性能功耗比正在逐步接近甚至超越入门级 dGPU。
+
+## 延伸阅读
+
+- **SPIR-V 规范**：深入了解 SPIR-V 指令集设计，包括控制流、内存模型、数据类型系统。
+- **Level Zero 编程指南**：Intel 官方文档，包含完整的 API 参考和示例代码。
+- **IGC 源码**：Intel Graphics Compiler 是开源的，可以研究其 JIT 编译优化策略（例如循环展开、寄存器分配、指令调度）。
+- **Vulkan vs Level Zero**：两者都是底层 GPU API，但 Vulkan 偏向图形渲染，Level Zero 专注计算。了解两者的设计权衡有助于选择合适的技术栈。
