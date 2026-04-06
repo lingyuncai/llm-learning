@@ -23,7 +23,6 @@ import MatrixFactorizationViz from '../../../components/interactive/MatrixFactor
 import BertRouterFlow from '../../../components/interactive/BertRouterFlow.tsx';
 import CausalLMRouter from '../../../components/interactive/CausalLMRouter.tsx';
 import SemanticRoutingViz from '../../../components/interactive/SemanticRoutingViz.tsx';
-import DecisionBoundaryCompare from '../../../components/interactive/DecisionBoundaryCompare.tsx';
 
 上一篇我们梳理了 model routing 的全景图。本篇聚焦其中最核心也最成熟的一类方法：**分类器路由**（classifier-based routing）。
 
@@ -106,8 +105,6 @@ $$s(q, m) = \mathbf{q}^\top \mathbf{m} + b_m$$
 **Causal LM Router** 倾向于更保守的决策 — 由于小语言模型对 query 难度有更深的语义理解，它更容易识别出"看起来简单但实际复杂"的 query（如"解释为什么 0.1 + 0.2 ≠ 0.3"），因此会将更多 query 路由到强模型。这意味着成本略高，但质量上限也更高。
 
 **Semantic Router** 做出最激进的决策 — 由于它基于模板匹配，对于与 simple_tasks 模板相似的 query 会果断选择弱模型。这导致它的弱模型使用率最高，但也意味着在模板覆盖不足的区域，错误率会显著上升。
-
-<DecisionBoundaryCompare client:visible />
 
 ## 总结
 

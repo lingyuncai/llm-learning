@@ -23,7 +23,6 @@ import MatrixFactorizationViz from '../../../components/interactive/MatrixFactor
 import BertRouterFlow from '../../../components/interactive/BertRouterFlow.tsx';
 import CausalLMRouter from '../../../components/interactive/CausalLMRouter.tsx';
 import SemanticRoutingViz from '../../../components/interactive/SemanticRoutingViz.tsx';
-import DecisionBoundaryCompare from '../../../components/interactive/DecisionBoundaryCompare.tsx';
 
 In the previous article we surveyed the model routing landscape. This article zooms in on the most mature and widely adopted approach: **classifier-based routing**.
 
@@ -106,8 +105,6 @@ How do the four classifiers make different decisions on the same set of queries?
 **Causal LM Router** tends toward more conservative decisions — since the small LM has deeper semantic understanding of query difficulty, it more easily identifies queries that "look simple but are actually complex" (e.g., "explain why 0.1 + 0.2 ≠ 0.3"), and thus routes more queries to the strong model. This means slightly higher cost, but also a higher quality ceiling.
 
 **Semantic Router** makes the most aggressive decisions — since it relies on template matching, it confidently selects the weak model for queries similar to the `simple_tasks` templates. This results in the highest weak-model utilization, but also means error rates rise significantly in regions with insufficient template coverage.
-
-<DecisionBoundaryCompare client:visible locale="en" />
 
 ## Summary
 
