@@ -27,7 +27,9 @@ title:
   zh: "LLM Model Routing：智能模型选择与混合推理"
   en: "LLM Model Routing: Intelligent Model Selection and Hybrid Inference"
 description:
-  zh: "根据任务复杂度自动选择对应的 LLM 模型。覆盖从简单分类器到 RL 在线学习，从 query-level 到 token-level，从"选一个"到"全都用"的完整方法谱系。"
+  zh: >-
+    根据任务复杂度自动选择对应的 LLM 模型。覆盖从简单分类器到 RL 在线学习，
+    从 query-level 到 token-level，从"选一个"到"全都用"的完整方法谱系。
   en: "Automatically select the right LLM based on task complexity. Covers the full spectrum from simple classifiers to RL-based online learning, query-level to token-level routing, and single-model selection to multi-model collaboration."
 level: advanced
 articles:
@@ -614,8 +616,13 @@ export default function AccuracyCostScatter() {
   const [hovered, setHovered] = useState<string | null>(null);
 
   const W = 580, H = 420;
-  const pL = 70, pR = 530, pT = 50, pB = 310;
+  const pL = 100, pR = 530, pT = 50, pB = 310;
   const pW = pR - pL, pH = pB - pT;
+  // X axis: -60 to 100 (supports negative cost saving = cost increase)
+  const xMin = -60, xMax = 100, xRange = xMax - xMin;
+  const getXPos = (costSaving: number) => pL + ((costSaving - xMin) / xRange) * pW;
+  // Zero line position
+  const zeroX = getXPos(0);
 
   return (
     <div className="my-6 p-4 border rounded-lg">
@@ -626,14 +633,19 @@ export default function AccuracyCostScatter() {
         </text>
         <text x={W / 2} y="42" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="10" fill={COLORS.mid}>
-          Hover 查看方法详情
+          Hover 查看方法详情 · 左侧=成本增加 · 右侧=成本节省
         </text>
 
         {/* Axes */}
         <line x1={pL} y1={pB} x2={pR} y2={pB} stroke={COLORS.mid} strokeWidth="1.5" />
         <line x1={pL} y1={pT} x2={pL} y2={pB} stroke={COLORS.mid} strokeWidth="1.5" />
+        {/* Zero line */}
+        <line x1={zeroX} y1={pT} x2={zeroX} y2={pB}
+              stroke={COLORS.mid} strokeWidth="1" strokeDasharray="4,3" />
+        <text x={zeroX} y={pB + 15} textAnchor="middle"
+              fontFamily={FONTS.mono} fontSize="9" fontWeight="600" fill={COLORS.dark}>0%</text>
         <text x={W / 2} y={pB + 30} textAnchor="middle" fontFamily={FONTS.sans} fontSize="12" fill={COLORS.dark}>
-          成本节省 (%) →
+          ← 成本增加 | 成本节省 (%) →
         </text>
         <text x={pL - 15} y={(pT + pB) / 2} textAnchor="middle" fontFamily={FONTS.sans} fontSize="12" fill={COLORS.dark}
               transform={`rotate(-90, ${pL - 15}, ${(pT + pB) / 2})`}>
@@ -641,11 +653,11 @@ export default function AccuracyCostScatter() {
         </text>
 
         {/* Grid lines */}
-        {[0, 25, 50, 75, 100].map(v => (
+        {[-50, 0, 25, 50, 75, 100].map(v => (
           <g key={`grid-${v}`}>
-            <line x1={pL + (v / 100) * pW} y1={pT} x2={pL + (v / 100) * pW} y2={pB}
+            <line x1={getXPos(v)} y1={pT} x2={getXPos(v)} y2={pB}
                   stroke={COLORS.light} strokeWidth="0.5" />
-            <text x={pL + (v / 100) * pW} y={pB + 15} textAnchor="middle"
+            <text x={getXPos(v)} y={pB + 15} textAnchor="middle"
                   fontFamily={FONTS.mono} fontSize="9" fill={COLORS.mid}>{v}</text>
           </g>
         ))}
@@ -660,7 +672,7 @@ export default function AccuracyCostScatter() {
 
         {/* Data points */}
         {METHODS.map(m => {
-          const cx = pL + (Math.max(0, m.costSaving) / 100) * pW;
+          const cx = getXPos(m.costSaving);
           const cy = pB - ((Math.min(100, Math.max(80, m.accuracy)) - 80) / 25) * pH;
           const isHovered = hovered === m.name;
           return (
@@ -1163,6 +1175,7 @@ import PaperTimeline from '../../../components/interactive/PaperTimeline.tsx';
 **写作要求**：
 - 中英混合（术语英文，解释中文）
 - 严格事实，引用论文
+- **⚠️ 必须用 WebFetch 验证每个 reference URL 的有效性**，特别是 2025-2026 年论文
 - 每种方法 1-2 段 + 核心直觉（不是一句话摘要）
 - 公式用 KaTeX（如有）
 - 总字数约 3000-4000 字

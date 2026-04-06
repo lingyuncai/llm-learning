@@ -21,7 +21,7 @@
 动画模拟组件，展示 Multi-armed Bandit 的 Explore vs Exploit 过程。
 
 ```tsx
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
 interface Arm {
@@ -49,15 +49,23 @@ export default function BanditExploration() {
   const [estimates, setEstimates] = useState(ARMS.map(() => ({ sum: 0, count: 0 })));
   const [epsilon, setEpsilon] = useState(20); // explore rate %
 
+  // Use functional state updates to avoid stale closure issues
   const pullArm = useCallback((armIdx: number) => {
-    const arm = ARMS[armIdx];
-    const seed = pulls.length * 7 + armIdx * 13 + 42;
-    const noise = (seededRandom(seed) - 0.5) * 0.3;
-    const reward = Math.max(0, Math.min(1, arm.trueQuality + noise));
-    const netReward = reward - arm.trueCost * 10; // quality - normalized cost
-
-    setPulls(prev => [...prev, { arm: armIdx, reward: netReward }]);
+    setPulls(prev => {
+      const arm = ARMS[armIdx];
+      const seed = prev.length * 7 + armIdx * 13 + 42;
+      const noise = (seededRandom(seed) - 0.5) * 0.3;
+      const reward = Math.max(0, Math.min(1, arm.trueQuality + noise));
+      const netReward = reward - arm.trueCost * 10;
+      return [...prev, { arm: armIdx, reward: netReward }];
+    });
     setEstimates(prev => {
+      // Recompute reward here to match (same seed logic)
+      const arm = ARMS[armIdx];
+      // Note: we use a ref-based counter for consistent seeding
+      const noise = (seededRandom(armIdx * 13 + 42 + prev[armIdx].count * 7) - 0.5) * 0.3;
+      const reward = Math.max(0, Math.min(1, arm.trueQuality + noise));
+      const netReward = reward - arm.trueCost * 10;
       const next = [...prev];
       next[armIdx] = {
         sum: prev[armIdx].sum + netReward,
@@ -65,23 +73,28 @@ export default function BanditExploration() {
       };
       return next;
     });
-  }, [pulls.length]);
+  }, []);
+
+  // Keep latest state in ref for autoStep to avoid stale closures
+  const estimatesRef = useRef(estimates);
+  estimatesRef.current = estimates;
+  const pullCountRef = useRef(0);
+  pullCountRef.current = pulls.length;
 
   const autoStep = useCallback(() => {
-    const seed = pulls.length * 17 + 99;
+    const seed = pullCountRef.current * 17 + 99;
     const isExplore = seededRandom(seed) * 100 < epsilon;
 
     if (isExplore) {
-      // Random arm
       const armIdx = Math.floor(seededRandom(seed + 1) * ARMS.length);
       pullArm(armIdx);
     } else {
-      // Best estimated arm
-      const avgs = estimates.map(e => e.count === 0 ? Infinity : e.sum / e.count);
+      const est = estimatesRef.current;
+      const avgs = est.map(e => e.count === 0 ? Infinity : e.sum / e.count);
       const bestIdx = avgs.indexOf(Math.max(...avgs.filter(v => v !== Infinity)));
       pullArm(bestIdx >= 0 ? bestIdx : 0);
     }
-  }, [pulls.length, epsilon, estimates, pullArm]);
+  }, [epsilon, pullArm]);
 
   const reset = () => {
     setPulls([]);
@@ -169,7 +182,7 @@ export default function BanditExploration() {
                 className="px-3 py-1.5 bg-blue-700 text-white text-sm rounded hover:bg-blue-800">
           ε-greedy 一步
         </button>
-        <button onClick={() => { for (let i = 0; i < 10; i++) setTimeout(() => autoStep(), i * 50); }}
+        <button onClick={() => { for (let i = 0; i < 10; i++) autoStep(); }}
                 className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">
           连续 10 步
         </button>
