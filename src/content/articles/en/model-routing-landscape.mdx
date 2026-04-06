@@ -44,7 +44,7 @@ Single-model solutions face a fundamental multi-dimensional tradeoff dilemma:
 
 The key insight is: these four dimensions cannot all be optimized simultaneously, but can be **optimized separately per query**. RouteLLM (Ong et al., 2024) proved in experiments that by training a router to intelligently switch between GPT-4 and smaller models, API call costs can be reduced by more than 85% while maintaining approximately 95% of GPT-4's quality. FrugalGPT (Chen et al., 2023) even demonstrated cost reductions of up to 98% through cascade strategies.
 
-<CostQualityTriangle client:visible />
+<CostQualityTriangle client:visible locale="en" />
 
 ## §2 Routing Method Classification Framework
 
@@ -66,9 +66,9 @@ The method space of model routing can be understood from three orthogonal dimens
 
 At the router implementation level, mainstream methods include: Matrix Factorization (MF, learning scoring functions from preference data), BERT classifiers (fine-tuned for strong/weak binary classification), Causal LMs (small language models for routing decisions), Semantic Routing (embedding matching, no training needed), self-verification (models evaluate their own output confidence), LLM-as-Judge (another LLM evaluates), Bandit/RL (online learning), and infrastructure-level routing (load balancing, fallback).
 
-<RoutingTaxonomyTree client:visible />
+<RoutingTaxonomyTree client:visible locale="en" />
 
-<RoutingGranularityCompare client:visible />
+<RoutingGranularityCompare client:visible locale="en" />
 
 ## §3 Core Principles of Each Method
 
@@ -116,17 +116,17 @@ Multi-model collaboration represents a philosophical shift: not "select the best
 
 Different routing methods vary greatly in precision, cost, latency, and applicable scenarios. The following three visualizations present these tradeoffs from different perspectives:
 
-<AccuracyCostScatter client:visible />
+<AccuracyCostScatter client:visible locale="en" />
 
-<LatencyOverheadBar client:visible />
+<LatencyOverheadBar client:visible locale="en" />
 
-<ScenarioFitMatrix client:visible />
+<ScenarioFitMatrix client:visible locale="en" />
 
 ## §5 Papers and Systems Landscape
 
 The model routing field rapidly moved from an exploratory period in 2023 to an explosive period in 2025-2026, with papers and open-source systems emerging intensively:
 
-<PaperTimeline client:visible />
+<PaperTimeline client:visible locale="en" />
 
 At the system level, several representative projects are worth noting:
 

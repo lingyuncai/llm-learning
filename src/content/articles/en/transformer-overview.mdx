@@ -60,7 +60,7 @@ This design enables the Transformer to far surpass RNNs in long sequence modelin
 
 The diagram below shows the internal structure of a **Pre-LayerNorm** variant of a Transformer Block. Modern LLMs (GPT-2, LLaMA, etc.) almost all adopt this variant, rather than the Post-LayerNorm from the original paper.
 
-<TransformerArchDiagram client:visible />
+<TransformerArchDiagram client:visible locale="en" />
 
 A complete Transformer model consists of $N$ such Blocks stacked together. The input first goes through Embedding and Positional Encoding, then passes through each Block layer by layer, and finally outputs for downstream tasks (such as next-token prediction in language modeling).
 
@@ -92,7 +92,7 @@ Modern models have developed various improved approaches:
 | Learnable Absolute Position Encoding | GPT-2, BERT | Directly learn a vector for each position |
 | RoPE (Rotary Position Embedding) | LLaMA, Qwen | Encodes relative positions via rotation in Attention computation |
 
-<PositionalEncodingComparison client:visible />
+<PositionalEncodingComparison client:visible locale="en" />
 
 ### LayerNorm
 
@@ -115,7 +115,7 @@ where $\mu, \sigma$ are the mean and standard deviation computed along the hidde
 - Starting with **GPT-2**, most models switched to Pre-LN: $\mathbf{x} + \text{SubLayer}(\text{LN}(\mathbf{x}))$, because it offers more stable training
 - **LLaMA** further replaced LayerNorm with **RMSNorm**, removing mean centering and bias terms for more efficient computation
 
-<PrePostLNComparison client:visible />
+<PrePostLNComparison client:visible locale="en" />
 
 ### Self-Attention (Overview)
 
@@ -161,7 +161,7 @@ Tensor shape transformation process:
 → Through $W_2$ →
 <TensorShape client:visible dims={[{name: "B", size: "batch"}, {name: "S", size: "seq\_len"}, {name: "H", size: "hidden"}]} label="FFN Output" />
 
-<FFNBottleneck client:visible />
+<FFNBottleneck client:visible locale="en" />
 
 ### Residual Connection
 
@@ -225,7 +225,7 @@ The GPT series pioneered the Decoder-only architecture, removing the Encoder and
 | Encoder-only | BERT, RoBERTa | Bidirectional | Classification, NLU |
 | Decoder-only | GPT series, LLaMA, Qwen | Causal (Masked) | Text Generation, General LLMs |
 
-<AttentionMaskVisualization client:visible />
+<AttentionMaskVisualization client:visible locale="en" />
 
 Currently, almost all mainstream LLMs (GPT-4, Claude, LLaMA, Qwen, Gemini) adopt the Decoder-only architecture.
 
