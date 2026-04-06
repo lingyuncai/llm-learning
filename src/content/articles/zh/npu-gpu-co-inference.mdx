@@ -1,0 +1,151 @@
+---
+title: "NPU 架构与 GPU+NPU 协同推理"
+slug: npu-gpu-co-inference
+locale: zh
+tags: [intel, npu, openvino, hetero, multi-device, co-inference]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [openvino-graph-pipeline, igpu-performance-analysis]
+references:
+  - type: website
+    title: "OpenVINO Multi-Device Execution — Intel"
+    url: "https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/multi-device.html"
+  - type: website
+    title: "OpenVINO AUTO Device — Intel"
+    url: "https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/auto-device-selection.html"
+  - type: website
+    title: "Intel NPU Device — OpenVINO Documentation"
+    url: "https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/npu-device.html"
+  - type: website
+    title: "Heterogeneous Execution — OpenVINO Docs"
+    url: "https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/hetero-execution.html"
+---
+
+import NpuVsIgpu from '../../../components/interactive/NpuVsIgpu.tsx';
+import DevicePluginSelector from '../../../components/interactive/DevicePluginSelector.tsx';
+import HeteroSubgraphSplit from '../../../components/interactive/HeteroSubgraphSplit.tsx';
+import PowerPerfTradeoff from '../../../components/interactive/PowerPerfTradeoff.tsx';
+
+## 简介
+
+在 Intel Core Ultra 处理器中，除了 Xe2 集成显卡 (iGPU)，还集成了专用的 AI 推理加速器 NPU (Neural Processing Unit，神经处理单元)，商业名称为 AI Boost。NPU 与 iGPU 的设计目标不同：NPU 针对低功耗、固定拓扑的神经网络推理场景优化，而 iGPU 则提供更高的计算灵活性和更广泛的模型支持。
+
+OpenVINO 提供了 AUTO、MULTI、HETERO 等设备插件 (Device Plugin)，允许开发者在单个推理会话中同时利用 NPU 和 GPU 的优势。AUTO 模式会自动选择最优设备，MULTI 模式在多设备间并行分发推理请求，HETERO 模式则将计算图按算子支持情况切分到不同设备。这些机制让开发者能够在功耗、延迟、吞吐量之间灵活权衡。
+
+本文将详细介绍 Intel NPU 的硬件架构，对比 NPU 与 iGPU 的适用场景，深入解析 OpenVINO 的多设备推理策略，并通过交互式可视化展示 GPU+NPU 协同推理的性能与功耗权衡。
+
+## Intel NPU 架构概览
+
+Intel NPU 基于 NCE (Neural Compute Engine，神经计算引擎) 架构，由多个专用的推理计算单元构成。与通用的 GPU Execution Unit 不同，NCE 针对卷积、矩阵乘法、激活函数等神经网络常见算子进行了硬件级优化，省去了通用指令解码和调度的开销。
+
+NPU 的核心组件包括：
+
+- **NCE Arrays**：并行计算阵列，执行卷积、矩阵乘法等核心运算。每个 NCE 包含专用的 MAC (Multiply-Accumulate) 单元和本地寄存器堆。
+- **DMA Engines**：高效的直接内存访问引擎，负责在系统内存、NPU 片上 SRAM 和 NCE 之间搬运数据，最小化 CPU 干预。
+- **On-chip SRAM**：高速片上缓存，存储中间激活值 (Activation) 和权重，减少对 DRAM 的访问延迟和功耗。
+- **Dispatcher**：任务调度器，管理计算图的执行流，协调多个 NCE 的并行工作。
+
+在 Intel Core Ultra (Lunar Lake) 中，NPU 的峰值算力约为 48 TOPS (INT8)，但其核心优势在于能效比：执行同样的推理任务，NPU 的功耗通常仅为 iGPU 的 1/3 到 1/5。这使得 NPU 成为笔记本电脑、移动设备等续航敏感场景的首选。
+
+需要注意的是，早期 Intel Movidius 架构使用了 SHAVE DSP 核心，但在 Core Ultra 的现代 NPU 中已被 NCE 阵列取代，架构已完全重构以适应 Transformer 等新型模型的推理需求。
+
+## NPU vs iGPU 适用场景
+
+NPU 和 iGPU 在设计目标上存在根本差异，因此各自适用的推理场景也不同。下面的雷达图对比了两者在五个关键维度上的表现。
+
+<NpuVsIgpu client:visible />
+
+**NPU 的优势场景**：
+
+- **低功耗长时运行**：例如实时语音识别 (Whisper)、持续的背景视觉任务 (人脸检测、OCR)，要求设备在电池供电下长时间工作。
+- **固定拓扑小模型**：模型结构稳定、算子支持度高、参数量较小 (例如 MobileNet、EfficientNet、小型 Transformer)。
+- **延迟敏感的单次推理**：NPU 的片上 SRAM 和流水线设计使得单次推理的启动开销极低，适合需要快速响应的交互场景。
+
+**iGPU 的优势场景**：
+
+- **大模型、高吞吐**：参数量在 7B 以上的 LLM，或需要大 Batch 并行推理的视觉任务，iGPU 的显存容量和并行度更有优势。
+- **动态图、自定义算子**：模型包含 NPU 不支持的算子 (例如稀疏注意力、自定义 CUDA kernel)，或推理过程中图结构动态变化。
+- **插电场景、性能优先**：在台式机或接电源的笔记本上，功耗限制放宽，此时 iGPU 的绝对性能更高。
+
+在实际部署中，开发者往往需要根据具体的模型、硬件环境和应用场景，在 NPU 和 iGPU 之间做出权衡。OpenVINO 提供的多设备推理机制让这一过程更加灵活。
+
+## OpenVINO Device Plugin 体系
+
+OpenVINO 的 Device Plugin 是推理运行时 (Inference Runtime) 与具体硬件之间的抽象层。每个 Plugin 负责将编译后的计算图 (Compiled Model) 映射到目标设备 (GPU、NPU、CPU) 的执行引擎。
+
+除了单设备插件 (如 `GPU`、`NPU`、`CPU`)，OpenVINO 还提供了三种多设备协同模式：
+
+- **AUTO 模式**：自动设备选择。首次推理时，OpenVINO 会查询所有可用设备的能力 (Capability Query)，运行轻量级基准测试 (Benchmark)，然后选择延迟最低或吞吐最高的设备。
+- **MULTI 模式**：多设备并行推理。将推理请求以 round-robin 方式分发到多个设备 (例如 GPU 和 NPU)，每个设备独立执行完整的计算图，结果汇总后返回。适合吞吐量敏感的批处理场景。
+- **HETERO 模式**：异构子图切分。将计算图按算子支持情况拆分为多个子图，分别在不同设备上执行。例如将 NPU 支持的卷积、矩阵乘法放在 NPU，不支持的自定义算子放在 GPU，中间通过跨设备内存拷贝连接。
+
+下面的交互式流程图展示了这三种模式的工作原理。
+
+<DevicePluginSelector client:visible />
+
+## AUTO Plugin 详解
+
+AUTO 插件的设计目标是"开箱即用"的最优性能。当开发者指定 `device="AUTO"` 时，OpenVINO 会执行以下步骤：
+
+1. **设备枚举**：扫描当前系统中所有可用的推理设备 (GPU、NPU、CPU)，查询各自的硬件规格和驱动版本。
+2. **能力查询**：向每个设备的 Plugin 发送 Capability Query，获取支持的算子列表、精度支持 (FP32/FP16/INT8)、内存限制等信息。
+3. **基准测试**：如果配置文件中没有缓存的性能数据，AUTO 会在每个设备上运行一次或多次推理，测量延迟 (Latency) 和吞吐量 (Throughput)。
+4. **设备选择**：根据 `ov::hint::PerformanceMode` 配置 (延迟优先或吞吐优先)，选择最优设备。例如，`LATENCY` 模式会选延迟最低的设备 (通常是 NPU)，`THROUGHPUT` 模式会选吞吐最高的设备 (通常是 GPU)。
+5. **回退机制**：如果首选设备不可用 (例如驱动未安装、显存不足)，AUTO 会自动回退到次优设备。
+
+AUTO 模式的优势在于简化了设备选择的复杂度，开发者无需显式指定设备即可获得合理的性能。但它的局限性在于只能选择一个设备，无法同时利用多个设备的算力。
+
+## GPU+NPU 混合推理 Pipeline
+
+在某些场景下，单一设备无法满足所有需求：例如模型中包含 NPU 不支持的算子，或者 NPU 的显存不足以容纳整个模型。此时，HETERO 插件可以将计算图切分为多个子图，分别在不同设备上执行。
+
+HETERO 的核心逻辑是 **子图划分 (Subgraph Partitioning)**：
+
+1. **算子支持度查询**：遍历计算图中的每个算子 (Operation)，查询 NPU Plugin 是否支持。例如 `Convolution`、`MatMul`、`ReLU` 通常支持，而 `NonMaxSuppression`、`TopK` 等可能不支持。
+2. **子图切分**：将支持的算子连续区域 (Subgraph) 分配给 NPU，不支持的区域分配给 GPU 或 CPU。切分点 (Partition Point) 即为跨设备的边界。
+3. **跨设备数据传输**：在切分点插入内存拷贝算子 (MemCopy)，将中间激活值 (Activation Tensor) 从一个设备的内存搬运到另一个设备。这一步会引入额外的延迟和功耗开销。
+4. **调度执行**：各子图在对应设备上并行或串行执行，OpenVINO 的 Scheduler 负责管理依赖关系和同步。
+
+下面的交互式组件展示了一个简化的 Transformer 模型在 NPU 和 GPU 之间的切分。你可以拖动滑块调整切分点，观察 NPU/GPU 负载、通信开销和延迟的变化。
+
+<HeteroSubgraphSplit client:visible />
+
+**关键洞察**：
+
+- **切分点越少越好**：每增加一个切分点，就需要在设备间传输中间结果，引入延迟和功耗开销。理想情况下，应将计算图划分为尽量少的连续子图。
+- **负载均衡**：如果某个设备负载过重 (例如 NPU 分到 80% 的计算)，会成为瓶颈；负载均衡时整体延迟最优。
+- **模型设计考量**：在模型训练阶段，可以通过算子选择 (例如用标准卷积代替 Deformable Convolution) 来提高 NPU 的算子支持度，减少切分点数量。
+
+## 功耗与性能权衡
+
+在真实部署中，开发者需要在功耗、延迟、吞吐量之间做出权衡。下图展示了不同设备配置 (纯 NPU、纯 GPU、GPU+NPU 混合) 在不同模型规模下的功耗-性能曲线。
+
+<PowerPerfTradeoff client:visible />
+
+**关键发现**：
+
+- **纯 NPU**：功耗最低 (5-12W)，但吞吐量受限于 NPU 的并行度和显存容量。适合小模型、续航敏感的场景。
+- **纯 GPU**：吞吐量最高 (70-80 infer/s)，但功耗也最高 (18-50W)。在模型规模增大时，GPU 的性能优势更加明显。
+- **GPU+NPU 混合**：在多数场景下提供最佳的能效比 (吞吐/瓦特)。将功耗敏感的前端算子 (例如 Token Embedding、浅层 Attention) 放在 NPU，计算密集的后端算子 (例如深层 FFN) 放在 GPU，可以在功耗和性能之间取得平衡。
+
+**部署建议**：
+
+- **续航优先** (笔记本电池供电、移动设备)：优先使用纯 NPU 或 AUTO 模式 (Latency 优化)。
+- **性能优先** (台式机、插电笔记本)：优先使用纯 GPU 或 MULTI 模式 (Throughput 优化)。
+- **灵活部署** (云端、边缘混合)：使用 HETERO 模式，根据运行时的功耗和性能监控动态调整切分点。
+
+## 总结
+
+Intel Core Ultra 的 NPU 和 iGPU 为开发者提供了功耗和性能的多重选择。NPU 的低功耗、低延迟特性使其成为移动和嵌入式场景的理想选择，而 iGPU 的高吞吐和灵活性则适合大模型和插电场景。
+
+OpenVINO 的 AUTO、MULTI、HETERO 插件机制进一步增强了灵活性。AUTO 模式让开发者无需显式选择设备即可获得合理性能，MULTI 模式通过并行分发提升吞吐量，HETERO 模式则通过子图切分实现跨设备协同。在实际部署中，开发者应根据模型特点、硬件环境和应用需求，选择合适的设备配置和推理策略。
+
+随着 NPU 硬件能力的不断提升 (例如支持 FP16、动态形状、稀疏化) 和 OpenVINO 软件栈的持续优化，GPU+NPU 协同推理将成为 AI 应用部署的重要趋势。掌握多设备推理的原理和最佳实践，是构建高效、低功耗 AI 系统的关键能力。
+
+## 延伸阅读
+
+- OpenVINO 官方文档中的 [MULTI 设备文档](https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/multi-device.html) 详细介绍了多设备并行推理的配置方法和性能调优策略。
+- Intel 的 [NPU 设备文档](https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/npu-device.html) 列出了 NPU 支持的算子列表、精度配置和编译选项。
+- [HETERO 异构执行文档](https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/hetero-execution.html) 提供了子图切分的示例代码和调试方法。
+- 研究 Intel 的 AI PC 白皮书和 Core Ultra 技术规格，了解 NPU 在实际产品中的部署案例和性能数据。
