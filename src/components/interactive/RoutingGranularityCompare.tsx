@@ -3,37 +3,99 @@ import { COLORS, FONTS } from './shared/colors';
 
 type Granularity = 'query' | 'subtask' | 'token';
 
-const MODES: { id: Granularity; label: string; desc: string; pros: string; cons: string }[] = [
-  {
-    id: 'query',
-    label: 'Query-level',
-    desc: '整个请求选一个模型',
-    pros: '简单高效、低延迟开销',
-    cons: '无法处理 query 内部复杂度差异',
-  },
-  {
-    id: 'subtask',
-    label: 'Subtask-level',
-    desc: '拆分子任务，各自路由',
-    pros: '每个子任务最优匹配',
-    cons: '需要任务分解能力',
-  },
-  {
-    id: 'token',
-    label: 'Token-level',
-    desc: '逐 token 决定用哪个模型',
-    pros: '最细粒度，理论最优',
-    cons: '开销大，实现复杂',
-  },
-];
+interface Props {
+  locale?: 'zh' | 'en';
+}
 
-export default function RoutingGranularityCompare() {
+const createModes = (locale: 'zh' | 'en') => {
+  const t = {
+    zh: {
+      query: {
+        id: 'query' as Granularity,
+        label: 'Query-level',
+        desc: '整个请求选一个模型',
+        pros: '简单高效、低延迟开销',
+        cons: '无法处理 query 内部复杂度差异',
+        example: '代表：RouteLLM, FrugalGPT, 大多数路由系统',
+      },
+      subtask: {
+        id: 'subtask' as Granularity,
+        label: 'Subtask-level',
+        desc: '拆分子任务，各自路由',
+        pros: '每个子任务最优匹配',
+        cons: '需要任务分解能力',
+        example: '代表：HybridFlow (2025), Agent 任务编排',
+      },
+      token: {
+        id: 'token' as Granularity,
+        label: 'Token-level',
+        desc: '逐 token 决定用哪个模型',
+        pros: '最细粒度，理论最优',
+        cons: '开销大，实现复杂',
+        example: '代表：Token-level Hybrid (2024), Speculative Decoding 变体',
+      },
+    },
+    en: {
+      query: {
+        id: 'query' as Granularity,
+        label: 'Query-level',
+        desc: 'Select one model for entire request',
+        pros: 'Simple and efficient, low latency overhead',
+        cons: 'Cannot handle complexity differences within query',
+        example: 'Examples: RouteLLM, FrugalGPT, most routing systems',
+      },
+      subtask: {
+        id: 'subtask' as Granularity,
+        label: 'Subtask-level',
+        desc: 'Split into subtasks, route each independently',
+        pros: 'Optimal match for each subtask',
+        cons: 'Requires task decomposition capability',
+        example: 'Examples: HybridFlow (2025), Agent task orchestration',
+      },
+      token: {
+        id: 'token' as Granularity,
+        label: 'Token-level',
+        desc: 'Decide which model per token',
+        pros: 'Finest granularity, theoretically optimal',
+        cons: 'High overhead, complex implementation',
+        example: 'Examples: Token-level Hybrid (2024), Speculative Decoding variants',
+      },
+    },
+  }[locale];
+  return [t.query, t.subtask, t.token];
+};
+
+export default function RoutingGranularityCompare({ locale = 'zh' }: Props) {
   const [active, setActive] = useState<Granularity>('query');
+  const MODES = createModes(locale);
+
+  const t = {
+    zh: {
+      title: '路由粒度对比',
+      inputQuery: '输入 Query',
+      tokens: ['请', '帮', '我', '翻', '译', '这', '段', '代', '码'],
+      queryLegend: '● 所有 token → 同一个模型',
+      subtaskLegend: '● 子任务1 "请帮我翻译" → 模型A（绿色） · 子任务2 "这段代码" → 模型B（紫色）',
+      tokenLegend: '● 每个 token 独立判断：绿=本地模型 · 蓝=中等模型 · 紫=云端强模型',
+      prosLabel: '✓ 优势：',
+      consLabel: '✗ 劣势：',
+    },
+    en: {
+      title: 'Routing Granularity Comparison',
+      inputQuery: 'Input Query',
+      tokens: ['Please', ' ', 'trans', 'late', ' ', 'this', ' ', 'code', ' '],
+      queryLegend: '● All tokens → same model',
+      subtaskLegend: '● Subtask 1 "Please translate" → Model A (green) · Subtask 2 "this code" → Model B (purple)',
+      tokenLegend: '● Each token judged independently: green=local model · blue=medium model · purple=cloud strong model',
+      prosLabel: '✓ Pros: ',
+      consLabel: '✗ Cons: ',
+    },
+  }[locale];
 
   const W = 580, H = 380;
 
   // Tokens for animation
-  const tokens = ['请', '帮', '我', '翻', '译', '这', '段', '代', '码'];
+  const tokens = t.tokens;
 
   const getTokenColor = (idx: number, mode: Granularity) => {
     if (mode === 'query') return COLORS.primary; // all same model
@@ -47,7 +109,7 @@ export default function RoutingGranularityCompare() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="25" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          路由粒度对比
+          {t.title}
         </text>
 
         {/* Mode tabs */}
@@ -74,7 +136,7 @@ export default function RoutingGranularityCompare() {
         <g transform="translate(40, 90)">
           <text x="0" y="0" fontFamily={FONTS.sans} fontSize="12"
                 fontWeight="600" fill={COLORS.dark}>
-            输入 Query
+            {t.inputQuery}
           </text>
           <g transform="translate(0, 10)">
             {tokens.map((t, i) => (
@@ -94,17 +156,17 @@ export default function RoutingGranularityCompare() {
           <g transform="translate(0, 55)">
             {active === 'query' && (
               <text x="0" y="0" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.mid}>
-                ● 所有 token → 同一个模型
+                {t.queryLegend}
               </text>
             )}
             {active === 'subtask' && (
               <text x="0" y="0" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.mid}>
-                ● 子任务1 "请帮我翻译" → 模型A（绿色） · 子任务2 "这段代码" → 模型B（紫色）
+                {t.subtaskLegend}
               </text>
             )}
             {active === 'token' && (
               <text x="0" y="0" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.mid}>
-                ● 每个 token 独立判断：绿=本地模型 · 蓝=中等模型 · 紫=云端强模型
+                {t.tokenLegend}
               </text>
             )}
           </g>
@@ -125,15 +187,13 @@ export default function RoutingGranularityCompare() {
                 {m.desc}
               </text>
               <text x="20" y="80" fontFamily={FONTS.sans} fontSize="12" fill={COLORS.green}>
-                ✓ 优势：{m.pros}
+                {t.prosLabel}{m.pros}
               </text>
               <text x="20" y="105" fontFamily={FONTS.sans} fontSize="12" fill={COLORS.red}>
-                ✗ 劣势：{m.cons}
+                {t.consLabel}{m.cons}
               </text>
               <text x="20" y="128" fontFamily={FONTS.mono} fontSize="10" fill={COLORS.mid}>
-                {active === 'query' ? '代表：RouteLLM, FrugalGPT, 大多数路由系统'
-                  : active === 'subtask' ? '代表：HybridFlow (2025), Agent 任务编排'
-                  : '代表：Token-level Hybrid (2024), Speculative Decoding 变体'}
+                {m.example}
               </text>
             </g>
           );

@@ -10,33 +10,90 @@ interface Paper {
   category: 'classifier' | 'cascade' | 'hybrid' | 'online' | 'ensemble' | 'system';
 }
 
-const PAPERS: Paper[] = [
-  { year: 2023, month: 5, name: 'FrugalGPT', venue: 'arXiv', contribution: '级联方法开山之作，98% 成本降低', category: 'cascade' },
-  { year: 2023, month: 10, name: 'AutoMix', venue: 'arXiv → NeurIPS 2024', contribution: 'POMDP + few-shot 自验证路由', category: 'cascade' },
-  { year: 2024, month: 6, name: 'RouteLLM', venue: 'arXiv', contribution: '开源路由框架，MF/BERT/Causal LM/SW 四种 router', category: 'system' },
-  { year: 2024, month: 6, name: 'Apple Intelligence', venue: 'WWDC', contribution: 'On-device + Private Cloud Compute，产品化标杆', category: 'hybrid' },
-  { year: 2024, month: 9, name: 'Token-level Hybrid', venue: 'arXiv', contribution: '逐 token 置信度判断，最细粒度', category: 'hybrid' },
-  { year: 2025, month: 2, name: 'Confidence-Driven Router', venue: 'arXiv', contribution: 'LLM-as-Judge + 不确定性估计', category: 'cascade' },
-  { year: 2025, month: 9, name: 'Router-free RL', venue: 'arXiv', contribution: '本地模型通过 RL 自学升级决策', category: 'hybrid' },
-  { year: 2025, month: 11, name: 'PRISM', venue: 'AAAI 2026', contribution: '实体级隐私敏感度路由', category: 'hybrid' },
-  { year: 2025, month: 12, name: 'HybridFlow', venue: 'arXiv', contribution: 'Subtask-level DAG 路由', category: 'hybrid' },
-  { year: 2026, month: 3, name: 'ConsRoute', venue: 'arXiv', contribution: 'Reranker 语义一致性做 cloud-edge-device 路由', category: 'hybrid' },
-  { year: 2026, month: 3, name: 'Robust Batch Routing', venue: 'arXiv', contribution: '批量优化在对抗条件下优于逐条 24%', category: 'online' },
-  { year: 2026, month: 4, name: 'Small Models as Routers', venue: 'arXiv', contribution: '1-4B 模型做路由，78.3% 准确率', category: 'classifier' },
-  { year: 2026, month: 4, name: 'Council Mode', venue: 'arXiv', contribution: '并行多 LLM + 综合，35.9% 幻觉降低', category: 'ensemble' },
-];
+interface Props {
+  locale?: 'zh' | 'en';
+}
+
+const createPapers = (locale: 'zh' | 'en'): Paper[] => {
+  const t = {
+    zh: {
+      frugalGpt: '级联方法开山之作，98% 成本降低',
+      autoMix: 'POMDP + few-shot 自验证路由',
+      routeLlm: '开源路由框架，MF/BERT/Causal LM/SW 四种 router',
+      appleIntelligence: 'On-device + Private Cloud Compute，产品化标杆',
+      tokenLevel: '逐 token 置信度判断，最细粒度',
+      confidenceDriven: 'LLM-as-Judge + 不确定性估计',
+      routerFreeRl: '本地模型通过 RL 自学升级决策',
+      prism: '实体级隐私敏感度路由',
+      hybridFlow: 'Subtask-level DAG 路由',
+      consRoute: 'Reranker 语义一致性做 cloud-edge-device 路由',
+      robustBatch: '批量优化在对抗条件下优于逐条 24%',
+      smallModels: '1-4B 模型做路由，78.3% 准确率',
+      councilMode: '并行多 LLM + 综合，35.9% 幻觉降低',
+    },
+    en: {
+      frugalGpt: 'Pioneering cascade method, 98% cost reduction',
+      autoMix: 'POMDP + few-shot self-verification routing',
+      routeLlm: 'Open-source routing framework, 4 routers: MF/BERT/Causal LM/SW',
+      appleIntelligence: 'On-device + Private Cloud Compute, production benchmark',
+      tokenLevel: 'Per-token confidence judgment, finest granularity',
+      confidenceDriven: 'LLM-as-Judge + uncertainty estimation',
+      routerFreeRl: 'Local model learns upgrade decision via RL',
+      prism: 'Entity-level privacy-sensitive routing',
+      hybridFlow: 'Subtask-level DAG routing',
+      consRoute: 'Reranker semantic consistency for cloud-edge-device routing',
+      robustBatch: 'Batch optimization 24% better than per-query under adversarial conditions',
+      smallModels: '1-4B models as routers, 78.3% accuracy',
+      councilMode: 'Parallel multi-LLM + synthesis, 35.9% hallucination reduction',
+    },
+  }[locale];
+
+  return [
+    { year: 2023, month: 5, name: 'FrugalGPT', venue: 'arXiv', contribution: t.frugalGpt, category: 'cascade' },
+    { year: 2023, month: 10, name: 'AutoMix', venue: 'arXiv → NeurIPS 2024', contribution: t.autoMix, category: 'cascade' },
+    { year: 2024, month: 6, name: 'RouteLLM', venue: 'arXiv', contribution: t.routeLlm, category: 'system' },
+    { year: 2024, month: 6, name: 'Apple Intelligence', venue: 'WWDC', contribution: t.appleIntelligence, category: 'hybrid' },
+    { year: 2024, month: 9, name: 'Token-level Hybrid', venue: 'arXiv', contribution: t.tokenLevel, category: 'hybrid' },
+    { year: 2025, month: 2, name: 'Confidence-Driven Router', venue: 'arXiv', contribution: t.confidenceDriven, category: 'cascade' },
+    { year: 2025, month: 9, name: 'Router-free RL', venue: 'arXiv', contribution: t.routerFreeRl, category: 'hybrid' },
+    { year: 2025, month: 11, name: 'PRISM', venue: 'AAAI 2026', contribution: t.prism, category: 'hybrid' },
+    { year: 2025, month: 12, name: 'HybridFlow', venue: 'arXiv', contribution: t.hybridFlow, category: 'hybrid' },
+    { year: 2026, month: 3, name: 'ConsRoute', venue: 'arXiv', contribution: t.consRoute, category: 'hybrid' },
+    { year: 2026, month: 3, name: 'Robust Batch Routing', venue: 'arXiv', contribution: t.robustBatch, category: 'online' },
+    { year: 2026, month: 4, name: 'Small Models as Routers', venue: 'arXiv', contribution: t.smallModels, category: 'classifier' },
+    { year: 2026, month: 4, name: 'Council Mode', venue: 'arXiv', contribution: t.councilMode, category: 'ensemble' },
+  ];
+};
 
 const CAT_COLORS: Record<string, string> = {
   classifier: '#1565c0', cascade: '#2e7d32', hybrid: '#e65100',
   online: '#6a1b9a', ensemble: '#c62828', system: '#00838f',
 };
-const CAT_LABELS: Record<string, string> = {
-  classifier: '分类器', cascade: '级联', hybrid: '混合路由',
-  online: '在线学习', ensemble: '多模型', system: '系统/框架',
-};
 
-export default function PaperTimeline() {
+const createCatLabels = (locale: 'zh' | 'en') => ({
+  zh: {
+    classifier: '分类器', cascade: '级联', hybrid: '混合路由',
+    online: '在线学习', ensemble: '多模型', system: '系统/框架',
+  },
+  en: {
+    classifier: 'Classifier', cascade: 'Cascade', hybrid: 'Hybrid Routing',
+    online: 'Online Learning', ensemble: 'Multi-Model', system: 'System/Framework',
+  },
+}[locale]);
+
+export default function PaperTimeline({ locale = 'zh' }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
+  const PAPERS = createPapers(locale);
+  const CAT_LABELS = createCatLabels(locale);
+
+  const t = {
+    zh: {
+      title: 'Model Routing 论文与系统时间线 (2023-2026)',
+    },
+    en: {
+      title: 'Model Routing Papers & Systems Timeline (2023-2026)',
+    },
+  }[locale];
 
   const W = 580, H = 520;
   const timelineL = 100, timelineR = 540;
@@ -52,7 +109,7 @@ export default function PaperTimeline() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="25" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          Model Routing 论文与系统时间线 (2023-2026)
+          {t.title}
         </text>
 
         {/* Timeline axis */}

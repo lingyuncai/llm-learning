@@ -12,8 +12,37 @@ const MODELS = [
   { name: 'Phi-3-mini', quality: 55, cost: 5, latency: 20, color: '#ef6c00' },
 ];
 
-export default function CostQualityTriangle() {
+interface Props {
+  locale?: 'zh' | 'en';
+}
+
+export default function CostQualityTriangle({ locale = 'zh' }: Props) {
   const [budget, setBudget] = useState(50);
+
+  const t = {
+    zh: {
+      title: '成本预算 vs 模型质量',
+      instruction: '拖动滑块调整成本预算上限',
+      xAxis: '相对成本 →',
+      yAxis: '质量 →',
+      budgetLine: '预算线',
+      quality: '质量',
+      bestInBudget: (name: string, quality: number, cost: number, count: number) =>
+        `预算内最优：${name}（质量 ${quality}%，成本 ${cost}%）— 共 ${count} 个可选模型`,
+      budgetTooLow: '预算过低，无可用模型',
+    },
+    en: {
+      title: 'Cost Budget vs Model Quality',
+      instruction: 'Drag slider to adjust cost budget limit',
+      xAxis: 'Relative Cost →',
+      yAxis: 'Quality →',
+      budgetLine: 'Budget Line',
+      quality: 'Quality',
+      bestInBudget: (name: string, quality: number, cost: number, count: number) =>
+        `Best within budget: ${name} (quality ${quality}%, cost ${cost}%) — ${count} models available`,
+      budgetTooLow: 'Budget too low, no models available',
+    },
+  }[locale];
 
   const W = 580, H = 400;
   const plotL = 80, plotR = 540, plotT = 60, plotB = 320;
@@ -25,13 +54,13 @@ export default function CostQualityTriangle() {
         {/* Title */}
         <text x={W / 2} y="25" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          成本预算 vs 模型质量
+          {t.title}
         </text>
 
         {/* Budget slider label */}
         <text x={W / 2} y="48" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="12" fill={COLORS.mid}>
-          拖动滑块调整成本预算上限：{budget}%
+          {t.instruction}：{budget}%
         </text>
 
         {/* Axes */}
@@ -41,12 +70,12 @@ export default function CostQualityTriangle() {
               stroke={COLORS.mid} strokeWidth="1.5" />
         <text x={W / 2} y={plotB + 35} textAnchor="middle"
               fontFamily={FONTS.sans} fontSize="12" fill={COLORS.dark}>
-          相对成本 →
+          {t.xAxis}
         </text>
         <text x={plotL - 15} y={(plotT + plotB) / 2} textAnchor="middle"
               fontFamily={FONTS.sans} fontSize="12" fill={COLORS.dark}
               transform={`rotate(-90, ${plotL - 15}, ${(plotT + plotB) / 2})`}>
-          质量 →
+          {t.yAxis}
         </text>
 
         {/* Budget line */}
@@ -60,7 +89,7 @@ export default function CostQualityTriangle() {
                     fill={COLORS.red} />
               <text x={bx} y={plotT + 8} textAnchor="middle"
                     fontFamily={FONTS.mono} fontSize="10" fill="#fff">
-                预算线
+                {t.budgetLine}
               </text>
               {/* Affordable zone */}
               <rect x={plotL} y={plotT} width={bx - plotL} height={plotH}
@@ -83,7 +112,7 @@ export default function CostQualityTriangle() {
                     fontFamily={FONTS.sans} fontSize="10"
                     fill={affordable ? COLORS.dark : COLORS.mid}>
                 {m.name}
-                {affordable ? ` (质量 ${m.quality}%)` : ''}
+                {affordable ? ` (${t.quality} ${m.quality}%)` : ''}
               </text>
             </g>
           );
@@ -102,8 +131,8 @@ export default function CostQualityTriangle() {
               <text x={W / 2} y={plotB + 65} textAnchor="middle"
                     fontFamily={FONTS.sans} fontSize="12" fill={COLORS.dark}>
                 {best
-                  ? `预算内最优：${best.name}（质量 ${best.quality}%，成本 ${best.cost}%）— 共 ${affordable.length} 个可选模型`
-                  : '预算过低，无可用模型'}
+                  ? t.bestInBudget(best.name, best.quality, best.cost, affordable.length)
+                  : t.budgetTooLow}
               </text>
             </g>
           );
