@@ -49,7 +49,18 @@ const ROWS: CompareRow[] = [
   },
 ];
 
-export default function PrefixCachingCompare() {
+export default function PrefixCachingCompare({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      dimension: '维度',
+      clickToExpand: '点击任一行展开详细说明。vLLM 从 v0.6 开始也实验性支持 tree-based caching。',
+    },
+    en: {
+      dimension: 'Dimension',
+      clickToExpand: 'Click any row to expand details. vLLM also experimentally supports tree-based caching from v0.6.',
+    },
+  }[locale];
+
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
   return (
@@ -59,7 +70,7 @@ export default function PrefixCachingCompare() {
         display: 'grid', gridTemplateColumns: '120px 1fr 1fr', gap: 1,
         background: COLORS.dark, borderRadius: '8px 8px 0 0', overflow: 'hidden',
       }}>
-        <div style={{ padding: '10px 12px', fontSize: 12, fontWeight: 600, color: '#fff' }}>维度</div>
+        <div style={{ padding: '10px 12px', fontSize: 12, fontWeight: 600, color: '#fff' }}>{t.dimension}</div>
         <div style={{ padding: '10px 12px', fontSize: 12, fontWeight: 600, color: '#fff', textAlign: 'center' }}>
           vLLM (Hash-based)
         </div>
@@ -122,7 +133,7 @@ export default function PrefixCachingCompare() {
         borderRadius: '0 0 8px 8px', fontSize: 11, color: COLORS.mid,
         borderTop: '1px solid #e5e7eb',
       }}>
-        点击任一行展开详细说明。vLLM 从 v0.6 开始也实验性支持 tree-based caching。
+        {t.clickToExpand}
       </div>
     </div>
   );

@@ -25,15 +25,64 @@ function Box({ x, y, w, h, label, color, sublabel }: {
   );
 }
 
-export default function HymbaParallelHeads() {
+export default function HymbaParallelHeads({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: '1. 输入 + Meta Tokens',
+      step1Subtitle: 'Meta Tokens 拼接到输入序列前',
+      concatenatedSeq: '拼接序列: [M₁, M₂, M₃, t₁, t₂, t₃, t₄, t₅]',
+      metaTokensDesc: 'Meta tokens 是可学习参数，存储全局关键信息（如任务类型、语言特征）',
+      metaTokensInfo: '减少 Attention 需要处理的有效序列长度 → 压缩 KV cache',
+      step2Title: '2. 并行 Attention + SSM Heads',
+      step2Subtitle: '同一层内：Attention 和 SSM 并行计算',
+      inputSeq: '拼接序列 [M + tokens]',
+      attnHeads: 'Attention Heads',
+      attnDesc: '处理 [M + tokens] 序列',
+      metaParticipate: 'Meta tokens 参与 Q/K/V 计算',
+      ssmHeads: 'SSM Heads',
+      ssmDesc: '仅处理 token 序列',
+      noMetaTokens: '不使用 Meta tokens',
+      output: '输出 = Attn + SSM',
+      parallelInfo: '并行计算无额外延迟 · Attention 提供精确检索 · SSM 提供高效摘要',
+      step3Title: '3. 输出融合 + Cross-layer KV Sharing',
+      step3Subtitle: '层间 KV cache 共享 → 进一步压缩显存',
+      sharedKv: '共享 KV',
+      cache: 'Cache',
+      hymbaStats: 'Hymba 1.5B: KV cache 比 Llama-3.2-3B 小 11.67× · Throughput 高 3.49×',
+    },
+    en: {
+      step1Title: '1. Input + Meta Tokens',
+      step1Subtitle: 'Meta Tokens concatenated before input sequence',
+      concatenatedSeq: 'Concatenated sequence: [M₁, M₂, M₃, t₁, t₂, t₃, t₄, t₅]',
+      metaTokensDesc: 'Meta tokens are learnable parameters, storing global key information (e.g., task type, language features)',
+      metaTokensInfo: 'Reduce effective sequence length for Attention processing → Compress KV cache',
+      step2Title: '2. Parallel Attention + SSM Heads',
+      step2Subtitle: 'Within the same layer: Attention and SSM compute in parallel',
+      inputSeq: 'Concatenated sequence [M + tokens]',
+      attnHeads: 'Attention Heads',
+      attnDesc: 'Process [M + tokens] sequence',
+      metaParticipate: 'Meta tokens participate in Q/K/V computation',
+      ssmHeads: 'SSM Heads',
+      ssmDesc: 'Process only token sequence',
+      noMetaTokens: 'Do not use Meta tokens',
+      output: 'Output = Attn + SSM',
+      parallelInfo: 'Parallel computation with no extra latency · Attention provides precise retrieval · SSM provides efficient summarization',
+      step3Title: '3. Output Fusion + Cross-layer KV Sharing',
+      step3Subtitle: 'Cross-layer KV cache sharing → Further compress memory',
+      sharedKv: 'Shared KV',
+      cache: 'Cache',
+      hymbaStats: 'Hymba 1.5B: KV cache 11.67× smaller than Llama-3.2-3B · Throughput 3.49× higher',
+    },
+  }[locale];
+
   const steps = [
     {
-      title: '1. 输入 + Meta Tokens',
+      title: t.step1Title,
       content: (
         <svg viewBox={`0 0 ${W} 220`} className="w-full">
           <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            Meta Tokens 拼接到输入序列前
+            {t.step1Subtitle}
           </text>
 
           {/* Meta tokens */}
@@ -66,33 +115,33 @@ export default function HymbaParallelHeads() {
             fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
           <text x={290} y={126} textAnchor="middle" fontSize="10" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            拼接序列: [M₁, M₂, M₃, t₁, t₂, t₃, t₄, t₅]
+            {t.concatenatedSeq}
           </text>
 
           <rect x={60} y={155} width={460} height={44} rx={6}
             fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
           <text x={290} y={173} textAnchor="middle" fontSize="10"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            Meta tokens 是可学习参数，存储全局关键信息（如任务类型、语言特征）
+            {t.metaTokensDesc}
           </text>
           <text x={290} y={189} textAnchor="middle" fontSize="9"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            减少 Attention 需要处理的有效序列长度 → 压缩 KV cache
+            {t.metaTokensInfo}
           </text>
         </svg>
       ),
     },
     {
-      title: '2. 并行 Attention + SSM Heads',
+      title: t.step2Title,
       content: (
         <svg viewBox={`0 0 ${W} 260`} className="w-full">
           <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            同一层内：Attention 和 SSM 并行计算
+            {t.step2Subtitle}
           </text>
 
           {/* Input */}
-          <Box x={200} y={40} w={180} h={28} label="拼接序列 [M + tokens]" color={COLORS.dark} />
+          <Box x={200} y={40} w={180} h={28} label={t.inputSeq} color={COLORS.dark} />
 
           {/* Split arrow */}
           <line x1={240} y1={68} x2={140} y2={95} stroke={COLORS.mid} strokeWidth="1" />
@@ -100,18 +149,18 @@ export default function HymbaParallelHeads() {
 
           {/* Attention branch */}
           <Box x={50} y={95} w={180} h={40}
-            label="Attention Heads" sublabel="处理 [M + tokens] 序列" color={COLORS.orange} />
+            label={t.attnHeads} sublabel={t.attnDesc} color={COLORS.orange} />
           <text x={140} y={150} textAnchor="middle" fontSize="8"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            Meta tokens 参与 Q/K/V 计算
+            {t.metaParticipate}
           </text>
 
           {/* SSM branch */}
           <Box x={350} y={95} w={180} h={40}
-            label="SSM Heads" sublabel="仅处理 token 序列" color={COLORS.primary} />
+            label={t.ssmHeads} sublabel={t.ssmDesc} color={COLORS.primary} />
           <text x={440} y={150} textAnchor="middle" fontSize="8"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            不使用 Meta tokens
+            {t.noMetaTokens}
           </text>
 
           {/* Merge */}
@@ -120,24 +169,24 @@ export default function HymbaParallelHeads() {
           <text x={290} y={184} textAnchor="middle" fontSize="14" fontWeight="700"
             fill={COLORS.green} fontFamily={FONTS.mono}>⊕</text>
 
-          <Box x={200} y={195} w={180} h={28} label="输出 = Attn + SSM" color={COLORS.green} />
+          <Box x={200} y={195} w={180} h={28} label={t.output} color={COLORS.green} />
 
           <rect x={60} y={235} width={460} height={20} rx={4}
             fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="0.5" />
           <text x={290} y={249} textAnchor="middle" fontSize="9"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            并行计算无额外延迟 · Attention 提供精确检索 · SSM 提供高效摘要
+            {t.parallelInfo}
           </text>
         </svg>
       ),
     },
     {
-      title: '3. 输出融合 + Cross-layer KV Sharing',
+      title: t.step3Title,
       content: (
         <svg viewBox={`0 0 ${W} 260`} className="w-full">
           <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            层间 KV cache 共享 → 进一步压缩显存
+            {t.step3Subtitle}
           </text>
 
           {/* Layer stack with shared KV */}
@@ -172,16 +221,16 @@ export default function HymbaParallelHeads() {
           <line x1={360} y1={45 + 3 * 45 + 16} x2={380} y2={45 + 3 * 45 + 16}
             stroke={COLORS.orange} strokeWidth="1" strokeDasharray="3 2" />
           <text x={388} y={45 + 1.5 * 45 + 20} fontSize="8" fontWeight="600"
-            fill={COLORS.orange} fontFamily={FONTS.sans}>共享 KV</text>
+            fill={COLORS.orange} fontFamily={FONTS.sans}>{t.sharedKv}</text>
           <text x={388} y={45 + 1.5 * 45 + 32} fontSize="7"
-            fill={COLORS.mid} fontFamily={FONTS.sans}>Cache</text>
+            fill={COLORS.mid} fontFamily={FONTS.sans}>{t.cache}</text>
 
           {/* Bottom summary */}
           <rect x={40} y={230} width={500} height={20} rx={4}
             fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="0.5" />
           <text x={290} y={244} textAnchor="middle" fontSize="9"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            Hymba 1.5B: KV cache 比 Llama-3.2-3B 小 11.67× · Throughput 高 3.49×
+            {t.hymbaStats}
           </text>
         </svg>
       ),

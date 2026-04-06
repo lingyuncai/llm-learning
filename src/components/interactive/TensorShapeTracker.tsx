@@ -10,49 +10,76 @@ interface Stage {
   desc: string;
 }
 
-const STAGES: Stage[] = [
-  { label: 'Input X', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: '输入序列的隐藏表示' },
-  { label: 'Q = X·Wq', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: '线性投影得到所有头的 Q' },
-  { label: 'K = X·Wk', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: '线性投影得到所有头的 K' },
-  { label: 'V = X·Wv', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: '线性投影得到所有头的 V' },
-  { label: 'reshape', simpleShape: '(S, d_k)', fullShape: '(B, h, S, d_k)', desc: 'reshape + transpose 拆分多头' },
-  { label: 'Q·Kᵀ', simpleShape: '(S, S)', fullShape: '(B, h, S, S)', desc: '计算注意力分数矩阵' },
-  { label: '÷ √d_k', simpleShape: '(S, S)', fullShape: '(B, h, S, S)', desc: '缩放防止梯度消失' },
-  { label: '+ mask', simpleShape: '(S, S)', fullShape: '(B, h, S, S)', desc: '因果遮罩 (可选)' },
-  { label: 'softmax', simpleShape: '(S, S)', fullShape: '(B, h, S, S)', desc: '归一化为注意力权重' },
-  { label: '× V', simpleShape: '(S, d_k)', fullShape: '(B, h, S, d_k)', desc: '加权求和 Value' },
-  { label: 'concat', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: 'transpose + reshape 拼接多头' },
-  { label: '× Wo', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: '输出投影' },
-];
-
-function StageBox({ stage, index, isActive, mode, onClick }: {
-  stage: Stage; index: number; isActive: boolean; mode: Mode;
-  onClick: () => void;
-}) {
-  const shape = mode === 'simple' ? stage.simpleShape : stage.fullShape;
-  return (
-    <g onClick={onClick} style={{ cursor: 'pointer' }}>
-      <rect x={0} y={index * 38} width={280} height={32} rx={6}
-        fill={isActive ? COLORS.highlight : COLORS.bgAlt}
-        stroke={isActive ? COLORS.primary : COLORS.light}
-        strokeWidth={isActive ? 2 : 1} />
-      <text x={10} y={index * 38 + 20} fontSize="11" fill={COLORS.dark}
-        fontFamily="system-ui" fontWeight={isActive ? '700' : '400'}>
-        {stage.label}
-      </text>
-      <text x={270} y={index * 38 + 20} textAnchor="end" fontSize="10"
-        fill={COLORS.primary} fontFamily="monospace" fontWeight="600">
-        {shape}
-      </text>
-    </g>
-  );
-}
-
-export default function TensorShapeTracker() {
+export default function TensorShapeTracker({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const [mode, setMode] = useState<Mode>('simple');
 
+  const t = {
+    zh: {
+      simpleMode: '简化模式 (单头)',
+      fullMode: '完整模式 (多头+batch)',
+      simplifiedNote: '简化模式省略了 batch (B) 和 多头 (h) 维度',
+      stages: [
+        { label: 'Input X', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: '输入序列的隐藏表示' },
+        { label: 'Q = X·Wq', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: '线性投影得到所有头的 Q' },
+        { label: 'K = X·Wk', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: '线性投影得到所有头的 K' },
+        { label: 'V = X·Wv', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: '线性投影得到所有头的 V' },
+        { label: 'reshape', simpleShape: '(S, d_k)', fullShape: '(B, h, S, d_k)', desc: 'reshape + transpose 拆分多头' },
+        { label: 'Q·Kᵀ', simpleShape: '(S, S)', fullShape: '(B, h, S, S)', desc: '计算注意力分数矩阵' },
+        { label: '÷ √d_k', simpleShape: '(S, S)', fullShape: '(B, h, S, S)', desc: '缩放防止梯度消失' },
+        { label: '+ mask', simpleShape: '(S, S)', fullShape: '(B, h, S, S)', desc: '因果遮罩 (可选)' },
+        { label: 'softmax', simpleShape: '(S, S)', fullShape: '(B, h, S, S)', desc: '归一化为注意力权重' },
+        { label: '× V', simpleShape: '(S, d_k)', fullShape: '(B, h, S, d_k)', desc: '加权求和 Value' },
+        { label: 'concat', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: 'transpose + reshape 拼接多头' },
+        { label: '× Wo', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: '输出投影' },
+      ],
+    },
+    en: {
+      simpleMode: 'Simple Mode (single head)',
+      fullMode: 'Full Mode (multi-head+batch)',
+      simplifiedNote: 'Simple mode omits batch (B) and multi-head (h) dimensions',
+      stages: [
+        { label: 'Input X', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: 'Hidden representation of input sequence' },
+        { label: 'Q = X·Wq', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: 'Linear projection for all heads Q' },
+        { label: 'K = X·Wk', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: 'Linear projection for all heads K' },
+        { label: 'V = X·Wv', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: 'Linear projection for all heads V' },
+        { label: 'reshape', simpleShape: '(S, d_k)', fullShape: '(B, h, S, d_k)', desc: 'reshape + transpose to split multi-heads' },
+        { label: 'Q·Kᵀ', simpleShape: '(S, S)', fullShape: '(B, h, S, S)', desc: 'Compute attention score matrix' },
+        { label: '÷ √d_k', simpleShape: '(S, S)', fullShape: '(B, h, S, S)', desc: 'Scale to prevent gradient vanishing' },
+        { label: '+ mask', simpleShape: '(S, S)', fullShape: '(B, h, S, S)', desc: 'Causal mask (optional)' },
+        { label: 'softmax', simpleShape: '(S, S)', fullShape: '(B, h, S, S)', desc: 'Normalize to attention weights' },
+        { label: '× V', simpleShape: '(S, d_k)', fullShape: '(B, h, S, d_k)', desc: 'Weighted sum of Values' },
+        { label: 'concat', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: 'transpose + reshape to concatenate heads' },
+        { label: '× Wo', simpleShape: '(S, H)', fullShape: '(B, S, H)', desc: 'Output projection' },
+      ],
+    },
+  }[locale];
+
+  const STAGES = t.stages;
   const svgH = STAGES.length * 38 + 10;
+
+  function StageBox({ stage, index, isActive, mode, onClick }: {
+    stage: Stage; index: number; isActive: boolean; mode: Mode;
+    onClick: () => void;
+  }) {
+    const shape = mode === 'simple' ? stage.simpleShape : stage.fullShape;
+    return (
+      <g onClick={onClick} style={{ cursor: 'pointer' }}>
+        <rect x={0} y={index * 38} width={280} height={32} rx={6}
+          fill={isActive ? COLORS.highlight : COLORS.bgAlt}
+          stroke={isActive ? COLORS.primary : COLORS.light}
+          strokeWidth={isActive ? 2 : 1} />
+        <text x={10} y={index * 38 + 20} fontSize="11" fill={COLORS.dark}
+          fontFamily="system-ui" fontWeight={isActive ? '700' : '400'}>
+          {stage.label}
+        </text>
+        <text x={270} y={index * 38 + 20} textAnchor="end" fontSize="10"
+          fill={COLORS.primary} fontFamily="monospace" fontWeight="600">
+          {shape}
+        </text>
+      </g>
+    );
+  }
 
   return (
     <div className="my-6">
@@ -64,7 +91,7 @@ export default function TensorShapeTracker() {
             ? 'bg-blue-600 text-white border-blue-600'
             : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
         >
-          简化模式 (单头)
+          {t.simpleMode}
         </button>
         <button
           onClick={() => setMode('full')}
@@ -72,7 +99,7 @@ export default function TensorShapeTracker() {
             ? 'bg-blue-600 text-white border-blue-600'
             : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
         >
-          完整模式 (多头+batch)
+          {t.fullMode}
         </button>
       </div>
 
@@ -106,7 +133,7 @@ export default function TensorShapeTracker() {
           </p>
           {mode === 'simple' && (
             <p className="text-xs text-gray-400 mt-2">
-              简化模式省略了 batch (B) 和 多头 (h) 维度
+              {t.simplifiedNote}
             </p>
           )}
         </div>

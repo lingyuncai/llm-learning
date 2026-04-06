@@ -98,7 +98,32 @@ const DATA_TYPES: DataType[] = [
   },
 ];
 
-export default function DataTypeBitLayout() {
+export default function DataTypeBitLayout({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      bits: 'bits',
+      sign: 'Sign',
+      exponent: 'Exponent',
+      mantissa: 'Mantissa/Value',
+      range: '表示范围',
+      precision: '精度',
+      example: '编码示例',
+      bf16Note: 'BF16 与 FP32 相同的 8-bit exponent — 相同的动态范围，但 mantissa 仅 7 位',
+      fp16Note: 'FP16 仅 5-bit exponent — 动态范围有限，但 10-bit mantissa 精度更高',
+    },
+    en: {
+      bits: 'bits',
+      sign: 'Sign',
+      exponent: 'Exponent',
+      mantissa: 'Mantissa/Value',
+      range: 'Range',
+      precision: 'Precision',
+      example: 'Encoding Example',
+      bf16Note: 'BF16 has same 8-bit exponent as FP32 — same dynamic range, but only 7-bit mantissa',
+      fp16Note: 'FP16 has only 5-bit exponent — limited dynamic range, but higher 10-bit mantissa precision',
+    },
+  }[locale];
+
   const [selected, setSelected] = useState(0);
   const dt = DATA_TYPES[selected];
 
@@ -128,7 +153,7 @@ export default function DataTypeBitLayout() {
       {/* Title */}
       <text x={W / 2} y={60} textAnchor="middle" fontSize="12" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        {dt.name} — {dt.totalBits} bits
+        {dt.name} — {dt.totalBits} {t.bits}
       </text>
 
       {/* Bit boxes */}
@@ -159,15 +184,15 @@ export default function DataTypeBitLayout() {
 
       {/* Legend */}
       {[
-        { label: 'Sign', color: COLORS.red },
-        { label: 'Exponent', color: COLORS.primary },
-        { label: 'Mantissa/Value', color: COLORS.green },
+        { key: 'sign', color: COLORS.red },
+        { key: 'exponent', color: COLORS.primary },
+        { key: 'mantissa', color: COLORS.green },
       ].map((item, i) => (
-        <g key={item.label}>
+        <g key={item.key}>
           <rect x={140 + i * 140} y={170} width={10} height={10} rx={2}
             fill={item.color} opacity={0.3} stroke={item.color} strokeWidth={1} />
           <text x={154 + i * 140} y={179} fontSize="7" fill={COLORS.mid}
-            fontFamily={FONTS.sans}>{item.label}</text>
+            fontFamily={FONTS.sans}>{t[item.key as keyof typeof t]}</text>
         </g>
       ))}
 
@@ -175,13 +200,13 @@ export default function DataTypeBitLayout() {
       <rect x={40} y={195} width={W - 80} height={110} rx={6}
         fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth={1} />
       <text x={60} y={218} fontSize="9" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        <tspan fontWeight="600">表示范围: </tspan>{dt.range}
+        <tspan fontWeight="600">{t.range}: </tspan>{dt.range}
       </text>
       <text x={60} y={238} fontSize="9" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        <tspan fontWeight="600">精度: </tspan>{dt.precision}
+        <tspan fontWeight="600">{t.precision}: </tspan>{dt.precision}
       </text>
       <text x={60} y={258} fontSize="9" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        <tspan fontWeight="600">编码示例: </tspan>
+        <tspan fontWeight="600">{t.example}: </tspan>
       </text>
       <text x={60} y={278} fontSize="8" fill={COLORS.mid} fontFamily={FONTS.mono}>
         {dt.example}
@@ -191,9 +216,7 @@ export default function DataTypeBitLayout() {
       {(dt.name === 'BF16' || dt.name === 'FP16') && (
         <text x={W / 2} y={H - 6} textAnchor="middle" fontSize="7" fill={COLORS.orange}
           fontFamily={FONTS.sans}>
-          {dt.name === 'BF16'
-            ? 'BF16 与 FP32 相同的 8-bit exponent — 相同的动态范围，但 mantissa 仅 7 位'
-            : 'FP16 仅 5-bit exponent — 动态范围有限，但 10-bit mantissa 精度更高'}
+          {dt.name === 'BF16' ? t.bf16Note : t.fp16Note}
         </text>
       )}
     </svg>

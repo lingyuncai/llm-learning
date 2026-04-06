@@ -28,7 +28,27 @@ const DIRS = [
   { name: 'left', dr: 0, dc: -1 },
 ];
 
-export default function MDPGridWorld() {
+export default function MDPGridWorld({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'MDP Grid World — 马尔可夫决策过程',
+      subtitle: 'γ = {gamma} | 每步 reward = -0.04 | 目标 +1 | 陷阱 -1',
+      trajectory: '轨迹 (Trajectory)',
+      goalReached: '🎯 到达目标！',
+      trapFell: '💥 掉入陷阱！',
+      reset: '重置',
+      instructions: '使用方向键控制 Agent | 蓝色圆点 = Agent 位置',
+    },
+    en: {
+      title: 'MDP Grid World — Markov Decision Process',
+      subtitle: 'γ = {gamma} | step reward = -0.04 | goal +1 | trap -1',
+      trajectory: 'Trajectory',
+      goalReached: '🎯 Goal Reached!',
+      trapFell: '💥 Fell into Trap!',
+      reset: 'Reset',
+      instructions: 'Use arrow keys to control Agent | Blue dot = Agent position',
+    },
+  }[locale];
   const [grid] = useState<Cell[][]>(initGrid);
   const [agentR, setAgentR] = useState(3);
   const [agentC, setAgentC] = useState(0);
@@ -71,10 +91,10 @@ export default function MDPGridWorld() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          MDP Grid World — 马尔可夫决策过程
+          {t.title}
         </text>
         <text x={W / 2} y={44} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          γ = {gamma} | 每步 reward = -0.04 | 目标 +1 | 陷阱 -1
+          {t.subtitle.replace('{gamma}', gamma.toString())}
         </text>
 
         {/* Grid */}
@@ -130,7 +150,7 @@ export default function MDPGridWorld() {
 
         {/* Trajectory */}
         <text x={370} y={OY + 140} fontSize={12} fontWeight={600} fill={COLORS.dark}>
-          轨迹 (Trajectory)
+          {t.trajectory}
         </text>
         {trajectory.slice(-6).map((t, i) => (
           <text key={i} x={370} y={OY + 158 + i * 16} fontSize={10} fill={COLORS.mid} fontFamily={FONTS.mono}>
@@ -142,16 +162,16 @@ export default function MDPGridWorld() {
         {done && (
           <text x={W / 2} y={H - 30} textAnchor="middle" fontSize={14} fontWeight={700}
             fill={grid[agentR][agentC].reward > 0 ? COLORS.green : COLORS.red}>
-            {grid[agentR][agentC].reward > 0 ? '🎯 到达目标！' : '💥 掉入陷阱！'}
+            {grid[agentR][agentC].reward > 0 ? t.goalReached : t.trapFell}
           </text>
         )}
         <g onClick={reset} style={{ cursor: 'pointer' }}>
           <rect x={370} y={H - 48} width={60} height={26} rx={5} fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth={1} />
-          <text x={400} y={H - 31} textAnchor="middle" fontSize={11} fill={COLORS.dark}>重置</text>
+          <text x={400} y={H - 31} textAnchor="middle" fontSize={11} fill={COLORS.dark}>{t.reset}</text>
         </g>
 
         <text x={30} y={H - 8} fontSize={9} fill={COLORS.mid}>
-          使用方向键控制 Agent | 蓝色圆点 = Agent 位置
+          {t.instructions}
         </text>
       </svg>
     </div>

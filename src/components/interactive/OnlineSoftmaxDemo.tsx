@@ -30,7 +30,26 @@ function HighlightVar({ label, value, color }: { label: string; value: string; c
   );
 }
 
-export default function OnlineSoftmaxDemo() {
+export default function OnlineSoftmaxDemo({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      init: '初始化',
+      update: '递推更新',
+      continue: '继续更新',
+      correction: '修正因子 α 将之前所有累积量调整到新的全局 max',
+      summary: '无需存储完整的 N×N 矩阵，只需维护 m, l, O 三个累积量',
+      block: 'Block',
+    },
+    en: {
+      init: 'Initialize',
+      update: 'Recursive Update',
+      continue: 'Continue Update',
+      correction: 'Correction factor α adjusts all previous accumulators to new global max',
+      summary: 'No need to store full N×N matrix, only maintain m, l, O accumulators',
+      block: 'Block',
+    },
+  }[locale];
+
   const computation = useMemo(() => {
     const steps: {
       title: string;
@@ -53,7 +72,7 @@ export default function OnlineSoftmaxDemo() {
     );
 
     steps.push({
-      title: 'Block 1: 初始化',
+      title: `${t.block} 1: ${t.init}`,
       block: 0,
       m: m1,
       l: l1,
@@ -76,7 +95,7 @@ export default function OnlineSoftmaxDemo() {
     });
 
     steps.push({
-      title: 'Block 2: 递推更新',
+      title: `${t.block} 2: ${t.update}`,
       block: 1,
       m: m2_new,
       l: l2,
@@ -100,7 +119,7 @@ export default function OnlineSoftmaxDemo() {
     });
 
     steps.push({
-      title: 'Block 3: 继续更新',
+      title: `${t.block} 3: ${t.continue}`,
       block: 2,
       m: m3_new,
       l: l3,
@@ -110,7 +129,7 @@ export default function OnlineSoftmaxDemo() {
     });
 
     return steps;
-  }, []);
+  }, [t]);
 
   const steps = computation.map((comp, i) => ({
     title: comp.title,
@@ -147,7 +166,7 @@ export default function OnlineSoftmaxDemo() {
 
         {comp.alpha !== undefined && (
           <p className="text-[11px] mt-1" style={{ color: COLORS.orange }}>
-            ⚠ 修正因子 α 将之前所有累积量调整到新的全局 max
+            ⚠ {t.correction}
           </p>
         )}
       </div>
@@ -158,7 +177,7 @@ export default function OnlineSoftmaxDemo() {
     <div className="my-6">
       <StepNavigator steps={steps} />
       <p className="text-xs mt-2 text-center" style={{ color: COLORS.mid }}>
-        无需存储完整的 N×N 矩阵，只需维护 m, l, O 三个累积量
+        {t.summary}
       </p>
     </div>
   );

@@ -4,50 +4,54 @@ import { COLORS, FONTS } from './shared/colors';
 
 interface TreeNode {
   id: number;
-  text: string;
+  textKey: string;
   x: number;
   y: number;
   children?: number[];
   isLeaf?: boolean;
-  recommendation?: string;
+  recommendationKey?: string;
 }
 
-const nodes: TreeNode[] = [
-  { id: 0, text: '性能不达标', x: 290, y: 30 },
-  { id: 1, text: 'GPU 利用率高吗？', x: 290, y: 100, children: [2, 3] },
-  { id: 2, text: '是：Arithmetic Intensity 高吗？', x: 140, y: 170, children: [4, 5] },
+interface BottleneckDiagnosisTreeProps {
+  locale?: 'zh' | 'en';
+}
+
+const nodeConfig: TreeNode[] = [
+  { id: 0, textKey: 'node0', x: 290, y: 30 },
+  { id: 1, textKey: 'node1', x: 290, y: 100, children: [2, 3] },
+  { id: 2, textKey: 'node2', x: 140, y: 170, children: [4, 5] },
   {
     id: 4,
-    text: '是：Compute-bound',
+    textKey: 'node4',
     x: 70,
     y: 240,
     isLeaf: true,
-    recommendation: '降低精度 (FP16/INT8)\n使用 XMX 矩阵引擎\n优化算法复杂度',
+    recommendationKey: 'rec4',
   },
   {
     id: 5,
-    text: '否：Memory-bound',
+    textKey: 'node5',
     x: 210,
     y: 240,
     isLeaf: true,
-    recommendation: '减少内存搬运\n使用 blocked format\nFuse 相邻 ops\n提高 data reuse',
+    recommendationKey: 'rec5',
   },
-  { id: 3, text: '否：CPU 占比高吗？', x: 440, y: 170, children: [6, 7] },
+  { id: 3, textKey: 'node3', x: 440, y: 170, children: [6, 7] },
   {
     id: 6,
-    text: '是：Host-bound',
+    textKey: 'node6',
     x: 370,
     y: 240,
     isLeaf: true,
-    recommendation: '减少同步点\n异步推理 API\nBatch 多次调用\n减少 host-device 拷贝',
+    recommendationKey: 'rec6',
   },
   {
     id: 7,
-    text: '否：Throttling?',
+    textKey: 'node7',
     x: 510,
     y: 240,
     isLeaf: true,
-    recommendation: '检查功耗限制\n检查温度墙\n检查 DVFS 策略\n确保 turbo 开启',
+    recommendationKey: 'rec7',
   },
 ];
 
@@ -61,7 +65,44 @@ const edges = [
   { from: 3, to: 7 },
 ];
 
-const BottleneckDiagnosisTree: React.FC = () => {
+const BottleneckDiagnosisTree: React.FC<BottleneckDiagnosisTreeProps> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      title: '性能瓶颈诊断决策树',
+      clickHint: '点击节点切换诊断路径',
+      optimizationSuggestion: '优化建议：',
+      node0: '性能不达标',
+      node1: 'GPU 利用率高吗？',
+      node2: '是：Arithmetic Intensity 高吗？',
+      node3: '否：CPU 占比高吗？',
+      node4: '是：Compute-bound',
+      node5: '否：Memory-bound',
+      node6: '是：Host-bound',
+      node7: '否：Throttling?',
+      rec4: '降低精度 (FP16/INT8)\n使用 XMX 矩阵引擎\n优化算法复杂度',
+      rec5: '减少内存搬运\n使用 blocked format\nFuse 相邻 ops\n提高 data reuse',
+      rec6: '减少同步点\n异步推理 API\nBatch 多次调用\n减少 host-device 拷贝',
+      rec7: '检查功耗限制\n检查温度墙\n检查 DVFS 策略\n确保 turbo 开启',
+    },
+    en: {
+      title: 'Performance Bottleneck Diagnosis Tree',
+      clickHint: 'Click nodes to switch diagnosis path',
+      optimizationSuggestion: 'Optimization Suggestions:',
+      node0: 'Performance issue',
+      node1: 'High GPU utilization?',
+      node2: 'Yes: High Arithmetic Intensity?',
+      node3: 'No: High CPU usage?',
+      node4: 'Yes: Compute-bound',
+      node5: 'No: Memory-bound',
+      node6: 'Yes: Host-bound',
+      node7: 'No: Throttling?',
+      rec4: 'Reduce precision (FP16/INT8)\nUse XMX matrix engine\nOptimize algorithm complexity',
+      rec5: 'Reduce memory transfer\nUse blocked format\nFuse adjacent ops\nIncrease data reuse',
+      rec6: 'Reduce sync points\nAsync inference API\nBatch multiple calls\nReduce host-device copies',
+      rec7: 'Check power limits\nCheck thermal throttling\nCheck DVFS policy\nEnsure turbo is enabled',
+    },
+  }[locale];
+
   const [currentNode, setCurrentNode] = useState<number>(0);
 
   const W = 580;
@@ -75,7 +116,7 @@ const BottleneckDiagnosisTree: React.FC = () => {
         path.add(id);
         return true;
       }
-      const node = nodes.find((n) => n.id === id);
+      const node = nodeConfig.find((n) => n.id === id);
       if (node?.children) {
         for (const childId of node.children) {
           if (findPath(childId)) {
@@ -92,7 +133,7 @@ const BottleneckDiagnosisTree: React.FC = () => {
 
   const activePath = getActivePath(currentNode);
 
-  const currentNodeData = nodes.find((n) => n.id === currentNode);
+  const currentNodeData = nodeConfig.find((n) => n.id === currentNode);
 
   return (
     <div className="my-6 p-4 border rounded-lg bg-white">
@@ -121,13 +162,13 @@ const BottleneckDiagnosisTree: React.FC = () => {
           fill={COLORS.dark}
           fontFamily={FONTS.sans}
         >
-          性能瓶颈诊断决策树
+          {t.title}
         </text>
 
         {/* Edges */}
         {edges.map((edge, idx) => {
-          const fromNode = nodes.find((n) => n.id === edge.from);
-          const toNode = nodes.find((n) => n.id === edge.to);
+          const fromNode = nodeConfig.find((n) => n.id === edge.from);
+          const toNode = nodeConfig.find((n) => n.id === edge.to);
           if (!fromNode || !toNode) return null;
 
           const isActive = activePath.has(edge.from) && activePath.has(edge.to);
@@ -148,7 +189,7 @@ const BottleneckDiagnosisTree: React.FC = () => {
         })}
 
         {/* Nodes */}
-        {nodes.map((node) => {
+        {nodeConfig.map((node) => {
           const isActive = activePath.has(node.id);
           const isCurrent = node.id === currentNode;
 
@@ -178,14 +219,14 @@ const BottleneckDiagnosisTree: React.FC = () => {
                 fontFamily={FONTS.sans}
                 fontWeight={isCurrent ? '600' : '400'}
               >
-                {node.text}
+                {t[node.textKey as keyof typeof t]}
               </text>
             </g>
           );
         })}
 
         {/* Recommendation panel */}
-        {currentNodeData?.isLeaf && currentNodeData.recommendation && (
+        {currentNodeData?.isLeaf && currentNodeData.recommendationKey && (
           <g transform={`translate(30, 300)`}>
             <rect
               x={0}
@@ -205,9 +246,9 @@ const BottleneckDiagnosisTree: React.FC = () => {
               fill={COLORS.dark}
               fontFamily={FONTS.sans}
             >
-              优化建议：
+              {t.optimizationSuggestion}
             </text>
-            {currentNodeData.recommendation.split('\n').map((line, idx) => (
+            {t[currentNodeData.recommendationKey as keyof typeof t].split('\n').map((line: string, idx: number) => (
               <text
                 key={idx}
                 x={10}
@@ -223,7 +264,7 @@ const BottleneckDiagnosisTree: React.FC = () => {
         )}
       </svg>
       <div className="mt-3 text-xs text-gray-600 text-center" style={{ fontFamily: FONTS.sans }}>
-        点击节点切换诊断路径
+        {t.clickHint}
       </div>
     </div>
   );

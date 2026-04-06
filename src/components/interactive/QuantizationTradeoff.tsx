@@ -26,7 +26,26 @@ const DATA: Record<QType, QData> = {
 
 const TYPES: QType[] = ['FP16', 'Q8_0', 'Q6_K', 'Q5_K_M', 'Q4_K_M', 'Q4_K_S', 'Q4_0'];
 
-export default function QuantizationTradeoff() {
+export default function QuantizationTradeoff({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '{{label}} — 精度 / 速度 / 显存 三角 (Qwen3-8B, RTX 4090)',
+      subtitle: '{{bpw}} bits/weight | 数据为估算值，仅供对比参考',
+      pplLabel: 'Perplexity +',
+      speedLabel: 'Tokens/s',
+      vramLabel: 'VRAM (GB)',
+      annotation: 'PPL 越低越好 | Tokens/s 越高越好 | VRAM 越低越好',
+    },
+    en: {
+      title: '{{label}} — Accuracy / Speed / Memory Triangle (Qwen3-8B, RTX 4090)',
+      subtitle: '{{bpw}} bits/weight | Estimated values for comparison only',
+      pplLabel: 'Perplexity +',
+      speedLabel: 'Tokens/s',
+      vramLabel: 'VRAM (GB)',
+      annotation: 'Lower PPL = better | Higher Tokens/s = better | Lower VRAM = better',
+    },
+  }[locale];
+
   const [selected, setSelected] = useState<QType>('Q4_K_M');
   const d = DATA[selected];
 
@@ -73,25 +92,25 @@ export default function QuantizationTradeoff() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          {d.label} — 精度 / 速度 / 显存 三角 (Qwen3-8B, RTX 4090)
+          {t.title.replace('{{label}}', d.label)}
         </text>
         <text x={W / 2} y={33} textAnchor="middle" fontSize="7" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          {d.bpw} bits/weight | 数据为估算值，仅供对比参考
+          {t.subtitle.replace('{{bpw}}', d.bpw.toString())}
         </text>
 
         {/* Three bars */}
-        <Bar x={30} value={d.pplDelta} max={0.2} label="Perplexity +" unit=""
+        <Bar x={30} value={d.pplDelta} max={0.2} label={t.pplLabel} unit=""
           color={COLORS.red} />
-        <Bar x={220} value={d.tokensPerSec} max={130} label="Tokens/s" unit=""
+        <Bar x={220} value={d.tokensPerSec} max={130} label={t.speedLabel} unit=""
           color={COLORS.green} />
-        <Bar x={410} value={d.vramGB} max={18} label="VRAM (GB)" unit=""
+        <Bar x={410} value={d.vramGB} max={18} label={t.vramLabel} unit=""
           color={COLORS.primary} />
 
         {/* Annotation */}
         <text x={W / 2} y={H - 20} textAnchor="middle" fontSize="7" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          PPL 越低越好 | Tokens/s 越高越好 | VRAM 越低越好
+          {t.annotation}
         </text>
       </svg>
     </div>

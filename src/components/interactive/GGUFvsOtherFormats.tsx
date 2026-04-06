@@ -9,34 +9,76 @@ const FORMATS = [
   { name: 'ONNX', x: 400, color: '#7c3aed' },
 ];
 
-const ROWS = [
-  {
-    label: '包含内容',
-    values: [
-      '权重 + tokenizer\n+ 配置 + template',
-      '权重 + 最小 metadata',
-      '计算图 + 权重\n+ 运行时配置',
-    ],
-  },
-  {
-    label: '文件数量',
-    values: ['单文件', '多文件 (HF repo)', '多文件'],
-  },
-  {
-    label: '加载方式',
-    values: ['mmap (按需)', '全量加载', '全量加载'],
-  },
-  {
-    label: '量化支持',
-    values: ['内嵌 (Q4_K 等)', '外部工具', '外部量化'],
-  },
-  {
-    label: '设计目标',
-    values: ['推理部署优化', '安全 tensor 存储', '跨框架通用'],
-  },
-];
+export default function GGUFvsOtherFormats({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '模型格式对比: GGUF vs safetensors vs ONNX',
+      content: '包含内容',
+      fileCount: '文件数量',
+      loading: '加载方式',
+      quant: '量化支持',
+      goal: '设计目标',
+      ggufContent: '权重 + tokenizer\n+ 配置 + template',
+      stContent: '权重 + 最小 metadata',
+      onnxContent: '计算图 + 权重\n+ 运行时配置',
+      singleFile: '单文件',
+      multiFile: '多文件 (HF repo)',
+      multiFile2: '多文件',
+      mmap: 'mmap (按需)',
+      fullLoad: '全量加载',
+      embeddedQuant: '内嵌 (Q4_K 等)',
+      externalTool: '外部工具',
+      externalQuant: '外部量化',
+      inferOpt: '推理部署优化',
+      safeTensor: '安全 tensor 存储',
+      crossFramework: '跨框架通用',
+    },
+    en: {
+      title: 'Model Format Comparison: GGUF vs safetensors vs ONNX',
+      content: 'Contents',
+      fileCount: 'File Count',
+      loading: 'Loading',
+      quant: 'Quantization',
+      goal: 'Design Goal',
+      ggufContent: 'Weights + tokenizer\n+ config + template',
+      stContent: 'Weights + minimal metadata',
+      onnxContent: 'Graph + weights\n+ runtime config',
+      singleFile: 'Single file',
+      multiFile: 'Multiple (HF repo)',
+      multiFile2: 'Multiple files',
+      mmap: 'mmap (on-demand)',
+      fullLoad: 'Full load',
+      embeddedQuant: 'Embedded (Q4_K etc)',
+      externalTool: 'External tools',
+      externalQuant: 'External quant',
+      inferOpt: 'Inference optimized',
+      safeTensor: 'Safe tensor storage',
+      crossFramework: 'Cross-framework',
+    },
+  }[locale];
 
-export default function GGUFvsOtherFormats() {
+  const ROWS = [
+    {
+      label: t.content,
+      values: [t.ggufContent, t.stContent, t.onnxContent],
+    },
+    {
+      label: t.fileCount,
+      values: [t.singleFile, t.multiFile, t.multiFile2],
+    },
+    {
+      label: t.loading,
+      values: [t.mmap, t.fullLoad, t.fullLoad],
+    },
+    {
+      label: t.quant,
+      values: [t.embeddedQuant, t.externalTool, t.externalQuant],
+    },
+    {
+      label: t.goal,
+      values: [t.inferOpt, t.safeTensor, t.crossFramework],
+    },
+  ];
   const colW = 160;
   const rowH = 38;
   const startY = 55;
@@ -46,7 +88,7 @@ export default function GGUFvsOtherFormats() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        模型格式对比: GGUF vs safetensors vs ONNX
+        {t.title}
       </text>
 
       {/* Column headers */}

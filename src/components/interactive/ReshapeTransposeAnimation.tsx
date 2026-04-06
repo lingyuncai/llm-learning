@@ -23,12 +23,23 @@ function cellLabel(row: number, col: number): string {
   return `${row},${col}`;
 }
 
-function Step1Flat() {
+function Step1Flat({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      desc: '投影后的矩阵',
+      desc2: '所有元素未区分 head，统一颜色。',
+    },
+    en: {
+      desc: 'Projected matrix',
+      desc2: 'All elements are undifferentiated by head, using uniform color.',
+    },
+  }[locale];
+
   return (
     <div>
       <p className="text-sm text-gray-600 mb-3">
-        投影后的矩阵 <code className="bg-gray-100 px-1 rounded">(S, H) = (4, 8)</code>，
-        所有元素未区分 head，统一颜色。
+        {t.desc} <code className="bg-gray-100 px-1 rounded">(S, H) = (4, 8)</code>，
+        {t.desc2}
       </p>
       <div className="flex flex-col items-center gap-1">
         <div className="text-xs text-gray-500 mb-1">Q ∈ (4, 8)</div>
@@ -45,12 +56,21 @@ function Step1Flat() {
   );
 }
 
-function Step2Reshape() {
+function Step2Reshape({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      desc: '按 head 分组着色，每组 d_k=4 个元素属于同一个 head。',
+    },
+    en: {
+      desc: 'Color-coded by head; each group of d_k=4 elements belongs to the same head.',
+    },
+  }[locale];
+
   return (
     <div>
       <p className="text-sm text-gray-600 mb-3">
         <code className="bg-gray-100 px-1 rounded">reshape(S, h, d_k) = (4, 2, 4)</code> —
-        按 head 分组着色，每组 d_k=4 个元素属于同一个 head。
+        {t.desc}
       </p>
       <div className="flex flex-col items-center gap-1">
         <div className="text-xs text-gray-500 mb-1">Q.reshape(4, 2, 4)</div>
@@ -82,12 +102,25 @@ function Step2Reshape() {
   );
 }
 
-function Step3Transpose() {
+function Step3Transpose({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      desc: '每个 head 获得自己的 (S, d_k) 矩阵，可以独立计算 Attention。',
+      keyPoint: '关键：',
+      explanation: '数据没有被复制，只是重新排列了维度顺序。每个 Head 现在拥有所有 token 的子空间表示，可以独立执行 Scaled Dot-Product Attention。',
+    },
+    en: {
+      desc: 'Each head gets its own (S, d_k) matrix and can compute Attention independently.',
+      keyPoint: 'Key point:',
+      explanation: 'Data is not copied, just dimension order is rearranged. Each Head now has the subspace representation of all tokens and can execute Scaled Dot-Product Attention independently.',
+    },
+  }[locale];
+
   return (
     <div>
       <p className="text-sm text-gray-600 mb-3">
         <code className="bg-gray-100 px-1 rounded">transpose(0, 1) → (h, S, d_k) = (2, 4, 4)</code> —
-        每个 head 获得自己的 (S, d_k) 矩阵，可以独立计算 Attention。
+        {t.desc}
       </p>
       <div className="flex flex-wrap justify-center gap-6">
         {Array.from({ length: h }, (_, headIdx) => (
@@ -111,18 +144,30 @@ function Step3Transpose() {
         ))}
       </div>
       <div className="mt-3 p-2 bg-blue-50 rounded text-xs text-blue-800">
-        <strong>关键：</strong>数据没有被复制，只是重新排列了维度顺序。每个 Head 现在拥有所有 token
-        的子空间表示，可以独立执行 Scaled Dot-Product Attention。
+        <strong>{t.keyPoint}</strong>{t.explanation}
       </div>
     </div>
   );
 }
 
-export default function ReshapeTransposeAnimation() {
+export default function ReshapeTransposeAnimation({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1: '(S, H) 原始投影结果',
+      step2: 'reshape → (S, h, d_k)',
+      step3: 'transpose → (h, S, d_k)',
+    },
+    en: {
+      step1: '(S, H) Original projection result',
+      step2: 'reshape → (S, h, d_k)',
+      step3: 'transpose → (h, S, d_k)',
+    },
+  }[locale];
+
   const steps = [
-    { title: '(S, H) 原始投影结果', content: <Step1Flat /> },
-    { title: 'reshape → (S, h, d_k)', content: <Step2Reshape /> },
-    { title: 'transpose → (h, S, d_k)', content: <Step3Transpose /> },
+    { title: t.step1, content: <Step1Flat locale={locale} /> },
+    { title: t.step2, content: <Step2Reshape locale={locale} /> },
+    { title: t.step3, content: <Step3Transpose locale={locale} /> },
   ];
 
   return <StepNavigator steps={steps} />;

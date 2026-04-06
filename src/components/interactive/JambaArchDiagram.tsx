@@ -3,7 +3,43 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const H = 520;
 
-export default function JambaArchDiagram() {
+export default function JambaArchDiagram({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Jamba 架构：交替式 Hybrid + MoE',
+      subtitle: '52B total / 12B active · 256K context · 单卡 80GB 可部署',
+      attention: 'Attention',
+      ffn: 'FFN (SwiGLU)',
+      kvCacheOnlyHere: 'KV Cache 仅此层生成',
+      kvCacheSize: 'KV cache 大小 = 1/8 纯 Transformer',
+      fixedState: '固定大小状态向量',
+      noGrowth: '不随序列长度增长',
+      paramDistribution: '参数分布',
+      mambaLayer: 'Mamba 层',
+      attentionLayer: 'Attention 层',
+      moeExperts: 'MoE experts',
+      mambaLayerLegend: 'Mamba 层',
+      attentionLayerLegend: 'Attention 层',
+      moeLegend: 'MoE (16E/2A)',
+    },
+    en: {
+      title: 'Jamba Architecture: Interleaved Hybrid + MoE',
+      subtitle: '52B total / 12B active · 256K context · Deployable on single 80GB GPU',
+      attention: 'Attention',
+      ffn: 'FFN (SwiGLU)',
+      kvCacheOnlyHere: 'KV Cache only generated here',
+      kvCacheSize: 'KV cache size = 1/8 pure Transformer',
+      fixedState: 'Fixed-size state vector',
+      noGrowth: 'Does not grow with sequence length',
+      paramDistribution: 'Parameter Distribution',
+      mambaLayer: 'Mamba Layers',
+      attentionLayer: 'Attention Layers',
+      moeExperts: 'MoE experts',
+      mambaLayerLegend: 'Mamba Layers',
+      attentionLayerLegend: 'Attention Layers',
+      moeLegend: 'MoE (16E/2A)',
+    },
+  }[locale];
   const layerW = 180;
   const layerH = 18;
   const gap = 3;
@@ -27,20 +63,20 @@ export default function JambaArchDiagram() {
 
   // Pie chart data
   const pieData = [
-    { label: 'Mamba 层', pct: 0.45, color: COLORS.primary },
-    { label: 'Attention 层', pct: 0.15, color: COLORS.orange },
-    { label: 'MoE experts', pct: 0.40, color: COLORS.purple },
+    { label: t.mambaLayer, pct: 0.45, color: COLORS.primary },
+    { label: t.attentionLayer, pct: 0.15, color: COLORS.orange },
+    { label: t.moeExperts, pct: 0.40, color: COLORS.purple },
   ];
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Jamba 架构：交替式 Hybrid + MoE
+        {t.title}
       </text>
       <text x={W / 2} y={38} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        52B total / 12B active · 256K context · 单卡 80GB 可部署
+        {t.subtitle}
       </text>
 
       {/* Layer stack */}
@@ -105,16 +141,16 @@ export default function JambaArchDiagram() {
             <line x1={stackX + layerW + 4} y1={attnY} x2={annotX - 4} y2={attnY}
               stroke={COLORS.orange} strokeWidth="0.8" strokeDasharray="3 2" />
             <text x={annotX} y={attnY - 4} fontSize="8" fontWeight="600"
-              fill={COLORS.orange} fontFamily={FONTS.sans}>KV Cache 仅此层生成</text>
+              fill={COLORS.orange} fontFamily={FONTS.sans}>{t.kvCacheOnlyHere}</text>
             <text x={annotX} y={attnY + 10} fontSize="7"
-              fill={COLORS.mid} fontFamily={FONTS.sans}>KV cache 大小 = 1/8 纯 Transformer</text>
+              fill={COLORS.mid} fontFamily={FONTS.sans}>{t.kvCacheSize}</text>
 
             <line x1={stackX + layerW + 4} y1={mambaY} x2={annotX - 4} y2={mambaY}
               stroke={COLORS.primary} strokeWidth="0.8" strokeDasharray="3 2" />
             <text x={annotX} y={mambaY - 4} fontSize="8" fontWeight="600"
-              fill={COLORS.primary} fontFamily={FONTS.sans}>固定大小状态向量</text>
+              fill={COLORS.primary} fontFamily={FONTS.sans}>{t.fixedState}</text>
             <text x={annotX} y={mambaY + 10} fontSize="7"
-              fill={COLORS.mid} fontFamily={FONTS.sans}>不随序列长度增长</text>
+              fill={COLORS.mid} fontFamily={FONTS.sans}>{t.noGrowth}</text>
           </g>
         );
       })()}
@@ -128,7 +164,7 @@ export default function JambaArchDiagram() {
         return (
           <g>
             <text x={cx} y={cy - r - 12} textAnchor="middle" fontSize="10" fontWeight="600"
-              fill={COLORS.dark} fontFamily={FONTS.sans}>参数分布</text>
+              fill={COLORS.dark} fontFamily={FONTS.sans}>{t.paramDistribution}</text>
             {pieData.map((d, i) => {
               const angle = d.pct * Math.PI * 2;
               const x1 = cx + r * Math.cos(startAngle);
@@ -158,11 +194,11 @@ export default function JambaArchDiagram() {
       {/* Legend */}
       <g transform="translate(40, 400)">
         <rect x={0} y={0} width={12} height={12} rx={2} fill={COLORS.primary} opacity="0.6" />
-        <text x={16} y={10} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>Mamba 层</text>
+        <text x={16} y={10} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>{t.mambaLayerLegend}</text>
         <rect x={80} y={0} width={12} height={12} rx={2} fill={COLORS.orange} opacity="0.6" />
-        <text x={96} y={10} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>Attention 层</text>
+        <text x={96} y={10} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>{t.attentionLayerLegend}</text>
         <rect x={180} y={0} width={12} height={12} rx={2} fill={COLORS.purple} opacity="0.6" />
-        <text x={196} y={10} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>MoE (16E/2A)</text>
+        <text x={196} y={10} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>{t.moeLegend}</text>
       </g>
     </svg>
   );

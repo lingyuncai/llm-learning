@@ -21,7 +21,36 @@ function seededRandom(seed: number) {
   return x - Math.floor(x);
 }
 
-export default function BanditExploration() {
+export default function BanditExploration({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Multi-armed Bandit 探索',
+      subtitle: (epsilon: number, total: number) => `ε-greedy: ${epsilon}% 探索 · ${100 - epsilon}% 利用 · 共 ${total} 次选择`,
+      selectedTimes: '选择',
+      times: '次',
+      estimatedValue: '估值',
+      manualSelect: '手动选择',
+      recentSelections: '最近选择:',
+      cumulativeReward: '累计 net reward',
+      epsilonGreedyStep: 'ε-greedy 一步',
+      continuous10Steps: '连续 10 步',
+      reset: '重置',
+    },
+    en: {
+      title: 'Multi-armed Bandit Exploration',
+      subtitle: (epsilon: number, total: number) => `ε-greedy: ${epsilon}% explore · ${100 - epsilon}% exploit · ${total} total pulls`,
+      selectedTimes: 'Pulled',
+      times: 'times',
+      estimatedValue: 'Est. value',
+      manualSelect: 'Manual pull',
+      recentSelections: 'Recent pulls:',
+      cumulativeReward: 'Cumulative net reward',
+      epsilonGreedyStep: 'ε-greedy step',
+      continuous10Steps: 'Run 10 steps',
+      reset: 'Reset',
+    },
+  }[locale];
+
   const [pulls, setPulls] = useState<{ arm: number; reward: number }[]>([]);
   const [estimates, setEstimates] = useState(ARMS.map(() => ({ sum: 0, count: 0 })));
   const [epsilon, setEpsilon] = useState(20); // explore rate %
@@ -86,11 +115,11 @@ export default function BanditExploration() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="22" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          Multi-armed Bandit 探索
+          {t.title}
         </text>
         <text x={W / 2} y="40" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="10" fill={COLORS.mid}>
-          ε-greedy: {epsilon}% 探索 · {100 - epsilon}% 利用 · 共 {totalPulls} 次选择
+          {t.subtitle(epsilon, totalPulls)}
         </text>
 
         {/* Arms */}
@@ -110,7 +139,7 @@ export default function BanditExploration() {
               </text>
               <text x="62.5" y="36" textAnchor="middle" fontFamily={FONTS.mono}
                     fontSize="9" fill={COLORS.mid}>
-                选择 {est.count} 次
+                {t.selectedTimes} {est.count} {t.times}
               </text>
 
               {/* Estimated value bar */}
@@ -118,7 +147,7 @@ export default function BanditExploration() {
                     fill={arm.color} opacity="0.3" />
               <text x="62.5" y="155" textAnchor="middle" fontFamily={FONTS.mono}
                     fontSize="10" fill={COLORS.dark}>
-                估值: {avg}
+                {t.estimatedValue}: {avg}
               </text>
 
               {/* Manual pull button */}
@@ -128,7 +157,7 @@ export default function BanditExploration() {
                     onClick={() => pullArm(i)} />
               <text x="62.5" y="65" textAnchor="middle" fontFamily={FONTS.sans}
                     fontSize="10" fill="#fff" style={{ pointerEvents: 'none' }}>
-                手动选择
+                {t.manualSelect}
               </text>
             </g>
           );
@@ -137,7 +166,7 @@ export default function BanditExploration() {
         {/* Recent history */}
         <g transform="translate(30, 230)">
           <text x="0" y="0" fontFamily={FONTS.sans} fontSize="11" fontWeight="600" fill={COLORS.dark}>
-            最近选择:
+            {t.recentSelections}
           </text>
           {pulls.slice(-15).map((p, i) => (
             <rect key={i} x={80 + i * 30} y="-8" width="24" height="16" rx="3"
@@ -148,7 +177,7 @@ export default function BanditExploration() {
         {/* Cumulative reward */}
         <g transform="translate(30, 258)">
           <text x="0" y="0" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark}>
-            累计 net reward: {pulls.reduce((s, p) => s + p.reward, 0).toFixed(2)}
+            {t.cumulativeReward}: {pulls.reduce((s, p) => s + p.reward, 0).toFixed(2)}
           </text>
         </g>
       </svg>
@@ -157,15 +186,15 @@ export default function BanditExploration() {
       <div className="flex items-center justify-center gap-4 mt-2">
         <button onClick={autoStep}
                 className="px-3 py-1.5 bg-blue-700 text-white text-sm rounded hover:bg-blue-800">
-          ε-greedy 一步
+          {t.epsilonGreedyStep}
         </button>
         <button onClick={() => { for (let i = 0; i < 10; i++) autoStep(); }}
                 className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">
-          连续 10 步
+          {t.continuous10Steps}
         </button>
         <button onClick={reset}
                 className="px-3 py-1.5 bg-gray-500 text-white text-sm rounded hover:bg-gray-600">
-          重置
+          {t.reset}
         </button>
         <div className="flex items-center gap-2">
           <span className="text-sm text-gray-500">ε:</span>

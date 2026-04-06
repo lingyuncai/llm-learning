@@ -16,80 +16,122 @@ interface ModelRow {
   keyDesign: string;
 }
 
-const MODELS: ModelRow[] = [
-  {
-    name: 'Jamba',
-    totalParams: '52B',
-    activeParams: '12B',
-    ssmAttnRatio: '7:1',
-    throughput: '1.6×',
-    avgBench: '72.1',
-    kvCache: '1/8',
-    org: 'AI21 Labs',
-    year: '2024.03',
-    keyDesign: '交替式 Hybrid + MoE, 256K context',
-  },
-  {
-    name: 'Zamba2',
-    totalParams: '2.7B',
-    activeParams: '2.7B',
-    ssmAttnRatio: '~6:1',
-    throughput: '2.0×',
-    avgBench: '68.5',
-    kvCache: '1/6',
-    org: 'Zyphra',
-    year: '2024.08',
-    keyDesign: '共享式 Hybrid: 2 shared Attention + LoRA',
-  },
-  {
-    name: 'Hymba',
-    totalParams: '1.5B',
-    activeParams: '1.5B',
-    ssmAttnRatio: '1:1',
-    throughput: '3.49×',
-    avgBench: '67.3',
-    kvCache: '1/12',
-    org: 'NVIDIA',
-    year: '2024.11',
-    keyDesign: '并行式 Hybrid: Attn+SSM heads + Meta tokens',
-  },
-  {
-    name: 'Transformer',
-    totalParams: '—',
-    activeParams: '—',
-    ssmAttnRatio: '0:N',
-    throughput: '1.0× (基准)',
-    avgBench: '基准',
-    kvCache: '1× (基准)',
-    org: '—',
-    year: '—',
-    keyDesign: '纯 Attention，KV cache 随序列线性增长',
-  },
-  {
-    name: 'Mamba',
-    totalParams: '—',
-    activeParams: '—',
-    ssmAttnRatio: 'N:0',
-    throughput: '~5×',
-    avgBench: '基准-2.65',
-    kvCache: 'O(1)',
-    org: 'CMU/Princeton',
-    year: '2023.12',
-    keyDesign: '纯 SSM，Copying/ICL 受限',
-  },
-];
+export default function HybridModelBenchmark({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Hybrid 模型对比',
+      hoverHint: 'Hover 查看模型详细信息',
+      colModel: '模型',
+      colTotalParams: '总参数',
+      colActive: 'Active',
+      colSsmAttn: 'SSM:Attn',
+      colThroughput: 'Throughput',
+      colAvgScore: 'Avg Score',
+      colKvCache: 'KV Cache',
+      jambaDesign: '交替式 Hybrid + MoE, 256K context',
+      zamba2Design: '共享式 Hybrid: 2 shared Attention + LoRA',
+      hymbaDesign: '并行式 Hybrid: Attn+SSM heads + Meta tokens',
+      transformerDesign: '纯 Attention，KV cache 随序列线性增长',
+      mambaDesign: '纯 SSM，Copying/ICL 受限',
+      baseline: '基准',
+      baselineThroughput: '1.0× (基准)',
+      baselineKvCache: '1× (基准)',
+      baselineBench: '基准-2.65',
+    },
+    en: {
+      title: 'Hybrid Model Comparison',
+      hoverHint: 'Hover to view detailed model information',
+      colModel: 'Model',
+      colTotalParams: 'Total Params',
+      colActive: 'Active',
+      colSsmAttn: 'SSM:Attn',
+      colThroughput: 'Throughput',
+      colAvgScore: 'Avg Score',
+      colKvCache: 'KV Cache',
+      jambaDesign: 'Interleaved Hybrid + MoE, 256K context',
+      zamba2Design: 'Shared Hybrid: 2 shared Attention + LoRA',
+      hymbaDesign: 'Parallel Hybrid: Attn+SSM heads + Meta tokens',
+      transformerDesign: 'Pure Attention, KV cache grows linearly with sequence',
+      mambaDesign: 'Pure SSM, limited Copying/ICL',
+      baseline: 'Baseline',
+      baselineThroughput: '1.0× (baseline)',
+      baselineKvCache: '1× (baseline)',
+      baselineBench: 'baseline-2.65',
+    },
+  }[locale];
 
-const COLS = [
-  { key: 'name' as const, label: '模型', w: 70 },
-  { key: 'totalParams' as const, label: '总参数', w: 55 },
-  { key: 'activeParams' as const, label: 'Active', w: 55 },
-  { key: 'ssmAttnRatio' as const, label: 'SSM:Attn', w: 60 },
-  { key: 'throughput' as const, label: 'Throughput', w: 70 },
-  { key: 'avgBench' as const, label: 'Avg Score', w: 65 },
-  { key: 'kvCache' as const, label: 'KV Cache', w: 60 },
-];
+  const MODELS: ModelRow[] = [
+    {
+      name: 'Jamba',
+      totalParams: '52B',
+      activeParams: '12B',
+      ssmAttnRatio: '7:1',
+      throughput: '1.6×',
+      avgBench: '72.1',
+      kvCache: '1/8',
+      org: 'AI21 Labs',
+      year: '2024.03',
+      keyDesign: t.jambaDesign,
+    },
+    {
+      name: 'Zamba2',
+      totalParams: '2.7B',
+      activeParams: '2.7B',
+      ssmAttnRatio: '~6:1',
+      throughput: '2.0×',
+      avgBench: '68.5',
+      kvCache: '1/6',
+      org: 'Zyphra',
+      year: '2024.08',
+      keyDesign: t.zamba2Design,
+    },
+    {
+      name: 'Hymba',
+      totalParams: '1.5B',
+      activeParams: '1.5B',
+      ssmAttnRatio: '1:1',
+      throughput: '3.49×',
+      avgBench: '67.3',
+      kvCache: '1/12',
+      org: 'NVIDIA',
+      year: '2024.11',
+      keyDesign: t.hymbaDesign,
+    },
+    {
+      name: 'Transformer',
+      totalParams: '—',
+      activeParams: '—',
+      ssmAttnRatio: '0:N',
+      throughput: t.baselineThroughput,
+      avgBench: t.baseline,
+      kvCache: t.baselineKvCache,
+      org: '—',
+      year: '—',
+      keyDesign: t.transformerDesign,
+    },
+    {
+      name: 'Mamba',
+      totalParams: '—',
+      activeParams: '—',
+      ssmAttnRatio: 'N:0',
+      throughput: '~5×',
+      avgBench: t.baselineBench,
+      kvCache: 'O(1)',
+      org: 'CMU/Princeton',
+      year: '2023.12',
+      keyDesign: t.mambaDesign,
+    },
+  ];
 
-export default function HybridModelBenchmark() {
+  const COLS = [
+    { key: 'name' as const, label: t.colModel, w: 70 },
+    { key: 'totalParams' as const, label: t.colTotalParams, w: 55 },
+    { key: 'activeParams' as const, label: t.colActive, w: 55 },
+    { key: 'ssmAttnRatio' as const, label: t.colSsmAttn, w: 60 },
+    { key: 'throughput' as const, label: t.colThroughput, w: 70 },
+    { key: 'avgBench' as const, label: t.colAvgScore, w: 65 },
+    { key: 'kvCache' as const, label: t.colKvCache, w: 60 },
+  ];
   const [hovered, setHovered] = useState<number | null>(null);
 
   const tableX = 20;
@@ -110,11 +152,11 @@ export default function HybridModelBenchmark() {
     <svg viewBox={`0 0 ${W} 340`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Hybrid 模型对比
+        {t.title}
       </text>
       <text x={W / 2} y={38} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        Hover 查看模型详细信息
+        {t.hoverHint}
       </text>
 
       {/* Header row */}

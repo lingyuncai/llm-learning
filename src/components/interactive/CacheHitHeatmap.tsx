@@ -5,30 +5,34 @@ const W = 580;
 const H = 320;
 
 interface Pattern {
-  label: string;
-  description: string;
+  labelKey: string;
+  descKey: string;
   hitRates: number[]; // per-request cache hit rates (0-1)
 }
 
-const PATTERNS: Pattern[] = [
+interface CacheHitHeatmapProps {
+  locale?: 'zh' | 'en';
+}
+
+const PATTERN_CONFIG: Pattern[] = [
   {
-    label: '单轮独立',
-    description: '每个请求完全独立，无共享前缀',
+    labelKey: 'pattern1Label',
+    descKey: 'pattern1Desc',
     hitRates: [0, 0, 0, 0.05, 0, 0, 0.02, 0, 0, 0],
   },
   {
-    label: '多轮对话',
-    description: '同一用户连续对话，共享 system prompt + 历史',
+    labelKey: 'pattern2Label',
+    descKey: 'pattern2Desc',
     hitRates: [0, 0.4, 0.55, 0.65, 0.72, 0.76, 0.79, 0.82, 0.84, 0.86],
   },
   {
-    label: 'Few-shot',
-    description: '多个请求共享相同的 few-shot examples',
+    labelKey: 'pattern3Label',
+    descKey: 'pattern3Desc',
     hitRates: [0, 0.7, 0.7, 0.7, 0.71, 0.7, 0.72, 0.7, 0.71, 0.7],
   },
   {
-    label: 'Tree-of-Thought',
-    description: '分支推理，共享前缀 + 部分中间路径',
+    labelKey: 'pattern4Label',
+    descKey: 'pattern4Desc',
     hitRates: [0, 0.5, 0.5, 0.35, 0.6, 0.45, 0.55, 0.4, 0.5, 0.65],
   },
 ];
@@ -47,7 +51,44 @@ function hitColor(rate: number): string {
   return COLORS.green;
 }
 
-export default function CacheHitHeatmap() {
+export default function CacheHitHeatmap({ locale = 'zh' }: CacheHitHeatmapProps) {
+  const t = {
+    zh: {
+      title: '不同对话模式下的缓存命中率',
+      pattern1Label: '单轮独立',
+      pattern1Desc: '每个请求完全独立，无共享前缀',
+      pattern2Label: '多轮对话',
+      pattern2Desc: '同一用户连续对话，共享 system prompt + 历史',
+      pattern3Label: 'Few-shot',
+      pattern3Desc: '多个请求共享相同的 few-shot examples',
+      pattern4Label: 'Tree-of-Thought',
+      pattern4Desc: '分支推理，共享前缀 + 部分中间路径',
+      tooltipHit: '命中',
+      legend0: '0%',
+      legendLow: '< 30%',
+      legendMid: '30-60%',
+      legendHigh: '60-80%',
+      legendVeryHigh: '> 80%',
+    },
+    en: {
+      title: 'Cache Hit Rate by Dialogue Pattern',
+      pattern1Label: 'Single-turn',
+      pattern1Desc: 'Each request is independent, no shared prefix',
+      pattern2Label: 'Multi-turn',
+      pattern2Desc: 'Same user continuous dialogue, shared system prompt + history',
+      pattern3Label: 'Few-shot',
+      pattern3Desc: 'Multiple requests share same few-shot examples',
+      pattern4Label: 'Tree-of-Thought',
+      pattern4Desc: 'Branching inference, shared prefix + partial intermediate paths',
+      tooltipHit: 'hit',
+      legend0: '0%',
+      legendLow: '< 30%',
+      legendMid: '30-60%',
+      legendHigh: '60-80%',
+      legendVeryHigh: '> 80%',
+    },
+  }[locale];
+
   const [hovered, setHovered] = useState<{ row: number; col: number } | null>(null);
 
   return (
@@ -56,7 +97,7 @@ export default function CacheHitHeatmap() {
         {/* Title */}
         <text x={W / 2} y={22} fontSize={13} fontWeight={600} fill={COLORS.dark}
           fontFamily={FONTS.sans} textAnchor="middle">
-          不同对话模式下的缓存命中率
+          {t.title}
         </text>
 
         {/* Column headers */}
@@ -70,14 +111,14 @@ export default function CacheHitHeatmap() {
         ))}
 
         {/* Rows */}
-        {PATTERNS.map((pattern, row) => {
+        {PATTERN_CONFIG.map((pattern, row) => {
           const y = TOP_MARGIN + row * (CELL_H + 4);
           return (
             <g key={row}>
               {/* Row label */}
               <text x={LEFT_MARGIN} y={y + CELL_H / 2 + 4} fontSize={11} fill={COLORS.dark}
                 fontFamily={FONTS.sans} fontWeight={500}>
-                {pattern.label}
+                {t[pattern.labelKey as keyof typeof t]}
               </text>
 
               {/* Cells */}
@@ -107,7 +148,7 @@ export default function CacheHitHeatmap() {
 
         {/* Tooltip */}
         {hovered && (() => {
-          const pattern = PATTERNS[hovered.row];
+          const pattern = PATTERN_CONFIG[hovered.row];
           const rate = pattern.hitRates[hovered.col];
           const tipW = 240;
           const tipH = 52;
@@ -118,10 +159,10 @@ export default function CacheHitHeatmap() {
               <rect x={tipX} y={tipY} width={tipW} height={tipH} rx={6}
                 fill={COLORS.dark} opacity={0.95} />
               <text x={tipX + 10} y={tipY + 18} fontSize={11} fill="#fff" fontFamily={FONTS.sans}>
-                {pattern.label} — 请求 #{hovered.col + 1}: {Math.round(rate * 100)}% 命中
+                {t[pattern.labelKey as keyof typeof t]} — {locale === 'zh' ? '请求' : 'Request'} #{hovered.col + 1}: {Math.round(rate * 100)}% {t.tooltipHit}
               </text>
               <text x={tipX + 10} y={tipY + 36} fontSize={10} fill={COLORS.light} fontFamily={FONTS.sans}>
-                {pattern.description}
+                {t[pattern.descKey as keyof typeof t]}
               </text>
             </g>
           );
@@ -130,15 +171,15 @@ export default function CacheHitHeatmap() {
         {/* Legend */}
         <g transform={`translate(${LEFT_MARGIN}, ${H - 30})`}>
           {[
-            { label: '0%', color: COLORS.waste },
-            { label: '< 30%', color: '#fde68a' },
-            { label: '30-60%', color: '#fbbf24' },
-            { label: '60-80%', color: '#34d399' },
-            { label: '> 80%', color: COLORS.green },
+            { labelKey: 'legend0', color: COLORS.waste },
+            { labelKey: 'legendLow', color: '#fde68a' },
+            { labelKey: 'legendMid', color: '#fbbf24' },
+            { labelKey: 'legendHigh', color: '#34d399' },
+            { labelKey: 'legendVeryHigh', color: COLORS.green },
           ].map((item, i) => (
             <g key={i} transform={`translate(${i * 100}, 0)`}>
               <rect width={14} height={14} rx={2} fill={item.color} />
-              <text x={18} y={11} fontSize={10} fill={COLORS.mid} fontFamily={FONTS.sans}>{item.label}</text>
+              <text x={18} y={11} fontSize={10} fill={COLORS.mid} fontFamily={FONTS.sans}>{t[item.labelKey as keyof typeof t]}</text>
             </g>
           ))}
         </g>

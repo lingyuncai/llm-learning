@@ -59,7 +59,32 @@ function BarChart({ values, maxVal, color, labels, height = 120, width = 280 }: 
   );
 }
 
-export default function ScalingFactorDemo() {
+export default function ScalingFactorDemo({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      headDim: 'Head 维度 d',
+      unscaled: '未缩放: QK',
+      scaled: '缩放后: QK',
+      variance: '方差:',
+      entropy: 'Softmax 熵:',
+      bits: 'bits',
+      softmaxOutput: '→ Softmax 输出',
+      observation: '观察：',
+      observationText: 'd越大 → 未缩放分数的方差越大 → Softmax 输出越接近 one-hot（熵趋近 0）。除以 √d后方差恢复到 ~1，Softmax 输出保持均匀分布（熵接近 {entropy} bits）。',
+    },
+    en: {
+      headDim: 'Head dimension d',
+      unscaled: 'Unscaled: QK',
+      scaled: 'Scaled: QK',
+      variance: 'Variance:',
+      entropy: 'Softmax entropy:',
+      bits: 'bits',
+      softmaxOutput: '→ Softmax output',
+      observation: 'Observation:',
+      observationText: 'Larger d → higher variance in unscaled scores → Softmax output approaches one-hot (entropy → 0). Dividing by √d restores variance to ~1, Softmax output maintains uniform distribution (entropy ≈ {entropy} bits).',
+    },
+  }[locale];
+
   const [dk, setDk] = useState(64);
 
   const rawScores = useMemo(() => generateScores(dk), [dk]);
@@ -79,7 +104,7 @@ export default function ScalingFactorDemo() {
     <div className="my-6 p-4 border rounded-lg">
       <div className="mb-4">
         <label className="block text-sm font-medium text-gray-700 mb-1">
-          Head 维度 d<sub>k</sub>: <strong>{dk}</strong>
+          {t.headDim}<sub>k</sub>: <strong>{dk}</strong>
         </label>
         <input type="range" min={8} max={128} step={8} value={dk}
           onChange={e => setDk(Number(e.target.value))}
@@ -88,29 +113,28 @@ export default function ScalingFactorDemo() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
-          <div className="text-sm font-semibold text-red-700 mb-1">未缩放: QK<sup>T</sup></div>
+          <div className="text-sm font-semibold text-red-700 mb-1">{t.unscaled}<sup>T</sup></div>
           <BarChart values={rawScores} maxVal={maxScore} color={COLORS.red} labels={labels} />
           <div className="text-xs text-gray-500 mt-1">
-            方差: {rawVar.toFixed(2)} · Softmax 熵: {rawEntropy.toFixed(3)} bits
+            {t.variance} {rawVar.toFixed(2)} · {t.entropy} {rawEntropy.toFixed(3)} {t.bits}
           </div>
-          <div className="text-xs font-semibold text-gray-600 mt-2">→ Softmax 输出</div>
+          <div className="text-xs font-semibold text-gray-600 mt-2">{t.softmaxOutput}</div>
           <BarChart values={rawProbs} maxVal={1} color={COLORS.red} labels={labels} />
         </div>
 
         <div>
-          <div className="text-sm font-semibold text-blue-700 mb-1">缩放后: QK<sup>T</sup> / √d<sub>k</sub></div>
+          <div className="text-sm font-semibold text-blue-700 mb-1">{t.scaled}<sup>T</sup> / √d<sub>k</sub></div>
           <BarChart values={scaledScores} maxVal={maxScore} color={COLORS.primary} labels={labels} />
           <div className="text-xs text-gray-500 mt-1">
-            方差: {scaledVar.toFixed(2)} · Softmax 熵: {scaledEntropy.toFixed(3)} bits
+            {t.variance} {scaledVar.toFixed(2)} · {t.entropy} {scaledEntropy.toFixed(3)} {t.bits}
           </div>
-          <div className="text-xs font-semibold text-gray-600 mt-2">→ Softmax 输出</div>
+          <div className="text-xs font-semibold text-gray-600 mt-2">{t.softmaxOutput}</div>
           <BarChart values={scaledProbs} maxVal={1} color={COLORS.primary} labels={labels} />
         </div>
       </div>
 
       <div className="mt-3 p-2 bg-blue-50 rounded text-xs text-blue-800">
-        <strong>观察：</strong>d<sub>k</sub> 越大 → 未缩放分数的方差越大 → Softmax 输出越接近 one-hot（熵趋近 0）。
-        除以 √d<sub>k</sub> 后方差恢复到 ~1，Softmax 输出保持均匀分布（熵接近 {Math.log2(8).toFixed(1)} bits）。
+        <strong>{t.observation}</strong>{t.observationText.replace('{entropy}', Math.log2(8).toFixed(1))}
       </div>
     </div>
   );

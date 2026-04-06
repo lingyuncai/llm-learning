@@ -3,7 +3,44 @@ import { COLORS, FONTS } from './shared/colors';
 
 type OpType = 'shuffle' | 'broadcast' | 'reduce';
 
-const SubgroupOps: React.FC = () => {
+const SubgroupOps: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      title: 'Sub-group 集合操作',
+      inputState: '输入状态 (8 个 SIMD 通道)',
+      outputState: '输出状态',
+      shuffle: {
+        desc: 'sg.shuffle(value, target_lane) — 通道间交换数据，用于矩阵转置、数据重排',
+        code: 'auto swapped = sg.shuffle(value, lane_id ^ 4);',
+      },
+      broadcast: {
+        desc: 'sg.broadcast(value, source_lane) — 单个值广播到所有通道，用于共享常量',
+        code: 'auto shared = sg.broadcast(value, 0);',
+      },
+      reduce: {
+        desc: 'sg.reduce(value, op) — 所有通道归约为单个结果，用于求和、最大值',
+        code: 'auto sum = sg.reduce(value, sycl::plus<>());',
+      },
+    },
+    en: {
+      title: 'Sub-group Collective Operations',
+      inputState: 'Input State (8 SIMD Lanes)',
+      outputState: 'Output State',
+      shuffle: {
+        desc: 'sg.shuffle(value, target_lane) — Exchange data between lanes for matrix transpose, data rearrangement',
+        code: 'auto swapped = sg.shuffle(value, lane_id ^ 4);',
+      },
+      broadcast: {
+        desc: 'sg.broadcast(value, source_lane) — Broadcast single value to all lanes for constant sharing',
+        code: 'auto shared = sg.broadcast(value, 0);',
+      },
+      reduce: {
+        desc: 'sg.reduce(value, op) — Reduce all lanes to single result for sum, max operations',
+        code: 'auto sum = sg.reduce(value, sycl::plus<>());',
+      },
+    },
+  }[locale];
+
   const [selectedOp, setSelectedOp] = useState<OpType>('shuffle');
 
   const lanes = [
@@ -100,33 +137,14 @@ const SubgroupOps: React.FC = () => {
     return null;
   };
 
-  const getDescription = () => {
-    switch (selectedOp) {
-      case 'shuffle':
-        return 'sg.shuffle(value, target_lane) — 通道间交换数据，用于矩阵转置、数据重排';
-      case 'broadcast':
-        return 'sg.broadcast(value, source_lane) — 单个值广播到所有通道，用于共享常量';
-      case 'reduce':
-        return 'sg.reduce(value, op) — 所有通道归约为单个结果，用于求和、最大值';
-    }
-  };
-
-  const getCodeExample = () => {
-    switch (selectedOp) {
-      case 'shuffle':
-        return 'auto swapped = sg.shuffle(value, lane_id ^ 4);';
-      case 'broadcast':
-        return 'auto shared = sg.broadcast(value, 0);';
-      case 'reduce':
-        return 'auto sum = sg.reduce(value, sycl::plus<>());';
-    }
-  };
+  const getDescription = () => t[selectedOp].desc;
+  const getCodeExample = () => t[selectedOp].code;
 
   return (
     <div className="my-6 p-4 border rounded-lg">
       <svg viewBox="0 0 580 300" className="w-full">
         <text x="290" y="25" textAnchor="middle" fontSize="14" fontWeight="bold" fill={COLORS.dark}>
-          Sub-group 集合操作
+          {t.title}
         </text>
 
         {/* Operation selector */}
@@ -163,7 +181,7 @@ const SubgroupOps: React.FC = () => {
 
         {/* SIMD8 lanes - input state */}
         <text x="290" y="105" textAnchor="middle" fontSize="11" fontWeight="bold" fill={COLORS.mid}>
-          输入状态 (8 个 SIMD 通道)
+          {t.inputState}
         </text>
         {lanes.map((lane, i) => {
           const x = 80 + i * 65;
@@ -210,7 +228,7 @@ const SubgroupOps: React.FC = () => {
 
         {/* Output state */}
         <text x="290" y="225" textAnchor="middle" fontSize="11" fontWeight="bold" fill={COLORS.mid}>
-          输出状态
+          {t.outputState}
         </text>
         {lanes.map((lane, i) => {
           const x = 80 + i * 65;

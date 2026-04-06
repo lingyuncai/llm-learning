@@ -69,15 +69,122 @@ function Badge({ color, children }: { color: string; children: React.ReactNode }
 }
 
 // Memory location indicator
-function MemoryTag({ location }: { location: 'SRAM' | 'HBM' }) {
+function MemoryTag({ location, sramText, hbmText }: { location: 'SRAM' | 'HBM'; sramText: string; hbmText: string }) {
   return location === 'SRAM' ? (
-    <Badge color="green">SRAM (快)</Badge>
+    <Badge color="green">{sramText}</Badge>
   ) : (
-    <Badge color="amber">HBM (慢)</Badge>
+    <Badge color="amber">{hbmText}</Badge>
   );
 }
 
-export default function FlashAttentionTiling() {
+export default function FlashAttentionTiling({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      sram_fast: 'SRAM (快)',
+      hbm_slow: 'HBM (慢)',
+      title_step1: 'Q, K, V 矩阵与分块',
+      desc_step1_p1: '标准 Attention 需要存储完整的',
+      desc_step1_p2: '注意力矩阵到 HBM，内存为',
+      desc_step1_p3: 'Flash Attention 的核心思想：将 Q、K、V 分成小块，在 SRAM 中逐块计算，',
+      desc_step1_p4: '永远不存储完整的 N×N 矩阵',
+      note_step1_title: '分块：',
+      note_step1_desc: '块大小 B',
+      note_step1_highlight: '高亮行 = 第一个块（t₁, t₂），非高亮行 = 第二个块（t₃, t₄）。我们将以 Q 的第一个块为例，展示如何逐步处理两个 K/V 块。',
+      title_step2: '加载 K₀, V₀ 到 SRAM',
+      desc_step2_p1: '外层循环 j=1：',
+      desc_step2_p2: '将第一个 K、V 块从 HBM 加载到 SRAM。同时加载 Q₀ 块和初始化统计量。',
+      note_step2_title: '关键：',
+      note_step2_desc: 'SRAM 只需容纳 2 个 B×d 的块和 1 个 B×B 的分数矩阵，而非完整的 N×N 矩阵。初始化：m = (-∞, -∞)，l = (0, 0)，O = 零矩阵。',
+      title_step3: '计算局部注意力分数 S₀₀',
+      desc_step3_p1: '在 SRAM 中计算',
+      desc_step3_p2: '这只是一个',
+      desc_step3_p3: '的小矩阵，完全在 SRAM 中完成！',
+      note_step3_title: '注意：',
+      note_step3_desc: '标准 Attention 会一次性计算 4×4 的完整分数矩阵并存到 HBM。Flash Attention 只计算 2×2 的局部分数，且留在 SRAM 中。',
+      title_step4: 'Online Softmax — 第一次更新',
+      desc_step4_p1: '核心创新：Online Softmax。',
+      desc_step4_p2: '只看到部分数据就计算"临时 softmax"，后续块到来时再修正。当前对 S₀₀ 计算局部统计量：',
+      stat_local: '局部统计量',
+      stat_local_row: '(逐行减最大值)',
+      stat_global: '更新全局统计量',
+      note_step4_title: 'O 更新公式：',
+      note_step4_desc: '第一次迭代中 l',
+      note_step4_desc2: '就是 diag(l̃)⁻¹ · P̃₀₀ · V₀。',
+      title_step5: '加载 K₁, V₁ — 计算 S₀₁',
+      desc_step5_p1: '外层循环 j=2：',
+      desc_step5_p2: '加载第二个 K、V 块到 SRAM，计算新的局部分数。之前的 K₀、V₀ 已经不需要了 — SRAM 空间被复用。',
+      label_new_load: '新加载',
+      label_still_sram: '(仍在SRAM)',
+      title_step6: 'Online Softmax 修正 — 合并结果',
+      desc_step6_p1: '关键步骤：',
+      desc_step6_p2: '新块的 max 可能大于之前的 max，需要修正之前的部分结果。这就是 Online Softmax 的核心 — 用指数修正因子重新缩放。',
+      correction_formula: '修正公式',
+      correction_factor: '修正因子 e',
+      correction_factor2: '确保之前的 partial sum 在新 max 下仍然正确',
+      label_before: '(修正前)',
+      label_before_note: '需要乘以修正因子',
+      label_final: '(最终结果)',
+      label_final_note: 'Q₀ 的最终输出',
+      verify_title: '验证：',
+      verify_desc1: 'Flash Attention 的结果与标准 Attention 完全一致（数值精度内）。',
+      verify_desc2: '标准 Attention 对 Q₀ 的结果:',
+      verify_desc3: 'Flash Attention 结果:',
+      verify_desc4: '内存：只用了 O(N) 额外空间，从未存储 4×4 的完整注意力矩阵！',
+    },
+    en: {
+      sram_fast: 'SRAM (fast)',
+      hbm_slow: 'HBM (slow)',
+      title_step1: 'Q, K, V matrices and blocking',
+      desc_step1_p1: 'Standard Attention requires storing the full',
+      desc_step1_p2: 'attention matrix in HBM, memory is',
+      desc_step1_p3: 'Flash Attention core idea: split Q, K, V into blocks, compute in SRAM blockwise,',
+      desc_step1_p4: 'never store the full N×N matrix',
+      note_step1_title: 'Blocking:',
+      note_step1_desc: 'block size B',
+      note_step1_highlight: "Highlighted rows = first block (t₁, t₂), non-highlighted = second block (t₃, t₄). We show processing two K/V blocks using Q's first block as example.",
+      title_step2: 'Load K₀, V₀ to SRAM',
+      desc_step2_p1: 'Outer loop j=1:',
+      desc_step2_p2: 'Load first K, V blocks from HBM to SRAM. Also load Q₀ block and initialize statistics.',
+      note_step2_title: 'Key:',
+      note_step2_desc: 'SRAM only needs to hold 2 B×d blocks and 1 B×B score matrix, not the full N×N matrix. Initialize: m = (-∞, -∞), l = (0, 0), O = zero matrix.',
+      title_step3: 'Compute local attention scores S₀₀',
+      desc_step3_p1: 'Compute in SRAM',
+      desc_step3_p2: 'This is just a',
+      desc_step3_p3: 'small matrix, entirely in SRAM!',
+      note_step3_title: 'Note:',
+      note_step3_desc: 'Standard Attention computes the full 4×4 score matrix and stores in HBM. Flash Attention only computes 2×2 local scores and keeps in SRAM.',
+      title_step4: 'Online Softmax — first update',
+      desc_step4_p1: 'Core innovation: Online Softmax.',
+      desc_step4_p2: 'Compute "partial softmax" from partial data, correct when new blocks arrive. Compute local statistics for S₀₀:',
+      stat_local: 'Local statistics',
+      stat_local_row: '(row-wise subtract max)',
+      stat_global: 'Update global statistics',
+      note_step4_title: 'O update formula:',
+      note_step4_desc: 'First iteration l',
+      note_step4_desc2: 'so O is diag(l̃)⁻¹ · P̃₀₀ · V₀.',
+      title_step5: 'Load K₁, V₁ — compute S₀₁',
+      desc_step5_p1: 'Outer loop j=2:',
+      desc_step5_p2: 'Load second K, V blocks to SRAM, compute new local scores. Previous K₀, V₀ no longer needed — SRAM space is reused.',
+      label_new_load: 'newly loaded',
+      label_still_sram: '(still in SRAM)',
+      title_step6: 'Online Softmax correction — merge results',
+      desc_step6_p1: 'Key step:',
+      desc_step6_p2: 'New block max may be larger than previous max, need to correct partial results. This is the core of Online Softmax — rescale with exponential correction factor.',
+      correction_formula: 'Correction formula',
+      correction_factor: 'Correction factor e',
+      correction_factor2: 'ensures previous partial sum remains correct under new max',
+      label_before: '(before correction)',
+      label_before_note: 'needs correction factor',
+      label_final: '(final result)',
+      label_final_note: 'Q₀ final output',
+      verify_title: 'Verification:',
+      verify_desc1: 'Flash Attention result matches standard Attention (within numerical precision).',
+      verify_desc2: 'Standard Attention result for Q₀:',
+      verify_desc3: 'Flash Attention result:',
+      verify_desc4: 'Memory: only O(N) extra space, never stored the full 4×4 attention matrix!',
+    },
+  }[locale];
+
   const N = 4;
   const d = 3;
   const B = 2; // block size B_r = B_c = 2
@@ -154,12 +261,12 @@ export default function FlashAttentionTiling() {
 
   const steps = [
     {
-      title: 'Q, K, V 矩阵与分块',
+      title: t.title_step1,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            标准 Attention 需要存储完整的 <code className="bg-gray-100 px-1 rounded">N×N</code> 注意力矩阵到 HBM，内存为 <strong>O(N²)</strong>。
-            Flash Attention 的核心思想：将 Q、K、V 分成小块，在 SRAM 中逐块计算，<strong>永远不存储完整的 N×N 矩阵</strong>。
+            {t.desc_step1_p1} <code className="bg-gray-100 px-1 rounded">N×N</code> {t.desc_step1_p2} <strong>O(N²)</strong>。
+            {t.desc_step1_p3}<strong>{t.desc_step1_p4}</strong>。
           </p>
           <div className="flex flex-wrap justify-center items-start gap-4">
             <MatrixGrid
@@ -191,26 +298,24 @@ export default function FlashAttentionTiling() {
             />
           </div>
           <div className="mt-3 p-2 bg-blue-50 rounded text-xs text-blue-800">
-            <strong>分块：</strong>块大小 B<sub>r</sub> = B<sub>c</sub> = 2。
-            高亮行 = 第一个块（t₁, t₂），非高亮行 = 第二个块（t₃, t₄）。
-            我们将以 Q 的第一个块为例，展示如何逐步处理两个 K/V 块。
+            <strong>{t.note_step1_title}</strong>{t.note_step1_desc}<sub>r</sub> = B<sub>c</sub> = 2。
+            {t.note_step1_highlight}
           </div>
         </div>
       ),
     },
     {
-      title: '加载 K₀, V₀ 到 SRAM',
+      title: t.title_step2,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            <strong>外层循环 j=1：</strong>将第一个 K、V 块从 HBM 加载到 SRAM。
-            同时加载 Q₀ 块和初始化统计量。
+            <strong>{t.desc_step2_p1}</strong>{t.desc_step2_p2}
           </p>
           <div className="flex flex-wrap justify-center items-start gap-6">
             <div>
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-sm font-semibold text-gray-700">Q₀</span>
-                <MemoryTag location="SRAM" />
+                <MemoryTag location="SRAM" sramText={t.sram_fast} hbmText={t.hbm_slow} />
               </div>
               <MatrixGrid
                 data={Q0}
@@ -224,7 +329,7 @@ export default function FlashAttentionTiling() {
             <div>
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-sm font-semibold text-gray-700">K₀</span>
-                <MemoryTag location="SRAM" />
+                <MemoryTag location="SRAM" sramText={t.sram_fast} hbmText={t.hbm_slow} />
               </div>
               <MatrixGrid
                 data={K0}
@@ -238,7 +343,7 @@ export default function FlashAttentionTiling() {
             <div>
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-sm font-semibold text-gray-700">V₀</span>
-                <MemoryTag location="SRAM" />
+                <MemoryTag location="SRAM" sramText={t.sram_fast} hbmText={t.hbm_slow} />
               </div>
               <MatrixGrid
                 data={V0}
@@ -251,19 +356,18 @@ export default function FlashAttentionTiling() {
             </div>
           </div>
           <div className="mt-3 p-2 bg-green-50 rounded text-xs text-green-800">
-            <strong>关键：</strong>SRAM 只需容纳 2 个 B×d 的块和 1 个 B×B 的分数矩阵，而非完整的 N×N 矩阵。
-            初始化：m = (-∞, -∞)，l = (0, 0)，O = 零矩阵。
+            <strong>{t.note_step2_title}</strong>{t.note_step2_desc}
           </div>
         </div>
       ),
     },
     {
-      title: '计算局部注意力分数 S₀₀',
+      title: t.title_step3,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            在 SRAM 中计算 <code className="bg-gray-100 px-1 rounded">S₀₀ = Q₀ · K₀ᵀ / √d</code>。
-            这只是一个 <strong>B×B = 2×2</strong> 的小矩阵，完全在 SRAM 中完成！
+            {t.desc_step3_p1} <code className="bg-gray-100 px-1 rounded">S₀₀ = Q₀ · K₀ᵀ / √d</code>。
+            {t.desc_step3_p2} <strong>B×B = 2×2</strong> {t.desc_step3_p3}
           </p>
           <div className="flex flex-wrap justify-center items-center gap-4">
             <MatrixGrid
@@ -295,31 +399,29 @@ export default function FlashAttentionTiling() {
             />
           </div>
           <div className="mt-3 p-2 bg-amber-50 rounded text-xs text-amber-800">
-            <strong>注意：</strong>标准 Attention 会一次性计算 4×4 的完整分数矩阵并存到 HBM。
-            Flash Attention 只计算 2×2 的局部分数，且留在 SRAM 中。
+            <strong>{t.note_step3_title}</strong>{t.note_step3_desc}
           </div>
         </div>
       ),
     },
     {
-      title: 'Online Softmax — 第一次更新',
+      title: t.title_step4,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            <strong>核心创新：Online Softmax。</strong>只看到部分数据就计算"临时 softmax"，
-            后续块到来时再修正。当前对 S₀₀ 计算局部统计量：
+            <strong>{t.desc_step4_p1}</strong>{t.desc_step4_p2}
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3">
             <div className="p-3 bg-gray-50 rounded border">
-              <div className="text-sm font-semibold mb-2">局部统计量</div>
+              <div className="text-sm font-semibold mb-2">{t.stat_local}</div>
               <div className="text-xs font-mono space-y-1">
                 <div>m̃₀₀ = rowmax(S₀₀) = [{m00.map(v => v.toFixed(2)).join(', ')}]</div>
-                <div>P̃₀₀ = exp(S₀₀ - m̃₀₀) <span className="text-gray-400">(逐行减最大值)</span></div>
+                <div>P̃₀₀ = exp(S₀₀ - m̃₀₀) <span className="text-gray-400">{t.stat_local_row}</span></div>
                 <div>l̃₀₀ = rowsum(P̃₀₀) = [{l00.map(v => v.toFixed(4)).join(', ')}]</div>
               </div>
             </div>
             <div className="p-3 bg-blue-50 rounded border border-blue-200">
-              <div className="text-sm font-semibold mb-2">更新全局统计量</div>
+              <div className="text-sm font-semibold mb-2">{t.stat_global}</div>
               <div className="text-xs font-mono space-y-1">
                 <div>m<sup>new</sup> = max(m<sup>old</sup>, m̃₀₀) = [{m00.map(v => v.toFixed(2)).join(', ')}]</div>
                 <div>l<sup>new</sup> = e<sup>(m_old−m_new)</sup>·l<sup>old</sup> + l̃₀₀ = [{l00.map(v => v.toFixed(4)).join(', ')}]</div>
@@ -359,30 +461,29 @@ export default function FlashAttentionTiling() {
             />
           </div>
           <div className="mt-3 p-2 bg-purple-50 rounded text-xs text-purple-800">
-            <strong>O 更新公式：</strong>
+            <strong>{t.note_step4_title}</strong>
             <code className="bg-purple-100 px-1 rounded">
               O = diag(l<sup>new</sup>)⁻¹ · (diag(l<sup>old</sup>)·e<sup>(m_old−m_new)</sup>·O<sup>old</sup> + P̃·V)
             </code>
             <br />
-            第一次迭代中 l<sup>old</sup>=0，所以 O 就是 diag(l̃)⁻¹ · P̃₀₀ · V₀。
+            {t.note_step4_desc}<sup>old</sup>=0，{t.note_step4_desc2}
           </div>
         </div>
       ),
     },
     {
-      title: '加载 K₁, V₁ — 计算 S₀₁',
+      title: t.title_step5,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            <strong>外层循环 j=2：</strong>加载第二个 K、V 块到 SRAM，计算新的局部分数。
-            之前的 K₀、V₀ 已经不需要了 — SRAM 空间被复用。
+            <strong>{t.desc_step5_p1}</strong>{t.desc_step5_p2}
           </p>
           <div className="flex flex-wrap justify-center items-start gap-6 mb-3">
             <div>
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-sm font-semibold text-gray-700">K₁</span>
-                <MemoryTag location="SRAM" />
-                <Badge color="red">新加载</Badge>
+                <MemoryTag location="SRAM" sramText={t.sram_fast} hbmText={t.hbm_slow} />
+                <Badge color="red">{t.label_new_load}</Badge>
               </div>
               <MatrixGrid
                 data={K1}
@@ -396,8 +497,8 @@ export default function FlashAttentionTiling() {
             <div>
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-sm font-semibold text-gray-700">V₁</span>
-                <MemoryTag location="SRAM" />
-                <Badge color="red">新加载</Badge>
+                <MemoryTag location="SRAM" sramText={t.sram_fast} hbmText={t.hbm_slow} />
+                <Badge color="red">{t.label_new_load}</Badge>
               </div>
               <MatrixGrid
                 data={V1}
@@ -412,7 +513,7 @@ export default function FlashAttentionTiling() {
           <div className="flex flex-wrap justify-center items-center gap-4">
             <MatrixGrid
               data={Q0}
-              label="Q₀ (仍在SRAM)"
+              label={`Q₀ ${t.label_still_sram}`}
               rowLabels={blk0Labels}
               highlightColor="#dbeafe"
               highlightRows={[0, 1]}
@@ -442,15 +543,14 @@ export default function FlashAttentionTiling() {
       ),
     },
     {
-      title: 'Online Softmax 修正 — 合并结果',
+      title: t.title_step6,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            <strong>关键步骤：</strong>新块的 max 可能大于之前的 max，需要修正之前的部分结果。
-            这就是 Online Softmax 的核心 — 用指数修正因子重新缩放。
+            <strong>{t.desc_step6_p1}</strong>{t.desc_step6_p2}
           </p>
           <div className="p-3 bg-blue-50 rounded border border-blue-200 mb-3">
-            <div className="text-sm font-semibold mb-2">修正公式</div>
+            <div className="text-sm font-semibold mb-2">{t.correction_formula}</div>
             <div className="text-xs font-mono space-y-1">
               <div>m̃₀₁ = rowmax(S₀₁) = [{m01_tilde.map(v => v.toFixed(2)).join(', ')}]</div>
               <div className="font-bold text-blue-900">
@@ -463,7 +563,7 @@ export default function FlashAttentionTiling() {
                 O<sup>new</sup> = diag(l<sup>new</sup>)⁻¹ · [e<sup>(m_old−m_new)</sup>·l<sup>old</sup>·O<sup>old</sup> + P̃₀₁·V₁]
               </div>
               <div className="text-gray-500 mt-1">
-                修正因子 e<sup>(m_old−m_new)</sup> 确保之前的 partial sum 在新 max 下仍然正确
+                {t.correction_factor}<sup>(m_old−m_new)</sup> {t.correction_factor2}
               </div>
             </div>
           </div>
@@ -471,36 +571,36 @@ export default function FlashAttentionTiling() {
             <div className="text-center">
               <MatrixGrid
                 data={O00}
-                label="O (修正前)"
+                label={`O ${t.label_before}`}
                 rowLabels={blk0Labels}
                 colLabels={dkLabels}
                 highlightColor="#fef3c7"
                 highlightRows={[0, 1]}
                 compact
               />
-              <div className="text-xs text-gray-400 mt-1">需要乘以修正因子</div>
+              <div className="text-xs text-gray-400 mt-1">{t.label_before_note}</div>
             </div>
             <span className="text-2xl text-gray-400">→</span>
             <div className="text-center">
               <MatrixGrid
                 data={O_final}
-                label="O (最终结果)"
+                label={`O ${t.label_final}`}
                 rowLabels={blk0Labels}
                 colLabels={dkLabels}
                 highlightColor="#d1fae5"
                 highlightRows={[0, 1]}
               />
-              <div className="text-xs text-green-600 mt-1 font-medium">Q₀ 的最终输出</div>
+              <div className="text-xs text-green-600 mt-1 font-medium">{t.label_final_note}</div>
             </div>
           </div>
           <div className="mt-3 p-2 bg-green-50 rounded text-xs text-green-800">
-            <strong>验证：</strong>Flash Attention 的结果与标准 Attention 完全一致（数值精度内）。
+            <strong>{t.verify_title}</strong>{t.verify_desc1}
             <br />
-            标准 Attention 对 Q₀ 的结果: [{O_ref[0].map(v => v.toFixed(4)).join(', ')}], [{O_ref[1].map(v => v.toFixed(4)).join(', ')}]
+            {t.verify_desc2} [{O_ref[0].map(v => v.toFixed(4)).join(', ')}], [{O_ref[1].map(v => v.toFixed(4)).join(', ')}]
             <br />
-            Flash Attention 结果: [{O_final[0].map(v => v.toFixed(4)).join(', ')}], [{O_final[1].map(v => v.toFixed(4)).join(', ')}]
+            {t.verify_desc3} [{O_final[0].map(v => v.toFixed(4)).join(', ')}], [{O_final[1].map(v => v.toFixed(4)).join(', ')}]
             <br />
-            <strong>内存：只用了 O(N) 额外空间，从未存储 4×4 的完整注意力矩阵！</strong>
+            <strong>{t.verify_desc4}</strong>
           </div>
         </div>
       ),

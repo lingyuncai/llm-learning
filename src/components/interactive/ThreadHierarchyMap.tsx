@@ -8,8 +8,23 @@ interface Level {
   count?: string;
 }
 
-const ThreadHierarchyMap: React.FC = () => {
+const ThreadHierarchyMap: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
   const [hoveredLevel, setHoveredLevel] = useState<string | null>(null);
+
+  const t = {
+    zh: {
+      title: '软件抽象 ↔ 硬件映射',
+      software: '软件层次 (SYCL)',
+      hardware: '硬件资源 (Xe2)',
+      hover: 'Hover 查看软件抽象到硬件资源的映射关系',
+    },
+    en: {
+      title: 'Software Abstraction ↔ Hardware Mapping',
+      software: 'Software Hierarchy (SYCL)',
+      hardware: 'Hardware Resources (Xe2)',
+      hover: 'Hover to see software-to-hardware mapping',
+    },
+  }[locale];
 
   const levels: Level[] = [
     { id: 'level0', softwareName: 'ND-Range', hardwareName: 'GPU', count: '1 GPU' },
@@ -22,15 +37,15 @@ const ThreadHierarchyMap: React.FC = () => {
     <div className="my-6 p-4 border rounded-lg">
       <svg viewBox="0 0 580 340" className="w-full">
         <text x="290" y="25" textAnchor="middle" fontSize="14" fontWeight="bold" fill={COLORS.dark}>
-          软件抽象 ↔ 硬件映射
+          {t.title}
         </text>
 
         {/* Column headers */}
         <text x="120" y="50" textAnchor="middle" fontSize="12" fontWeight="bold" fill={COLORS.primary}>
-          软件层次 (SYCL)
+          {t.software}
         </text>
         <text x="460" y="50" textAnchor="middle" fontSize="12" fontWeight="bold" fill={COLORS.green}>
-          硬件资源 (Xe2)
+          {t.hardware}
         </text>
 
         {/* Levels */}
@@ -160,7 +175,7 @@ const ThreadHierarchyMap: React.FC = () => {
         {/* Legend */}
         <rect x="20" y="305" width="540" height="25" fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
         <text x="290" y="322" textAnchor="middle" fontSize="10" fill={COLORS.mid}>
-          Hover 查看软件抽象到硬件资源的映射关系
+          {t.hover}
         </text>
       </svg>
     </div>

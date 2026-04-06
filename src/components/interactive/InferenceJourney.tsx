@@ -26,9 +26,65 @@ function LayerBox({ x, y, w, h, label, sub, side }: {
   );
 }
 
-const steps = [
+export default function InferenceJourney({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: 'Step 1: Prompt 输入',
+      step1Desc: '用户输入「解释量子计算」→ CLI 构造请求 → Server 路由处理',
+      step1Layer: '全部在 Ollama (Go) 层',
+      step2Title: 'Step 2: 模型加载',
+      step2Desc: 'Ollama 定位文件 → llama.cpp/GGML 负责 mmap 和 tensor 分配',
+      step2OllamaSide: 'Ollama 侧',
+      step2LlamaSide: 'llama.cpp 侧',
+      step3Title: 'Step 3: Runner 启动',
+      step3Desc: 'Ollama 主进程 fork runner 子进程 → 子进程初始化推理基础设施',
+      step4Title: 'Step 4: Prefill 阶段',
+      step4Desc: '所有 prompt token 一次性通过模型 → KV Cache 被填充',
+      step4BatchLabel: '并行处理 N 个 token (宽 batch)',
+      step4Type: 'Prefill: 计算密集 (compute-bound)',
+      step5Title: 'Step 5: Decode 阶段',
+      step5Token: '1 token',
+      step5Type: 'Decode: 带宽密集 (memory-bound), 逐 token 生成',
+      step6Title: 'Step 6: Prefix Cache 命中',
+      step6Req1: '请求 1:「解释量子计算」',
+      step6Cached: '✓ KV Cache 已缓存',
+      step6Req2: '请求 2:「解释量子纠缠」',
+      step6Reuse: '复用',
+      step6New: '新',
+      step6Desc: '前缀匹配「解释量子」→ 跳过已有 KV → 只 prefill「纠缠」',
+      step6Saved: '节省 ~67% prefill 计算量',
+    },
+    en: {
+      step1Title: 'Step 1: Prompt Input',
+      step1Desc: 'User input "explain quantum computing" → CLI builds request → Server routes',
+      step1Layer: 'All in Ollama (Go) layer',
+      step2Title: 'Step 2: Model Loading',
+      step2Desc: 'Ollama locates file → llama.cpp/GGML handles mmap and tensor allocation',
+      step2OllamaSide: 'Ollama side',
+      step2LlamaSide: 'llama.cpp side',
+      step3Title: 'Step 3: Runner Startup',
+      step3Desc: 'Ollama main process forks runner subprocess → subprocess initializes inference',
+      step4Title: 'Step 4: Prefill Phase',
+      step4Desc: 'All prompt tokens pass through model at once → KV Cache filled',
+      step4BatchLabel: 'Parallel processing N tokens (wide batch)',
+      step4Type: 'Prefill: compute-bound',
+      step5Title: 'Step 5: Decode Phase',
+      step5Token: '1 token',
+      step5Type: 'Decode: memory-bound, token-by-token generation',
+      step6Title: 'Step 6: Prefix Cache Hit',
+      step6Req1: 'Request 1: "explain quantum computing"',
+      step6Cached: '✓ KV Cache cached',
+      step6Req2: 'Request 2: "explain quantum entanglement"',
+      step6Reuse: 'reuse',
+      step6New: 'new',
+      step6Desc: 'Prefix match "explain quantum" → skip existing KV → only prefill "entanglement"',
+      step6Saved: 'Saves ~67% prefill computation',
+    },
+  }[locale];
+
+  const steps = [
   {
-    title: 'Step 1: Prompt 输入',
+    title: t.step1Title,
     content: (
       <StepSvg h={160}>
         <LayerBox x={40} y={20} w={130} h={40} label="CLI 解析" sub="ollama run qwen3 ..." side="ollama" />
@@ -47,19 +103,19 @@ const steps = [
         </defs>
         <text x={W / 2} y={90} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          用户输入「解释量子计算」→ CLI 构造请求 → Server 路由处理
+          {t.step1Desc}
         </text>
         <rect x={180} y={105} width={220} height={18} rx={4}
           fill="#dbeafe" stroke={COLORS.primary} strokeWidth={0.8} />
         <text x={290} y={117} textAnchor="middle" fontSize="7" fontWeight="600"
           fill={COLORS.primary} fontFamily={FONTS.sans}>
-          全部在 Ollama (Go) 层
+          {t.step1Layer}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'Step 2: 模型加载',
+    title: t.step2Title,
     content: (
       <StepSvg h={160}>
         <LayerBox x={30} y={20} w={120} h={40} label="定位 GGUF" sub="本地 blob 存储" side="ollama" />
@@ -71,21 +127,21 @@ const steps = [
           markerEnd="url(#ij-arr)" />
         <text x={W / 2} y={90} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          Ollama 定位文件 → llama.cpp/GGML 负责 mmap 和 tensor 分配
+          {t.step2Desc}
         </text>
         <rect x={130} y={105} width={100} height={16} rx={3}
           fill="#dbeafe" stroke={COLORS.primary} strokeWidth={0.8} />
         <text x={180} y={116} textAnchor="middle" fontSize="6.5" fill={COLORS.primary}
-          fontFamily={FONTS.sans}>Ollama 侧</text>
+          fontFamily={FONTS.sans}>{t.step2OllamaSide}</text>
         <rect x={270} y={105} width={100} height={16} rx={3}
           fill="#fef3c7" stroke={COLORS.orange} strokeWidth={0.8} />
         <text x={320} y={116} textAnchor="middle" fontSize="6.5" fill={COLORS.orange}
-          fontFamily={FONTS.sans}>llama.cpp 侧</text>
+          fontFamily={FONTS.sans}>{t.step2LlamaSide}</text>
       </StepSvg>
     ),
   },
   {
-    title: 'Step 3: Runner 启动',
+    title: t.step3Title,
     content: (
       <StepSvg h={160}>
         <LayerBox x={30} y={20} w={140} h={40} label="启动子进程" sub="ollamarunner / llamarunner" side="ollama" />
@@ -97,13 +153,13 @@ const steps = [
           markerEnd="url(#ij-arr)" />
         <text x={W / 2} y={95} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          Ollama 主进程 fork runner 子进程 → 子进程初始化推理基础设施
+          {t.step3Desc}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'Step 4: Prefill 阶段',
+    title: t.step4Title,
     content: (
       <StepSvg h={180}>
         <LayerBox x={20} y={15} w={100} h={35} label="Tokenize" sub="解释量子计算 → IDs" side="both" />
@@ -118,7 +174,7 @@ const steps = [
           markerEnd="url(#ij-arr)" />
         <text x={W / 2} y={80} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          所有 prompt token 一次性通过模型 → KV Cache 被填充
+          {t.step4Desc}
         </text>
         {/* Wide batch visual */}
         {Array.from({ length: 8 }, (_, i) => (
@@ -126,16 +182,16 @@ const steps = [
             fill="#fef3c7" stroke={COLORS.orange} strokeWidth={0.8} />
         ))}
         <text x={W / 2} y={108} textAnchor="middle" fontSize="7" fill={COLORS.orange}
-          fontFamily={FONTS.sans}>并行处理 N 个 token (宽 batch)</text>
+          fontFamily={FONTS.sans}>{t.step4BatchLabel}</text>
         <text x={W / 2} y={140} textAnchor="middle" fontSize="7" fontWeight="600"
           fill={COLORS.orange} fontFamily={FONTS.sans}>
-          Prefill: 计算密集 (compute-bound)
+          {t.step4Type}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'Step 5: Decode 阶段',
+    title: t.step5Title,
     content: (
       <StepSvg h={180}>
         <LayerBox x={20} y={15} w={110} h={35} label="Sampling" sub="logits → token ID" side="both" />
@@ -152,62 +208,61 @@ const steps = [
         <rect x={255} y={90} width={50} height={20} rx={3}
           fill="#dbeafe" stroke={COLORS.primary} strokeWidth={0.8} />
         <text x={280} y={103} textAnchor="middle" fontSize="7" fill={COLORS.primary}
-          fontFamily={FONTS.sans}>1 token</text>
+          fontFamily={FONTS.sans}>{t.step5Token}</text>
         <text x={W / 2} y={135} textAnchor="middle" fontSize="7" fontWeight="600"
           fill={COLORS.primary} fontFamily={FONTS.sans}>
-          Decode: 带宽密集 (memory-bound), 逐 token 生成
+          {t.step5Type}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'Step 6: Prefix Cache 命中',
+    title: t.step6Title,
     content: (
       <StepSvg h={180}>
         {/* First request tokens */}
         <text x={20} y={25} fontSize="8" fontWeight="600" fill={COLORS.dark}
-          fontFamily={FONTS.sans}>请求 1:「解释量子计算」</text>
-        {['解释', '量子', '计算'].map((t, i) => (
+          fontFamily={FONTS.sans}>{t.step6Req1}</text>
+        {['解释', '量子', '计算'].map((tok, i) => (
           <rect key={i} x={20 + i * 65} y={32} width={58} height={22} rx={3}
             fill="#dbeafe" stroke={COLORS.primary} strokeWidth={0.8} />
         ))}
-        {['解释', '量子', '计算'].map((t, i) => (
+        {['解释', '量子', '计算'].map((tok, i) => (
           <text key={`t${i}`} x={49 + i * 65} y={46} textAnchor="middle" fontSize="7"
-            fill={COLORS.primary} fontFamily={FONTS.sans}>{t}</text>
+            fill={COLORS.primary} fontFamily={FONTS.sans}>{tok}</text>
         ))}
         <text x={230} y={46} fontSize="7" fill={COLORS.green} fontFamily={FONTS.sans}>
-          ✓ KV Cache 已缓存
+          {t.step6Cached}
         </text>
 
         {/* Second request */}
         <text x={20} y={80} fontSize="8" fontWeight="600" fill={COLORS.dark}
-          fontFamily={FONTS.sans}>请求 2:「解释量子纠缠」</text>
-        {['解释', '量子'].map((t, i) => (
+          fontFamily={FONTS.sans}>{t.step6Req2}</text>
+        {['解释', '量子'].map((tok, i) => (
           <rect key={i} x={20 + i * 65} y={87} width={58} height={22} rx={3}
             fill="#dcfce7" stroke={COLORS.green} strokeWidth={1.2} />
         ))}
-        {['解释', '量子'].map((t, i) => (
+        {['解释', '量子'].map((tok, i) => (
           <text key={`t2${i}`} x={49 + i * 65} y={101} textAnchor="middle" fontSize="7"
-            fill={COLORS.green} fontFamily={FONTS.sans}>{t} (复用)</text>
+            fill={COLORS.green} fontFamily={FONTS.sans}>{tok} ({t.step6Reuse})</text>
         ))}
         <rect x={150} y={87} width={58} height={22} rx={3}
           fill="#fef3c7" stroke={COLORS.orange} strokeWidth={1.2} />
         <text x={179} y={101} textAnchor="middle" fontSize="7"
-          fill={COLORS.orange} fontFamily={FONTS.sans}>纠缠 (新)</text>
+          fill={COLORS.orange} fontFamily={FONTS.sans}>纠缠 ({t.step6New})</text>
 
         <text x={W / 2} y={140} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          前缀匹配「解释量子」→ 跳过已有 KV → 只 prefill「纠缠」
+          {t.step6Desc}
         </text>
         <text x={W / 2} y={158} textAnchor="middle" fontSize="7" fontWeight="600"
           fill={COLORS.green} fontFamily={FONTS.sans}>
-          节省 ~67% prefill 计算量
+          {t.step6Saved}
         </text>
       </StepSvg>
     ),
   },
 ];
 
-export default function InferenceJourney() {
   return <StepNavigator steps={steps} />;
 }

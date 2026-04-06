@@ -22,8 +22,31 @@ const TOKENS: TokenData[] = [
 
 const STATE_DIM = 4;
 
-export default function SelectiveScanViz() {
+export default function SelectiveScanViz({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [selected, setSelected] = useState<number | null>(null);
+
+  const t = {
+    zh: {
+      title: 'Mamba 选择性机制：Δ 控制记忆与遗忘',
+      subtitle: '点击 token 查看其对状态的影响',
+      deltaLabel: 'Δ 值',
+      largeDelta: '大 Δ = 记住（内容词）',
+      smallDelta: '小 Δ = 遗忘（功能词）',
+      stateProcessed: '状态 (处理到 "{token}")',
+      stateCumulative: '累积状态 (全部 tokens)',
+      annotation: '选择性 Δ 让 Mamba 自适应地关注重要 token，忽略噪声 — 类似 Attention 的"软选择"',
+    },
+    en: {
+      title: 'Mamba Selective Mechanism: Δ Controls Memory & Forgetting',
+      subtitle: 'Click token to see its impact on state',
+      deltaLabel: 'Δ value',
+      largeDelta: 'Large Δ = Remember (content words)',
+      smallDelta: 'Small Δ = Forget (function words)',
+      stateProcessed: 'State (processed to "{token}")',
+      stateCumulative: 'Cumulative state (all tokens)',
+      annotation: 'Selective Δ allows Mamba to adaptively focus on important tokens and ignore noise — similar to Attention\'s "soft selection"',
+    },
+  }[locale];
 
   const tokenW = 70;
   const tokenH = 32;
@@ -50,11 +73,11 @@ export default function SelectiveScanViz() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Mamba 选择性机制：Δ 控制记忆与遗忘
+        {t.title}
       </text>
       <text x={W / 2} y={40} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        点击 token 查看其对状态的影响
+        {t.subtitle}
       </text>
 
       {/* Token row */}
@@ -78,7 +101,7 @@ export default function SelectiveScanViz() {
 
       {/* Delta bars */}
       <text x={tokensX - 5} y={deltaY + deltaMaxH / 2} fontSize="10" fontWeight="600"
-        fill={COLORS.mid} fontFamily={FONTS.sans} textAnchor="end">Δ 值</text>
+        fill={COLORS.mid} fontFamily={FONTS.sans} textAnchor="end">{t.deltaLabel}</text>
       {TOKENS.map((tok, i) => {
         const x = tokensX + i * tokenW;
         const barH = tok.delta * deltaMaxH;
@@ -97,16 +120,16 @@ export default function SelectiveScanViz() {
       })}
       {/* Delta legend */}
       <text x={tokensX} y={deltaY + deltaMaxH + 18} fontSize="9"
-        fill={COLORS.green} fontFamily={FONTS.sans}>■ 大 Δ = 记住（内容词）</text>
+        fill={COLORS.green} fontFamily={FONTS.sans}>■ {t.largeDelta}</text>
       <text x={tokensX + 200} y={deltaY + deltaMaxH + 18} fontSize="9"
-        fill={COLORS.red} fontFamily={FONTS.sans}>■ 小 Δ = 遗忘（功能词）</text>
+        fill={COLORS.red} fontFamily={FONTS.sans}>■ {t.smallDelta}</text>
 
       {/* State heatmap */}
       <text x={W / 2} y={stateY - 12} textAnchor="middle" fontSize="11" fontWeight="600"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
         {selected !== null
-          ? `状态 (处理到 "${TOKENS[selected].text}")`
-          : '累积状态 (全部 tokens)'}
+          ? t.stateProcessed.replace('{token}', TOKENS[selected].text)
+          : t.stateCumulative}
       </text>
       {cumulativeState.map((val, d) => {
         const x = (W - STATE_DIM * stateCellW) / 2 + d * stateCellW;
@@ -134,7 +157,7 @@ export default function SelectiveScanViz() {
       {/* Annotation */}
       <text x={W / 2} y={H - 10} textAnchor="middle" fontSize="9"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        选择性 Δ 让 Mamba 自适应地关注重要 token，忽略噪声 — 类似 Attention 的"软选择"
+        {t.annotation}
       </text>
     </svg>
   );

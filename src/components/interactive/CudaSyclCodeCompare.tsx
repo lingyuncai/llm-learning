@@ -87,40 +87,76 @@ const CONCEPTS = [
   { color: COLORS.red, cuda: '<<<grid, block>>>', sycl: 'sycl::queue', meaning: '启动 / 设备选择' },
 ];
 
-export default function CudaSyclCodeCompare() {
+export default function CudaSyclCodeCompare({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'CUDA vs SYCL: 同一个向量加法 Kernel',
+      subtitle: '颜色标注对应概念 — 核心逻辑完全相同，只是 API 不同',
+      cudaTitle: 'CUDA C++',
+      syclTitle: 'SYCL (Intel DPC++)',
+      conceptMapping: '概念映射',
+      sharedNote: 'CUDA: __shared__ → SYCL: local accessor | CUDA: __syncthreads() → SYCL: group_barrier()',
+      warpNote: 'CUDA: warp (32 threads) → SYCL: sub-group (8/16/32, 宽度由硬件决定)',
+      concepts: [
+        { cuda: 'threadIdx.x', sycl: 'get_local_id(0)', meaning: 'Block/Work-group 内线程 ID' },
+        { cuda: 'blockIdx.x', sycl: 'get_group(0)', meaning: 'Block/Work-group ID' },
+        { cuda: 'blockDim.x', sycl: 'get_local_range(0)', meaning: 'Block/Work-group 大小' },
+        { cuda: '__global__', sycl: 'parallel_for', meaning: 'Kernel 入口' },
+        { cuda: '<<<grid, block>>>', sycl: 'sycl::queue', meaning: '启动 / 设备选择' },
+      ],
+    },
+    en: {
+      title: 'CUDA vs SYCL: Same Vector Addition Kernel',
+      subtitle: 'Color-coded concepts — identical core logic, different APIs',
+      cudaTitle: 'CUDA C++',
+      syclTitle: 'SYCL (Intel DPC++)',
+      conceptMapping: 'Concept Mapping',
+      sharedNote: 'CUDA: __shared__ → SYCL: local accessor | CUDA: __syncthreads() → SYCL: group_barrier()',
+      warpNote: 'CUDA: warp (32 threads) → SYCL: sub-group (8/16/32, width hardware-dependent)',
+      concepts: [
+        { cuda: 'threadIdx.x', sycl: 'get_local_id(0)', meaning: 'Thread ID in block/work-group' },
+        { cuda: 'blockIdx.x', sycl: 'get_group(0)', meaning: 'Block/Work-group ID' },
+        { cuda: 'blockDim.x', sycl: 'get_local_range(0)', meaning: 'Block/Work-group size' },
+        { cuda: '__global__', sycl: 'parallel_for', meaning: 'Kernel entry' },
+        { cuda: '<<<grid, block>>>', sycl: 'sycl::queue', meaning: 'Launch / device selection' },
+      ],
+    },
+  }[locale];
+
   const legendY = CODE_Y + CUDA_CODE.length * LINE_H + 35;
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img"
       aria-label="CUDA vs SYCL code comparison">
       <text x={W / 2} y={20} textAnchor="middle" fontSize="13" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        CUDA vs SYCL: 同一个向量加法 Kernel
+        {t.title}
       </text>
       <text x={W / 2} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
         fontFamily={FONTS.sans}>
-        颜色标注对应概念 — 核心逻辑完全相同，只是 API 不同
+        {t.subtitle}
       </text>
 
       {/* Code blocks */}
-      <CodeBlock x={10} y={CODE_Y} lines={CUDA_CODE} title="CUDA C++" titleColor={COLORS.green} />
-      <CodeBlock x={300} y={CODE_Y} lines={SYCL_CODE} title="SYCL (Intel DPC++)" titleColor={COLORS.primary} />
+      <CodeBlock x={10} y={CODE_Y} lines={CUDA_CODE} title={t.cudaTitle} titleColor={COLORS.green} />
+      <CodeBlock x={300} y={CODE_Y} lines={SYCL_CODE} title={t.syclTitle} titleColor={COLORS.primary} />
 
       {/* Concept mapping legend */}
       <text x={W / 2} y={legendY} textAnchor="middle" fontSize="10" fontWeight="600"
-        fill={COLORS.dark} fontFamily={FONTS.sans}>概念映射</text>
+        fill={COLORS.dark} fontFamily={FONTS.sans}>{t.conceptMapping}</text>
 
-      {CONCEPTS.map((c, i) => {
+      {t.concepts.map((c, i) => {
         const y = legendY + 16 + i * 16;
+        const color = CONCEPTS[i].color;
         return (
           <g key={i}>
-            <rect x={20} y={y - 6} width={8} height={8} rx={1} fill={c.color} />
-            <text x={35} y={y + 1} fontSize="7.5" fill={c.color} fontFamily={FONTS.mono}>
+            <rect x={20} y={y - 6} width={8} height={8} rx={1} fill={color} />
+            <text x={35} y={y + 1} fontSize="7.5" fill={color} fontFamily={FONTS.mono}>
               {c.cuda}
             </text>
             <text x={185} y={y + 1} fontSize="7.5" fill="#64748b" fontFamily={FONTS.sans}>
               ↔
             </text>
-            <text x={200} y={y + 1} fontSize="7.5" fill={c.color} fontFamily={FONTS.mono}>
+            <text x={200} y={y + 1} fontSize="7.5" fill={color} fontFamily={FONTS.mono}>
               {c.sycl}
             </text>
             <text x={400} y={y + 1} fontSize="7.5" fill={COLORS.dark} fontFamily={FONTS.sans}>
@@ -135,11 +171,11 @@ export default function CudaSyclCodeCompare() {
         fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
       <text x={W / 2} y={legendY + 116} textAnchor="middle" fontSize="8" fill={COLORS.dark}
         fontFamily={FONTS.sans}>
-        CUDA: __shared__ → SYCL: local accessor | CUDA: __syncthreads() → SYCL: group_barrier()
+        {t.sharedNote}
       </text>
       <text x={W / 2} y={legendY + 130} textAnchor="middle" fontSize="8" fill="#64748b"
         fontFamily={FONTS.sans}>
-        CUDA: warp (32 threads) → SYCL: sub-group (8/16/32, 宽度由硬件决定)
+        {t.warpNote}
       </text>
     </svg>
   );

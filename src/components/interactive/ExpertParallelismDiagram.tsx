@@ -6,7 +6,30 @@ const H = 280;
 const NUM_GPUS = 4;
 const EXPERTS_PER_GPU = 2;
 
-export default function ExpertParallelismDiagram() {
+export default function ExpertParallelismDiagram({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Expert Parallelism: Expert 分布在不同 GPU 上',
+      gpu: 'GPU',
+      expert: 'Expert',
+      tokenBuffer: 'Token Buffer',
+      flowDesc: 'All-to-All 通信：token dispatch → expert compute → result combine',
+      flowDetail: '每个 GPU 上的 token 需要发送到对应 expert 所在 GPU，计算完再发回',
+      dispatch: 'dispatch',
+      combine: 'combine',
+    },
+    en: {
+      title: 'Expert Parallelism: Experts Distributed Across GPUs',
+      gpu: 'GPU',
+      expert: 'Expert',
+      tokenBuffer: 'Token Buffer',
+      flowDesc: 'All-to-All communication: token dispatch → expert compute → result combine',
+      flowDetail: 'Tokens on each GPU must be sent to the GPU containing corresponding expert, computed, then sent back',
+      dispatch: 'dispatch',
+      combine: 'combine',
+    },
+  }[locale];
+
   const gpuW = 110;
   const gpuH = 160;
   const gpuGap = 20;
@@ -17,7 +40,7 @@ export default function ExpertParallelismDiagram() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full my-6">
       <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Expert Parallelism: Expert 分布在不同 GPU 上
+        {t.title}
       </text>
 
       <defs>
@@ -36,7 +59,7 @@ export default function ExpertParallelismDiagram() {
               fill="#f8fafc" stroke={HEAD_COLORS[gi]} strokeWidth={2} />
             <text x={gx + gpuW / 2} y={gpuY + 18} textAnchor="middle"
               fontSize="9" fontWeight="700" fill={HEAD_COLORS[gi]} fontFamily={FONTS.sans}>
-              GPU {gi}
+              {t.gpu} {gi}
             </text>
 
             {/* Experts inside GPU */}
@@ -49,7 +72,7 @@ export default function ExpertParallelismDiagram() {
                     fill="#fef3c7" stroke={COLORS.orange} strokeWidth={1} />
                   <text x={gx + gpuW / 2} y={ey + 17} textAnchor="middle"
                     fontSize="8" fontWeight="600" fill={COLORS.orange} fontFamily={FONTS.sans}>
-                    Expert {expertIdx}
+                    {t.expert} {expertIdx}
                   </text>
                 </g>
               );
@@ -60,7 +83,7 @@ export default function ExpertParallelismDiagram() {
               fill="#dbeafe" stroke={COLORS.primary} strokeWidth={1} />
             <text x={gx + gpuW / 2} y={gpuY + gpuH - 23} textAnchor="middle"
               fontSize="7" fontWeight="600" fill={COLORS.primary} fontFamily={FONTS.sans}>
-              Token Buffer
+              {t.tokenBuffer}
             </text>
           </g>
         );
@@ -68,9 +91,9 @@ export default function ExpertParallelismDiagram() {
 
       {/* All-to-All arrows between GPUs */}
       {[
-        { from: 0, to: 1, label: 'dispatch' },
+        { from: 0, to: 1, label: t.dispatch },
         { from: 1, to: 2, label: '' },
-        { from: 2, to: 3, label: 'combine' },
+        { from: 2, to: 3, label: t.combine },
       ].map(({ from, to, label }, i) => {
         const x1 = startX + from * (gpuW + gpuGap) + gpuW;
         const x2 = startX + to * (gpuW + gpuGap);
@@ -92,11 +115,11 @@ export default function ExpertParallelismDiagram() {
       {/* Flow description */}
       <text x={W / 2} y={gpuY + gpuH + 25} textAnchor="middle" fontSize="9"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        All-to-All 通信：token dispatch → expert compute → result combine
+        {t.flowDesc}
       </text>
       <text x={W / 2} y={gpuY + gpuH + 42} textAnchor="middle" fontSize="8"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        每个 GPU 上的 token 需要发送到对应 expert 所在 GPU，计算完再发回
+        {t.flowDetail}
       </text>
     </svg>
   );

@@ -14,12 +14,18 @@ interface StateNode {
   color: string;
 }
 
-const STATES: StateNode[] = [
-  { id: 'waiting',  label: 'Waiting',  x: 110, y: 110, color: COLORS.orange },
-  { id: 'running',  label: 'Running',  x: 350, y: 110, color: COLORS.green },
-  { id: 'swapped',  label: 'Swapped',  x: 230, y: 260, color: COLORS.purple },
-  { id: 'finished', label: 'Finished', x: 470, y: 260, color: COLORS.mid },
-];
+function getStates(locale: 'zh' | 'en'): StateNode[] {
+  const labels = {
+    zh: { waiting: 'Waiting', running: 'Running', swapped: 'Swapped', finished: 'Finished' },
+    en: { waiting: 'Waiting', running: 'Running', swapped: 'Swapped', finished: 'Finished' },
+  }[locale];
+  return [
+    { id: 'waiting',  label: labels.waiting,  x: 110, y: 110, color: COLORS.orange },
+    { id: 'running',  label: labels.running,  x: 350, y: 110, color: COLORS.green },
+    { id: 'swapped',  label: labels.swapped,  x: 230, y: 260, color: COLORS.purple },
+    { id: 'finished', label: labels.finished, x: 470, y: 260, color: COLORS.mid },
+  ];
+}
 
 interface Transition {
   from: State;
@@ -28,17 +34,51 @@ interface Transition {
   event: string;
 }
 
-const TRANSITIONS: Transition[] = [
-  { from: 'waiting', to: 'running',  label: 'GPU slot 空闲', event: 'schedule' },
-  { from: 'running', to: 'finished', label: '生成 EOS', event: 'finish' },
-  { from: 'running', to: 'swapped',  label: '显存不足', event: 'preempt' },
-  { from: 'swapped', to: 'running',  label: 'swap 完成', event: 'resume' },
-];
+function getTransitions(locale: 'zh' | 'en'): Transition[] {
+  const labels = {
+    zh: {
+      schedule: 'GPU slot 空闲',
+      finish: '生成 EOS',
+      preempt: '显存不足',
+      resume: 'swap 完成',
+    },
+    en: {
+      schedule: 'GPU slot free',
+      finish: 'EOS generated',
+      preempt: 'Out of memory',
+      resume: 'Swap completed',
+    },
+  }[locale];
+  return [
+    { from: 'waiting', to: 'running',  label: labels.schedule, event: 'schedule' },
+    { from: 'running', to: 'finished', label: labels.finish, event: 'finish' },
+    { from: 'running', to: 'swapped',  label: labels.preempt, event: 'preempt' },
+    { from: 'swapped', to: 'running',  label: labels.resume, event: 'resume' },
+  ];
+}
 
 const NODE_RX = 45;
 const NODE_RY = 25;
 
-export default function SchedulerStateMachine() {
+export default function SchedulerStateMachine({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Scheduler 请求状态机',
+      subtitle: '点击下方按钮触发状态转换',
+      reset: '重置',
+      lastEvent: '最近事件',
+    },
+    en: {
+      title: 'Scheduler Request State Machine',
+      subtitle: 'Click buttons below to trigger state transitions',
+      reset: 'Reset',
+      lastEvent: 'Last event',
+    },
+  }[locale];
+
+  const STATES = getStates(locale);
+  const TRANSITIONS = getTransitions(locale);
+
   const [currentState, setCurrentState] = useState<State>('waiting');
   const [lastEvent, setLastEvent] = useState<string | null>(null);
 
@@ -62,11 +102,11 @@ export default function SchedulerStateMachine() {
 
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Scheduler 请求状态机
+        {t.title}
       </text>
       <text x={W / 2} y={40} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        点击下方按钮触发状态转换
+        {t.subtitle}
       </text>
 
       {/* Transition edges */}
@@ -127,14 +167,14 @@ export default function SchedulerStateMachine() {
           <rect x={200} y={330} width={100} height={28} rx={14}
             fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1" />
           <text x={250} y={348} textAnchor="middle" fontSize="10"
-            fontWeight="600" fill={COLORS.mid} fontFamily={FONTS.sans}>重置</text>
+            fontWeight="600" fill={COLORS.mid} fontFamily={FONTS.sans}>{t.reset}</text>
         </g>
       )}
 
       {lastEvent && (
         <text x={430} y={350} textAnchor="middle" fontSize="9"
           fill={COLORS.mid} fontFamily={FONTS.mono}>
-          最近事件: {lastEvent}
+          {t.lastEvent}: {lastEvent}
         </text>
       )}
     </svg>

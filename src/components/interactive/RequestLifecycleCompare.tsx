@@ -37,41 +37,85 @@ function Pipeline({ stages, title }: StageProps) {
   );
 }
 
-export default function RequestLifecycleCompare() {
+export default function RequestLifecycleCompare({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      vllmTitle: '云端 Serving (vLLM)',
+      vllmPipelineTitle: 'vLLM 请求流程 — 吞吐优先',
+      vllmStages: [
+        { label: 'API 请求', desc: 'OpenAI 兼容' },
+        { label: 'Scheduler', desc: '调度 + 批处理' },
+        { label: 'PagedAttention', desc: '分页 KV 管理' },
+        { label: 'GPU 推理', desc: 'Batch decode' },
+        { label: 'Stream 输出', desc: 'SSE 流式返回' },
+      ],
+      ollamaTitle: '本地推理 (Ollama)',
+      ollamaPipelineTitle: 'Ollama 请求流程 — 易用优先',
+      ollamaStages: [
+        { label: 'CLI / API', desc: 'ollama run' },
+        { label: '模型加载', desc: 'GGUF 量化' },
+        { label: 'llama.cpp', desc: '单请求推理' },
+        { label: '输出', desc: '逐 token 打印' },
+      ],
+      sglangTitle: '可编程管道 (SGLang)',
+      sglangPipelineTitle: 'SGLang 请求流程 — 可编程优先',
+      sglangStages: [
+        { label: 'DSL 程序', desc: 'gen/fork/join' },
+        { label: 'IR 编排', desc: '执行计划优化' },
+        { label: 'RadixAttention', desc: '前缀缓存复用' },
+        { label: 'GPU 推理', desc: '约束解码' },
+        { label: '结构化输出', desc: 'JSON/Schema' },
+      ],
+    },
+    en: {
+      vllmTitle: 'Cloud Serving (vLLM)',
+      vllmPipelineTitle: 'vLLM Request Flow — Throughput First',
+      vllmStages: [
+        { label: 'API Request', desc: 'OpenAI compatible' },
+        { label: 'Scheduler', desc: 'Schedule + batch' },
+        { label: 'PagedAttention', desc: 'Paged KV mgmt' },
+        { label: 'GPU Inference', desc: 'Batch decode' },
+        { label: 'Stream Output', desc: 'SSE streaming' },
+      ],
+      ollamaTitle: 'Local Inference (Ollama)',
+      ollamaPipelineTitle: 'Ollama Request Flow — Ease of Use First',
+      ollamaStages: [
+        { label: 'CLI / API', desc: 'ollama run' },
+        { label: 'Model Load', desc: 'GGUF quantized' },
+        { label: 'llama.cpp', desc: 'Single request' },
+        { label: 'Output', desc: 'Token by token' },
+      ],
+      sglangTitle: 'Programmable Pipeline (SGLang)',
+      sglangPipelineTitle: 'SGLang Request Flow — Programmability First',
+      sglangStages: [
+        { label: 'DSL Program', desc: 'gen/fork/join' },
+        { label: 'IR Orchestration', desc: 'Execution plan opt' },
+        { label: 'RadixAttention', desc: 'Prefix cache reuse' },
+        { label: 'GPU Inference', desc: 'Constrained decode' },
+        { label: 'Structured Output', desc: 'JSON/Schema' },
+      ],
+    },
+  }[locale];
+
+  const colors = [COLORS.primary, COLORS.orange, COLORS.green, COLORS.purple, COLORS.primary];
+
   const steps = [
     {
-      title: '云端 Serving (vLLM)',
+      title: t.vllmTitle,
       content: (
-        <Pipeline title="vLLM 请求流程 — 吞吐优先" stages={[
-          { label: 'API 请求', color: COLORS.primary, desc: 'OpenAI 兼容' },
-          { label: 'Scheduler', color: COLORS.orange, desc: '调度 + 批处理' },
-          { label: 'PagedAttention', color: COLORS.green, desc: '分页 KV 管理' },
-          { label: 'GPU 推理', color: COLORS.purple, desc: 'Batch decode' },
-          { label: 'Stream 输出', color: COLORS.primary, desc: 'SSE 流式返回' },
-        ]} />
+        <Pipeline title={t.vllmPipelineTitle} stages={t.vllmStages.map((s, i) => ({ ...s, color: colors[i] }))} />
       ),
     },
     {
-      title: '本地推理 (Ollama)',
+      title: t.ollamaTitle,
       content: (
-        <Pipeline title="Ollama 请求流程 — 易用优先" stages={[
-          { label: 'CLI / API', color: COLORS.orange, desc: 'ollama run' },
-          { label: '模型加载', color: COLORS.primary, desc: 'GGUF 量化' },
-          { label: 'llama.cpp', color: COLORS.green, desc: '单请求推理' },
-          { label: '输出', color: COLORS.purple, desc: '逐 token 打印' },
-        ]} />
+        <Pipeline title={t.ollamaPipelineTitle} stages={t.ollamaStages.map((s, i) => ({ ...s, color: colors[i] }))} />
       ),
     },
     {
-      title: '可编程管道 (SGLang)',
+      title: t.sglangTitle,
       content: (
-        <Pipeline title="SGLang 请求流程 — 可编程优先" stages={[
-          { label: 'DSL 程序', color: COLORS.green, desc: 'gen/fork/join' },
-          { label: 'IR 编排', color: COLORS.primary, desc: '执行计划优化' },
-          { label: 'RadixAttention', color: COLORS.orange, desc: '前缀缓存复用' },
-          { label: 'GPU 推理', color: COLORS.purple, desc: '约束解码' },
-          { label: '结构化输出', color: COLORS.green, desc: 'JSON/Schema' },
-        ]} />
+        <Pipeline title={t.sglangPipelineTitle} stages={t.sglangStages.map((s, i) => ({ ...s, color: colors[i] }))} />
       ),
     },
   ];

@@ -1,8 +1,23 @@
 import { COLORS, FONTS } from './shared/colors';
 
-export default function XeVsCudaMapping() {
+export default function XeVsCudaMapping({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const W = 580;
   const H = 380;
+
+  const t = {
+    zh: {
+      title: 'Xe2 与 CUDA 概念映射',
+      subtitle: '理解 Intel Xe 与 NVIDIA CUDA 的对应关系，帮助 CUDA 开发者快速上手',
+      xeHeader: 'Intel Xe2',
+      cudaHeader: 'NVIDIA CUDA',
+    },
+    en: {
+      title: 'Xe2 vs CUDA Concept Mapping',
+      subtitle: 'Understanding Intel Xe and NVIDIA CUDA correspondence, helping CUDA developers onboard quickly',
+      xeHeader: 'Intel Xe2',
+      cudaHeader: 'NVIDIA CUDA',
+    },
+  }[locale];
 
   const mappings = [
     { xe: 'Execution Unit (EU)', cuda: 'CUDA Core' },
@@ -23,9 +38,9 @@ export default function XeVsCudaMapping() {
   return (
     <div className="my-6 p-4 border rounded-lg bg-white">
       <div className="mb-3">
-        <h3 className="text-lg font-semibold mb-2">Xe2 与 CUDA 概念映射</h3>
+        <h3 className="text-lg font-semibold mb-2">{t.title}</h3>
         <p className="text-sm text-gray-600">
-          理解 Intel Xe 与 NVIDIA CUDA 的对应关系，帮助 CUDA 开发者快速上手
+          {t.subtitle}
         </p>
       </div>
 
@@ -41,7 +56,7 @@ export default function XeVsCudaMapping() {
           fontWeight="bold"
           fontFamily={FONTS.sans}
         >
-          Intel Xe2
+          {t.xeHeader}
         </text>
 
         <rect x={310} y={20} width={250} height={30} fill={COLORS.green} rx={4} />
@@ -54,7 +69,7 @@ export default function XeVsCudaMapping() {
           fontWeight="bold"
           fontFamily={FONTS.sans}
         >
-          NVIDIA CUDA
+          {t.cudaHeader}
         </text>
 
         {/* Mappings */}

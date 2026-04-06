@@ -26,7 +26,30 @@ const MAX_TIME = 14;
 const BAR_H = 28;
 const GAP = 4;
 
-export default function ContinuousBatchingTimeline() {
+export default function ContinuousBatchingTimeline({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Continuous Batching 时间线',
+      subtitle: '{0} 个 GPU slot，请求动态进出，完成即释放',
+      slotLabel: 'Slot {0}',
+      arrivalLabel: '{0} 到达',
+      legendPrefill: 'Prefill（深色）',
+      legendDecode: 'Decode（浅色）',
+      legendArrival: '新请求到达',
+      summary: '请求 A/C 完成后 slot 立即被 D/E 填入 — 无空闲等待，GPU 利用率最大化',
+    },
+    en: {
+      title: 'Continuous Batching Timeline',
+      subtitle: '{0} GPU slots, dynamic entry/exit, released upon completion',
+      slotLabel: 'Slot {0}',
+      arrivalLabel: '{0} arrival',
+      legendPrefill: 'Prefill (dark)',
+      legendDecode: 'Decode (light)',
+      legendArrival: 'New request arrival',
+      summary: 'Requests A/C complete, slots immediately filled by D/E — no idle wait, max GPU utilization',
+    },
+  }[locale];
+
   const [hovered, setHovered] = useState<string | null>(null);
 
   const chartX = 50;
@@ -54,18 +77,18 @@ export default function ContinuousBatchingTimeline() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Continuous Batching 时间线
+        {t.title}
       </text>
       <text x={W / 2} y={40} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        {SLOT_COUNT} 个 GPU slot，请求动态进出，完成即释放
+        {t.subtitle.replace('{0}', String(SLOT_COUNT))}
       </text>
 
       {/* Slot labels */}
       {Array.from({ length: SLOT_COUNT }, (_, s) => (
         <text key={s} x={chartX - 8} y={chartY + s * (BAR_H + GAP) + BAR_H / 2 + 4}
           textAnchor="end" fontSize="9" fontWeight="600"
-          fill={COLORS.mid} fontFamily={FONTS.sans}>Slot {s}</text>
+          fill={COLORS.mid} fontFamily={FONTS.sans}>{t.slotLabel.replace('{0}', String(s))}</text>
       ))}
 
       {/* Time axis */}
@@ -119,7 +142,7 @@ export default function ContinuousBatchingTimeline() {
               y2={chartY + SLOT_COUNT * (BAR_H + GAP)}
               stroke={r.color} strokeWidth="1" strokeDasharray="3,2" />
             <text x={x} y={chartY - 14} textAnchor="middle" fontSize="8"
-              fill={r.color} fontFamily={FONTS.sans}>{r.id} 到达</text>
+              fill={r.color} fontFamily={FONTS.sans}>{t.arrivalLabel.replace('{0}', r.id)}</text>
           </g>
         );
       })}
@@ -138,17 +161,17 @@ export default function ContinuousBatchingTimeline() {
         <rect x={100} y={H - 60} width={16} height={12} rx={2}
           fill={COLORS.primary} opacity={0.8} />
         <text x={122} y={H - 51} fontSize="9" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Prefill（深色）
+          {t.legendPrefill}
         </text>
         <rect x={240} y={H - 60} width={16} height={12} rx={2}
           fill={COLORS.primary} opacity={0.4} />
         <text x={262} y={H - 51} fontSize="9" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Decode（浅色）
+          {t.legendDecode}
         </text>
         <line x1={380} y1={H - 54} x2={410} y2={H - 54}
           stroke={COLORS.mid} strokeWidth="1" strokeDasharray="3,2" />
         <text x={416} y={H - 51} fontSize="9" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          新请求到达
+          {t.legendArrival}
         </text>
       </g>
 
@@ -157,7 +180,7 @@ export default function ContinuousBatchingTimeline() {
         fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
       <text x={W / 2} y={H - 18} textAnchor="middle" fontSize="10"
         fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        请求 A/C 完成后 slot 立即被 D/E 填入 — 无空闲等待，GPU 利用率最大化
+        {t.summary}
       </text>
     </svg>
   );

@@ -19,28 +19,90 @@ interface FlowNode {
   width: number;
 }
 
-const CODE_LINES: CodeLine[] = [
-  { code: '# SGLang DSL 示例: 多步推理', type: 'comment' },
-  { code: 's = sgl.gen("分析", max_tokens=100)', type: 'gen' },
-  { code: 's = sgl.select("判断", ["正面","负面","中性"])', type: 'select' },
-  { code: 's1, s2 = sgl.fork(s, 2)', type: 'fork' },
-  { code: 's1 = sgl.gen("解释1", max_tokens=50)', type: 'gen' },
-  { code: 's2 = sgl.gen("解释2", max_tokens=50)', type: 'gen' },
-  { code: 'result = sgl.join([s1, s2])', type: 'join' },
-  { code: 'result = sgl.append("综合结论:")', type: 'append' },
-  { code: 'result = sgl.gen("结论", max_tokens=80)', type: 'gen' },
-];
+export default function SGLangExecutionFlow({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      codeLines: [
+        '# SGLang DSL 示例: 多步推理',
+        's = sgl.gen("分析", max_tokens=100)',
+        's = sgl.select("判断", ["正面","负面","中性"])',
+        's1, s2 = sgl.fork(s, 2)',
+        's1 = sgl.gen("解释1", max_tokens=50)',
+        's2 = sgl.gen("解释2", max_tokens=50)',
+        'result = sgl.join([s1, s2])',
+        'result = sgl.append("综合结论:")',
+        'result = sgl.gen("结论", max_tokens=80)',
+      ],
+      flowNodes: {
+        gen1: 'gen("分析")\n→ token 流',
+        select: 'select("判断")\n正面/负面/中性',
+        fork: 'fork(2)',
+        gen2: 'gen("解释1")',
+        gen3: 'gen("解释2")',
+        join: 'join()',
+        append: 'append("综合结论:")',
+        gen4: 'gen("结论")\n→ token 流',
+      },
+      legendLabels: {
+        gen: 'gen',
+        select: 'select',
+        forkJoin: 'fork/join',
+        append: 'append',
+      },
+    },
+    en: {
+      codeLines: [
+        '# SGLang DSL Example: Multi-step Reasoning',
+        's = sgl.gen("analyze", max_tokens=100)',
+        's = sgl.select("judge", ["positive","negative","neutral"])',
+        's1, s2 = sgl.fork(s, 2)',
+        's1 = sgl.gen("explain1", max_tokens=50)',
+        's2 = sgl.gen("explain2", max_tokens=50)',
+        'result = sgl.join([s1, s2])',
+        'result = sgl.append("Summary:")',
+        'result = sgl.gen("conclusion", max_tokens=80)',
+      ],
+      flowNodes: {
+        gen1: 'gen("analyze")\n→ token stream',
+        select: 'select("judge")\npos/neg/neutral',
+        fork: 'fork(2)',
+        gen2: 'gen("explain1")',
+        gen3: 'gen("explain2")',
+        join: 'join()',
+        append: 'append("Summary:")',
+        gen4: 'gen("conclusion")\n→ token stream',
+      },
+      legendLabels: {
+        gen: 'gen',
+        select: 'select',
+        forkJoin: 'fork/join',
+        append: 'append',
+      },
+    },
+  }[locale];
 
-const FLOW_NODES: FlowNode[] = [
-  { id: 'gen1', label: 'gen("分析")\n→ token 流', type: 'gen', x: 320, y: 30, width: 130 },
-  { id: 'sel', label: 'select("判断")\n正面/负面/中性', type: 'select', x: 320, y: 90, width: 130 },
-  { id: 'fork', label: 'fork(2)', type: 'fork', x: 320, y: 150, width: 80 },
-  { id: 'gen2', label: 'gen("解释1")', type: 'gen', x: 270, y: 210, width: 100 },
-  { id: 'gen3', label: 'gen("解释2")', type: 'gen', x: 400, y: 210, width: 100 },
-  { id: 'join', label: 'join()', type: 'join', x: 340, y: 270, width: 80 },
-  { id: 'app', label: 'append("综合结论:")', type: 'append', x: 340, y: 320, width: 140 },
-  { id: 'gen4', label: 'gen("结论")\n→ token 流', type: 'gen', x: 340, y: 370, width: 130 },
-];
+  const CODE_LINES: CodeLine[] = [
+    { code: t.codeLines[0], type: 'comment' },
+    { code: t.codeLines[1], type: 'gen' },
+    { code: t.codeLines[2], type: 'select' },
+    { code: t.codeLines[3], type: 'fork' },
+    { code: t.codeLines[4], type: 'gen' },
+    { code: t.codeLines[5], type: 'gen' },
+    { code: t.codeLines[6], type: 'join' },
+    { code: t.codeLines[7], type: 'append' },
+    { code: t.codeLines[8], type: 'gen' },
+  ];
+
+  const FLOW_NODES: FlowNode[] = [
+    { id: 'gen1', label: t.flowNodes.gen1, type: 'gen', x: 320, y: 30, width: 130 },
+    { id: 'sel', label: t.flowNodes.select, type: 'select', x: 320, y: 90, width: 130 },
+    { id: 'fork', label: t.flowNodes.fork, type: 'fork', x: 320, y: 150, width: 80 },
+    { id: 'gen2', label: t.flowNodes.gen2, type: 'gen', x: 270, y: 210, width: 100 },
+    { id: 'gen3', label: t.flowNodes.gen3, type: 'gen', x: 400, y: 210, width: 100 },
+    { id: 'join', label: t.flowNodes.join, type: 'join', x: 340, y: 270, width: 80 },
+    { id: 'app', label: t.flowNodes.append, type: 'append', x: 340, y: 320, width: 140 },
+    { id: 'gen4', label: t.flowNodes.gen4, type: 'gen', x: 340, y: 370, width: 130 },
+  ];
 
 const FLOW_EDGES: [string, string][] = [
   ['gen1', 'sel'], ['sel', 'fork'],
@@ -49,16 +111,15 @@ const FLOW_EDGES: [string, string][] = [
   ['join', 'app'], ['app', 'gen4'],
 ];
 
-const TYPE_COLORS: Record<string, string> = {
-  gen: COLORS.primary,
-  select: COLORS.purple,
-  fork: COLORS.orange,
-  join: COLORS.orange,
-  append: COLORS.green,
-  comment: COLORS.mid,
-};
+  const TYPE_COLORS: Record<string, string> = {
+    gen: COLORS.primary,
+    select: COLORS.purple,
+    fork: COLORS.orange,
+    join: COLORS.orange,
+    append: COLORS.green,
+    comment: COLORS.mid,
+  };
 
-export default function SGLangExecutionFlow() {
   const [activeStep, setActiveStep] = useState<number | null>(null);
 
   // Map code line index to flow node IDs to highlight
@@ -151,10 +212,10 @@ export default function SGLangExecutionFlow() {
 
         {/* Legend */}
         {[
-          { label: 'gen', color: COLORS.primary },
-          { label: 'select', color: COLORS.purple },
-          { label: 'fork/join', color: COLORS.orange },
-          { label: 'append', color: COLORS.green },
+          { label: t.legendLabels.gen, color: COLORS.primary },
+          { label: t.legendLabels.select, color: COLORS.purple },
+          { label: t.legendLabels.forkJoin, color: COLORS.orange },
+          { label: t.legendLabels.append, color: COLORS.green },
         ].map((item, i) => (
           <g key={i} transform={`translate(10, ${H - 30 + 0})`}>
             <rect x={i * 75} width={10} height={10} rx={2} fill={item.color} />

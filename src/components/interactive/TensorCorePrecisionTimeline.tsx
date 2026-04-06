@@ -59,8 +59,21 @@ const TYPE_COLORS: Record<string, string> = {
   INT1: '#827717',
 };
 
-export default function TensorCorePrecisionTimeline() {
+export default function TensorCorePrecisionTimeline({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const lineY = 80;
+
+  const t = {
+    zh: {
+      title: 'Tensor Core 精度支持演进',
+      summary: 'Blackwell (5th gen) 支持全部精度:',
+      trend: '趋势: 精度越来越低 → 吞吐量越来越高（每降一级精度，吞吐量约翻倍）',
+    },
+    en: {
+      title: 'Tensor Core Precision Evolution',
+      summary: 'Blackwell (5th gen) supports all precisions:',
+      trend: 'Trend: Lower precision → Higher throughput (roughly 2x per precision level)',
+    },
+  }[locale];
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img"
@@ -69,7 +82,7 @@ export default function TensorCorePrecisionTimeline() {
       {/* Title */}
       <text x={W / 2} y={20} textAnchor="middle" fontSize="13" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Tensor Core 精度支持演进
+        {t.title}
       </text>
 
       {/* Timeline line */}
@@ -123,7 +136,7 @@ export default function TensorCorePrecisionTimeline() {
       {/* Bottom: summary of all types for latest gen */}
       <text x={W / 2} y={H - 50} textAnchor="middle" fontSize="9" fill="#64748b"
         fontFamily={FONTS.sans}>
-        Blackwell (5th gen) 支持全部精度:
+        {t.summary}
       </text>
       {(() => {
         const types = generations[generations.length - 1].allTypes;
@@ -143,7 +156,7 @@ export default function TensorCorePrecisionTimeline() {
       {/* Trend arrow annotation */}
       <text x={W / 2} y={H - 8} textAnchor="middle" fontSize="8" fill="#94a3b8"
         fontFamily={FONTS.sans}>
-        趋势: 精度越来越低 → 吞吐量越来越高（每降一级精度，吞吐量约翻倍）
+        {t.trend}
       </text>
     </svg>
   );

@@ -38,18 +38,62 @@ const CELL_GAP = 2;
 const THREAD_Y = 60;
 const MEM_Y = 150;
 
-const steps = [
+export default function MemoryCoalescingDemo({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      coalescedTitle: 'Coalesced: 连续访问',
+      coalescedHeader: 'Coalesced Access: Thread i 读 A[i] (连续地址)',
+      coalescedSubheader: '32 个线程读 32 个连续 float (128 bytes) → 合并为 1 个 128B transaction',
+      coalescedGlobalMem: 'Global Memory (HBM)',
+      coalescedTransaction: '1 × 128B transaction',
+      coalescedEfficiency: '效率: 128 / 128 = 100% 带宽利用率',
+      coalescedDetail: '传输 128 bytes, 有效数据 128 bytes — 零浪费',
+      coalescedExplain: 'GPU 内存控制器将 warp 内连续地址合并为最少的 transaction',
+      coalescedNote: '行优先访问矩阵的同一行: thread i 读 M[row][i] — 地址连续，天然 coalesced',
+      stridedTitle: 'Strided: 不连续访问',
+      stridedHeader: 'Strided Access: Thread i 读 A[i × stride] (不连续地址)',
+      stridedSubheader: 'stride=16: warp 中线程的地址散落在 16 个 128B segment 中 (显示前 16 个线程)',
+      stridedGlobalMem: 'Global Memory: 多个 128B transaction',
+      stridedSegmentLabel: (idx: number) => `seg ${idx}: 128B (有效 8B)`,
+      stridedEfficiency: '效率: 128 / 2048 = 6.25% 带宽利用率',
+      stridedDetail: '传输 16 × 128B = 2048 bytes, 有效数据仅 128 bytes — 93.75% 浪费',
+      stridedExplain: '每对相邻 thread 的 8B 数据落在同一 segment → 每个 segment 仅用 8B / 128B',
+      stridedNote: '列优先访问矩阵: thread i 读 M[i][col] — stride = 行宽，严重 uncoalesced',
+    },
+    en: {
+      coalescedTitle: 'Coalesced: Sequential Access',
+      coalescedHeader: 'Coalesced Access: Thread i reads A[i] (contiguous addresses)',
+      coalescedSubheader: '32 threads read 32 consecutive floats (128 bytes) → coalesced into 1 × 128B transaction',
+      coalescedGlobalMem: 'Global Memory (HBM)',
+      coalescedTransaction: '1 × 128B transaction',
+      coalescedEfficiency: 'Efficiency: 128 / 128 = 100% bandwidth utilization',
+      coalescedDetail: 'Transfer 128 bytes, effective data 128 bytes — zero waste',
+      coalescedExplain: 'GPU memory controller coalesces contiguous addresses in warp into minimal transactions',
+      coalescedNote: 'Row-major matrix access: thread i reads M[row][i] — contiguous addresses, naturally coalesced',
+      stridedTitle: 'Strided: Non-contiguous Access',
+      stridedHeader: 'Strided Access: Thread i reads A[i × stride] (non-contiguous addresses)',
+      stridedSubheader: 'stride=16: thread addresses scattered across 16 × 128B segments (showing first 16 threads)',
+      stridedGlobalMem: 'Global Memory: Multiple 128B transactions',
+      stridedSegmentLabel: (idx: number) => `seg ${idx}: 128B (8B used)`,
+      stridedEfficiency: 'Efficiency: 128 / 2048 = 6.25% bandwidth utilization',
+      stridedDetail: 'Transfer 16 × 128B = 2048 bytes, effective data only 128 bytes — 93.75% wasted',
+      stridedExplain: 'Adjacent threads 8B data falls in same segment → each segment uses only 8B / 128B',
+      stridedNote: 'Column-major matrix access: thread i reads M[i][col] — stride = row width, severely uncoalesced',
+    },
+  }[locale];
+
+  const steps = [
   {
-    title: 'Coalesced: 连续访问',
+    title: t.coalescedTitle,
     content: (
       <StepSvg>
         <text x={W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Coalesced Access: Thread i 读 A[i] (连续地址)
+          {t.coalescedHeader}
         </text>
         <text x={W / 2} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
           fontFamily={FONTS.sans}>
-          32 个线程读 32 个连续 float (128 bytes) → 合并为 1 个 128B transaction
+          {t.coalescedSubheader}
         </text>
 
         {/* Thread row */}
@@ -72,11 +116,11 @@ const steps = [
 
         {/* Memory: single 128B segment */}
         <text x={W / 2} y={MEM_Y - 8} textAnchor="middle" fontSize="8" fontWeight="600"
-          fill={COLORS.dark} fontFamily={FONTS.sans}>Global Memory (HBM)</text>
+          fill={COLORS.dark} fontFamily={FONTS.sans}>{t.coalescedGlobalMem}</text>
         <MemSegment
           x={(W - THREAD_COUNT * (CELL_W + CELL_GAP) + CELL_GAP) / 2}
           y={MEM_Y} w={THREAD_COUNT * (CELL_W + CELL_GAP) - CELL_GAP} h={30}
-          label="1 × 128B transaction" used={128} total={128}
+          label={t.coalescedTransaction} used={128} total={128}
           color={COLORS.green} bg="#dcfce7" />
 
         {/* Stats */}
@@ -84,36 +128,36 @@ const steps = [
           fill="#dcfce7" stroke={COLORS.green} strokeWidth={1} />
         <text x={W / 2} y={218} textAnchor="middle" fontSize="10" fontWeight="600"
           fill={COLORS.green} fontFamily={FONTS.sans}>
-          效率: 128 / 128 = 100% 带宽利用率
+          {t.coalescedEfficiency}
         </text>
         <text x={W / 2} y={236} textAnchor="middle" fontSize="8" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          传输 128 bytes, 有效数据 128 bytes — 零浪费
+          {t.coalescedDetail}
         </text>
         <text x={W / 2} y={248} textAnchor="middle" fontSize="7" fill="#64748b"
           fontFamily={FONTS.sans}>
-          GPU 内存控制器将 warp 内连续地址合并为最少的 transaction
+          {t.coalescedExplain}
         </text>
 
         {/* Note */}
         <text x={W / 2} y={280} textAnchor="middle" fontSize="8" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          行优先访问矩阵的同一行: thread i 读 M[row][i] — 地址连续，天然 coalesced
+          {t.coalescedNote}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'Strided: 不连续访问',
+    title: t.stridedTitle,
     content: (
       <StepSvg>
         <text x={W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Strided Access: Thread i 读 A[i × stride] (不连续地址)
+          {t.stridedHeader}
         </text>
         <text x={W / 2} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
           fontFamily={FONTS.sans}>
-          stride=16: warp 中线程的地址散落在 16 个 128B segment 中 (显示前 16 个线程)
+          {t.stridedSubheader}
         </text>
 
         {/* Thread row — spread out */}
@@ -133,7 +177,7 @@ const steps = [
 
         {/* Memory: many segments, mostly wasted */}
         <text x={W / 2} y={MEM_Y - 8} textAnchor="middle" fontSize="8" fontWeight="600"
-          fill={COLORS.dark} fontFamily={FONTS.sans}>Global Memory: 多个 128B transaction</text>
+          fill={COLORS.dark} fontFamily={FONTS.sans}>{t.stridedGlobalMem}</text>
 
         {Array.from({ length: 4 }).map((_, row) => (
           <g key={row}>
@@ -144,7 +188,7 @@ const steps = [
               return (
                 <MemSegment key={segIdx}
                   x={x} y={y} w={120} h={14}
-                  label={`seg ${segIdx}: 128B (有效 8B)`} used={8} total={128}
+                  label={t.stridedSegmentLabel(segIdx)} used={8} total={128}
                   color={COLORS.red} bg="#fee2e2" />
               );
             })}
@@ -156,27 +200,26 @@ const steps = [
           fill="#fee2e2" stroke={COLORS.red} strokeWidth={1} />
         <text x={W / 2} y={248} textAnchor="middle" fontSize="10" fontWeight="600"
           fill={COLORS.red} fontFamily={FONTS.sans}>
-          效率: 128 / 2048 = 6.25% 带宽利用率
+          {t.stridedEfficiency}
         </text>
         <text x={W / 2} y={266} textAnchor="middle" fontSize="8" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          传输 16 × 128B = 2048 bytes, 有效数据仅 128 bytes — 93.75% 浪费
+          {t.stridedDetail}
         </text>
         <text x={W / 2} y={278} textAnchor="middle" fontSize="7" fill="#64748b"
           fontFamily={FONTS.sans}>
-          每对相邻 thread 的 8B 数据落在同一 segment → 每个 segment 仅用 8B / 128B
+          {t.stridedExplain}
         </text>
 
         {/* Note */}
         <text x={W / 2} y={305} textAnchor="middle" fontSize="8" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          列优先访问矩阵: thread i 读 M[i][col] — stride = 行宽，严重 uncoalesced
+          {t.stridedNote}
         </text>
       </StepSvg>
     ),
   },
 ];
 
-export default function MemoryCoalescingDemo() {
   return <StepNavigator steps={steps} />;
 }

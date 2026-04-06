@@ -6,7 +6,7 @@ const H = 420;
 
 interface FsmState {
   id: string;
-  label: string;
+  label: { zh: string; en: string };
   x: number;
   y: number;
 }
@@ -19,16 +19,16 @@ interface FsmTransition {
 
 // Simplified JSON FSM: { "name": "..." }
 const STATES: FsmState[] = [
-  { id: 'start', label: 'START', x: 60, y: 100 },
-  { id: 'open', label: '{ 已打开', x: 180, y: 100 },
-  { id: 'key_q1', label: '"key', x: 300, y: 60 },
-  { id: 'key_name', label: '"name"', x: 400, y: 60 },
-  { id: 'colon', label: ': 分隔', x: 500, y: 100 },
-  { id: 'val_q1', label: '"val', x: 500, y: 200 },
-  { id: 'val_str', label: '字符串内容', x: 380, y: 250 },
-  { id: 'val_q2', label: '"val 结束', x: 240, y: 250 },
-  { id: 'close', label: '} 关闭', x: 120, y: 250 },
-  { id: 'end', label: 'END', x: 60, y: 200 },
+  { id: 'start', label: { zh: 'START', en: 'START' }, x: 60, y: 100 },
+  { id: 'open', label: { zh: '{ 已打开', en: '{ opened' }, x: 180, y: 100 },
+  { id: 'key_q1', label: { zh: '"key', en: '"key' }, x: 300, y: 60 },
+  { id: 'key_name', label: { zh: '"name"', en: '"name"' }, x: 400, y: 60 },
+  { id: 'colon', label: { zh: ': 分隔', en: ': separator' }, x: 500, y: 100 },
+  { id: 'val_q1', label: { zh: '"val', en: '"val' }, x: 500, y: 200 },
+  { id: 'val_str', label: { zh: '字符串内容', en: 'string content' }, x: 380, y: 250 },
+  { id: 'val_q2', label: { zh: '"val 结束', en: '"val end' }, x: 240, y: 250 },
+  { id: 'close', label: { zh: '} 关闭', en: '} closed' }, x: 120, y: 250 },
+  { id: 'end', label: { zh: 'END', en: 'END' }, x: 60, y: 200 },
 ];
 
 const TRANSITIONS: FsmTransition[] = [
@@ -46,7 +46,21 @@ const TRANSITIONS: FsmTransition[] = [
 
 const ALL_TOKENS = ['{', '"', 'name', '":', ' "', 'Alice', '"', '}', 'hello', '[', '123', 'true'];
 
-export default function FSMConstrainedDecoding() {
+export default function FSMConstrainedDecoding({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      output: '输出:',
+      click_hint: '(点击合法 token 开始生成)',
+      reset: '重置',
+      vocab_hint: 'Token 词表（绿色=合法，灰色=非法）:',
+    },
+    en: {
+      output: 'Output:',
+      click_hint: '(click valid tokens to generate)',
+      reset: 'Reset',
+      vocab_hint: 'Token vocabulary (green=valid, gray=invalid):',
+    },
+  }[locale];
   const [currentState, setCurrentState] = useState('start');
   const [generated, setGenerated] = useState<string[]>([]);
 
@@ -90,14 +104,14 @@ export default function FSMConstrainedDecoding() {
         display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
         padding: '8px 12px', background: COLORS.bgAlt, borderRadius: 6,
       }}>
-        <span style={{ fontSize: 12, color: COLORS.mid }}>输出:</span>
+        <span style={{ fontSize: 12, color: COLORS.mid }}>{t.output}</span>
         <span style={{ fontFamily: FONTS.mono, fontSize: 13, color: COLORS.dark }}>
-          {generated.length > 0 ? generated.join('') : '(点击合法 token 开始生成)'}
+          {generated.length > 0 ? generated.join('') : t.click_hint}
         </span>
         <button onClick={reset} style={{
           marginLeft: 'auto', padding: '3px 10px', borderRadius: 4, border: 'none',
           background: COLORS.light, cursor: 'pointer', fontSize: 11, fontFamily: FONTS.sans,
-        }}>重置</button>
+        }}>{t.reset}</button>
       </div>
 
       <svg viewBox={`0 0 ${W} 280`} className="w-full" style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
@@ -116,7 +130,7 @@ export default function FSMConstrainedDecoding() {
               {s.id === 'end' && <circle cx={s.x} cy={s.y} r={r - 4} fill="none" stroke={COLORS.mid} strokeWidth={1} />}
               <text x={s.x} y={s.y + 4} fontSize={9} fill={COLORS.dark}
                 fontFamily={FONTS.sans} textAnchor="middle" fontWeight={isCurrent ? 600 : 400}>
-                {s.label}
+                {s.label[locale]}
               </text>
             </g>
           );
@@ -162,7 +176,7 @@ export default function FSMConstrainedDecoding() {
 
       {/* Token vocabulary */}
       <div style={{ marginTop: 12 }}>
-        <div style={{ fontSize: 12, color: COLORS.mid, marginBottom: 6 }}>Token 词表（绿色=合法，灰色=非法）:</div>
+        <div style={{ fontSize: 12, color: COLORS.mid, marginBottom: 6 }}>{t.vocab_hint}</div>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           {ALL_TOKENS.map((token, i) => {
             const isValid = token in validTokenMap;

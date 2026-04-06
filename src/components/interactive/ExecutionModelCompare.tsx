@@ -7,65 +7,115 @@ const H = 360;
 
 const COL_X = [100, 245, 420]; // column centers
 const COL_COLORS = [COLORS.primary, COLORS.green, COLORS.purple];
-const HEADERS = ['SIMD (经典)', 'SIMT (NVIDIA)', 'Intel iGPU (混合)'];
-
-const ROWS = [
-  {
-    dim: '编程视角',
-    cells: [
-      '显式向量指令\n(intrinsic / 编译器向量化)',
-      '标量代码\n(硬件自动并行)',
-      'SYCL work-item 标量代码\n(sub-group 暴露 SIMD)',
-    ],
-  },
-  {
-    dim: '硬件执行',
-    cells: [
-      '一条指令操作\nN-wide 向量寄存器',
-      'Warp (32 threads)\n锁步执行同一指令',
-      'EU Thread 驱动\n8/16-wide SIMD ALU',
-    ],
-  },
-  {
-    dim: '分支处理',
-    cells: [
-      '需要显式 mask\n或 blend 指令',
-      '硬件自动 mask\n(warp divergence)',
-      '硬件 mask\n(channel enable)',
-    ],
-  },
-  {
-    dim: '向量宽度',
-    cells: [
-      '程序员必须知道\n(8/16/32)',
-      '对程序员透明\n(始终 32-wide warp)',
-      '部分可见\n(sub-group size)',
-    ],
-  },
-  {
-    dim: '典型硬件',
-    cells: [
-      'CPU (SSE/AVX)\nIntel EU (底层)',
-      'NVIDIA SM\n(FP32 / INT32 Core)',
-      'Intel Xe-Core\n(Vector Engine + XMX)',
-    ],
-  },
-];
 
 const ROW_START = 80;
 const ROW_H = 52;
 
-export default function ExecutionModelCompare() {
+export default function ExecutionModelCompare({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '三种并行执行模型对比',
+      headers: ['SIMD (经典)', 'SIMT (NVIDIA)', 'Intel iGPU (混合)'],
+      rows: [
+        {
+          dim: '编程视角',
+          cells: [
+            '显式向量指令\n(intrinsic / 编译器向量化)',
+            '标量代码\n(硬件自动并行)',
+            'SYCL work-item 标量代码\n(sub-group 暴露 SIMD)',
+          ],
+        },
+        {
+          dim: '硬件执行',
+          cells: [
+            '一条指令操作\nN-wide 向量寄存器',
+            'Warp (32 threads)\n锁步执行同一指令',
+            'EU Thread 驱动\n8/16-wide SIMD ALU',
+          ],
+        },
+        {
+          dim: '分支处理',
+          cells: [
+            '需要显式 mask\n或 blend 指令',
+            '硬件自动 mask\n(warp divergence)',
+            '硬件 mask\n(channel enable)',
+          ],
+        },
+        {
+          dim: '向量宽度',
+          cells: [
+            '程序员必须知道\n(8/16/32)',
+            '对程序员透明\n(始终 32-wide warp)',
+            '部分可见\n(sub-group size)',
+          ],
+        },
+        {
+          dim: '典型硬件',
+          cells: [
+            'CPU (SSE/AVX)\nIntel EU (底层)',
+            'NVIDIA SM\n(FP32 / INT32 Core)',
+            'Intel Xe-Core\n(Vector Engine + XMX)',
+          ],
+        },
+      ],
+    },
+    en: {
+      title: 'Three Parallel Execution Models Comparison',
+      headers: ['SIMD (Classic)', 'SIMT (NVIDIA)', 'Intel iGPU (Hybrid)'],
+      rows: [
+        {
+          dim: 'Programming View',
+          cells: [
+            'Explicit vector instructions\n(intrinsic / compiler vectorization)',
+            'Scalar code\n(hardware auto-parallelization)',
+            'SYCL work-item scalar code\n(sub-group exposes SIMD)',
+          ],
+        },
+        {
+          dim: 'Hardware Execution',
+          cells: [
+            'One instruction operates\nN-wide vector register',
+            'Warp (32 threads)\nlockstep same instruction',
+            'EU Thread driven\n8/16-wide SIMD ALU',
+          ],
+        },
+        {
+          dim: 'Branch Handling',
+          cells: [
+            'Explicit mask needed\nor blend instruction',
+            'Hardware auto mask\n(warp divergence)',
+            'Hardware mask\n(channel enable)',
+          ],
+        },
+        {
+          dim: 'Vector Width',
+          cells: [
+            'Programmer must know\n(8/16/32)',
+            'Transparent to programmer\n(always 32-wide warp)',
+            'Partially visible\n(sub-group size)',
+          ],
+        },
+        {
+          dim: 'Typical Hardware',
+          cells: [
+            'CPU (SSE/AVX)\nIntel EU (low-level)',
+            'NVIDIA SM\n(FP32 / INT32 Core)',
+            'Intel Xe-Core\n(Vector Engine + XMX)',
+          ],
+        },
+      ],
+    },
+  }[locale];
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img"
       aria-label="SIMD vs SIMT vs Intel iGPU comparison table">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="13" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        三种并行执行模型对比
+        {t.title}
       </text>
 
       {/* Column headers */}
-      {HEADERS.map((h, i) => (
+      {t.headers.map((h, i) => (
         <g key={`h-${i}`}>
           <rect x={COL_X[i] - 70} y={42} width={140} height={26} rx={4}
             fill={COL_COLORS[i]} fillOpacity={0.08} stroke={COL_COLORS[i]} strokeWidth={1} />
@@ -75,7 +125,7 @@ export default function ExecutionModelCompare() {
       ))}
 
       {/* Row dimension label column */}
-      {ROWS.map((row, ri) => {
+      {t.rows.map((row, ri) => {
         const y = ROW_START + ri * ROW_H;
         return (
           <g key={`r-${ri}`}>
@@ -108,9 +158,9 @@ export default function ExecutionModelCompare() {
       })}
 
       {/* Separator lines between columns */}
-      <line x1={170} y1={42} x2={170} y2={ROW_START + ROWS.length * ROW_H - 10}
+      <line x1={170} y1={42} x2={170} y2={ROW_START + t.rows.length * ROW_H - 10}
         stroke="#e2e8f0" strokeWidth={0.5} />
-      <line x1={330} y1={42} x2={330} y2={ROW_START + ROWS.length * ROW_H - 10}
+      <line x1={330} y1={42} x2={330} y2={ROW_START + t.rows.length * ROW_H - 10}
         stroke="#e2e8f0" strokeWidth={0.5} />
     </svg>
   );

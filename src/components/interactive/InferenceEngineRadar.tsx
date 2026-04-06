@@ -10,7 +10,6 @@ interface EngineData {
   scores: number[]; // 0-1 for each axis
 }
 
-const AXES = ['吞吐量', '延迟', '易用性', '生态', '灵活性'];
 const ENGINES: EngineData[] = [
   { name: 'vLLM',         color: COLORS.primary, scores: [0.95, 0.75, 0.70, 0.90, 0.60] },
   { name: 'SGLang',       color: COLORS.green,   scores: [0.90, 0.80, 0.60, 0.65, 0.95] },
@@ -27,10 +26,23 @@ function polarToXY(angle: number, r: number): [number, number] {
   return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
 }
 
-export default function InferenceEngineRadar() {
+export default function InferenceEngineRadar({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '推理引擎特性对比',
+      subtitle: '点击引擎名称查看各维度评分',
+      axes: ['吞吐量', '延迟', '易用性', '生态', '灵活性'],
+    },
+    en: {
+      title: 'Inference Engine Comparison',
+      subtitle: 'Click engine name to view scores',
+      axes: ['Throughput', 'Latency', 'Usability', 'Ecosystem', 'Flexibility'],
+    },
+  }[locale];
+
   const [active, setActive] = useState<number | null>(null);
 
-  const angleStep = (2 * Math.PI) / AXES.length;
+  const angleStep = (2 * Math.PI) / t.axes.length;
 
   // Grid rings
   const rings = [0.25, 0.5, 0.75, 1.0];
@@ -39,22 +51,22 @@ export default function InferenceEngineRadar() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={cx} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        推理引擎特性对比
+        {t.title}
       </text>
       <text x={cx} y={40} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        点击引擎名称查看各维度评分
+        {t.subtitle}
       </text>
 
       {/* Grid rings */}
       {rings.map((scale) => {
-        const points = AXES.map((_, i) => polarToXY(i * angleStep, R * scale));
+        const points = t.axes.map((_, i) => polarToXY(i * angleStep, R * scale));
         const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p[0]} ${p[1]}`).join(' ') + ' Z';
         return <path key={scale} d={d} fill="none" stroke={COLORS.light} strokeWidth="1" />;
       })}
 
       {/* Axis lines + labels */}
-      {AXES.map((label, i) => {
+      {t.axes.map((label, i) => {
         const angle = i * angleStep;
         const [ex, ey] = polarToXY(angle, R + 5);
         const [lx, ly] = polarToXY(angle, R + 22);

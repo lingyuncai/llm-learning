@@ -4,7 +4,38 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const H = 420;
 
-export default function PPOClipExplainer() {
+export default function PPOClipExplainer({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'PPO Clipped Surrogate Objective',
+      epsilon: 'ε',
+      goodAction: '> 0 (好动作)',
+      badAction: '< 0 (坏动作)',
+      advantage: 'A',
+      ratio: 'ratio',
+      ratioFormula: 'ratio = π_new(a|s) / π_old(a|s)',
+      unclipped: 'ratio × A (无 clip)',
+      clipped: 'L_CLIP = min(...) (PPO)',
+      clipFormula: 'L_CLIP = min(ratio·A, clip(ratio, 1-ε, 1+ε)·A)',
+      posExplanation: 'A>0 时：ratio 超过 1+ε 后 objective 不再增长 → 阻止过度增大好动作概率',
+      negExplanation: 'A<0 时：ratio 低于 1-ε 后 objective 不再减小 → 阻止过度减小坏动作概率',
+    },
+    en: {
+      title: 'PPO Clipped Surrogate Objective',
+      epsilon: 'ε',
+      goodAction: '> 0 (good)',
+      badAction: '< 0 (bad)',
+      advantage: 'A',
+      ratio: 'ratio',
+      ratioFormula: 'ratio = π_new(a|s) / π_old(a|s)',
+      unclipped: 'ratio × A (unclipped)',
+      clipped: 'L_CLIP = min(...) (PPO)',
+      clipFormula: 'L_CLIP = min(ratio·A, clip(ratio, 1-ε, 1+ε)·A)',
+      posExplanation: 'When A>0: objective stops growing after ratio > 1+ε → prevents excessive increase',
+      negExplanation: 'When A<0: objective stops shrinking after ratio < 1-ε → prevents excessive decrease',
+    },
+  }[locale];
+
   const [epsilon, setEpsilon] = useState(0.2);
   const [advPositive, setAdvPositive] = useState(true);
 
@@ -37,12 +68,12 @@ export default function PPOClipExplainer() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          PPO Clipped Surrogate Objective
+          {t.title}
         </text>
 
         {/* Controls */}
         <text x={80} y={52} fontSize={11} fill={COLORS.dark} fontFamily={FONTS.mono}>
-          ε = {epsilon.toFixed(2)}
+          {t.epsilon} = {epsilon.toFixed(2)}
         </text>
         {[0.1, 0.2, 0.3, 0.4].map((e, i) => (
           <g key={e} onClick={() => setEpsilon(e)} style={{ cursor: 'pointer' }}>
@@ -58,7 +89,7 @@ export default function PPOClipExplainer() {
           <rect x={380} y={40} width={170} height={22} rx={4}
             fill={advPositive ? COLORS.green : COLORS.red} />
           <text x={465} y={55} textAnchor="middle" fontSize={10} fontWeight={600} fill="#fff">
-            A {advPositive ? '> 0 (好动作)' : '< 0 (坏动作)'}
+            {t.advantage} {advPositive ? t.goodAction : t.badAction}
           </text>
         </g>
 
@@ -74,7 +105,7 @@ export default function PPOClipExplainer() {
         <line x1={toChartX(1)} y1={chartY} x2={toChartX(1)} y2={chartY + chartH}
           stroke={COLORS.mid} strokeWidth={0.5} strokeDasharray="4 3" />
         <text x={toChartX(1)} y={chartY + chartH + 14} textAnchor="middle" fontSize={9} fill={COLORS.dark}>
-          ratio=1
+          {t.ratio}=1
         </text>
 
         {/* Clip boundaries */}
@@ -97,25 +128,23 @@ export default function PPOClipExplainer() {
         {/* Legend */}
         <line x1={chartX + 10} y1={chartY + 14} x2={chartX + 30} y2={chartY + 14}
           stroke={COLORS.mid} strokeWidth={2} strokeDasharray="6 3" />
-        <text x={chartX + 35} y={chartY + 18} fontSize={9} fill={COLORS.mid}>ratio × A (无 clip)</text>
+        <text x={chartX + 35} y={chartY + 18} fontSize={9} fill={COLORS.mid}>{t.unclipped}</text>
         <line x1={chartX + 10} y1={chartY + 30} x2={chartX + 30} y2={chartY + 30}
           stroke={COLORS.primary} strokeWidth={2} />
-        <text x={chartX + 35} y={chartY + 34} fontSize={9} fill={COLORS.primary}>L_CLIP = min(...) (PPO)</text>
+        <text x={chartX + 35} y={chartY + 34} fontSize={9} fill={COLORS.primary}>{t.clipped}</text>
 
         {/* X axis label */}
         <text x={chartX + chartW / 2} y={chartY + chartH + 28} textAnchor="middle" fontSize={10} fill={COLORS.mid}>
-          ratio = π_new(a|s) / π_old(a|s)
+          {t.ratioFormula}
         </text>
 
         {/* Explanation */}
         <rect x={40} y={H - 56} width={500} height={44} rx={6} fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth={1} />
         <text x={50} y={H - 38} fontSize={10} fontWeight={600} fill={COLORS.orange}>
-          L_CLIP = min(ratio·A, clip(ratio, 1-ε, 1+ε)·A)
+          {t.clipFormula}
         </text>
         <text x={50} y={H - 22} fontSize={10} fill={COLORS.mid}>
-          {advPositive
-            ? 'A>0 时：ratio 超过 1+ε 后 objective 不再增长 → 阻止过度增大好动作概率'
-            : 'A<0 时：ratio 低于 1-ε 后 objective 不再减小 → 阻止过度减小坏动作概率'}
+          {advPositive ? t.posExplanation : t.negExplanation}
         </text>
       </svg>
     </div>

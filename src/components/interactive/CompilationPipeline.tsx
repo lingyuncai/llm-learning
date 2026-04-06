@@ -2,10 +2,58 @@ import React from 'react';
 import StepNavigator from '../primitives/StepNavigator';
 import { COLORS, FONTS } from './shared/colors';
 
-const CompilationPipeline: React.FC = () => {
+const CompilationPipeline: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      step1Title: 'DPC++ 源码',
+      step1Label: 'SYCL Kernel (C++ 模板)',
+      step1Desc: '高层并行抽象，跨平台 (CPU/GPU/FPGA)',
+      step2Title: 'LLVM IR',
+      step2Label: 'DPC++ Frontend → LLVM 中间表示',
+      step2Desc: 'SSA 形式，平台无关的优化层',
+      step3Title: 'SPIR-V',
+      step3Feature1: 'Khronos 标准',
+      step3Feature2: '多厂商支持',
+      step3Feature3: '二进制格式',
+      step3Desc: 'LLVM IR → SPIR-V Backend，可移植到 Intel/AMD/ARM GPU',
+      step4Title: 'Xe2 ISA (JIT)',
+      step4Compiler: 'IGC (JIT Compiler)',
+      step4CompilerDesc: '运行时编译，目标特定优化',
+      step4Arch: 'Xe2-LPG 架构原生指令',
+      step4Desc: 'SIMD16 向量指令 + LSC (Load/Store Cache) 消息',
+      step4Latency: '启动延迟: 首次执行需 JIT 编译 (数十毫秒)',
+      step5Title: 'GPU 执行',
+      step5Submit: 'Level Zero Submit',
+      step5EU: 'Xe2 执行单元 (EU) Grid',
+      step5Desc: 'Work-groups 分发到 EU，SIMD 向量并行执行',
+    },
+    en: {
+      step1Title: 'DPC++ Source',
+      step1Label: 'SYCL Kernel (C++ Template)',
+      step1Desc: 'High-level parallel abstraction, cross-platform (CPU/GPU/FPGA)',
+      step2Title: 'LLVM IR',
+      step2Label: 'DPC++ Frontend → LLVM Intermediate Representation',
+      step2Desc: 'SSA form, platform-independent optimization layer',
+      step3Title: 'SPIR-V',
+      step3Feature1: 'Khronos Standard',
+      step3Feature2: 'Multi-vendor Support',
+      step3Feature3: 'Binary Format',
+      step3Desc: 'LLVM IR → SPIR-V Backend, portable to Intel/AMD/ARM GPUs',
+      step4Title: 'Xe2 ISA (JIT)',
+      step4Compiler: 'IGC (JIT Compiler)',
+      step4CompilerDesc: 'Runtime compilation, target-specific optimizations',
+      step4Arch: 'Xe2-LPG architecture native instructions',
+      step4Desc: 'SIMD16 vector instructions + LSC (Load/Store Cache) messages',
+      step4Latency: 'Startup latency: first execution requires JIT compilation (tens of ms)',
+      step5Title: 'GPU Execution',
+      step5Submit: 'Level Zero Submit',
+      step5EU: 'Xe2 Execution Unit (EU) Grid',
+      step5Desc: 'Work-groups dispatched to EUs, SIMD vector parallel execution',
+    },
+  }[locale];
   const steps = [
     {
-      title: 'DPC++ 源码',
+      title: t.step1Title,
       content: (
         <div className="my-6 p-4 border rounded-lg">
           <svg viewBox="0 0 580 160" className="w-full">
@@ -25,17 +73,17 @@ const CompilationPipeline: React.FC = () => {
 
             {/* Label */}
             <text x="30" y="105" fontFamily={FONTS.sans} fontSize="13" fill={COLORS.primary} fontWeight="600">
-              SYCL Kernel (C++ 模板)
+              {t.step1Label}
             </text>
             <text x="30" y="125" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.mid}>
-              高层并行抽象，跨平台 (CPU/GPU/FPGA)
+              {t.step1Desc}
             </text>
           </svg>
         </div>
       ),
     },
     {
-      title: 'LLVM IR',
+      title: t.step2Title,
       content: (
         <div className="my-6 p-4 border rounded-lg">
           <svg viewBox="0 0 580 160" className="w-full">
@@ -69,17 +117,17 @@ const CompilationPipeline: React.FC = () => {
 
             {/* Label */}
             <text x="30" y="125" fontFamily={FONTS.sans} fontSize="13" fill={COLORS.primary} fontWeight="600">
-              DPC++ Frontend → LLVM 中间表示
+              {t.step2Label}
             </text>
             <text x="30" y="142" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
-              SSA 形式，平台无关的优化层
+              {t.step2Desc}
             </text>
           </svg>
         </div>
       ),
     },
     {
-      title: 'SPIR-V',
+      title: t.step3Title,
       content: (
         <div className="my-6 p-4 border rounded-lg">
           <svg viewBox="0 0 580 160" className="w-full">
@@ -98,29 +146,29 @@ const CompilationPipeline: React.FC = () => {
             {/* Features */}
             <rect x="30" y="85" width="150" height="28" fill={COLORS.primary} opacity="0.1" rx="3" />
             <text x="40" y="103" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.primary} fontWeight="600">
-              Khronos 标准
+              {t.step3Feature1}
             </text>
 
             <rect x="195" y="85" width="150" height="28" fill={COLORS.green} opacity="0.1" rx="3" />
             <text x="205" y="103" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.green} fontWeight="600">
-              多厂商支持
+              {t.step3Feature2}
             </text>
 
             <rect x="360" y="85" width="150" height="28" fill={COLORS.orange} opacity="0.1" rx="3" />
             <text x="370" y="103" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.orange} fontWeight="600">
-              二进制格式
+              {t.step3Feature3}
             </text>
 
             {/* Label */}
             <text x="30" y="135" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.mid}>
-              LLVM IR → SPIR-V Backend，可移植到 Intel/AMD/ARM GPU
+              {t.step3Desc}
             </text>
           </svg>
         </div>
       ),
     },
     {
-      title: 'Xe2 ISA (JIT)',
+      title: t.step4Title,
       content: (
         <div className="my-6 p-4 border rounded-lg">
           <svg viewBox="0 0 580 160" className="w-full">
@@ -130,10 +178,10 @@ const CompilationPipeline: React.FC = () => {
             {/* IGC compiler box */}
             <rect x="30" y="25" width="220" height="50" fill={COLORS.purple} opacity="0.15" stroke={COLORS.purple} strokeWidth="2" rx="4" />
             <text x="80" y="48" fontFamily={FONTS.sans} fontSize="13" fill={COLORS.purple} fontWeight="700">
-              IGC (JIT Compiler)
+              {t.step4Compiler}
             </text>
             <text x="50" y="65" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
-              运行时编译，目标特定优化
+              {t.step4CompilerDesc}
             </text>
 
             {/* Arrow */}
@@ -158,20 +206,20 @@ const CompilationPipeline: React.FC = () => {
 
             {/* Hardware target */}
             <text x="30" y="105" fontFamily={FONTS.sans} fontSize="12" fill={COLORS.dark} fontWeight="600">
-              Xe2-LPG 架构原生指令
+              {t.step4Arch}
             </text>
             <text x="30" y="125" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
-              SIMD16 向量指令 + LSC (Load/Store Cache) 消息
+              {t.step4Desc}
             </text>
             <text x="30" y="142" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.orange}>
-              启动延迟: 首次执行需 JIT 编译 (数十毫秒)
+              {t.step4Latency}
             </text>
           </svg>
         </div>
       ),
     },
     {
-      title: 'GPU 执行',
+      title: t.step5Title,
       content: (
         <div className="my-6 p-4 border rounded-lg">
           <svg viewBox="0 0 580 160" className="w-full">
@@ -181,7 +229,7 @@ const CompilationPipeline: React.FC = () => {
             {/* Level Zero submit */}
             <rect x="30" y="25" width="180" height="45" fill={COLORS.primary} opacity="0.15" stroke={COLORS.primary} strokeWidth="2" rx="4" />
             <text x="70" y="45" fontFamily={FONTS.sans} fontSize="12" fill={COLORS.primary} fontWeight="700">
-              Level Zero Submit
+              {t.step5Submit}
             </text>
             <text x="45" y="62" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
               zeCommandQueueExecute
@@ -197,7 +245,7 @@ const CompilationPipeline: React.FC = () => {
 
             {/* EU Grid */}
             <text x="260" y="30" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} fontWeight="600">
-              Xe2 执行单元 (EU) Grid
+              {t.step5EU}
             </text>
             {[0, 1, 2, 3].map((row) => (
               <g key={row}>
@@ -218,7 +266,7 @@ const CompilationPipeline: React.FC = () => {
               </g>
             ))}
             <text x="260" y="142" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
-              Work-groups 分发到 EU，SIMD 向量并行执行
+              {t.step5Desc}
             </text>
           </svg>
         </div>

@@ -22,7 +22,32 @@ function quantize(val: number, scale: number): number {
   return q * scale;
 }
 
-export default function GranularityCompare() {
+export default function GranularityCompare({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '量化粒度对比 — 误差热力图',
+      perTensor: 'Per-Tensor',
+      perChannel: 'Per-Channel',
+      perGroup: 'Per-Group',
+      groupSize: 'Group Size:',
+      lowError: '低误差',
+      mediumError: '中等',
+      highError: '高误差',
+      summary: '粒度越细 → 每组独立 scale → 误差越小 → 但 metadata 开销越大 (llama.cpp block=32)',
+    },
+    en: {
+      title: 'Quantization Granularity Comparison — Error Heatmap',
+      perTensor: 'Per-Tensor',
+      perChannel: 'Per-Channel',
+      perGroup: 'Per-Group',
+      groupSize: 'Group Size:',
+      lowError: 'Low Error',
+      mediumError: 'Medium',
+      highError: 'High Error',
+      summary: 'Finer granularity → independent scale per group → lower error → but higher metadata overhead (llama.cpp block=32)',
+    },
+  }[locale];
+
   const [groupSize, setGroupSize] = useState(4);
 
   const results = useMemo(() => {
@@ -90,14 +115,14 @@ export default function GranularityCompare() {
     );
   }
 
-  const labels = ['Per-Tensor', 'Per-Channel', `Per-Group (${groupSize})`];
+  const labels = [t.perTensor, t.perChannel, `${t.perGroup} (${groupSize})`];
   const mses = [results.tensorMSE, results.channelMSE, results.groupMSE];
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        量化粒度对比 — 误差热力图
+        {t.title}
       </text>
 
       {[0, 1, 2].map(col => (
@@ -119,7 +144,7 @@ export default function GranularityCompare() {
 
       {/* Group size selector */}
       <text x={15} y={startY + ROWS * cellSize + 46} fontSize="8" fontWeight="600"
-        fill={COLORS.dark} fontFamily={FONTS.sans}>Group Size:</text>
+        fill={COLORS.dark} fontFamily={FONTS.sans}>{t.groupSize}</text>
       {[2, 4, 8].map((gs, i) => (
         <g key={gs} onClick={() => setGroupSize(gs)} cursor="pointer">
           <rect x={100 + i * 55} y={startY + ROWS * cellSize + 34} width={45} height={20}
@@ -134,9 +159,9 @@ export default function GranularityCompare() {
 
       {/* Legend */}
       {[
-        { label: '低误差', color: '#c8e6c9' },
-        { label: '中等', color: '#fff9c4' },
-        { label: '高误差', color: '#ffcdd2' },
+        { label: t.lowError, color: '#c8e6c9' },
+        { label: t.mediumError, color: '#fff9c4' },
+        { label: t.highError, color: '#ffcdd2' },
       ].map((item, i) => (
         <g key={item.label}>
           <rect x={350 + i * 70} y={startY + ROWS * cellSize + 34}
@@ -148,7 +173,7 @@ export default function GranularityCompare() {
 
       <text x={W / 2} y={H - 10} textAnchor="middle" fontSize="7.5" fill={COLORS.orange}
         fontFamily={FONTS.sans}>
-        粒度越细 → 每组独立 scale → 误差越小 → 但 metadata 开销越大 (llama.cpp block=32)
+        {t.summary}
       </text>
     </svg>
   );

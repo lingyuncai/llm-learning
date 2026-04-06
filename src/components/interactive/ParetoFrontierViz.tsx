@@ -31,7 +31,34 @@ function computePareto(models: Model[]): Model[] {
   return pareto;
 }
 
-export default function ParetoFrontierViz() {
+export default function ParetoFrontierViz({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Pareto 前沿：成本 vs 质量',
+      subtitle: '点击右侧列表添加/移除模型，观察 Pareto 前沿变化',
+      costAxis: '成本 →',
+      qualityAxis: '质量 →',
+      modelList: '模型列表:',
+      paretoOptimal: 'Pareto 最优',
+      frontierNote: '前沿上的模型在其成本下质量最高',
+      infoTitle: 'Pareto 前沿:',
+      infoModels: '个模型',
+      infoFooter: '添加新模型可能改变前沿 · ParetoBandit (2026) 在此基础上做 cost-aware 选择',
+    },
+    en: {
+      title: 'Pareto Frontier: Cost vs Quality',
+      subtitle: 'Click models on the right to add/remove, observe Pareto frontier changes',
+      costAxis: 'Cost →',
+      qualityAxis: 'Quality →',
+      modelList: 'Model List:',
+      paretoOptimal: 'Pareto optimal',
+      frontierNote: 'Models on the frontier have best quality at their cost',
+      infoTitle: 'Pareto Frontier:',
+      infoModels: 'models',
+      infoFooter: 'Adding new models may change frontier · ParetoBandit (2026) builds cost-aware selection on this',
+    },
+  }[locale];
+
   const [enabled, setEnabled] = useState(new Set(ALL_MODELS.map((_, i) => i)));
 
   const toggle = (idx: number) => {
@@ -64,19 +91,19 @@ export default function ParetoFrontierViz() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={290} y="22" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          Pareto 前沿：成本 vs 质量
+          {t.title}
         </text>
         <text x={290} y="40" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="10" fill={COLORS.mid}>
-          点击右侧列表添加/移除模型，观察 Pareto 前沿变化
+          {t.subtitle}
         </text>
 
         {/* Axes */}
         <line x1={pL} y1={pB} x2={pR} y2={pB} stroke={COLORS.mid} strokeWidth="1.5" />
         <line x1={pL} y1={pT} x2={pL} y2={pB} stroke={COLORS.mid} strokeWidth="1.5" />
-        <text x={(pL + pR) / 2} y={pB + 28} textAnchor="middle" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark}>成本 →</text>
+        <text x={(pL + pR) / 2} y={pB + 28} textAnchor="middle" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark}>{t.costAxis}</text>
         <text x={pL - 12} y={(pT + pB) / 2} textAnchor="middle" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark}
-              transform={`rotate(-90, ${pL - 12}, ${(pT + pB) / 2})`}>质量 →</text>
+              transform={`rotate(-90, ${pL - 12}, ${(pT + pB) / 2})`}>{t.qualityAxis}</text>
 
         {/* Pareto frontier line */}
         {paretoPath && (
@@ -103,7 +130,7 @@ export default function ParetoFrontierViz() {
         {/* Model toggle list */}
         <g transform="translate(435, 55)">
           <text x="0" y="0" fontFamily={FONTS.sans} fontSize="11" fontWeight="600" fill={COLORS.dark}>
-            模型列表:
+            {t.modelList}
           </text>
           {ALL_MODELS.map((m, i) => {
             const isOn = enabled.has(i);
@@ -126,11 +153,11 @@ export default function ParetoFrontierViz() {
 
           <text x="0" y={10 + ALL_MODELS.length * 28 + 10} fontFamily={FONTS.sans}
                 fontSize="9" fill={COLORS.mid}>
-            ⭐ = Pareto 最优
+            ⭐ = {t.paretoOptimal}
           </text>
           <text x="0" y={10 + ALL_MODELS.length * 28 + 24} fontFamily={FONTS.sans}
                 fontSize="9" fill={COLORS.mid}>
-            前沿上的模型在其成本下质量最高
+            {t.frontierNote}
           </text>
         </g>
 
@@ -139,13 +166,13 @@ export default function ParetoFrontierViz() {
           <rect x="0" y="0" width="390" height="55" rx="4"
                 fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1" />
           <text x="15" y="18" fontFamily={FONTS.sans} fontSize="11" fontWeight="600" fill={COLORS.dark}>
-            Pareto 前沿: {pareto.length} 个模型
+            {t.infoTitle} {pareto.length} {t.infoModels}
           </text>
           <text x="15" y="36" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
             {pareto.map(p => p.name).join(' → ')}
           </text>
           <text x="15" y="50" fontFamily={FONTS.sans} fontSize="9" fill={COLORS.mid}>
-            添加新模型可能改变前沿 · ParetoBandit (2026) 在此基础上做 cost-aware 选择
+            {t.infoFooter}
           </text>
         </g>
       </svg>

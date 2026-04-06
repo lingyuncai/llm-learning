@@ -11,7 +11,16 @@ function expectedTokens(alpha: number, K: number): number {
 const ALPHA_CURVES = [0.5, 0.7, 0.8, 0.9, 0.95];
 const MAX_K = 10;
 
-export default function AcceptanceRateCalculator() {
+export default function AcceptanceRateCalculator({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      expectedTokens: '期望每轮生成 token 数',
+    },
+    en: {
+      expectedTokens: 'Expected tokens per round',
+    },
+  }[locale];
+
   const [alpha, setAlpha] = useState(0.8);
   const [K, setK] = useState(5);
   const expected = expectedTokens(alpha, K);
@@ -68,7 +77,7 @@ export default function AcceptanceRateCalculator() {
 
       {/* Result */}
       <div className="text-center p-2 rounded-lg bg-blue-50 border border-blue-200">
-        <div className="text-xs text-gray-500">期望每轮生成 token 数</div>
+        <div className="text-xs text-gray-500">{t.expectedTokens}</div>
         <div className="text-xl font-bold font-mono" style={{ color: COLORS.primary }}>
           {expected.toFixed(2)} tokens
         </div>

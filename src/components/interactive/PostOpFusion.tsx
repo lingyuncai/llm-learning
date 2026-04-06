@@ -3,12 +3,59 @@ import { COLORS, FONTS } from './shared/colors';
 
 type Mode = 'unfused' | 'fused';
 
-const PostOpFusion: React.FC = () => {
+const PostOpFusion: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
   const [mode, setMode] = useState<Mode>('unfused');
+
+  const t = {
+    zh: {
+      title: 'Post-op Fusion 优化',
+      unfused: '未融合 (Unfused)',
+      fused: '融合 (Fused)',
+      unfusedTitle: '未融合：3 个独立 kernel，6 次内存访问',
+      fusedTitle: '融合：1 个 kernel，2 次内存访问',
+      readOnce: 'read once',
+      writeOnce: 'write once',
+      singleLaunch: 'Single Launch',
+      pipelinedExec: 'Pipelined execution',
+      noIntermediateStorage: 'No intermediate storage',
+      performanceCompare: '性能对比',
+      kernelLaunches: 'Kernel 启动次数:',
+      memoryOps: '内存操作次数:',
+      relativePerf: '相对性能:',
+      wasteBandwidth: '❌ 浪费带宽与启动开销',
+      saveBandwidth: '✅ 节省带宽与延迟',
+      intermediateSaveVRAM: '中间结果需写回 VRAM',
+      dataInRegisters: '数据留在寄存器/L1 cache',
+      kernelSyncOverhead: 'Kernel 启动同步开销大',
+      pipelineNoSync: 'Pipeline 并行，无同步',
+    },
+    en: {
+      title: 'Post-op Fusion Optimization',
+      unfused: 'Unfused',
+      fused: 'Fused',
+      unfusedTitle: 'Unfused: 3 separate kernels, 6 memory accesses',
+      fusedTitle: 'Fused: 1 kernel, 2 memory accesses',
+      readOnce: 'read once',
+      writeOnce: 'write once',
+      singleLaunch: 'Single Launch',
+      pipelinedExec: 'Pipelined execution',
+      noIntermediateStorage: 'No intermediate storage',
+      performanceCompare: 'Performance Comparison',
+      kernelLaunches: 'Kernel Launches:',
+      memoryOps: 'Memory Operations:',
+      relativePerf: 'Relative Performance:',
+      wasteBandwidth: '❌ Wastes bandwidth & launch overhead',
+      saveBandwidth: '✅ Saves bandwidth & latency',
+      intermediateSaveVRAM: 'Intermediate results saved to VRAM',
+      dataInRegisters: 'Data stays in registers/L1 cache',
+      kernelSyncOverhead: 'Kernel launch synchronization overhead',
+      pipelineNoSync: 'Pipelined, no synchronization',
+    },
+  }[locale];
 
   return (
     <div className="my-6 p-4 border rounded-lg bg-white">
-      <h3 className="text-lg font-semibold mb-3 text-gray-800">Post-op Fusion 优化</h3>
+      <h3 className="text-lg font-semibold mb-3 text-gray-800">{t.title}</h3>
 
       {/* Mode selector */}
       <div className="flex gap-2 mb-4">
@@ -20,7 +67,7 @@ const PostOpFusion: React.FC = () => {
               : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
           }`}
         >
-          未融合 (Unfused)
+          {t.unfused}
         </button>
         <button
           onClick={() => setMode('fused')}
@@ -30,7 +77,7 @@ const PostOpFusion: React.FC = () => {
               : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
           }`}
         >
-          融合 (Fused)
+          {t.fused}
         </button>
       </div>
 

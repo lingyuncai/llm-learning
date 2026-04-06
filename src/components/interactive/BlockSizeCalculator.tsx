@@ -3,7 +3,34 @@ import { useState, useMemo } from 'react';
 import { motion } from 'motion/react';
 import { COLORS } from './shared/colors';
 
-export default function BlockSizeCalculator() {
+export default function BlockSizeCalculator({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '分块大小计算器',
+      sramLabel: 'SRAM (M)',
+      headDimLabel: 'head dim (d)',
+      seqLengthLabel: '序列长度 (N)',
+      qBlocksLabel: 'Q blocks (Tr)',
+      kvBlocksLabel: 'K/V blocks (Tc)',
+      qMatrixLabel: 'Q 矩阵',
+      kvMatrixLabel: 'K, V 矩阵',
+      moreLabel: '...(... more)',
+      summaryNote: 'SRAM 越大 → 块越大 → 外循环次数越少 → HBM 访问越少（当前共 ... 次块计算）',
+    },
+    en: {
+      title: 'Block Size Calculator',
+      sramLabel: 'SRAM (M)',
+      headDimLabel: 'head dim (d)',
+      seqLengthLabel: 'sequence length (N)',
+      qBlocksLabel: 'Q blocks (Tr)',
+      kvBlocksLabel: 'K/V blocks (Tc)',
+      qMatrixLabel: 'Q Matrix',
+      kvMatrixLabel: 'K, V Matrix',
+      moreLabel: '...(...more)',
+      summaryNote: 'Larger SRAM → larger blocks → fewer outer loops → less HBM access (currently ... block computations)',
+    },
+  }[locale];
+
   const [sramKB, setSramKB] = useState(100);
   const [d, setD] = useState(64);
   const [N, setN] = useState(512);
@@ -26,14 +53,14 @@ export default function BlockSizeCalculator() {
   return (
     <div className="my-6 p-4 bg-white rounded-lg border" style={{ borderColor: COLORS.light }}>
       <h3 className="text-base font-bold mb-3" style={{ color: COLORS.dark }}>
-        分块大小计算器
+        {t.title}
       </h3>
 
       {/* Sliders */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
         <label className="text-xs">
           <div className="flex justify-between mb-1">
-            <span style={{ color: COLORS.mid }}>SRAM (M)</span>
+            <span style={{ color: COLORS.mid }}>{t.sramLabel}</span>
             <span className="font-mono font-semibold" style={{ color: COLORS.primary }}>{sramKB} KB</span>
           </div>
           <input type="range" min={10} max={200} step={10} value={sramKB}
@@ -43,7 +70,7 @@ export default function BlockSizeCalculator() {
         </label>
         <label className="text-xs">
           <div className="flex justify-between mb-1">
-            <span style={{ color: COLORS.mid }}>head dim (d)</span>
+            <span style={{ color: COLORS.mid }}>{t.headDimLabel}</span>
             <span className="font-mono font-semibold" style={{ color: COLORS.primary }}>{d}</span>
           </div>
           <input type="range" min={32} max={128} step={32} value={d}
@@ -53,7 +80,7 @@ export default function BlockSizeCalculator() {
         </label>
         <label className="text-xs">
           <div className="flex justify-between mb-1">
-            <span style={{ color: COLORS.mid }}>序列长度 (N)</span>
+            <span style={{ color: COLORS.mid }}>{t.seqLengthLabel}</span>
             <span className="font-mono font-semibold" style={{ color: COLORS.primary }}>{N}</span>
           </div>
           <input type="range" min={128} max={4096} step={128} value={N}
@@ -68,8 +95,8 @@ export default function BlockSizeCalculator() {
         {[
           { label: 'Bc = ⌈M/(4d)⌉', value: calc.Bc, color: COLORS.primary },
           { label: 'Br = min(Bc, d)', value: calc.Br, color: COLORS.green },
-          { label: 'Q blocks (Tr)', value: calc.Tr, color: COLORS.green },
-          { label: 'K/V blocks (Tc)', value: calc.Tc, color: COLORS.primary },
+          { label: t.qBlocksLabel, value: calc.Tr, color: COLORS.green },
+          { label: t.kvBlocksLabel, value: calc.Tc, color: COLORS.primary },
         ].map(({ label, value, color }) => (
           <motion.div key={label}
             className="p-2 rounded border text-xs"
@@ -87,7 +114,7 @@ export default function BlockSizeCalculator() {
         {/* Q blocks */}
         <div className="text-center">
           <div className="text-xs mb-1" style={{ color: COLORS.mid }}>
-            Q 矩阵 ({N}×{d})
+            {t.qMatrixLabel} ({N}×{d})
           </div>
           <div className="flex flex-col gap-0.5">
             {Array.from({ length: qBlocks }, (_, i) => (
@@ -109,7 +136,7 @@ export default function BlockSizeCalculator() {
             ))}
             {calc.Tr > maxBlocksToShow && (
               <div className="text-[9px]" style={{ color: COLORS.mid }}>
-                ...({calc.Tr - maxBlocksToShow} more)
+                {t.moreLabel.replace('...', `(${calc.Tr - maxBlocksToShow} more)`)}
               </div>
             )}
           </div>
@@ -118,7 +145,7 @@ export default function BlockSizeCalculator() {
         {/* K/V blocks */}
         <div className="text-center">
           <div className="text-xs mb-1" style={{ color: COLORS.mid }}>
-            K, V 矩阵 ({N}×{d})
+            {t.kvMatrixLabel} ({N}×{d})
           </div>
           <div className="flex flex-col gap-0.5">
             {Array.from({ length: kvBlocks }, (_, i) => (
@@ -140,7 +167,7 @@ export default function BlockSizeCalculator() {
             ))}
             {calc.Tc > maxBlocksToShow && (
               <div className="text-[9px]" style={{ color: COLORS.mid }}>
-                ...({calc.Tc - maxBlocksToShow} more)
+                {t.moreLabel.replace('...', `(${calc.Tc - maxBlocksToShow} more)`)}
               </div>
             )}
           </div>
@@ -148,7 +175,7 @@ export default function BlockSizeCalculator() {
       </div>
 
       <p className="text-xs text-center" style={{ color: COLORS.orange }}>
-        SRAM 越大 → 块越大 → 外循环次数越少 → HBM 访问越少（当前共 {calc.totalBlocks} 次块计算）
+        {t.summaryNote.replace('...', calc.totalBlocks.toString())}
       </p>
     </div>
   );

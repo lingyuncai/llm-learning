@@ -20,7 +20,52 @@ function generateWeights(): number[] {
   return vals;
 }
 
-export default function QuantizationProcess() {
+export default function QuantizationProcess({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: 'Step 1: FP16 原始权重',
+      step1Desc: '一个 block = 32 个 FP16 权重值 (每个 16 bit, 共 64 bytes)',
+      step1Label: 'FP16 权重',
+      step1Subset: '(前 16 / 32 个值)',
+      step1Footer: 'max|w| = {{maxAbs}}, 范围 [{{min}}, {{max}}]',
+      step2Title: 'Step 2: 量化 (Q4_0)',
+      step2Header: 'Q4_0 对称量化公式:',
+      step2Scale: 'scale = max(|w|) / 7 = {{maxAbs}} / 7 = {{scale}}',
+      step2Formula: 'q[i] = round(w[i] / scale)',
+      step2Note: '每个值: FP16 (16 bit) → INT4 (4 bit), 压缩 4x',
+      step2Label: 'INT4 量化值',
+      step2Footer: '量化值范围: [-8, 7] (4-bit signed integer)',
+      step3Title: 'Step 3: 反量化与误差',
+      step3Header: '存储: 32 个 INT4 值 (16 bytes) + 1 个 FP16 scale (2 bytes) = 18 bytes',
+      step3Formula: "反量化: w'[i] = q[i] × scale",
+      step3Error: '最大误差: {{maxError}} | 平均误差: {{avgError}}',
+      step3Ratio: '压缩比: 64 bytes → 18 bytes = 3.6x',
+      step3Label: '量化误差 (|原始 - 反量化|)',
+      step3Footer: '误差通常 < 0.1, 对最终模型输出影响有限',
+    },
+    en: {
+      step1Title: 'Step 1: FP16 Original Weights',
+      step1Desc: 'One block = 32 FP16 weights (16 bits each, 64 bytes total)',
+      step1Label: 'FP16 Weights',
+      step1Subset: '(first 16 / 32 values)',
+      step1Footer: 'max|w| = {{maxAbs}}, range [{{min}}, {{max}}]',
+      step2Title: 'Step 2: Quantization (Q4_0)',
+      step2Header: 'Q4_0 Symmetric Quantization Formula:',
+      step2Scale: 'scale = max(|w|) / 7 = {{maxAbs}} / 7 = {{scale}}',
+      step2Formula: 'q[i] = round(w[i] / scale)',
+      step2Note: 'Per value: FP16 (16 bit) → INT4 (4 bit), 4x compression',
+      step2Label: 'INT4 Quantized Values',
+      step2Footer: 'Quantized range: [-8, 7] (4-bit signed integer)',
+      step3Title: 'Step 3: Dequantization & Error',
+      step3Header: 'Storage: 32 INT4 values (16 bytes) + 1 FP16 scale (2 bytes) = 18 bytes',
+      step3Formula: "Dequantization: w'[i] = q[i] × scale",
+      step3Error: 'Max error: {{maxError}} | Avg error: {{avgError}}',
+      step3Ratio: 'Compression ratio: 64 bytes → 18 bytes = 3.6x',
+      step3Label: 'Quantization Error (|original - dequantized|)',
+      step3Footer: 'Error typically < 0.1, limited impact on model output',
+    },
+  }[locale];
+
   const weights = useMemo(() => generateWeights(), []);
   const maxAbs = useMemo(() => Math.max(...weights.map(Math.abs)), [weights]);
   const scale = maxAbs / 7; // Q4_0: 4-bit signed → range [-8, 7]
@@ -64,7 +109,7 @@ export default function QuantizationProcess() {
           stroke="#94a3b8" strokeWidth={0.5} />
         <text x={barX(16) + 10} y={y + barMaxH / 2 + 3} fontSize="6"
           fill={COLORS.mid} fontFamily={FONTS.sans}>
-          (前 16 / 32 个值)
+          {t.step1Subset}
         </text>
       </g>
     );
@@ -72,54 +117,57 @@ export default function QuantizationProcess() {
 
   const steps = [
     {
-      title: 'Step 1: FP16 原始权重',
+      title: t.step1Title,
       content: (
         <StepSvg h={180}>
           <text x={W / 2} y={16} textAnchor="middle" fontSize="8" fill={COLORS.mid}
             fontFamily={FONTS.sans}>
-            一个 block = 32 个 FP16 权重值 (每个 16 bit, 共 64 bytes)
+            {t.step1Desc}
           </text>
-          <WeightBars values={weights} y={30} color={COLORS.primary} label="FP16 权重" />
+          <WeightBars values={weights} y={30} color={COLORS.primary} label={t.step1Label} />
           <text x={W / 2} y={160} textAnchor="middle" fontSize="7" fill={COLORS.mid}
             fontFamily={FONTS.sans}>
-            max|w| = {maxAbs.toFixed(2)}, 范围 [{Math.min(...weights).toFixed(2)}, {Math.max(...weights).toFixed(2)}]
+            {t.step1Footer
+              .replace('{{maxAbs}}', maxAbs.toFixed(2))
+              .replace('{{min}}', Math.min(...weights).toFixed(2))
+              .replace('{{max}}', Math.max(...weights).toFixed(2))}
           </text>
         </StepSvg>
       ),
     },
     {
-      title: 'Step 2: 量化 (Q4_0)',
+      title: t.step2Title,
       content: (
         <div>
           <div className="p-3 bg-orange-50 rounded-lg mb-3 text-xs font-mono text-orange-800">
-            <p className="font-semibold mb-1">Q4_0 对称量化公式:</p>
-            <p>scale = max(|w|) / 7 = {maxAbs.toFixed(4)} / 7 = {scale.toFixed(4)}</p>
-            <p>q[i] = round(w[i] / scale)</p>
-            <p className="mt-1 text-orange-600">每个值: FP16 (16 bit) → INT4 (4 bit), 压缩 4x</p>
+            <p className="font-semibold mb-1">{t.step2Header}</p>
+            <p>{t.step2Scale.replace('{{maxAbs}}', maxAbs.toFixed(4)).replace('{{scale}}', scale.toFixed(4))}</p>
+            <p>{t.step2Formula}</p>
+            <p className="mt-1 text-orange-600">{t.step2Note}</p>
           </div>
           <StepSvg h={120}>
-            <WeightBars values={quantized} y={10} color={COLORS.orange} label="INT4 量化值" />
+            <WeightBars values={quantized} y={10} color={COLORS.orange} label={t.step2Label} />
             <text x={W / 2} y={105} textAnchor="middle" fontSize="7" fill={COLORS.mid}
               fontFamily={FONTS.sans}>
-              量化值范围: [-8, 7] (4-bit signed integer)
+              {t.step2Footer}
             </text>
           </StepSvg>
         </div>
       ),
     },
     {
-      title: 'Step 3: 反量化与误差',
+      title: t.step3Title,
       content: (
         <div>
           <div className="p-3 bg-green-50 rounded-lg mb-3 text-xs font-mono text-green-800">
-            <p className="font-semibold mb-1">存储: 32 个 INT4 值 (16 bytes) + 1 个 FP16 scale (2 bytes) = 18 bytes</p>
-            <p>反量化: w'[i] = q[i] × scale</p>
-            <p className="mt-1">最大误差: {maxError.toFixed(4)} | 平均误差: {avgError.toFixed(4)}</p>
-            <p className="text-green-600">压缩比: 64 bytes → 18 bytes = 3.6x</p>
+            <p className="font-semibold mb-1">{t.step3Header}</p>
+            <p>{t.step3Formula}</p>
+            <p className="mt-1">{t.step3Error.replace('{{maxError}}', maxError.toFixed(4)).replace('{{avgError}}', avgError.toFixed(4))}</p>
+            <p className="text-green-600">{t.step3Ratio}</p>
           </div>
           <StepSvg h={140}>
             <text x={15} y={12} fontSize="7" fontWeight="600" fill={COLORS.dark}
-              fontFamily={FONTS.sans}>量化误差 (|原始 - 反量化|)</text>
+              fontFamily={FONTS.sans}>{t.step3Label}</text>
             {errors.slice(0, 16).map((e, i) => {
               const h = (e / maxAbs) * 60;
               return (
@@ -131,7 +179,7 @@ export default function QuantizationProcess() {
               stroke="#94a3b8" strokeWidth={0.5} />
             <text x={W / 2} y={100} textAnchor="middle" fontSize="7" fill={COLORS.mid}
               fontFamily={FONTS.sans}>
-              误差通常 &lt; 0.1, 对最终模型输出影响有限
+              {t.step3Footer}
             </text>
           </StepSvg>
         </div>

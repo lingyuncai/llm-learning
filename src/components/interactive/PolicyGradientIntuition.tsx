@@ -4,13 +4,48 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const H = 360;
 
-export default function PolicyGradientIntuition() {
+export default function PolicyGradientIntuition({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Policy Gradient 直觉：概率分布随 Reward 调整',
+      subtitle: '点击动作获得 reward → 正 reward 推高概率，负 reward 压低概率',
+      actionA: '动作 A',
+      actionB: '动作 B',
+      actionC: '动作 C',
+      actionD: '动作 D',
+      lastAction: '上次：',
+      reward: 'reward',
+      gradientCore: '策略梯度核心',
+      formula: 'R>0: 推高 π(a) | R<0: 压低 π(a)',
+      rewardHistory: 'reward 历史',
+      steps: '步',
+      reset: '重置',
+      description: '每个动作有隐藏的期望 reward | 多次点击观察策略如何收敛到最优动作',
+    },
+    en: {
+      title: 'Policy Gradient Intuition: Probability Adjusts with Reward',
+      subtitle: 'Click actions to get rewards → positive reward increases prob, negative decreases',
+      actionA: 'Action A',
+      actionB: 'Action B',
+      actionC: 'Action C',
+      actionD: 'Action D',
+      lastAction: 'Last: ',
+      reward: 'reward',
+      gradientCore: 'Policy Gradient Core',
+      formula: 'R>0: increase π(a) | R<0: decrease π(a)',
+      rewardHistory: 'reward history',
+      steps: 'steps',
+      reset: 'Reset',
+      description: 'Each action has hidden expected reward | Click multiple times to see policy converge',
+    },
+  }[locale];
+
   const [probs, setProbs] = useState([0.25, 0.25, 0.25, 0.25]);
   const [lastAction, setLastAction] = useState<number | null>(null);
   const [lastReward, setLastReward] = useState<number | null>(null);
   const [history, setHistory] = useState<{ action: number; reward: number }[]>([]);
 
-  const actions = ['动作 A', '动作 B', '动作 C', '动作 D'];
+  const actions = [t.actionA, t.actionB, t.actionC, t.actionD];
   const trueRewards = [0.2, 0.8, -0.5, 0.1]; // hidden expected rewards
   const barW = 80;
   const barMaxH = 160;
@@ -49,10 +84,10 @@ export default function PolicyGradientIntuition() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          Policy Gradient 直觉：概率分布随 Reward 调整
+          {t.title}
         </text>
         <text x={W / 2} y={42} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          点击动作获得 reward → 正 reward 推高概率，负 reward 压低概率
+          {t.subtitle}
         </text>
 
         {/* Probability bars */}
@@ -86,11 +121,11 @@ export default function PolicyGradientIntuition() {
           <g>
             <rect x={420} y={oy} width={140} height={50} rx={6} fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth={1} />
             <text x={490} y={oy + 18} textAnchor="middle" fontSize={11} fontWeight={600} fill={COLORS.dark}>
-              上次：{actions[lastAction]}
+              {t.lastAction}{actions[lastAction]}
             </text>
             <text x={490} y={oy + 38} textAnchor="middle" fontSize={13} fontWeight={700}
               fill={lastReward > 0 ? COLORS.green : COLORS.red} fontFamily={FONTS.mono}>
-              reward = {lastReward > 0 ? '+' : ''}{lastReward.toFixed(2)}
+              {t.reward} = {lastReward > 0 ? '+' : ''}{lastReward.toFixed(2)}
             </text>
           </g>
         )}
@@ -98,18 +133,18 @@ export default function PolicyGradientIntuition() {
         {/* Gradient explanation */}
         <rect x={420} y={oy + 60} width={140} height={60} rx={6} fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth={1} />
         <text x={490} y={oy + 78} textAnchor="middle" fontSize={10} fontWeight={600} fill={COLORS.orange}>
-          策略梯度核心
+          {t.gradientCore}
         </text>
         <text x={490} y={oy + 94} textAnchor="middle" fontSize={9} fill={COLORS.dark} fontFamily={FONTS.mono}>
           ∇J ≈ ∇log π(a|s) · R
         </text>
         <text x={490} y={oy + 110} textAnchor="middle" fontSize={9} fill={COLORS.mid}>
-          R{'>'}0: 推高 π(a) | R{'<'}0: 压低 π(a)
+          {t.formula}
         </text>
 
         {/* History sparkline */}
         <text x={420} y={oy + 140} fontSize={10} fontWeight={600} fill={COLORS.dark}>
-          reward 历史 ({history.length} 步)
+          {t.rewardHistory} ({history.length} {t.steps})
         </text>
         {history.slice(-20).map((h, i) => (
           <rect key={i} x={420 + i * 7} y={oy + 148} width={5}
@@ -121,11 +156,11 @@ export default function PolicyGradientIntuition() {
         {/* Reset */}
         <g onClick={reset} style={{ cursor: 'pointer' }}>
           <rect x={460} y={H - 40} width={60} height={24} rx={5} fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth={1} />
-          <text x={490} y={H - 24} textAnchor="middle" fontSize={11} fill={COLORS.dark}>重置</text>
+          <text x={490} y={H - 24} textAnchor="middle" fontSize={11} fill={COLORS.dark}>{t.reset}</text>
         </g>
 
         <text x={30} y={H - 10} fontSize={9} fill={COLORS.mid}>
-          每个动作有隐藏的期望 reward | 多次点击观察策略如何收敛到最优动作
+          {t.description}
         </text>
       </svg>
     </div>

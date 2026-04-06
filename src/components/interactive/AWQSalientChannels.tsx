@@ -18,7 +18,36 @@ const ACTIVATIONS = [
 
 const SALIENT_COLS = new Set([2]);
 
-export default function AWQSalientChannels() {
+export default function AWQSalientChannels({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '激活矩阵 X（点击列选择通道）',
+      channel: '通道',
+      salient: '⚡ 显著通道',
+      normal: '普通通道',
+      scaleFactor: '缩放因子 s = ',
+      salientExplain: 'AWQ 放大此通道权重 → 量化粒度更细 → 误差更小',
+      normalExplain: '普通通道无需特殊处理, s=1',
+      errorBefore: '缩放前量化误差',
+      errorAfter: '缩放后量化误差',
+      formula: 'Y = XW = (X·diag(s)⁻¹)·(diag(s)·W) — 保持数学等价, 保护 1% 关键通道',
+      awqVsGptq: 'AWQ 是"事前预防" (调整分布使其易量化) vs GPTQ 是"事后补救" (补偿量化误差)',
+    },
+    en: {
+      title: 'Activation Matrix X (click column to select channel)',
+      channel: 'Channel',
+      salient: '⚡ Salient',
+      normal: 'Normal',
+      scaleFactor: 'Scale factor s = ',
+      salientExplain: 'AWQ scales up this channel weight → finer quantization → less error',
+      normalExplain: 'Normal channel needs no special handling, s=1',
+      errorBefore: 'Quantization error before scaling',
+      errorAfter: 'Quantization error after scaling',
+      formula: 'Y = XW = (X·diag(s)⁻¹)·(diag(s)·W) — mathematically equivalent, protects 1% critical channels',
+      awqVsGptq: 'AWQ is "preventive" (adjust distribution for quantization) vs GPTQ is "remedial" (compensate error)',
+    },
+  }[locale];
+
   const [selectedCol, setSelectedCol] = useState(2);
   const maxAct = 5.5;
 
@@ -47,7 +76,7 @@ export default function AWQSalientChannels() {
   return (
     <svg viewBox={`0 0 ${W} 380`} className="w-full">
       <text x={heatX} y={25} fontSize="10" fontWeight="600" fill={COLORS.dark}
-        fontFamily={FONTS.sans}>激活矩阵 X（点击列选择通道）</text>
+        fontFamily={FONTS.sans}>{t.title}</text>
 
       {ACTIVATIONS.map((row, i) =>
         row.map((v, j) => (
@@ -76,41 +105,39 @@ export default function AWQSalientChannels() {
         fill={COLORS.bgAlt} stroke={isSalient ? COLORS.red : COLORS.light} strokeWidth={1} />
       <text x={300} y={55} fontSize="9" fontWeight="600" fill={COLORS.dark}
         fontFamily={FONTS.sans}>
-        通道 {selectedCol} {isSalient ? '⚡ 显著通道' : '普通通道'}
+        {t.channel} {selectedCol} {isSalient ? t.salient : t.normal}
       </text>
       <text x={300} y={72} fontSize="8" fill={COLORS.mid} fontFamily={FONTS.mono}>
         max={colMax.toFixed(2)}  mean={colMean}
       </text>
       <text x={300} y={90} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        <tspan fontWeight="600">缩放因子 s = </tspan>{scaleFactor.toFixed(2)}
+        <tspan fontWeight="600">{t.scaleFactor}</tspan>{scaleFactor.toFixed(2)}
       </text>
       <text x={300} y={108} fontSize="7.5" fill={COLORS.mid} fontFamily={FONTS.sans}>
-        {isSalient
-          ? 'AWQ 放大此通道权重 → 量化粒度更细 → 误差更小'
-          : '普通通道无需特殊处理, s=1'}
+        {isSalient ? t.salientExplain : t.normalExplain}
       </text>
 
       <rect x={30} y={290} width={245} height={35} rx={6}
         fill={COLORS.bgAlt} stroke={COLORS.red} strokeWidth={1} />
       <text x={152} y={312} textAnchor="middle" fontSize="9" fontWeight="600"
         fill={COLORS.red} fontFamily={FONTS.sans}>
-        缩放前量化误差: {errBefore.toFixed(2)}
+        {t.errorBefore}: {errBefore.toFixed(2)}
       </text>
 
       <rect x={290} y={290} width={260} height={35} rx={6}
         fill={COLORS.bgAlt} stroke={COLORS.green} strokeWidth={1} />
       <text x={420} y={312} textAnchor="middle" fontSize="9" fontWeight="600"
         fill={COLORS.green} fontFamily={FONTS.sans}>
-        缩放后量化误差: {errAfter.toFixed(2)}
+        {t.errorAfter}: {errAfter.toFixed(2)}
       </text>
 
       <text x={W / 2} y={350} textAnchor="middle" fontSize="8" fill={COLORS.orange}
         fontFamily={FONTS.sans}>
-        Y = XW = (X·diag(s)⁻¹)·(diag(s)·W) — 保持数学等价, 保护 1% 关键通道
+        {t.formula}
       </text>
       <text x={W / 2} y={368} textAnchor="middle" fontSize="7.5" fill={COLORS.mid}
         fontFamily={FONTS.sans}>
-        AWQ 是"事前预防" (调整分布使其易量化) vs GPTQ 是"事后补救" (补偿量化误差)
+        {t.awqVsGptq}
       </text>
     </svg>
   );

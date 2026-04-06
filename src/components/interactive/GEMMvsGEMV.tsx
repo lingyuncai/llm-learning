@@ -5,6 +5,10 @@ import { COLORS } from './shared/colors';
 const d = 6; // simplified dimension
 const n = 4; // batch/seq length for Prefill
 
+interface GEMMvsGEMVProps {
+  locale?: 'zh' | 'en';
+}
+
 function MatrixViz({ rows, cols, activeRow, activeCol, color, label }: {
   rows: number; cols: number; activeRow?: number; activeCol?: number;
   color: string; label: string;
@@ -41,43 +45,69 @@ function GPUGrid({ active, total, label }: { active: number; total: number; labe
             style={{ backgroundColor: i < active ? COLORS.green : '#e5e7eb' }} />
         ))}
       </div>
-      <div className="text-[8px] text-gray-400 mt-0.5">{((active / total) * 100).toFixed(0)}% 利用率</div>
+      <div className="text-[8px] text-gray-400 mt-0.5">{((active / total) * 100).toFixed(0)}%</div>
     </div>
   );
 }
 
-export default function GEMMvsGEMV() {
+export default function GEMMvsGEMV({ locale = 'zh' }: GEMMvsGEMVProps) {
+  const t = {
+    zh: {
+      title: 'GEMM (Prefill) vs GEMV (Decode)',
+      intro: 'Prefill 做矩阵×矩阵 (GEMM)，Decode 做向量×矩阵 (GEMV)。关键差异在于',
+      dataReuse: '数据复用率',
+      prefillTitle: 'Prefill (GEMM)',
+      decodeTitle: 'Decode (GEMV)',
+      input: '输入',
+      weight: '权重',
+      prefillReuse: `权重的每列被 ${n} 行复用 → 数据复用率高`,
+      decodeReuse: '权重的每列只被 1 行用一次 → 加载即丢弃',
+      gpuCores: 'GPU 核心',
+    },
+    en: {
+      title: 'GEMM (Prefill) vs GEMV (Decode)',
+      intro: 'Prefill performs matrix×matrix (GEMM), Decode performs vector×matrix (GEMV). Key difference is',
+      dataReuse: 'data reuse',
+      prefillTitle: 'Prefill (GEMM)',
+      decodeTitle: 'Decode (GEMV)',
+      input: 'Input',
+      weight: 'Weight',
+      prefillReuse: `Each weight column reused by ${n} rows → high data reuse`,
+      decodeReuse: 'Each weight column used once → loaded and discarded',
+      gpuCores: 'GPU Cores',
+    },
+  }[locale];
+
   const steps = [
     {
-      title: 'GEMM (Prefill) vs GEMV (Decode)',
+      title: t.title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            Prefill 做矩阵×矩阵 (GEMM)，Decode 做向量×矩阵 (GEMV)。
-            关键差异在于<strong>数据复用率</strong>。
+            {t.intro}<strong>{t.dataReuse}</strong>。
           </p>
           <div className="grid grid-cols-2 gap-6">
             <div className="text-center">
-              <div className="text-sm font-semibold mb-2" style={{ color: COLORS.green }}>Prefill (GEMM)</div>
+              <div className="text-sm font-semibold mb-2" style={{ color: COLORS.green }}>{t.prefillTitle}</div>
               <div className="text-xs text-gray-500 mb-2">({n}×{d}) × ({d}×{d})</div>
               <div className="flex items-center justify-center gap-2">
-                <MatrixViz rows={n} cols={d} color={COLORS.valid} label={`输入 (${n}×${d})`} />
+                <MatrixViz rows={n} cols={d} color={COLORS.valid} label={`${t.input} (${n}×${d})`} />
                 <span className="text-gray-400">×</span>
-                <MatrixViz rows={d} cols={d} activeCol={0} color={COLORS.highlight} label={`权重 (${d}×${d})`} />
+                <MatrixViz rows={d} cols={d} activeCol={0} color={COLORS.highlight} label={`${t.weight} (${d}×${d})`} />
               </div>
-              <p className="text-xs text-gray-500 mt-2">权重的每列被 {n} 行复用 → 数据复用率高</p>
-              <GPUGrid active={14} total={16} label="GPU 核心" />
+              <p className="text-xs text-gray-500 mt-2">{t.prefillReuse}</p>
+              <GPUGrid active={14} total={16} label={t.gpuCores} />
             </div>
             <div className="text-center">
-              <div className="text-sm font-semibold mb-2" style={{ color: COLORS.red }}>Decode (GEMV)</div>
+              <div className="text-sm font-semibold mb-2" style={{ color: COLORS.red }}>{t.decodeTitle}</div>
               <div className="text-xs text-gray-500 mb-2">(1×{d}) × ({d}×{d})</div>
               <div className="flex items-center justify-center gap-2">
-                <MatrixViz rows={1} cols={d} color={COLORS.valid} label={`输入 (1×${d})`} />
+                <MatrixViz rows={1} cols={d} color={COLORS.valid} label={`${t.input} (1×${d})`} />
                 <span className="text-gray-400">×</span>
-                <MatrixViz rows={d} cols={d} activeCol={0} color={COLORS.highlight} label={`权重 (${d}×${d})`} />
+                <MatrixViz rows={d} cols={d} activeCol={0} color={COLORS.highlight} label={`${t.weight} (${d}×${d})`} />
               </div>
-              <p className="text-xs text-gray-500 mt-2">权重的每列只被 1 行用一次 → 加载即丢弃</p>
-              <GPUGrid active={4} total={16} label="GPU 核心" />
+              <p className="text-xs text-gray-500 mt-2">{t.decodeReuse}</p>
+              <GPUGrid active={4} total={16} label={t.gpuCores} />
             </div>
           </div>
         </div>

@@ -23,12 +23,27 @@ const ENGINES: EnginePos[] = [
   { name: 'Ollama',       x: EX - 80,  y: EY - 50,  color: COLORS.orange,  desc: '易用优先' },
 ];
 
-export default function DesignPhilosophyMap() {
+export default function DesignPhilosophyMap({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '推理引擎设计哲学定位',
+      throughput: '吞吐量',
+      programmable: '可编程性',
+      easeOfUse: '易用性',
+    },
+    en: {
+      title: 'Inference Engine Design Philosophy Positioning',
+      throughput: 'Throughput',
+      programmable: 'Programmability',
+      easeOfUse: 'Ease of Use',
+    },
+  }[locale];
+
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        推理引擎设计哲学定位
+        {t.title}
       </text>
 
       {/* Triangle */}
@@ -37,11 +52,11 @@ export default function DesignPhilosophyMap() {
 
       {/* Vertex labels */}
       <text x={TX} y={TY - 10} textAnchor="middle" fontSize="12" fontWeight="700"
-        fill={COLORS.dark} fontFamily={FONTS.sans}>吞吐量</text>
+        fill={COLORS.dark} fontFamily={FONTS.sans}>{t.throughput}</text>
       <text x={PX - 10} y={PY + 20} textAnchor="middle" fontSize="12" fontWeight="700"
-        fill={COLORS.dark} fontFamily={FONTS.sans}>可编程性</text>
+        fill={COLORS.dark} fontFamily={FONTS.sans}>{t.programmable}</text>
       <text x={EX + 10} y={EY + 20} textAnchor="middle" fontSize="12" fontWeight="700"
-        fill={COLORS.dark} fontFamily={FONTS.sans}>易用性</text>
+        fill={COLORS.dark} fontFamily={FONTS.sans}>{t.easeOfUse}</text>
 
       {/* Engine dots + labels */}
       {ENGINES.map((e) => (

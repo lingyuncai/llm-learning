@@ -22,7 +22,32 @@ function formatBytes(bytes: number): string {
   return `${bytes}`;
 }
 
-export default function IOComplexityChart() {
+export default function IOComplexityChart({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'IO 复杂度对比：Standard vs Flash v1 vs v2',
+      headDim: 'head dim d',
+      sram: 'SRAM M',
+      seqLength: '序列长度 N',
+      hbmAccess: 'HBM 访问量 (log scale)',
+      standardLabel: 'Standard Θ(Nd+N²)',
+      flashV1Label: 'Flash v1 Θ(N²d²/M)',
+      flashV2Label: 'Flash v2 Θ(N²d/M)',
+      footer: '长序列下标准方案 IO 爆炸 vs Flash Attention 的亚二次增长',
+    },
+    en: {
+      title: 'IO Complexity Comparison: Standard vs Flash v1 vs v2',
+      headDim: 'head dim d',
+      sram: 'SRAM M',
+      seqLength: 'Sequence length N',
+      hbmAccess: 'HBM access (log scale)',
+      standardLabel: 'Standard Θ(Nd+N²)',
+      flashV1Label: 'Flash v1 Θ(N²d²/M)',
+      flashV2Label: 'Flash v2 Θ(N²d/M)',
+      footer: 'Long sequences: standard IO explosion vs Flash Attention sub-quadratic growth',
+    },
+  }[locale];
+
   const [d, setD] = useState(128);
   const [M, setM] = useState(100 * 1024); // 100KB in bytes
 
@@ -52,21 +77,21 @@ export default function IOComplexityChart() {
   };
 
   const lines = [
-    { key: 'standard', color: COLORS.red, label: 'Standard Θ(Nd+N²)' },
-    { key: 'flashV1', color: COLORS.orange, label: 'Flash v1 Θ(N²d²/M)' },
-    { key: 'flashV2', color: COLORS.green, label: 'Flash v2 Θ(N²d/M)' },
+    { key: 'standard', color: COLORS.red, label: t.standardLabel },
+    { key: 'flashV1', color: COLORS.orange, label: t.flashV1Label },
+    { key: 'flashV2', color: COLORS.green, label: t.flashV2Label },
   ] as const;
 
   return (
     <div className="my-6 p-4 bg-white rounded-lg border" style={{ borderColor: COLORS.light }}>
       <h3 className="text-base font-bold mb-3" style={{ color: COLORS.dark }}>
-        IO 复杂度对比：Standard vs Flash v1 vs v2
+        {t.title}
       </h3>
 
       {/* Controls */}
       <div className="flex flex-wrap gap-4 mb-3">
         <label className="flex items-center gap-2 text-xs">
-          <span style={{ color: COLORS.mid }}>head dim d:</span>
+          <span style={{ color: COLORS.mid }}>{t.headDim}:</span>
           <select value={d} onChange={e => setD(Number(e.target.value))}
             className="px-2 py-0.5 border rounded text-xs" style={{ borderColor: COLORS.light }}>
             <option value={64}>64</option>
@@ -74,7 +99,7 @@ export default function IOComplexityChart() {
           </select>
         </label>
         <label className="flex items-center gap-2 text-xs">
-          <span style={{ color: COLORS.mid }}>SRAM M:</span>
+          <span style={{ color: COLORS.mid }}>{t.sram}:</span>
           <select value={M} onChange={e => setM(Number(e.target.value))}
             className="px-2 py-0.5 border rounded text-xs" style={{ borderColor: COLORS.light }}>
             <option value={50 * 1024}>50 KB</option>
@@ -117,12 +142,12 @@ export default function IOComplexityChart() {
           </text>
         ))}
         <text x={pad.left + plotW / 2} y={H - 2} textAnchor="middle"
-          fontSize={10} fill={COLORS.mid}>序列长度 N</text>
+          fontSize={10} fill={COLORS.mid}>{t.seqLength}</text>
 
         {/* Y axis label */}
         <text x={12} y={pad.top + plotH / 2} textAnchor="middle"
           fontSize={10} fill={COLORS.mid} transform={`rotate(-90, 12, ${pad.top + plotH / 2})`}>
-          HBM 访问量 (log scale)
+          {t.hbmAccess}
         </text>
       </svg>
 
@@ -137,7 +162,7 @@ export default function IOComplexityChart() {
       </div>
 
       <p className="text-xs mt-2 text-center" style={{ color: COLORS.mid }}>
-        长序列下标准方案 IO 爆炸 vs Flash Attention 的亚二次增长
+        {t.footer}
       </p>
     </div>
   );

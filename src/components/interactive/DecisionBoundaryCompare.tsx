@@ -19,7 +19,28 @@ const ROUTERS = [
   { name: 'Semantic', threshold: 60, accuracy: '85%', note: '更激进（倾向弱模型）', color: '#6a1b9a' },
 ];
 
-export default function DecisionBoundaryCompare() {
+export default function DecisionBoundaryCompare({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '四种 Router 决策边界对比',
+      subtitle: '相同 query 集，不同 router 的强/弱模型判定差异',
+      strong: '强',
+      weak: '弱',
+      accuracy: '准确率',
+      threshold: '阈值',
+      wrongDecision: '判断错误',
+    },
+    en: {
+      title: 'Four Router Decision Boundary Comparison',
+      subtitle: 'Same query set, different router strong/weak model decisions',
+      strong: 'Strong',
+      weak: 'Weak',
+      accuracy: 'Accuracy',
+      threshold: 'Threshold',
+      wrongDecision: 'Wrong decision',
+    },
+  }[locale];
+
   const [hoveredRouter, setHoveredRouter] = useState<number | null>(null);
 
   const W = 580, H = 380;
@@ -31,11 +52,11 @@ export default function DecisionBoundaryCompare() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="25" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          四种 Router 决策边界对比
+          {t.title}
         </text>
         <text x={W / 2} y="42" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="10" fill={COLORS.mid}>
-          相同 query 集，不同 router 的强/弱模型判定差异
+          {t.subtitle}
         </text>
 
         {ROUTERS.map((router, ri) => {
@@ -66,7 +87,7 @@ export default function DecisionBoundaryCompare() {
                     <text x={cellW - 5} y="15" textAnchor="end"
                           fontFamily={FONTS.mono} fontSize="9"
                           fill={decision === 'strong' ? COLORS.red : COLORS.green}>
-                      {decision === 'strong' ? '强' : '弱'}
+                      {decision === 'strong' ? t.strong : t.weak}
                     </text>
                   </g>
                 );
@@ -74,7 +95,7 @@ export default function DecisionBoundaryCompare() {
 
               <text x={cellW / 2} y={35 + QUERIES.length * 27 + 15} textAnchor="middle"
                     fontFamily={FONTS.mono} fontSize="10" fontWeight="600" fill={router.color}>
-                准确率: {router.accuracy}
+                {t.accuracy}: {router.accuracy}
               </text>
             </g>
           );
@@ -86,7 +107,7 @@ export default function DecisionBoundaryCompare() {
                   fill={COLORS.bgAlt} stroke={ROUTERS[hoveredRouter].color} strokeWidth="1" />
             <text x="10" y="18" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark}>
               {ROUTERS[hoveredRouter].name}: {ROUTERS[hoveredRouter].note}
-              · 阈值={ROUTERS[hoveredRouter].threshold} · 红色边框=判断错误
+              · {t.threshold}={ROUTERS[hoveredRouter].threshold} · {locale === 'zh' ? '红色边框=' : 'Red border='}{t.wrongDecision}
             </text>
           </g>
         )}

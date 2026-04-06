@@ -10,7 +10,12 @@ function kvCacheGB(layers: number, kvHeads: number, headDim: number, seqLen: num
   return (2 * layers * kvHeads * seqLen * headDim * bytesPerParam) / (1024 ** 3);
 }
 
-export default function KVCacheGrowthChart() {
+export default function KVCacheGrowthChart({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: { modelPreset: '模型预设', precision: '精度' },
+    en: { modelPreset: 'Model Preset', precision: 'Precision' },
+  }[locale];
+
   const [preset, setPreset] = useState('LLaMA-2 70B');
   const [precision, setPrecision] = useState<Precision>('FP16');
   const model = MODEL_PRESETS[preset];
@@ -52,14 +57,14 @@ export default function KVCacheGrowthChart() {
     <div className="my-6 p-4 border rounded-lg">
       <div className="flex flex-wrap gap-4 mb-3">
         <div>
-          <label className="text-xs text-gray-500 block">模型预设</label>
+          <label className="text-xs text-gray-500 block">{t.modelPreset}</label>
           <select value={preset} onChange={e => setPreset(e.target.value)}
             className="text-sm border rounded px-2 py-1">
             {Object.keys(MODEL_PRESETS).map(k => <option key={k} value={k}>{k}</option>)}
           </select>
         </div>
         <div>
-          <label className="text-xs text-gray-500 block">精度</label>
+          <label className="text-xs text-gray-500 block">{t.precision}</label>
           <select value={precision} onChange={e => setPrecision(e.target.value as Precision)}
             className="text-sm border rounded px-2 py-1">
             {(['FP32', 'FP16', 'INT8', 'INT4'] as Precision[]).map(p => <option key={p}>{p}</option>)}

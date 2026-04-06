@@ -51,14 +51,44 @@ const expertGap = 10;
 const expertsStartX = (W - NUM_EXPERTS * (expertW + expertGap) + expertGap) / 2;
 const expertsY = 100;
 
+export default function MoEBasicFlow({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: 'Router 打分',
+      step1Heading: 'Step 1: Token 进入 Router，对每个 Expert 打分',
+      step1Desc: 'Router（小型线性层）为每个 expert 输出一个概率分数',
+      step2Title: 'Top-K 选择',
+      step2Heading: `Step 2: Top-${TOP_K} 选择（高亮被选中的 Expert）`,
+      step2Selected: `选择分数最高的 ${TOP_K} 个`,
+      step2Unselected: '未选中的 expert 不参与计算 — 这就是 "稀疏" 的含义',
+      step2Efficiency: `每个 token 只激活 ${TOP_K}/${NUM_EXPERTS} 的 expert → 计算量仅为 dense 的 ${(TOP_K / NUM_EXPERTS * 100).toFixed(0)}%`,
+      step3Title: '加权合并',
+      step3Heading: 'Step 3: 选中 Expert 并行计算，输出加权合并',
+      step3Renormalize: '权重经过 renormalize（选中 expert 的分数归一化为 1）',
+    },
+    en: {
+      step1Title: 'Router Scoring',
+      step1Heading: 'Step 1: Token enters Router, scores each Expert',
+      step1Desc: 'Router (small linear layer) outputs a probability score for each expert',
+      step2Title: 'Top-K Selection',
+      step2Heading: `Step 2: Top-${TOP_K} selection (highlight selected Experts)`,
+      step2Selected: `Select top ${TOP_K} highest scores`,
+      step2Unselected: 'Unselected experts do not participate — this is "sparse"',
+      step2Efficiency: `Each token activates only ${TOP_K}/${NUM_EXPERTS} experts → ${(TOP_K / NUM_EXPERTS * 100).toFixed(0)}% computation vs dense`,
+      step3Title: 'Weighted Merge',
+      step3Heading: 'Step 3: Selected Experts compute in parallel, outputs merged',
+      step3Renormalize: 'Weights renormalized (selected expert scores normalized to 1)',
+    },
+  }[locale];
+
 const steps = [
   {
-    title: 'Router 打分',
+    title: t.step1Title,
     content: (
       <StepSvg h={220}>
         <text x={W / 2} y={22} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Step 1: Token 进入 Router，对每个 Expert 打分
+          {t.step1Heading}
         </text>
 
         {/* Input token */}
@@ -88,18 +118,18 @@ const steps = [
 
         <text x={W / 2} y={165} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          Router（小型线性层）为每个 expert 输出一个概率分数
+          {t.step1Desc}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'Top-K 选择',
+    title: t.step2Title,
     content: (
       <StepSvg h={220}>
         <text x={W / 2} y={22} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Step 2: Top-{TOP_K} 选择（高亮被选中的 Expert）
+          {t.step2Heading}
         </text>
 
         <rect x={W / 2 - 40} y={40} width={80} height={28} rx={14}
@@ -109,7 +139,7 @@ const steps = [
 
         <text x={W / 2} y={85} textAnchor="middle" fontSize="8" fill={COLORS.primary}
           fontFamily={FONTS.mono} fontWeight="600">
-          选择分数最高的 {TOP_K} 个: E{topIdx[0]} ({scores[topIdx[0]].toFixed(2)}) + E{topIdx[1]} ({scores[topIdx[1]].toFixed(2)})
+          {t.step2Selected}: E{topIdx[0]} ({scores[topIdx[0]].toFixed(2)}) + E{topIdx[1]} ({scores[topIdx[1]].toFixed(2)})
         </text>
 
         {scores.map((score, i) => (
@@ -122,23 +152,23 @@ const steps = [
 
         <text x={W / 2} y={165} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          未选中的 expert 不参与计算 — 这就是 "稀疏" 的含义
+          {t.step2Unselected}
         </text>
 
         <text x={W / 2} y={185} textAnchor="middle" fontSize="8" fill={COLORS.green}
           fontFamily={FONTS.sans} fontWeight="600">
-          每个 token 只激活 {TOP_K}/{NUM_EXPERTS} 的 expert → 计算量仅为 dense 的 {(TOP_K / NUM_EXPERTS * 100).toFixed(0)}%
+          {t.step2Efficiency}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: '加权合并',
+    title: t.step3Title,
     content: (
       <StepSvg h={250}>
         <text x={W / 2} y={22} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Step 3: 选中 Expert 并行计算，输出加权合并
+          {t.step3Heading}
         </text>
 
         <rect x={W / 2 - 40} y={40} width={80} height={28} rx={14}
@@ -194,13 +224,12 @@ const steps = [
 
         <text x={W / 2} y={235} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          权重经过 renormalize（选中 expert 的分数归一化为 1）
+          {t.step3Renormalize}
         </text>
       </StepSvg>
     ),
   },
 ];
 
-export default function MoEBasicFlow() {
   return <StepNavigator steps={steps} />;
 }

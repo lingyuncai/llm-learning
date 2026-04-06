@@ -78,7 +78,24 @@ function MiniBarChart({ candidates, probs, correctIdx }: {
   );
 }
 
-export default function PerplexityIntuition() {
+export default function PerplexityIntuition({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      goodModel: '好模型',
+      badModel: '差模型',
+      pplLabel: 'PPL',
+      goodModelNote: '好模型：高置信度预测 → 低困惑度（每步平均只需从 ~2 个 token 中选择）',
+      badModelNote: '差模型：概率分散 → 高困惑度（每步平均要从 ~4 个 token 中选择）',
+    },
+    en: {
+      goodModel: 'Good Model',
+      badModel: 'Bad Model',
+      pplLabel: 'PPL',
+      goodModelNote: 'Good model: high-confidence predictions → low perplexity (on average, choose from ~2 tokens per step)',
+      badModelNote: 'Bad model: scattered probabilities → high perplexity (on average, choose from ~4 tokens per step)',
+    },
+  }[locale];
+
   const [isGoodModel, setIsGoodModel] = useState(true);
   const model = isGoodModel ? GOOD_MODEL : BAD_MODEL;
   const ppl = useMemo(() => computePPL(model), [model]);
@@ -95,7 +112,7 @@ export default function PerplexityIntuition() {
               : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
           }`}
         >
-          好模型
+          {t.goodModel}
         </button>
         <button
           onClick={() => setIsGoodModel(false)}
@@ -105,7 +122,7 @@ export default function PerplexityIntuition() {
               : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
           }`}
         >
-          差模型
+          {t.badModel}
         </button>
       </div>
 
@@ -158,12 +175,10 @@ export default function PerplexityIntuition() {
         animate={{ opacity: 1 }}
       >
         <div className="text-lg font-bold" style={{ color: isGoodModel ? COLORS.green : COLORS.red }}>
-          PPL = {ppl.toFixed(2)}
+          {t.pplLabel} = {ppl.toFixed(2)}
         </div>
         <div className="text-xs text-gray-600 mt-1">
-          {isGoodModel
-            ? '好模型：高置信度预测 → 低困惑度（每步平均只需从 ~2 个 token 中选择）'
-            : '差模型：概率分散 → 高困惑度（每步平均要从 ~4 个 token 中选择）'}
+          {isGoodModel ? t.goodModelNote : t.badModelNote}
         </div>
       </motion.div>
     </div>

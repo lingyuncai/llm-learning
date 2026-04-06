@@ -6,7 +6,38 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const SVG_H = 320;
 
-export default function IndexCalculation() {
+export default function IndexCalculation({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      totalThreads: '总线程数',
+      clickToSelect: '点击选择线程',
+      grid: 'Grid',
+      blocks: 'blocks',
+      threads: 'threads',
+      individualThreads: '个线程',
+      block: 'Block',
+      globalIndexFormula: 'Global Index 计算公式',
+      threadInBlock: '线程在 Block 内的位置',
+      blockInGrid: 'Block 在 Grid 内的位置',
+      threadsPerBlock: '每个 Block 的线程数',
+      thisGlobalIdx: '这个 globalIdx 就是该线程负责处理的数据元素下标',
+    },
+    en: {
+      totalThreads: 'Total threads',
+      clickToSelect: 'Click to select thread',
+      grid: 'Grid',
+      blocks: 'blocks',
+      threads: 'threads',
+      individualThreads: 'threads',
+      block: 'Block',
+      globalIndexFormula: 'Global Index Calculation',
+      threadInBlock: 'thread position within block',
+      blockInGrid: 'block position within grid',
+      threadsPerBlock: 'threads per block',
+      thisGlobalIdx: 'This globalIdx is the data element index this thread processes',
+    },
+  }[locale];
+
   const [blockDim, setBlockDim] = useState(8);
   const [gridDim, setGridDim] = useState(4);
   const [selectedBlock, setSelectedBlock] = useState(1);
@@ -34,7 +65,7 @@ export default function IndexCalculation() {
           <span className="font-mono text-primary-600 w-6">{gridDim}</span>
         </label>
         <span className="text-xs text-gray-500">
-          总线程数: {totalThreads} | 点击选择线程
+          {t.totalThreads}: {totalThreads} | {t.clickToSelect}
         </span>
       </div>
 
@@ -44,7 +75,7 @@ export default function IndexCalculation() {
           {/* Title */}
           <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            1D Grid: {gridDim} blocks × {blockDim} threads = {totalThreads} 个线程
+            1D {t.grid}: {gridDim} {t.blocks} × {blockDim} {t.threads} = {totalThreads} {t.individualThreads}
           </text>
 
           {/* Blocks */}
@@ -64,7 +95,7 @@ export default function IndexCalculation() {
                   fontSize="8" fontWeight="600"
                   fill={isSelectedBlock ? COLORS.primary : COLORS.dark}
                   fontFamily={FONTS.sans}>
-                  Block {bi}
+                  {t.block} {bi}
                 </text>
 
                 {/* Threads within block */}
@@ -102,7 +133,7 @@ export default function IndexCalculation() {
 
           <text x={W / 2} y={192} textAnchor="middle" fontSize="10" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            Global Index 计算公式
+            {t.globalIndexFormula}
           </text>
 
           <text x={W / 2} y={215} textAnchor="middle" fontSize="11" fontWeight="700"
@@ -118,12 +149,12 @@ export default function IndexCalculation() {
           {/* Breakdown */}
           <text x={W / 2} y={265} textAnchor="middle" fontSize="8"
             fill="#64748b" fontFamily={FONTS.sans}>
-            threadIdx.x = {selectedThread} (线程在 Block 内的位置) | blockIdx.x = {selectedBlock} (Block 在 Grid 内的位置) | blockDim.x = {blockDim} (每个 Block 的线程数)
+            threadIdx.x = {selectedThread} ({t.threadInBlock}) | blockIdx.x = {selectedBlock} ({t.blockInGrid}) | blockDim.x = {blockDim} ({t.threadsPerBlock})
           </text>
 
           <text x={W / 2} y={285} textAnchor="middle" fontSize="8"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            这个 globalIdx 就是该线程负责处理的数据元素下标: a[{globalIdx}] = b[{globalIdx}] + c[{globalIdx}]
+            {t.thisGlobalIdx}: a[{globalIdx}] = b[{globalIdx}] + c[{globalIdx}]
           </text>
         </svg>
       </div>

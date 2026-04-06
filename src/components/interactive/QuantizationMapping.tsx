@@ -9,7 +9,46 @@ const WEIGHTS = [
   0.15, 0.27, 0.35, 0.49, 0.56, 0.68, 0.74, 0.91,
 ];
 
-export default function QuantizationMapping() {
+export default function QuantizationMapping({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      symmetric: '对称',
+      asymmetric: '非对称',
+      step1Title: 'Step 1: FP16 权重分布',
+      step1Footer: 'FP16 权重值 (连续分布)',
+      step2Title: 'Step 2: 计算 scale 和量化网格',
+      step2Footer: '橙色虚线 = 量化级别 (整数网格)',
+      step3Title: 'Step 3: 映射到最近网格线 (Rounding)',
+      step3Footer: '蓝 = 原始值, 橙 = 量化后值, 红线 = rounding 误差',
+      step3Formula: 'q[i] = round(w[i] / scale',
+      step4Title: 'Step 4: 反量化与误差分析',
+      step4Error: '量化误差 |w - ŵ|',
+      step4Dequant: '反量化: ',
+      step4MSE: 'MSE: ',
+      step4MaxError: 'Max Error: ',
+      step4SymNote: '对称量化: 简单高效, 适合近似对称的权重分布',
+      step4AsymNote: '非对称量化: 额外存储 zero_point, 适合偏移分布 (如 activation)',
+    },
+    en: {
+      symmetric: 'Symmetric',
+      asymmetric: 'Asymmetric',
+      step1Title: 'Step 1: FP16 Weight Distribution',
+      step1Footer: 'FP16 weight values (continuous)',
+      step2Title: 'Step 2: Compute scale & quantization grid',
+      step2Footer: 'Orange dashed lines = quantization levels (integer grid)',
+      step3Title: 'Step 3: Map to nearest grid (Rounding)',
+      step3Footer: 'Blue = original, Orange = quantized, Red = rounding error',
+      step3Formula: 'q[i] = round(w[i] / scale',
+      step4Title: 'Step 4: Dequantization & error analysis',
+      step4Error: 'Quantization error |w - ŵ|',
+      step4Dequant: 'Dequantization: ',
+      step4MSE: 'MSE: ',
+      step4MaxError: 'Max Error: ',
+      step4SymNote: 'Symmetric quantization: simple & efficient, good for near-symmetric weights',
+      step4AsymNote: 'Asymmetric quantization: stores zero_point, good for shifted distributions (e.g. activations)',
+    },
+  }[locale];
+
   const [symmetric, setSymmetric] = useState(true);
 
   const { scale, zeroPoint, qMin, qMax, quantized, dequantized, errors } = useMemo(() => {
@@ -47,7 +86,7 @@ export default function QuantizationMapping() {
 
   const modeToggle = (
     <g>
-      {['对称', '非对称'].map((label, i) => (
+      {[t.symmetric, t.asymmetric].map((label, i) => (
         <g key={label} onClick={() => setSymmetric(i === 0)} cursor="pointer">
           <rect x={200 + i * 90} y={4} width={80} height={20} rx={4}
             fill={(i === 0) === symmetric ? COLORS.primary : COLORS.bgAlt}
@@ -62,7 +101,7 @@ export default function QuantizationMapping() {
 
   const steps = [
     {
-      title: 'Step 1: FP16 权重分布',
+      title: t.step1Title,
       content: (
         <svg viewBox={`0 0 ${W} 195`} className="w-full">
           {modeToggle}
@@ -77,12 +116,12 @@ export default function QuantizationMapping() {
           <text x={toX(0)} y={172} textAnchor="middle" fontSize="7" fill={COLORS.mid}
             fontFamily={FONTS.mono}>0</text>
           <text x={W / 2} y={190} textAnchor="middle" fontSize="7" fill={COLORS.mid}
-            fontFamily={FONTS.sans}>FP16 权重值 (连续分布)</text>
+            fontFamily={FONTS.sans}>{t.step1Footer}</text>
         </svg>
       ),
     },
     {
-      title: 'Step 2: 计算 scale 和量化网格',
+      title: t.step2Title,
       content: (
         <svg viewBox={`0 0 ${W} 195`} className="w-full">
           {modeToggle}
@@ -110,12 +149,12 @@ export default function QuantizationMapping() {
               fill={COLORS.primary} opacity={0.6} />
           ))}
           <text x={W / 2} y={185} textAnchor="middle" fontSize="7" fill={COLORS.mid}
-            fontFamily={FONTS.sans}>橙色虚线 = 量化级别 (整数网格)</text>
+            fontFamily={FONTS.sans}>{t.step2Footer}</text>
         </svg>
       ),
     },
     {
-      title: 'Step 3: 映射到最近网格线 (Rounding)',
+      title: t.step3Title,
       content: (
         <svg viewBox={`0 0 ${W} 195`} className="w-full">
           {modeToggle}
@@ -140,21 +179,21 @@ export default function QuantizationMapping() {
             );
           })}
           <text x={W / 2} y={165} textAnchor="middle" fontSize="7" fill={COLORS.mid}
-            fontFamily={FONTS.sans}>蓝 = 原始值, 橙 = 量化后值, 红线 = rounding 误差</text>
+            fontFamily={FONTS.sans}>{t.step3Footer}</text>
           <text x={W / 2} y={185} textAnchor="middle" fontSize="8" fill={COLORS.dark}
             fontFamily={FONTS.sans}>
-            q[i] = round(w[i] / scale{symmetric ? '' : ' + zero_point'})
+            {t.step3Formula}{symmetric ? '' : ' + zero_point'})
           </text>
         </svg>
       ),
     },
     {
-      title: 'Step 4: 反量化与误差分析',
+      title: t.step4Title,
       content: (
         <svg viewBox={`0 0 ${W} 200`} className="w-full">
           {modeToggle}
           <text x={15} y={42} fontSize="7" fontWeight="600" fill={COLORS.dark}
-            fontFamily={FONTS.sans}>量化误差 |w - ŵ|</text>
+            fontFamily={FONTS.sans}>{t.step4Error}</text>
           {WEIGHTS.map((_w, i) => {
             const maxErr = Math.max(...errors);
             const barH = maxErr > 0 ? (errors[i] / maxErr) * 50 : 0;
@@ -171,20 +210,18 @@ export default function QuantizationMapping() {
           <rect x={40} y={100} width={W - 80} height={55} rx={6}
             fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth={1} />
           <text x={60} y={120} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            <tspan fontWeight="600">反量化: </tspan>
+            <tspan fontWeight="600">{t.step4Dequant}</tspan>
             ŵ[i] = {symmetric ? 'q[i] × scale' : '(q[i] - zero_point) × scale'}
           </text>
           <text x={60} y={140} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            <tspan fontWeight="600">MSE: </tspan>
+            <tspan fontWeight="600">{t.step4MSE}</tspan>
             {(errors.reduce((a, b) => a + b * b, 0) / errors.length).toFixed(6)}
-            <tspan dx={20} fontWeight="600">Max Error: </tspan>
+            <tspan dx={20} fontWeight="600">{t.step4MaxError}</tspan>
             {Math.max(...errors).toFixed(4)}
           </text>
           <text x={W / 2} y={180} textAnchor="middle" fontSize="7.5" fill={COLORS.orange}
             fontFamily={FONTS.sans}>
-            {symmetric
-              ? '对称量化: 简单高效, 适合近似对称的权重分布'
-              : '非对称量化: 额外存储 zero_point, 适合偏移分布 (如 activation)'}
+            {symmetric ? t.step4SymNote : t.step4AsymNote}
           </text>
         </svg>
       ),

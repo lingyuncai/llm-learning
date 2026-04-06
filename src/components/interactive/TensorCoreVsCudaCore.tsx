@@ -239,6 +239,210 @@ const steps = [
   },
 ];
 
-export default function TensorCoreVsCudaCore() {
+export default function TensorCoreVsCudaCore({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: '矩阵乘法 C = A × B (4×4)',
+      step1Main: '目标: 计算 C(4×4) = A(4×4) × B(4×4) — 需要多少次操作?',
+      eachElement: '每个输出元素 C[i][j] = 4 次乘法 + 3 次加法 = 7 次操作',
+      totalOps: '16 个输出元素 × 7 = 112 次标量操作（实际为 64 次乘法 + 48 次加法）',
+      comparison: 'CUDA Core: 逐个标量操作 → 112 次 | Tensor Core: 一条 MMA 指令 → 1 次',
+      step2Title: 'CUDA Core 路径 — 112 次标量操作',
+      cudaCorePath: 'CUDA Core 路径',
+      cudaDetail: '逐元素: 每个 C[i][j] 需要 4 次乘 + 3 次加',
+      cComputing: 'C — 逐个计算中...',
+      tensorCorePath: 'Tensor Core 路径',
+      tensorDetail: '一条 MMA 指令: D = A · B + C',
+      cDone: 'C — 已完成',
+      opsCount: '操作计数',
+      step3Title: '吞吐量差距 — 一个数量级',
+      step3Main: 'H100 SXM 理论峰值对比',
+      cudaCore: 'CUDA Core',
+      tensorCore: 'Tensor Core',
+      aiCompute: 'AI 训练和推理中 90%+ 的计算量是矩阵乘法',
+      speedup: 'Tensor Core / XMX 等专用单元让这些计算快一个数量级',
+      systolicNext: '关键: 它们内部都是 Systolic Array（脉动阵列）的变体 → 下一节详解',
+    },
+    en: {
+      step1Title: 'Matrix Multiplication C = A × B (4×4)',
+      step1Main: 'Goal: Compute C(4×4) = A(4×4) × B(4×4) — How many operations needed?',
+      eachElement: 'Each output element C[i][j] = 4 multiplies + 3 adds = 7 operations',
+      totalOps: '16 output elements × 7 = 112 scalar operations (64 multiplies + 48 adds)',
+      comparison: 'CUDA Core: Scalar ops one by one → 112 ops | Tensor Core: One MMA instruction → 1 op',
+      step2Title: 'CUDA Core Path — 112 Scalar Operations',
+      cudaCorePath: 'CUDA Core Path',
+      cudaDetail: 'Element-wise: each C[i][j] needs 4 muls + 3 adds',
+      cComputing: 'C — Computing...',
+      tensorCorePath: 'Tensor Core Path',
+      tensorDetail: 'One MMA instruction: D = A · B + C',
+      cDone: 'C — Done',
+      opsCount: 'Op Count',
+      step3Title: 'Throughput Gap — Order of Magnitude',
+      step3Main: 'H100 SXM Peak Theoretical Performance',
+      cudaCore: 'CUDA Core',
+      tensorCore: 'Tensor Core',
+      aiCompute: '90%+ of AI training/inference compute is matrix multiplication',
+      speedup: 'Tensor Core / XMX specialized units make these operations ~10x faster',
+      systolicNext: 'Key: They all use Systolic Array variants internally → detailed in next section',
+    },
+  }[locale];
+
+  const steps = [
+    {
+      title: t.step1Title,
+      content: (
+        <StepSvg>
+          <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="600"
+            fill={COLORS.dark} fontFamily={FONTS.sans}>
+            {t.step1Main}
+          </text>
+          <Matrix4x4 x={30} y={50} label="A (4×4)" fills={makeGrid('#dbeafe')} values={A} />
+          <text x={W / 2 - 30} y={120} fontSize="20" fill={COLORS.dark} fontFamily={FONTS.sans}>×</text>
+          <Matrix4x4 x={210} y={50} label="B (4×4)" fills={makeGrid('#dcfce7')} values={B} />
+          <text x={W / 2 + 80} y={120} fontSize="20" fill={COLORS.dark} fontFamily={FONTS.sans}>=</text>
+          <Matrix4x4 x={390} y={50} label="C (4×4)" fills={makeGrid(EMPTY)} />
+          <text x={W / 2} y={200} textAnchor="middle" fontSize="10" fill="#64748b"
+            fontFamily={FONTS.sans}>
+            {t.eachElement}
+          </text>
+          <text x={W / 2} y={218} textAnchor="middle" fontSize="10" fill="#64748b"
+            fontFamily={FONTS.sans}>
+            {t.totalOps}
+          </text>
+          <text x={W / 2} y={245} textAnchor="middle" fontSize="11" fontWeight="600"
+            fill={COLORS.primary} fontFamily={FONTS.sans}>
+            {t.comparison}
+          </text>
+        </StepSvg>
+      ),
+    },
+    {
+      title: t.step2Title,
+      content: (
+        <StepSvg>
+          {/* Left: CUDA Core */}
+          <text x={W / 4} y={20} textAnchor="middle" fontSize="12" fontWeight="700"
+            fill={COLORS.primary} fontFamily={FONTS.sans}>
+            {t.cudaCorePath}
+          </text>
+          <text x={W / 4} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
+            fontFamily={FONTS.sans}>
+            {t.cudaDetail}
+          </text>
+          {/* Show output matrix partially filled */}
+          <Matrix4x4 x={50} y={50} label={t.cComputing} fills={cudaFills(6)} values={C} />
+          <OpsCounter x={90} y={180} current={42} total={112} color={COLORS.primary} />
+          {/* Equation for current element */}
+          <text x={W / 4} y={235} textAnchor="middle" fontSize="8" fill="#64748b"
+            fontFamily={FONTS.mono}>
+            C[1][1] = A[1][0]×B[0][1] + A[1][1]×B[1][1] + A[1][2]×B[2][1] + A[1][3]×B[3][1]
+          </text>
+
+          {/* Divider */}
+          <line x1={W / 2} y1={10} x2={W / 2} y2={SVG_H - 10}
+            stroke="#e2e8f0" strokeWidth={1} strokeDasharray="4 3" />
+
+          {/* Right: result if Tensor Core */}
+          <text x={W * 3 / 4} y={20} textAnchor="middle" fontSize="12" fontWeight="700"
+            fill={COLORS.purple} fontFamily={FONTS.sans}>
+            {t.tensorCorePath}
+          </text>
+          <text x={W * 3 / 4} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
+            fontFamily={FONTS.sans}>
+            {t.tensorDetail}
+          </text>
+          <Matrix4x4 x={W / 2 + 60} y={50} label={t.cDone} fills={makeGrid(TC_DONE)} values={C} />
+          <OpsCounter x={W / 2 + 100} y={180} current={1} total={1} color={COLORS.purple} />
+          <text x={W * 3 / 4} y={235} textAnchor="middle" fontSize="8" fill="#64748b"
+            fontFamily={FONTS.mono}>
+            mma.sync.aligned.m4n4k4 — {locale === 'zh' ? '一条指令完成整块矩阵乘' : 'one instruction completes entire matrix multiply'}
+          </text>
+        </StepSvg>
+      ),
+    },
+    {
+      title: t.step3Title,
+      content: (
+        <StepSvg>
+          <text x={W / 2} y={24} textAnchor="middle" fontSize="12" fontWeight="700"
+            fill={COLORS.dark} fontFamily={FONTS.sans}>
+            {t.step3Main}
+          </text>
+
+          {/* CUDA Core bar */}
+          <rect x={120} y={50} width={120} height={36} rx={5}
+            fill="#dbeafe" stroke={COLORS.primary} strokeWidth={1.5} />
+          <text x={60} y={72} textAnchor="middle" fontSize="10" fontWeight="600"
+            fill={COLORS.primary} fontFamily={FONTS.sans}>
+            {t.cudaCore}
+          </text>
+          <text x={180} y={64} textAnchor="middle" dominantBaseline="middle"
+            fontSize="11" fontWeight="700" fill={COLORS.primary} fontFamily={FONTS.mono}>
+            ~67 TFLOPS
+          </text>
+          <text x={250} y={72} fontSize="8" fill="#64748b" fontFamily={FONTS.sans}>
+            FP32
+          </text>
+
+          {/* Tensor Core bar — much wider */}
+          <rect x={120} y={100} width={400} height={36} rx={5}
+            fill="#f3e8ff" stroke={COLORS.purple} strokeWidth={1.5} />
+          <text x={60} y={122} textAnchor="middle" fontSize="10" fontWeight="600"
+            fill={COLORS.purple} fontFamily={FONTS.sans}>
+            {t.tensorCore}
+          </text>
+          <text x={320} y={114} textAnchor="middle" dominantBaseline="middle"
+            fontSize="11" fontWeight="700" fill={COLORS.purple} fontFamily={FONTS.mono}>
+            ~990 TFLOPS
+          </text>
+          <text x={530} y={122} fontSize="8" fill="#64748b" fontFamily={FONTS.sans}>
+            FP16
+          </text>
+
+          {/* Ratio */}
+          <text x={W / 2} y={160} textAnchor="middle" fontSize="11" fontWeight="600"
+            fill={COLORS.dark} fontFamily={FONTS.sans}>
+            {locale === 'zh' ? 'Tensor Core 吞吐量约为 CUDA Core 的 15 倍（FP16 vs FP32）' : 'Tensor Core throughput ~15x CUDA Core (FP16 vs FP32)'}
+          </text>
+
+          {/* Why it matters */}
+          <rect x={40} y={180} width={W - 80} height={60} rx={6}
+            fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
+          <text x={W / 2} y={200} textAnchor="middle" fontSize="10" fill={COLORS.dark}
+            fontFamily={FONTS.sans}>
+            {t.aiCompute}
+          </text>
+          <text x={W / 2} y={218} textAnchor="middle" fontSize="10" fill={COLORS.dark}
+            fontFamily={FONTS.sans}>
+            {t.speedup}
+          </text>
+          <text x={W / 2} y={236} textAnchor="middle" fontSize="9" fill="#64748b"
+            fontFamily={FONTS.sans}>
+            {t.systolicNext}
+          </text>
+        </StepSvg>
+      ),
+    },
+  ];
+
+  function OpsCounter({ x, y, current, total, color }: {
+    x: number; y: number; current: number; total: number; color: string;
+  }) {
+    return (
+      <g>
+        <rect x={x} y={y} width={100} height={30} rx={5}
+          fill="white" stroke={color} strokeWidth={1.5} />
+        <text x={x + 50} y={y + 12} textAnchor="middle"
+          fontSize="8" fill="#64748b" fontFamily={FONTS.sans}>
+          {t.opsCount}
+        </text>
+        <text x={x + 50} y={y + 24} textAnchor="middle"
+          fontSize="11" fontWeight="700" fill={color} fontFamily={FONTS.mono}>
+          {current} / {total}
+        </text>
+      </g>
+    );
+  }
+
   return <StepNavigator steps={steps} />;
 }

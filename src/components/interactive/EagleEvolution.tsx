@@ -4,6 +4,10 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const SVG_H = 320;
 
+interface EagleEvolutionProps {
+  locale?: 'zh' | 'en';
+}
+
 function StepSvg({ children }: { children: React.ReactNode }) {
   return (
     <svg viewBox={`0 0 ${W} ${SVG_H}`} className="w-full" role="img">
@@ -54,9 +58,85 @@ function Arrow({ x1, y1, x2, y2, label, color }: {
   );
 }
 
-const steps = [
+export default function EagleEvolution({ locale = 'zh' }: EagleEvolutionProps) {
+  const t = {
+    zh: {
+      eagle1Title: 'EAGLE-1: Feature-Level Drafting',
+      eagle1Subtitle: '用 target model 的 hidden state 做 draft — feature 级信息量 > token 级',
+      targetModel: 'Target Model',
+      forwardPass: 'Forward Pass',
+      hiddenState: 'Hidden State',
+      topLayerFeature: 'Top-layer feature',
+      tokenEmbedding: 'Token Embedding',
+      draftHead: 'Draft Head',
+      lightweightDecoder: 'Lightweight decoder',
+      feature: 'feature',
+      embedding: 'embedding',
+      draftTokens: 'Draft Tokens',
+      coreInsight: '核心洞察: Feature-level > Token-level',
+      hiddenStateAdvantage: 'Hidden state 编码了完整上下文语义 → acceptance rate 比 Medusa 高 10-15%',
+      limitation: '限制: Draft 阶段依赖 target model 的 hidden state → 必须等 target forward pass 完成',
+      eagle2Title: 'EAGLE-2: Dynamic Draft Tree',
+      eagle2Subtitle: '在 EAGLE-1 基础上 + 根据置信度动态调整树结构',
+      contextAware: 'Context-Aware Dynamic Draft Tree',
+      dynamicTree: 'Dynamic Tree: 高置信度 → 深扩展, 低置信度 → 提前剪枝',
+      highConfidence: '高置信度分支: 展开更深',
+      lowConfidence: '低置信度分支: 提前剪枝',
+      pruned: 'pruned',
+      eagle2Improvement: 'EAGLE-2 改进: Token budget 智能分配',
+      budgetAllocation: '固定 token budget 下，把验证资源集中在高概率路径 → 更高 acceptance rate',
+      stillLimitation: '仍然限制: Draft 阶段依赖 target model hidden state',
+      eagle3Title: 'EAGLE-3: Direct Token Prediction',
+      eagle3Subtitle: '从 feature prediction 转为直接预测 token，融合多层特征',
+      directTokenPrediction: 'Direct Token Prediction + Multi-Layer Fusion',
+      multiLayerFusion: 'Multi-Layer Fusion',
+      trainingTimeTest: 'Training-Time Test',
+      directPrediction: 'Direct Token Prediction',
+      noFeatureMapping: '不经过 feature → token 映射',
+      speedup65x: 'Draft Tokens (6.5x speedup)',
+      speedupComparison: '加速比对比',
+    },
+    en: {
+      eagle1Title: 'EAGLE-1: Feature-Level Drafting',
+      eagle1Subtitle: 'Draft using target model hidden state — feature-level info > token-level',
+      targetModel: 'Target Model',
+      forwardPass: 'Forward Pass',
+      hiddenState: 'Hidden State',
+      topLayerFeature: 'Top-layer feature',
+      tokenEmbedding: 'Token Embedding',
+      draftHead: 'Draft Head',
+      lightweightDecoder: 'Lightweight decoder',
+      feature: 'feature',
+      embedding: 'embedding',
+      draftTokens: 'Draft Tokens',
+      coreInsight: 'Core Insight: Feature-level > Token-level',
+      hiddenStateAdvantage: 'Hidden state encodes full context semantics → acceptance rate 10-15% higher than Medusa',
+      limitation: 'Limitation: Draft stage depends on target model hidden state → must wait for target forward pass',
+      eagle2Title: 'EAGLE-2: Dynamic Draft Tree',
+      eagle2Subtitle: 'EAGLE-1 + dynamic tree structure based on confidence',
+      contextAware: 'Context-Aware Dynamic Draft Tree',
+      dynamicTree: 'Dynamic Tree: high confidence → deep expansion, low confidence → early pruning',
+      highConfidence: 'High confidence branch: expand deeper',
+      lowConfidence: 'Low confidence branch: early pruning',
+      pruned: 'pruned',
+      eagle2Improvement: 'EAGLE-2 Improvement: Smart token budget allocation',
+      budgetAllocation: 'Fixed token budget → focus verification on high-probability paths → higher acceptance rate',
+      stillLimitation: 'Still limited: Draft stage depends on target model hidden state',
+      eagle3Title: 'EAGLE-3: Direct Token Prediction',
+      eagle3Subtitle: 'From feature prediction to direct token prediction with multi-layer fusion',
+      directTokenPrediction: 'Direct Token Prediction + Multi-Layer Fusion',
+      multiLayerFusion: 'Multi-Layer Fusion',
+      trainingTimeTest: 'Training-Time Test',
+      directPrediction: 'Direct Token Prediction',
+      noFeatureMapping: 'No feature → token mapping',
+      speedup65x: 'Draft Tokens (6.5x speedup)',
+      speedupComparison: 'Speedup Comparison',
+    },
+  }[locale];
+
+  const steps = [
   {
-    title: 'EAGLE-1: Feature-Level Drafting',
+    title: t.eagle1Title,
     content: (
       <StepSvg>
         <defs>
@@ -72,24 +152,24 @@ const steps = [
         </text>
         <text x={W / 2} y={38} textAnchor="middle" fontSize="8" fill="#64748b"
           fontFamily={FONTS.sans}>
-          用 target model 的 hidden state 做 draft — feature 级信息量 {'>'} token 级
+          {t.eagle1Subtitle}
         </text>
 
-        <Box x={40} y={70} w={140} h={50} label="Target Model"
-          sublabel="Forward Pass" fill="#dbeafe" stroke={COLORS.primary} />
-        <Box x={220} y={70} w={140} h={50} label="Hidden State"
-          sublabel="Top-layer feature" fill="#fef3c7" stroke={COLORS.orange} />
+        <Box x={40} y={70} w={140} h={50} label={t.targetModel}
+          sublabel={t.forwardPass} fill="#dbeafe" stroke={COLORS.primary} />
+        <Box x={220} y={70} w={140} h={50} label={t.hiddenState}
+          sublabel={t.topLayerFeature} fill="#fef3c7" stroke={COLORS.orange} />
         <Arrow x1={180} y1={95} x2={220} y2={95} color={COLORS.primary} />
 
-        <Box x={220} y={140} w={140} h={36} label="Token Embedding"
+        <Box x={220} y={140} w={140} h={36} label={t.tokenEmbedding}
           fill="#f1f5f9" stroke="#94a3b8" />
 
-        <Box x={400} y={90} w={140} h={50} label="Draft Head"
-          sublabel="Lightweight decoder" fill="#dcfce7" stroke={COLORS.green} />
-        <Arrow x1={360} y1={95} x2={400} y2={105} label="feature" color={COLORS.orange} />
-        <Arrow x1={360} y1={158} x2={400} y2={120} label="embedding" color="#94a3b8" />
+        <Box x={400} y={90} w={140} h={50} label={t.draftHead}
+          sublabel={t.lightweightDecoder} fill="#dcfce7" stroke={COLORS.green} />
+        <Arrow x1={360} y1={95} x2={400} y2={105} label={t.feature} color={COLORS.orange} />
+        <Arrow x1={360} y1={158} x2={400} y2={120} label={t.embedding} color="#94a3b8" />
 
-        <Box x={400} y={170} w={140} h={36} label="Draft Tokens"
+        <Box x={400} y={170} w={140} h={36} label={t.draftTokens}
           sublabel="T+1, T+2, ..." fill="#dcfce7" stroke={COLORS.green} />
         <Arrow x1={470} y1={140} x2={470} y2={170} color={COLORS.green} />
 
@@ -97,21 +177,21 @@ const steps = [
           fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
         <text x={W / 2} y={250} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          核心洞察: Feature-level {'>'} Token-level
+          {t.coreInsight}
         </text>
         <text x={W / 2} y={268} textAnchor="middle" fontSize="8" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          Hidden state 编码了完整上下文语义 → acceptance rate 比 Medusa 高 10-15%
+          {t.hiddenStateAdvantage}
         </text>
         <text x={W / 2} y={284} textAnchor="middle" fontSize="8" fill={COLORS.red}
           fontFamily={FONTS.sans}>
-          限制: Draft 阶段依赖 target model 的 hidden state → 必须等 target forward pass 完成
+          {t.limitation}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'EAGLE-2: Dynamic Draft Tree',
+    title: t.eagle2Title,
     content: (
       <StepSvg>
         <defs>
@@ -123,25 +203,25 @@ const steps = [
 
         <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          EAGLE-2: Context-Aware Dynamic Draft Tree
+          {t.contextAware}
         </text>
         <text x={W / 2} y={38} textAnchor="middle" fontSize="8" fill="#64748b"
           fontFamily={FONTS.sans}>
-          在 EAGLE-1 基础上 + 根据置信度动态调整树结构
+          {t.eagle2Subtitle}
         </text>
 
-        <Box x={40} y={60} w={120} h={40} label="Target Model"
+        <Box x={40} y={60} w={120} h={40} label={t.targetModel}
           fill="#dbeafe" stroke={COLORS.primary} />
         <Arrow x1={160} y1={80} x2={190} y2={80} color={COLORS.primary} />
-        <Box x={190} y={60} w={120} h={40} label="Hidden State"
+        <Box x={190} y={60} w={120} h={40} label={t.hiddenState}
           fill="#fef3c7" stroke={COLORS.orange} />
         <Arrow x1={310} y1={80} x2={340} y2={80} color={COLORS.orange} />
-        <Box x={340} y={60} w={120} h={40} label="Draft Head"
+        <Box x={340} y={60} w={120} h={40} label={t.draftHead}
           fill="#dcfce7" stroke={COLORS.green} />
 
         <text x={W / 2} y={124} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Dynamic Tree: 高置信度 → 深扩展, 低置信度 → 提前剪枝
+          {t.dynamicTree}
         </text>
 
         <g>
@@ -166,7 +246,7 @@ const steps = [
             fill={COLORS.green} fontFamily={FONTS.sans}>p=0.6</text>
           <text x={150} y={200} textAnchor="middle" fontSize="8" fontWeight="600"
             fill={COLORS.green} fontFamily={FONTS.sans}>
-            高置信度分支: 展开更深
+            {t.highConfidence}
           </text>
         </g>
 
@@ -178,11 +258,11 @@ const steps = [
           <line x1={404} y1={152} x2={430} y2={152} stroke="#cbd5e1" strokeWidth={1}
             strokeDasharray="3 2" />
           <text x={455} y={155} fontSize="7" fill="#94a3b8" fontFamily={FONTS.sans}>
-            pruned
+            {t.pruned}
           </text>
           <text x={420} y={200} textAnchor="middle" fontSize="8" fontWeight="600"
             fill={COLORS.red} fontFamily={FONTS.sans}>
-            低置信度分支: 提前剪枝
+            {t.lowConfidence}
           </text>
         </g>
 
@@ -190,21 +270,21 @@ const steps = [
           fill="#dcfce7" stroke={COLORS.green} strokeWidth={1} />
         <text x={W / 2} y={245} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.green} fontFamily={FONTS.sans}>
-          EAGLE-2 改进: Token budget 智能分配
+          {t.eagle2Improvement}
         </text>
         <text x={W / 2} y={263} textAnchor="middle" fontSize="8" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          固定 token budget 下，把验证资源集中在高概率路径 → 更高 acceptance rate
+          {t.budgetAllocation}
         </text>
         <text x={W / 2} y={281} textAnchor="middle" fontSize="8" fill={COLORS.red}
           fontFamily={FONTS.sans}>
-          仍然限制: Draft 阶段依赖 target model hidden state
+          {t.stillLimitation}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'EAGLE-3: Direct Token Prediction',
+    title: t.eagle3Title,
     content: (
       <StepSvg>
         <defs>
@@ -216,14 +296,14 @@ const steps = [
 
         <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          EAGLE-3: Direct Token Prediction + Multi-Layer Fusion
+          {t.directTokenPrediction}
         </text>
         <text x={W / 2} y={38} textAnchor="middle" fontSize="8" fill="#64748b"
           fontFamily={FONTS.sans}>
-          从 feature prediction 转为直接预测 token，融合多层特征
+          {t.eagle3Subtitle}
         </text>
 
-        <Box x={30} y={65} w={130} h={80} label="Target Model"
+        <Box x={30} y={65} w={130} h={80} label={t.targetModel}
           sublabel="" fill="#dbeafe" stroke={COLORS.primary} />
         <text x={95} y={90} textAnchor="middle" fontSize="7" fill={COLORS.primary}
           fontFamily={FONTS.sans}>Layer N</text>
@@ -238,20 +318,20 @@ const steps = [
         <Arrow x1={160} y1={105} x2={200} y2={105} color={COLORS.primary} />
         <Arrow x1={160} y1={120} x2={200} y2={120} color={COLORS.primary} />
 
-        <Box x={200} y={72} w={140} h={65} label="Multi-Layer Fusion"
-          sublabel="Training-Time Test" fill="#fef3c7" stroke={COLORS.orange} />
+        <Box x={200} y={72} w={140} h={65} label={t.multiLayerFusion}
+          sublabel={t.trainingTimeTest} fill="#fef3c7" stroke={COLORS.orange} />
 
         <Arrow x1={340} y1={105} x2={380} y2={105} color={COLORS.orange} />
-        <Box x={380} y={80} w={160} h={50} label="Direct Token Prediction"
-          sublabel="不经过 feature → token 映射" fill="#dcfce7" stroke={COLORS.green} />
+        <Box x={380} y={80} w={160} h={50} label={t.directPrediction}
+          sublabel={t.noFeatureMapping} fill="#dcfce7" stroke={COLORS.green} />
 
         <Arrow x1={460} y1={130} x2={460} y2={158} color={COLORS.green} />
-        <Box x={380} y={158} w={160} h={36} label="Draft Tokens (6.5x speedup)"
+        <Box x={380} y={158} w={160} h={36} label={t.speedup65x}
           fill="#dcfce7" stroke={COLORS.green} />
 
         <text x={W / 2} y={220} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          加速比对比
+          {t.speedupComparison}
         </text>
 
         {[
@@ -283,6 +363,5 @@ const steps = [
   },
 ];
 
-export default function EagleEvolution() {
   return <StepNavigator steps={steps} />;
 }

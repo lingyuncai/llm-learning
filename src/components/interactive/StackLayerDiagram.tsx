@@ -34,7 +34,18 @@ function isLayerHighlighted(layer: StackLayer, activeBrand: string | null): bool
   return layer.nodes.some(n => n.brands.includes(activeBrand));
 }
 
-export default function StackLayerDiagram() {
+export default function StackLayerDiagram({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      clearFilter: '清除筛选',
+      hint: '点击层名展开技术节点 · 底部按钮按品牌高亮',
+    },
+    en: {
+      clearFilter: 'Clear filter',
+      hint: 'Click layer name to expand tech nodes · Use buttons to filter by brand',
+    },
+  }[locale];
+
   const [expandedLayers, setExpandedLayers] = useState<Set<string>>(new Set());
   const [activeBrand, setActiveBrand] = useState<string | null>(null);
 
@@ -150,13 +161,13 @@ export default function StackLayerDiagram() {
         {activeBrand && (
           <button onClick={() => setActiveBrand(null)}
             className="px-3 py-1 text-xs rounded-full border border-gray-300 text-gray-500 hover:bg-gray-100 transition-colors">
-            清除筛选
+            {t.clearFilter}
           </button>
         )}
       </div>
 
       <p className="text-xs text-gray-400 text-center">
-        点击层名展开技术节点 · 底部按钮按品牌高亮
+        {t.hint}
       </p>
     </div>
   );

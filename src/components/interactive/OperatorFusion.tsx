@@ -14,36 +14,67 @@ interface FusionInfo {
   savedKernels: number;
 }
 
-const FUSIONS: Record<FusionType, FusionInfo> = {
-  none: {
-    label: '无融合',
-    desc: '所有操作独立执行',
-    beforeNodes: ['Q×K^T', 'Scale', 'Mask', 'Softmax', '×V'],
-    afterNodes: ['Q×K^T', 'Scale', 'Mask', 'Softmax', '×V'],
-    savedKernels: 0,
-  },
-  flash_attn: {
-    label: 'FlashAttention',
-    desc: 'Q/K/V → 单个融合内核, 减少 HBM 读写',
-    beforeNodes: ['Q×K^T', 'Scale', 'Mask', 'Softmax', '×V'],
-    afterNodes: ['FlashAttn(Q,K,V)'],
-    savedKernels: 4,
-  },
-  rmsnorm_matmul: {
-    label: 'RMSNorm + MatMul',
-    desc: '归一化和线性变换融合, 减少一次全局读写',
-    beforeNodes: ['RMSNorm', 'MatMul'],
-    afterNodes: ['FusedRMSNormMatMul'],
-    savedKernels: 1,
-  },
-  glu: {
-    label: 'SwiGLU Fusion',
-    desc: 'Gate/Up/SiLU/Mul 融合为单内核',
-    beforeNodes: ['Gate Linear', 'Up Linear', 'SiLU', 'Mul'],
-    afterNodes: ['FusedSwiGLU'],
-    savedKernels: 3,
-  },
-};
+function getFusions(locale: 'zh' | 'en'): Record<FusionType, FusionInfo> {
+  return locale === 'zh' ? {
+    none: {
+      label: '无融合',
+      desc: '所有操作独立执行',
+      beforeNodes: ['Q×K^T', 'Scale', 'Mask', 'Softmax', '×V'],
+      afterNodes: ['Q×K^T', 'Scale', 'Mask', 'Softmax', '×V'],
+      savedKernels: 0,
+    },
+    flash_attn: {
+      label: 'FlashAttention',
+      desc: 'Q/K/V → 单个融合内核, 减少 HBM 读写',
+      beforeNodes: ['Q×K^T', 'Scale', 'Mask', 'Softmax', '×V'],
+      afterNodes: ['FlashAttn(Q,K,V)'],
+      savedKernels: 4,
+    },
+    rmsnorm_matmul: {
+      label: 'RMSNorm + MatMul',
+      desc: '归一化和线性变换融合, 减少一次全局读写',
+      beforeNodes: ['RMSNorm', 'MatMul'],
+      afterNodes: ['FusedRMSNormMatMul'],
+      savedKernels: 1,
+    },
+    glu: {
+      label: 'SwiGLU Fusion',
+      desc: 'Gate/Up/SiLU/Mul 融合为单内核',
+      beforeNodes: ['Gate Linear', 'Up Linear', 'SiLU', 'Mul'],
+      afterNodes: ['FusedSwiGLU'],
+      savedKernels: 3,
+    },
+  } : {
+    none: {
+      label: 'No Fusion',
+      desc: 'All operations executed independently',
+      beforeNodes: ['Q×K^T', 'Scale', 'Mask', 'Softmax', '×V'],
+      afterNodes: ['Q×K^T', 'Scale', 'Mask', 'Softmax', '×V'],
+      savedKernels: 0,
+    },
+    flash_attn: {
+      label: 'FlashAttention',
+      desc: 'Q/K/V → single fused kernel, reduces HBM reads/writes',
+      beforeNodes: ['Q×K^T', 'Scale', 'Mask', 'Softmax', '×V'],
+      afterNodes: ['FlashAttn(Q,K,V)'],
+      savedKernels: 4,
+    },
+    rmsnorm_matmul: {
+      label: 'RMSNorm + MatMul',
+      desc: 'Normalization and linear transform fused, reduces one global read/write',
+      beforeNodes: ['RMSNorm', 'MatMul'],
+      afterNodes: ['FusedRMSNormMatMul'],
+      savedKernels: 1,
+    },
+    glu: {
+      label: 'SwiGLU Fusion',
+      desc: 'Gate/Up/SiLU/Mul fused into single kernel',
+      beforeNodes: ['Gate Linear', 'Up Linear', 'SiLU', 'Mul'],
+      afterNodes: ['FusedSwiGLU'],
+      savedKernels: 3,
+    },
+  };
+}
 
 const TYPES: FusionType[] = ['none', 'flash_attn', 'rmsnorm_matmul', 'glu'];
 
@@ -78,8 +109,28 @@ function NodeChain({ nodes, x, y, color, label }: {
   );
 }
 
-export default function OperatorFusion() {
+export default function OperatorFusion({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      operatorFusion: '算子融合',
+      before: '融合前',
+      after: '融合后',
+      savedKernels: '节省',
+      kernelCalls: '次内核调用',
+      noFusion: '无融合 — 所有节点独立调度',
+    },
+    en: {
+      operatorFusion: 'Operator Fusion',
+      before: 'Before',
+      after: 'After',
+      savedKernels: 'Saved',
+      kernelCalls: 'kernel calls',
+      noFusion: 'No fusion — all nodes independently scheduled',
+    },
+  }[locale];
+
   const [fusion, setFusion] = useState<FusionType>('flash_attn');
+  const FUSIONS = getFusions(locale);
   const info = FUSIONS[fusion];
 
   return (
@@ -100,19 +151,19 @@ export default function OperatorFusion() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          算子融合: {info.label}
+          {t.operatorFusion}: {info.label}
         </text>
         <text x={W / 2} y={33} textAnchor="middle" fontSize="7" fill={COLORS.mid}
           fontFamily={FONTS.sans}>{info.desc}</text>
 
         {/* Before (left) */}
-        <NodeChain nodes={info.beforeNodes} x={80} y={55} color={COLORS.orange} label="融合前" />
+        <NodeChain nodes={info.beforeNodes} x={80} y={55} color={COLORS.orange} label={t.before} />
 
         {/* Arrow */}
         <text x={W / 2} y={140} textAnchor="middle" fontSize="16" fill="#94a3b8">→</text>
 
         {/* After (right) */}
-        <NodeChain nodes={info.afterNodes} x={370} y={55} color={COLORS.green} label="融合后" />
+        <NodeChain nodes={info.afterNodes} x={370} y={55} color={COLORS.green} label={t.after} />
 
         {/* Stats */}
         <rect x={180} y={H - 50} width={220} height={35} rx={6}
@@ -120,8 +171,8 @@ export default function OperatorFusion() {
         <text x={290} y={H - 30} textAnchor="middle" fontSize="8" fontWeight="600"
           fill={COLORS.green} fontFamily={FONTS.sans}>
           {info.savedKernels > 0
-            ? `节省 ${info.savedKernels} 次内核调用 (${info.beforeNodes.length} → ${info.afterNodes.length})`
-            : '无融合 — 所有节点独立调度'}
+            ? `${t.savedKernels} ${info.savedKernels} ${t.kernelCalls} (${info.beforeNodes.length} → ${info.afterNodes.length})`
+            : t.noFusion}
         </text>
       </svg>
     </div>

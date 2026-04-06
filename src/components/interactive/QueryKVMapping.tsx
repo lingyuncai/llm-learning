@@ -60,81 +60,126 @@ function Column({ title, subtitle, qPositions, kvPositions, connections, annotat
   );
 }
 
-function MHADiagram() {
+function MHADiagram({ t }: { t: any }) {
   const qs = [{ x: 45, label: 'Q₁' }, { x: 105, label: 'Q₂' }, { x: 195, label: 'Q₃' }, { x: 255, label: 'Q₄' }];
   const kvs = [{ x: 45, label: 'KV₁' }, { x: 105, label: 'KV₂' }, { x: 195, label: 'KV₃' }, { x: 255, label: 'KV₄' }];
   return (
     <svg viewBox="0 0 300 160" className="w-full max-w-[300px]">
-      <Column title="MHA" subtitle="一对一" qPositions={qs} kvPositions={kvs}
+      <Column title={t.mhaTitle} subtitle={t.mhaSubtitle} qPositions={qs} kvPositions={kvs}
         connections={[[0, 0], [1, 1], [2, 2], [3, 3]]}
-        annotations={[{ x: 150, y: 155, text: 'KV heads = h = 4' }]} />
+        annotations={[{ x: 150, y: 155, text: t.mhaAnnotation }]} />
     </svg>
   );
 }
 
-function GQADiagram() {
+function GQADiagram({ t }: { t: any }) {
   const qs = [{ x: 40, label: 'Q₁' }, { x: 100, label: 'Q₂' }, { x: 200, label: 'Q₃' }, { x: 260, label: 'Q₄' }];
   const kvs = [{ x: 70, label: 'KV₁' }, { x: 230, label: 'KV₂' }];
   return (
     <svg viewBox="0 0 300 160" className="w-full max-w-[300px]">
-      <Column title="GQA (g=2)" subtitle="两对一" qPositions={qs} kvPositions={kvs}
+      <Column title={t.gqaTitle} subtitle={t.gqaSubtitle} qPositions={qs} kvPositions={kvs}
         connections={[[0, 0], [1, 0], [2, 1], [3, 1]]}
         annotations={[
-          { x: 70, y: 152, text: 'repeat_interleave' },
-          { x: 230, y: 152, text: 'repeat_interleave' },
+          { x: 70, y: 152, text: t.gqaAnnotation },
+          { x: 230, y: 152, text: t.gqaAnnotation },
         ]} />
     </svg>
   );
 }
 
-function MQADiagram() {
+function MQADiagram({ t }: { t: any }) {
   const qs = [{ x: 40, label: 'Q₁' }, { x: 100, label: 'Q₂' }, { x: 200, label: 'Q₃' }, { x: 260, label: 'Q₄' }];
   const kvs = [{ x: 150, label: 'KV' }];
   return (
     <svg viewBox="0 0 300 160" className="w-full max-w-[300px]">
-      <Column title="MQA" subtitle="全共享" qPositions={qs} kvPositions={kvs}
+      <Column title={t.mqaTitle} subtitle={t.mqaSubtitle} qPositions={qs} kvPositions={kvs}
         connections={[[0, 0], [1, 0], [2, 0], [3, 0]]}
-        annotations={[{ x: 150, y: 155, text: 'KV heads = 1' }]} />
+        annotations={[{ x: 150, y: 155, text: t.mqaAnnotation }]} />
     </svg>
   );
 }
 
-export default function QueryKVMapping() {
+export default function QueryKVMapping({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      mhaTitle: 'MHA',
+      mhaSubtitle: '一对一',
+      mhaAnnotation: 'KV heads = h = 4',
+      gqaTitle: 'GQA (g=2)',
+      gqaSubtitle: '两对一',
+      gqaAnnotation: 'repeat_interleave',
+      mqaTitle: 'MQA',
+      mqaSubtitle: '全共享',
+      mqaAnnotation: 'KV heads = 1',
+      step1Title: 'MHA — 每个 Q 对应独立 KV',
+      step1Desc: '标准多头注意力：{{h}} 个 Q head 各自拥有独立的 KV head。',
+      step2Title: 'GQA — 每组 Q 共享 KV',
+      step2Desc: '分组查询注意力：{{h}} 个 Q head 分为 {{g}} 组，每组共享一对 KV head。通过 <code className="bg-gray-100 px-1 rounded">repeat_interleave</code> 将 KV 复制以匹配 Q 数量。',
+      step2Box: 'KV Cache 缩减为 MHA 的 g/h = {{g}}/{{h}} = {{percent}}%',
+      step3Title: 'MQA — 所有 Q 共享同一 KV',
+      step3Desc: '多查询注意力：所有 {{h}} 个 Q head 共享同一对 KV head — 最极致的缩减。',
+      step3Box: 'KV Cache 缩减为 MHA 的 1/h = 1/{{h}} = {{percent}}%',
+    },
+    en: {
+      mhaTitle: 'MHA',
+      mhaSubtitle: 'One-to-One',
+      mhaAnnotation: 'KV heads = h = 4',
+      gqaTitle: 'GQA (g=2)',
+      gqaSubtitle: 'Two-to-One',
+      gqaAnnotation: 'repeat_interleave',
+      mqaTitle: 'MQA',
+      mqaSubtitle: 'All Share',
+      mqaAnnotation: 'KV heads = 1',
+      step1Title: 'MHA — Each Q has its own KV',
+      step1Desc: 'Standard Multi-Head Attention: {{h}} Q heads each have independent KV heads.',
+      step2Title: 'GQA — Q groups share KV',
+      step2Desc: 'Grouped Query Attention: {{h}} Q heads grouped into {{g}} groups, each sharing one KV head pair. <code className="bg-gray-100 px-1 rounded">repeat_interleave</code> duplicates KV to match Q count.',
+      step2Box: 'KV Cache reduced to g/h = {{g}}/{{h}} = {{percent}}% of MHA',
+      step3Title: 'MQA — All Q share one KV',
+      step3Desc: 'Multi-Query Attention: All {{h}} Q heads share a single KV head pair — most extreme reduction.',
+      step3Box: 'KV Cache reduced to 1/h = 1/{{h}} = {{percent}}% of MHA',
+    },
+  }[locale];
+
   const steps = [
     {
-      title: 'MHA — 每个 Q 对应独立 KV',
+      title: t.step1Title,
       content: (
         <div>
-          <p className="text-sm text-gray-600 mb-3">标准多头注意力：{h} 个 Q head 各自拥有独立的 KV head。</p>
-          <div className="flex justify-center"><MHADiagram /></div>
+          <p className="text-sm text-gray-600 mb-3">{t.step1Desc.replace('{{h}}', h.toString())}</p>
+          <div className="flex justify-center"><MHADiagram t={t} /></div>
         </div>
       ),
     },
     {
-      title: 'GQA — 每组 Q 共享 KV',
+      title: t.step2Title,
       content: (
         <div>
-          <p className="text-sm text-gray-600 mb-3">
-            分组查询注意力：{h} 个 Q head 分为 {gqa_g} 组，每组共享一对 KV head。
-            通过 <code className="bg-gray-100 px-1 rounded">repeat_interleave</code> 将 KV 复制以匹配 Q 数量。
-          </p>
-          <div className="flex justify-center"><GQADiagram /></div>
+          <p className="text-sm text-gray-600 mb-3" dangerouslySetInnerHTML={{
+            __html: t.step2Desc.replace('{{h}}', h.toString()).replace('{{g}}', gqa_g.toString())
+          }} />
+          <div className="flex justify-center"><GQADiagram t={t} /></div>
           <div className="mt-2 p-2 bg-green-50 rounded text-xs text-green-800">
-            KV Cache 缩减为 MHA 的 g/h = {gqa_g}/{h} = {((gqa_g / h) * 100).toFixed(0)}%
+            {t.step2Box
+              .replace('{{g}}', gqa_g.toString())
+              .replace('{{h}}', h.toString())
+              .replace('{{percent}}', ((gqa_g / h) * 100).toFixed(0))}
           </div>
         </div>
       ),
     },
     {
-      title: 'MQA — 所有 Q 共享同一 KV',
+      title: t.step3Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            多查询注意力：所有 {h} 个 Q head 共享同一对 KV head — 最极致的缩减。
+            {t.step3Desc.replace('{{h}}', h.toString())}
           </p>
-          <div className="flex justify-center"><MQADiagram /></div>
+          <div className="flex justify-center"><MQADiagram t={t} /></div>
           <div className="mt-2 p-2 bg-blue-50 rounded text-xs text-blue-800">
-            KV Cache 缩减为 MHA 的 1/h = 1/{h} = {((1 / h) * 100).toFixed(1)}%
+            {t.step3Box
+              .replace('{{h}}', h.toString())
+              .replace('{{percent}}', ((1 / h) * 100).toFixed(1))}
           </div>
         </div>
       ),

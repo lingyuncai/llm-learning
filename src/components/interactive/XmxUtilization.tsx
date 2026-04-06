@@ -3,11 +3,56 @@ import { COLORS, FONTS } from './shared/colors';
 
 type Dtype = 'fp16' | 'bf16' | 'int8';
 
-const XmxUtilization: React.FC = () => {
+const XmxUtilization: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
   const [M, setM] = useState(256);
   const [K, setK] = useState(512);
   const [N, setN] = useState(1024);
   const [dtype, setDtype] = useState<Dtype>('fp16');
+
+  const t = {
+    zh: {
+      title: 'XMX 利用率计算器',
+      utilization: 'XMX 利用率',
+      alignReq: '对齐要求',
+      alignGranularity: '对齐粒度',
+      actualDim: '实际维度',
+      alignedDim: '对齐后',
+      alignWaste: '对齐浪费',
+      theoretical: '理论',
+      throughputCompare: '吞吐量对比',
+      xmxPeak: 'XMX 峰值',
+      actual: '实际',
+      theoreticalPeak: '理论峰值',
+      actualUtil: '实际利用',
+      excellent: '✓ 优秀 — 维度已充分对齐，XMX 利用率高',
+      canOptimize: '⚠ 可优化 — 建议调整维度为',
+      multipleTail: '的倍数',
+      inefficient: '✗ 低效 — 大量对齐浪费，强烈建议使用',
+      alignedDim2: '对齐的维度',
+      dataType: '数据类型',
+    },
+    en: {
+      title: 'XMX Utilization Calculator',
+      utilization: 'XMX Utilization',
+      alignReq: 'Alignment Requirements',
+      alignGranularity: 'Alignment Granularity',
+      actualDim: 'Actual Dimensions',
+      alignedDim: 'Aligned',
+      alignWaste: 'Alignment Waste',
+      theoretical: 'Theoretical',
+      throughputCompare: 'Throughput Comparison',
+      xmxPeak: 'XMX Peak',
+      actual: 'Actual',
+      theoreticalPeak: 'Theoretical Peak',
+      actualUtil: 'Actual Utilization',
+      excellent: '✓ Excellent — Dimensions well aligned, high XMX utilization',
+      canOptimize: '⚠ Optimizable — Consider adjusting dimensions to multiples of',
+      multipleTail: '',
+      inefficient: '✗ Inefficient — Significant alignment waste, strongly recommend using',
+      alignedDim2: 'aligned dimensions',
+      dataType: 'Data Type',
+    },
+  }[locale];
 
   const metrics = useMemo(() => {
     // XMX alignment requirements
@@ -74,15 +119,15 @@ const XmxUtilization: React.FC = () => {
             onChange={e => setN(Number(e.target.value))} className="w-36" />
         </div>
         <div>
-          <label className="text-xs text-gray-500 block">数据类型</label>
+          <label className="text-xs text-gray-500 block">{t.dataType}</label>
           <div className="flex gap-1">
-            {(['fp16', 'bf16', 'int8'] as Dtype[]).map(t => (
+            {(['fp16', 'bf16', 'int8'] as Dtype[]).map(dt => (
               <button
-                key={t}
-                onClick={() => setDtype(t)}
-                className={`px-2 py-1 text-xs rounded border ${dtype === t ? 'bg-blue-700 text-white border-blue-700' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+                key={dt}
+                onClick={() => setDtype(dt)}
+                className={`px-2 py-1 text-xs rounded border ${dtype === dt ? 'bg-blue-700 text-white border-blue-700' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
               >
-                {t.toUpperCase()}
+                {dt.toUpperCase()}
               </button>
             ))}
           </div>
@@ -91,12 +136,12 @@ const XmxUtilization: React.FC = () => {
       <svg viewBox="0 0 580 280" className="w-full">
         {/* Title */}
         <text x="290" y="20" textAnchor="middle" fontFamily={FONTS.sans} fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          XMX 利用率计算器
+          {t.title}
         </text>
 
         {/* Utilization bar */}
         <g transform="translate(0, 40)">
-          <text x="40" y="0" fontFamily={FONTS.sans} fontSize="13" fontWeight="600" fill={COLORS.dark}>XMX 利用率</text>
+          <text x="40" y="0" fontFamily={FONTS.sans} fontSize="13" fontWeight="600" fill={COLORS.dark}>{t.utilization}</text>
           <rect x="40" y="10" width="500" height="30" fill={COLORS.light} stroke={COLORS.mid} strokeWidth="1" rx="4" />
           <rect
             x="40"
@@ -123,22 +168,22 @@ const XmxUtilization: React.FC = () => {
         <g transform="translate(0, 100)">
           <rect x="40" y="0" width="240" height="120" fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1" rx="4" />
           <text x="160" y="20" textAnchor="middle" fontFamily={FONTS.sans} fontSize="12" fontWeight="600" fill={COLORS.dark}>
-            对齐要求
+            {t.alignReq}
           </text>
           <text x="160" y="40" textAnchor="middle" fontFamily={FONTS.mono} fontSize="11" fill={COLORS.mid}>
-            对齐粒度: {metrics.alignment}×{metrics.alignment}
+            {t.alignGranularity}: {metrics.alignment}×{metrics.alignment}
           </text>
           <text x="160" y="60" textAnchor="middle" fontFamily={FONTS.mono} fontSize="10" fill={COLORS.mid}>
-            实际维度: {M}×{K}×{N}
+            {t.actualDim}: {M}×{K}×{N}
           </text>
           <text x="160" y="78" textAnchor="middle" fontFamily={FONTS.mono} fontSize="10" fill={COLORS.orange}>
-            对齐后: {metrics.M_aligned}×{metrics.K_aligned}×{metrics.N_aligned}
+            {t.alignedDim}: {metrics.M_aligned}×{metrics.K_aligned}×{metrics.N_aligned}
           </text>
           <text x="160" y="96" textAnchor="middle" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.red}>
-            对齐浪费: {metrics.alignmentWaste.toFixed(1)}%
+            {t.alignWaste}: {metrics.alignmentWaste.toFixed(1)}%
           </text>
           <text x="160" y="112" textAnchor="middle" fontFamily={FONTS.mono} fontSize="9" fill={COLORS.mid}>
-            理论 {(metrics.theoreticalOps / 1e6).toFixed(1)}M ops
+            {t.theoretical} {(metrics.theoreticalOps / 1e6).toFixed(1)}M ops
           </text>
         </g>
 
@@ -146,33 +191,33 @@ const XmxUtilization: React.FC = () => {
         <g transform="translate(290, 100)">
           <rect x="0" y="0" width="250" height="120" fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1" rx="4" />
           <text x="125" y="20" textAnchor="middle" fontFamily={FONTS.sans} fontSize="12" fontWeight="600" fill={COLORS.dark}>
-            吞吐量对比
+            {t.throughputCompare}
           </text>
           <text x="125" y="40" textAnchor="middle" fontFamily={FONTS.mono} fontSize="11" fill={COLORS.mid}>
-            XMX 峰值: {metrics.opsPerCycle} ops/cycle
+            {t.xmxPeak}: {metrics.opsPerCycle} ops/cycle
           </text>
           <text x="125" y="60" textAnchor="middle" fontFamily={FONTS.mono} fontSize="11" fill={getUtilColor(metrics.utilization)}>
-            实际: {metrics.effectiveThroughput.toFixed(1)} ops/cycle
+            {t.actual}: {metrics.effectiveThroughput.toFixed(1)} ops/cycle
           </text>
 
           {/* Bars */}
           <rect x="20" y="70" width="90" height="16" fill={COLORS.light} stroke={COLORS.mid} strokeWidth="1" rx="2" />
           <rect x="20" y="70" width="90" height="16" fill={COLORS.primary} rx="2" />
-          <text x="65" y="82" textAnchor="middle" fontFamily={FONTS.mono} fontSize="9" fill={COLORS.bg}>理论峰值</text>
+          <text x="65" y="82" textAnchor="middle" fontFamily={FONTS.mono} fontSize="9" fill={COLORS.bg}>{t.theoreticalPeak}</text>
 
           <rect x="20" y="92" width={(metrics.utilization / 100) * 90} height="16" fill={getUtilColor(metrics.utilization)} rx="2" />
           <rect x="20" y="92" width="90" height="16" fill="none" stroke={COLORS.mid} strokeWidth="1" rx="2" />
-          <text x="65" y="104" textAnchor="middle" fontFamily={FONTS.mono} fontSize="9" fill={COLORS.dark}>实际利用</text>
+          <text x="65" y="104" textAnchor="middle" fontFamily={FONTS.mono} fontSize="9" fill={COLORS.dark}>{t.actualUtil}</text>
         </g>
 
         {/* Recommendation */}
         <g transform="translate(40, 240)">
           <text x="0" y="0" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
             {metrics.utilization >= 90
-              ? `✓ 优秀 — 维度已充分对齐，XMX 利用率高`
+              ? t.excellent
               : metrics.utilization >= 70
-              ? `⚠ 可优化 — 建议调整维度为 ${metrics.alignment} 的倍数`
-              : `✗ 低效 — 大量对齐浪费，强烈建议使用 ${metrics.alignment}×${metrics.alignment} 对齐的维度`}
+              ? `${t.canOptimize} ${metrics.alignment} ${t.multipleTail}`
+              : `${t.inefficient} ${metrics.alignment}×${metrics.alignment} ${t.alignedDim2}`}
           </text>
         </g>
       </svg>

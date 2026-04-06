@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
-const QUERIES = ['写一首诗', '解释量子力学', '翻译这段话', '写排序算法', '总结这篇论文'];
 const MODELS = ['GPT-4', 'Llama-70B', 'Llama-8B'];
 
 const PREFERENCES: number[][] = [
@@ -21,7 +20,37 @@ const MODEL_VECS: [number, number][] = [
 
 type ViewMode = 'matrix' | 'vectors' | 'scoring';
 
-export default function MatrixFactorizationViz() {
+export default function MatrixFactorizationViz({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Matrix Factorization 路由',
+      tabs: { matrix: '偏好矩阵', vectors: '向量空间', scoring: '评分预测' },
+      queries: ['写一首诗', '解释量子力学', '翻译这段话', '写排序算法', '总结这篇论文'],
+      matrixNote: '高分 → 偏好强模型 · 低分 → 弱模型即可胜任',
+      vectorSpaceTitle: '潜在向量空间 (2D 投影)',
+      queryVectorLabel: 'Query 向量',
+      modelVectorLabel: 'Model 向量',
+      closeDistance: '距离近 = 偏好匹配',
+      largerProduct: '内积越大 = 越偏好',
+      scoringTitle: '评分过程：query_vec · model_vec → score → 选模型',
+      scoringSummary: '高分 query 路由到 GPT-4（红），低分 query 路由到 Llama-8B（绿）节省成本',
+    },
+    en: {
+      title: 'Matrix Factorization Routing',
+      tabs: { matrix: 'Preference Matrix', vectors: 'Vector Space', scoring: 'Score Prediction' },
+      queries: ['Write a poem', 'Explain quantum mechanics', 'Translate this', 'Write sorting algo', 'Summarize paper'],
+      matrixNote: 'High score → prefer strong model · Low score → weak model suffices',
+      vectorSpaceTitle: 'Latent Vector Space (2D projection)',
+      queryVectorLabel: 'Query vector',
+      modelVectorLabel: 'Model vector',
+      closeDistance: 'Close distance = preference match',
+      largerProduct: 'Larger dot product = stronger preference',
+      scoringTitle: 'Scoring process: query_vec · model_vec → score → select model',
+      scoringSummary: 'High-score queries route to GPT-4 (red), low-score to Llama-8B (green) to save cost',
+    },
+  }[locale];
+
+  const QUERIES = t.queries;
   const [mode, setMode] = useState<ViewMode>('matrix');
   const [hoveredQuery, setHoveredQuery] = useState<number | null>(null);
 
@@ -32,13 +61,12 @@ export default function MatrixFactorizationViz() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="25" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          Matrix Factorization 路由
+          {t.title}
         </text>
 
         {/* Mode tabs */}
         <g transform="translate(140, 40)">
           {(['matrix', 'vectors', 'scoring'] as ViewMode[]).map((m, i) => {
-            const labels = { matrix: '偏好矩阵', vectors: '向量空间', scoring: '评分预测' };
             return (
               <g key={m}>
                 <rect x={i * 105} y="0" width="95" height="28" rx="4"
@@ -50,7 +78,7 @@ export default function MatrixFactorizationViz() {
                       fontWeight={mode === m ? "700" : "400"}
                       fill={mode === m ? '#fff' : COLORS.dark}
                       style={{ cursor: 'pointer', pointerEvents: 'none' }}>
-                  {labels[m]}
+                  {t.tabs[m]}
                 </text>
               </g>
             );
@@ -86,7 +114,7 @@ export default function MatrixFactorizationViz() {
               </g>
             ))}
             <text x="200" y="240" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.mid}>
-              高分 → 偏好强模型 · 低分 → 弱模型即可胜任
+              {t.matrixNote}
             </text>
           </g>
         )}
@@ -95,7 +123,7 @@ export default function MatrixFactorizationViz() {
           <g transform="translate(100, 85)">
             <rect x="0" y="0" width="250" height="250" fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1" rx="4" />
             <text x="125" y="-5" textAnchor="middle" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.mid}>
-              潜在向量空间 (2D 投影)
+              {t.vectorSpaceTitle}
             </text>
             {QUERY_VECS.map(([x, y], i) => (
               <g key={`qv-${i}`} onMouseEnter={() => setHoveredQuery(i)} onMouseLeave={() => setHoveredQuery(null)}>
@@ -119,14 +147,14 @@ export default function MatrixFactorizationViz() {
             ))}
             <g transform="translate(270, 20)">
               <circle cx="8" cy="8" r="6" fill={COLORS.green} />
-              <text x="20" y="12" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.dark}>Query 向量</text>
+              <text x="20" y="12" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.dark}>{t.queryVectorLabel}</text>
               <rect x="2" y="25" width="12" height="12" rx="2" fill={COLORS.primary} />
-              <text x="20" y="35" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.dark}>Model 向量</text>
+              <text x="20" y="35" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.dark}>{t.modelVectorLabel}</text>
               <text x="0" y="60" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
-                距离近 = 偏好匹配
+                {t.closeDistance}
               </text>
               <text x="0" y="75" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
-                内积越大 = 越偏好
+                {t.largerProduct}
               </text>
             </g>
             {hoveredQuery !== null && (
@@ -147,7 +175,7 @@ export default function MatrixFactorizationViz() {
         {mode === 'scoring' && (
           <g transform="translate(40, 90)">
             <text x="250" y="0" textAnchor="middle" fontFamily={FONTS.sans} fontSize="13" fontWeight="600" fill={COLORS.dark}>
-              评分过程：query_vec · model_vec → score → 选模型
+              {t.scoringTitle}
             </text>
             {QUERIES.map((q, i) => {
               const scores = MODELS.map((_, mi) => {
@@ -170,7 +198,7 @@ export default function MatrixFactorizationViz() {
               );
             })}
             <text x="250" y="270" textAnchor="middle" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
-              高分 query 路由到 GPT-4（红），低分 query 路由到 Llama-8B（绿）节省成本
+              {t.scoringSummary}
             </text>
           </g>
         )}

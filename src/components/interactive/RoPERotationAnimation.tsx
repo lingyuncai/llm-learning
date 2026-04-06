@@ -78,10 +78,49 @@ function PolarGrid() {
   );
 }
 
-export default function RoPERotationAnimation() {
+export default function RoPERotationAnimation({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: 'Q 向量（position 0）',
+      step1Caption: 'Position 0: 旋转角度 = 0',
+      step1Desc: '把 Q 向量的一对维度 (d₂ᵢ, d₂ᵢ₊₁) 看作二维平面上的向量',
+      step2Title: 'Position 1: Q 和 K 各旋转 θ',
+      step2Caption: 'Position 1: 两个向量都旋转 θ = {theta}°',
+      step2Desc: 'RoPE 对 Q 和 K 施加<strong>相同的</strong>旋转，角度 = position × θ',
+      step3Title: 'Position 3 vs 5: 内积只依赖差值',
+      step3Caption: 'Q₃ᵀK₅ = Qᵀ R(5−3)θ K — 只依赖相对距离',
+      step3Desc: '<strong>关键性质：</strong>Q̃ₘᵀK̃ₙ = QᵀR₍ₙ₋ₘ₎θK — 内积只依赖 n - m',
+      step4Title: '多维度对：不同频率',
+      step4LowFreq: 'θ₁ (低频)',
+      step4MidFreq: 'θ₂ (中频)',
+      step4HighFreq: 'θ₃ (高频)',
+      step4StepLabel: '每步旋转 {theta}°',
+      step4Desc: '不同维度对使用不同 θᵢ，类似 Sinusoidal 的多频率思想',
+      step4SubDesc: '低频 → 捕捉远距离位置关系；高频 → 捕捉近距离精确位置',
+    },
+    en: {
+      step1Title: 'Q vector (position 0)',
+      step1Caption: 'Position 0: rotation angle = 0',
+      step1Desc: 'View Q vector dimension pair (d₂ᵢ, d₂ᵢ₊₁) as vector on 2D plane',
+      step2Title: 'Position 1: Q and K each rotate by θ',
+      step2Caption: 'Position 1: both vectors rotate by θ = {theta}°',
+      step2Desc: 'RoPE applies <strong>identical</strong> rotation to Q and K, angle = position × θ',
+      step3Title: 'Position 3 vs 5: dot product depends only on difference',
+      step3Caption: 'Q₃ᵀK₅ = Qᵀ R(5−3)θ K — depends only on relative distance',
+      step3Desc: '<strong>Key property:</strong> Q̃ₘᵀK̃ₙ = QᵀR₍ₙ₋ₘ₎θK — dot product only depends on n - m',
+      step4Title: 'Multiple dim pairs: different frequencies',
+      step4LowFreq: 'θ₁ (low freq)',
+      step4MidFreq: 'θ₂ (mid freq)',
+      step4HighFreq: 'θ₃ (high freq)',
+      step4StepLabel: 'Rotate {theta}° per step',
+      step4Desc: 'Different dim pairs use different θᵢ, similar to Sinusoidal multi-frequency idea',
+      step4SubDesc: 'Low freq → capture long-range position relation; high freq → capture short-range precise position',
+    },
+  }[locale];
+
   const steps = useMemo(() => [
     {
-      title: 'Q 向量（position 0）',
+      title: t.step1Title,
       content: (
         <div className="space-y-2">
           <svg viewBox={`0 0 ${SVG_SIZE} ${SVG_SIZE}`} className="w-full max-w-[280px] mx-auto">
@@ -94,16 +133,16 @@ export default function RoPERotationAnimation() {
             <PolarGrid />
             <Arrow fromAngle={0} toAngle={0} r={RADIUS} color={COLORS.primary} label="Q₀" />
             <text x={CENTER} y={SVG_SIZE - 8} textAnchor="middle" fontSize="10" fill={COLORS.mid}
-              fontFamily="system-ui">Position 0: 旋转角度 = 0</text>
+              fontFamily="system-ui">{t.step1Caption}</text>
           </svg>
           <p className="text-sm text-gray-600 text-center">
-            把 Q 向量的一对维度 (d₂ᵢ, d₂ᵢ₊₁) 看作二维平面上的向量
+            {t.step1Desc}
           </p>
         </div>
       ),
     },
     {
-      title: 'Position 1: Q 和 K 各旋转 θ',
+      title: t.step2Title,
       content: (
         <div className="space-y-2">
           <svg viewBox={`0 0 ${SVG_SIZE} ${SVG_SIZE}`} className="w-full max-w-[280px] mx-auto">
@@ -127,16 +166,14 @@ export default function RoPERotationAnimation() {
             <Arrow fromAngle={0} toAngle={THETA} r={RADIUS * 0.75} color={COLORS.green}
               label={`K₁ (θ)`} showArc />
             <text x={CENTER} y={SVG_SIZE - 8} textAnchor="middle" fontSize="10" fill={COLORS.mid}
-              fontFamily="system-ui">Position 1: 两个向量都旋转 θ = {THETA}°</text>
+              fontFamily="system-ui">{t.step2Caption.replace('{theta}', THETA.toString())}</text>
           </svg>
-          <p className="text-sm text-gray-600 text-center">
-            RoPE 对 Q 和 K 施加<strong>相同的</strong>旋转，角度 = position × θ
-          </p>
+          <p className="text-sm text-gray-600 text-center" dangerouslySetInnerHTML={{ __html: t.step2Desc }} />
         </div>
       ),
     },
     {
-      title: 'Position 3 vs 5: 内积只依赖差值',
+      title: t.step3Title,
       content: (
         <div className="space-y-2">
           <svg viewBox={`0 0 ${SVG_SIZE} ${SVG_SIZE}`} className="w-full max-w-[280px] mx-auto">
@@ -178,23 +215,21 @@ export default function RoPERotationAnimation() {
               Δ = 2θ
             </motion.text>
             <text x={CENTER} y={SVG_SIZE - 8} textAnchor="middle" fontSize="10" fill={COLORS.mid}
-              fontFamily="system-ui">Q₃ᵀK₅ = Qᵀ R(5−3)θ K — 只依赖相对距离</text>
+              fontFamily="system-ui">{t.step3Caption}</text>
           </svg>
-          <p className="text-sm text-gray-600 text-center">
-            <strong>关键性质：</strong>Q̃ₘᵀK̃ₙ = QᵀR₍ₙ₋ₘ₎θK — 内积只依赖 n - m
-          </p>
+          <p className="text-sm text-gray-600 text-center" dangerouslySetInnerHTML={{ __html: t.step3Desc }} />
         </div>
       ),
     },
     {
-      title: '多维度对：不同频率',
+      title: t.step4Title,
       content: (
         <div className="space-y-2">
           <div className="grid grid-cols-3 gap-2">
             {[
-              { label: 'θ₁ (低频)', theta: 10, color: HEAD_COLORS[0] },
-              { label: 'θ₂ (中频)', theta: 30, color: HEAD_COLORS[1] },
-              { label: 'θ₃ (高频)', theta: 70, color: HEAD_COLORS[2] },
+              { label: t.step4LowFreq, theta: 10, color: HEAD_COLORS[0] },
+              { label: t.step4MidFreq, theta: 30, color: HEAD_COLORS[1] },
+              { label: t.step4HighFreq, theta: 70, color: HEAD_COLORS[2] },
             ].map(({ label, theta, color }) => {
               const size = 120;
               const c = size / 2;
@@ -237,20 +272,20 @@ export default function RoPERotationAnimation() {
                       );
                     })}
                   </svg>
-                  <div className="text-[10px] text-gray-500">每步旋转 {theta}°</div>
+                  <div className="text-[10px] text-gray-500">{t.step4StepLabel.replace('{theta}', theta.toString())}</div>
                 </div>
               );
             })}
           </div>
           <p className="text-sm text-gray-600 text-center">
-            不同维度对使用不同 θᵢ，类似 Sinusoidal 的多频率思想
+            {t.step4Desc}
             <br />
-            <span className="text-xs">低频 → 捕捉远距离位置关系；高频 → 捕捉近距离精确位置</span>
+            <span className="text-xs">{t.step4SubDesc}</span>
           </p>
         </div>
       ),
     },
-  ], []);
+  ], [t]);
 
   return <StepNavigator steps={steps} />;
 }

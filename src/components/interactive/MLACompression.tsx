@@ -4,7 +4,43 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const H = 280;
 
-export default function MLACompression() {
+export default function MLACompression({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'KV Cache 大小对比 (FP16, seq_len=',
+      formulaSummary: 'head_dim = d_model / num_heads =',
+      mhaFormula: 'MHA: 2 ×',
+      gqaFormula: 'GQA: 2 ×',
+      mlaFormula: 'MLA:',
+      heads: 'heads',
+      kvHeads: 'kv_heads',
+      dim: 'dim',
+      seq: 'seq',
+      latentDim: 'latent_dim',
+      dModel: 'd_model:',
+      numHeads: 'num_heads:',
+      gqaKvHeads: 'GQA kv_heads:',
+      mlaLatentDim: 'MLA latent_dim:',
+      seqLen: 'seq_len:',
+    },
+    en: {
+      title: 'KV Cache Size Comparison (FP16, seq_len=',
+      formulaSummary: 'head_dim = d_model / num_heads =',
+      mhaFormula: 'MHA: 2 ×',
+      gqaFormula: 'GQA: 2 ×',
+      mlaFormula: 'MLA:',
+      heads: 'heads',
+      kvHeads: 'kv_heads',
+      dim: 'dim',
+      seq: 'seq',
+      latentDim: 'latent_dim',
+      dModel: 'd_model:',
+      numHeads: 'num_heads:',
+      gqaKvHeads: 'GQA kv_heads:',
+      mlaLatentDim: 'MLA latent_dim:',
+      seqLen: 'seq_len:',
+    },
+  }[locale];
   const [dModel, setDModel] = useState(4096);
   const [numHeads, setNumHeads] = useState(32);
   const [numKvHeads, setNumKvHeads] = useState(8);
@@ -43,27 +79,27 @@ export default function MLACompression() {
     <div className="my-6">
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3 px-2">
         <div>
-          <label className="text-xs text-gray-500 block">d_model: {dModel}</label>
+          <label className="text-xs text-gray-500 block">{t.dModel} {dModel}</label>
           <input type="range" min={1024} max={8192} step={1024} value={dModel}
             onChange={e => setDModel(Number(e.target.value))} className="w-full" />
         </div>
         <div>
-          <label className="text-xs text-gray-500 block">num_heads: {numHeads}</label>
+          <label className="text-xs text-gray-500 block">{t.numHeads} {numHeads}</label>
           <input type="range" min={8} max={64} step={8} value={numHeads}
             onChange={e => setNumHeads(Number(e.target.value))} className="w-full" />
         </div>
         <div>
-          <label className="text-xs text-gray-500 block">GQA kv_heads: {numKvHeads}</label>
+          <label className="text-xs text-gray-500 block">{t.gqaKvHeads} {numKvHeads}</label>
           <input type="range" min={1} max={numHeads} step={1} value={numKvHeads}
             onChange={e => setNumKvHeads(Number(e.target.value))} className="w-full" />
         </div>
         <div>
-          <label className="text-xs text-gray-500 block">MLA latent_dim: {latentDim}</label>
+          <label className="text-xs text-gray-500 block">{t.mlaLatentDim} {latentDim}</label>
           <input type="range" min={64} max={2048} step={64} value={latentDim}
             onChange={e => setLatentDim(Number(e.target.value))} className="w-full" />
         </div>
         <div>
-          <label className="text-xs text-gray-500 block">seq_len: {seqLen}</label>
+          <label className="text-xs text-gray-500 block">{t.seqLen} {seqLen}</label>
           <input type="range" min={512} max={32768} step={512} value={seqLen}
             onChange={e => setSeqLen(Number(e.target.value))} className="w-full" />
         </div>
@@ -71,20 +107,20 @@ export default function MLACompression() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y={20} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          KV Cache 大小对比 (FP16, seq_len={seqLen})
+          {t.title}{seqLen})
         </text>
 
         {/* Formula summary */}
         <text x={W / 2} y={42} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.mono}>
-          head_dim = d_model / num_heads = {dModel} / {numHeads} = {headDim}
+          {t.formulaSummary} {dModel} / {numHeads} = {headDim}
         </text>
 
         {/* Formulas */}
         {[
-          `MHA: 2 × ${numHeads} heads × ${headDim} dim × ${seqLen} seq × 2B = ${results.mha.toFixed(1)} MB`,
-          `GQA: 2 × ${numKvHeads} kv_heads × ${headDim} dim × ${seqLen} seq × 2B = ${results.gqa.toFixed(1)} MB`,
-          `MLA: ${latentDim} latent_dim × ${seqLen} seq × 2B = ${results.mla.toFixed(1)} MB`,
+          `${t.mhaFormula} ${numHeads} ${t.heads} × ${headDim} ${t.dim} × ${seqLen} ${t.seq} × 2B = ${results.mha.toFixed(1)} MB`,
+          `${t.gqaFormula} ${numKvHeads} ${t.kvHeads} × ${headDim} ${t.dim} × ${seqLen} ${t.seq} × 2B = ${results.gqa.toFixed(1)} MB`,
+          `${t.mlaFormula} ${latentDim} ${t.latentDim} × ${seqLen} ${t.seq} × 2B = ${results.mla.toFixed(1)} MB`,
         ].map((text, i) => (
           <text key={i} x={30} y={65 + i * 16} fontSize="8" fill={COLORS.dark}
             fontFamily={FONTS.mono}>{text}</text>

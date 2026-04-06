@@ -12,42 +12,53 @@ interface MethodData {
   description: string;
 }
 
-const METHODS: MethodData[] = [
-  {
-    name: '无约束',
-    color: COLORS.red,
-    accuracy: 45,
-    speed: 120,
-    description: '直接让 LLM 生成 JSON，通过 prompt 指示格式。经常缺少引号、多余逗号、字段遗漏。',
-  },
-  {
-    name: 'Regex-guided',
-    color: COLORS.orange,
-    accuracy: 82,
-    speed: 95,
-    description: '用正则表达式约束每一步的合法 token。可以保证基本格式，但复杂嵌套结构难以用正则表达。',
-  },
-  {
-    name: 'FSM-guided',
-    color: COLORS.primary,
-    accuracy: 99,
-    speed: 85,
-    description: 'JSON Schema → 正则 → FSM，每步精确 mask 非法 token。保证 100% 格式合规（误差来自极端 edge case）。',
-  },
-  {
-    name: 'FSM + Jump-Forward',
-    color: COLORS.green,
-    accuracy: 99,
-    speed: 160,
-    description: 'FSM 约束 + 确定性片段跳过。同等正确率下速度最快，确定性部分不走 LLM，节省 40-70% forward pass。',
-  },
-];
-
 const BAR_LEFT = 160;
 const BAR_MAX_W = 350;
 const BAR_H = 26;
 
-export default function StructuredOutputAccuracy() {
+export default function StructuredOutputAccuracy({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      unconstrained: '无约束',
+      unconstrainedDesc: '直接让 LLM 生成 JSON，通过 prompt 指示格式。经常缺少引号、多余逗号、字段遗漏。',
+      regexGuided: 'Regex-guided',
+      regexGuidedDesc: '用正则表达式约束每一步的合法 token。可以保证基本格式，但复杂嵌套结构难以用正则表达。',
+      fsmGuided: 'FSM-guided',
+      fsmGuidedDesc: 'JSON Schema → 正则 → FSM，每步精确 mask 非法 token。保证 100% 格式合规（误差来自极端 edge case）。',
+      fsmJump: 'FSM + Jump-Forward',
+      fsmJumpDesc: 'FSM 约束 + 确定性片段跳过。同等正确率下速度最快，确定性部分不走 LLM，节省 40-70% forward pass。',
+      accuracyLabel: '输出合规率 (%)',
+      speedLabel: '生成速度 (tokens/s)',
+      accuracyTitle: '结构化输出合规率对比',
+      speedTitle: '生成速度对比',
+      accuracyAxis: '合规率 (%)',
+      speedAxis: '生成速度 (tokens/s)',
+    },
+    en: {
+      unconstrained: 'Unconstrained',
+      unconstrainedDesc: 'Directly let LLM generate JSON, instruct format via prompt. Often missing quotes, extra commas, field omissions.',
+      regexGuided: 'Regex-guided',
+      regexGuidedDesc: 'Use regex to constrain legal tokens at each step. Can guarantee basic format, but complex nested structures are hard to express with regex.',
+      fsmGuided: 'FSM-guided',
+      fsmGuidedDesc: 'JSON Schema → regex → FSM, precisely mask illegal tokens at each step. Guarantees 100% format compliance (errors from extreme edge cases).',
+      fsmJump: 'FSM + Jump-Forward',
+      fsmJumpDesc: 'FSM constraint + deterministic segment skipping. Fastest speed with same accuracy, deterministic parts skip LLM, saving 40-70% forward passes.',
+      accuracyLabel: 'Output compliance rate (%)',
+      speedLabel: 'Generation speed (tokens/s)',
+      accuracyTitle: 'Structured output compliance comparison',
+      speedTitle: 'Generation speed comparison',
+      accuracyAxis: 'Compliance rate (%)',
+      speedAxis: 'Generation speed (tokens/s)',
+    },
+  }[locale];
+
+  const METHODS: MethodData[] = [
+    { name: t.unconstrained, color: COLORS.red, accuracy: 45, speed: 120, description: t.unconstrainedDesc },
+    { name: t.regexGuided, color: COLORS.orange, accuracy: 82, speed: 95, description: t.regexGuidedDesc },
+    { name: t.fsmGuided, color: COLORS.primary, accuracy: 99, speed: 85, description: t.fsmGuidedDesc },
+    { name: t.fsmJump, color: COLORS.green, accuracy: 99, speed: 160, description: t.fsmJumpDesc },
+  ];
+
   const [hovered, setHovered] = useState<number | null>(null);
   const [metric, setMetric] = useState<'accuracy' | 'speed'>('accuracy');
 
@@ -64,7 +75,7 @@ export default function StructuredOutputAccuracy() {
             color: metric === m ? '#fff' : COLORS.dark,
             fontSize: 13, fontFamily: FONTS.sans,
           }}>
-            {m === 'accuracy' ? '输出合规率 (%)' : '生成速度 (tokens/s)'}
+            {m === 'accuracy' ? t.accuracyLabel : t.speedLabel}
           </button>
         ))}
       </div>
@@ -72,7 +83,7 @@ export default function StructuredOutputAccuracy() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
         <text x={W / 2} y={25} fontSize={13} fontWeight={600} fill={COLORS.dark}
           fontFamily={FONTS.sans} textAnchor="middle">
-          {metric === 'accuracy' ? '结构化输出合规率对比' : '生成速度对比'}
+          {metric === 'accuracy' ? t.accuracyTitle : t.speedTitle}
         </text>
 
         {METHODS.map((m, i) => {
@@ -130,7 +141,7 @@ export default function StructuredOutputAccuracy() {
         {/* Axis label */}
         <text x={BAR_LEFT + BAR_MAX_W / 2} y={H - 15} fontSize={11} fill={COLORS.mid}
           fontFamily={FONTS.sans} textAnchor="middle">
-          {metric === 'accuracy' ? '合规率 (%)' : '生成速度 (tokens/s)'}
+          {metric === 'accuracy' ? t.accuracyAxis : t.speedAxis}
         </text>
       </svg>
     </div>

@@ -21,21 +21,33 @@ const MODELS: MoEModel[] = [
   { name: 'Qwen2.5-MoE', totalParams: '57B', activeParams: '14B', numExperts: '64', topK: 8, sharedExperts: '8', year: '2025' },
 ];
 
-const cols: { key: keyof MoEModel; label: string }[] = [
-  { key: 'name', label: '模型' },
-  { key: 'totalParams', label: 'Total Params' },
-  { key: 'activeParams', label: 'Active Params' },
-  { key: 'numExperts', label: 'Experts' },
-  { key: 'topK', label: 'Top-K' },
-  { key: 'sharedExperts', label: 'Shared' },
-  { key: 'year', label: '年份' },
-];
-
 const rowH = 22;
 const headerH = 24;
 const tableY = 40;
 
-export default function MoEModelComparison() {
+export default function MoEModelComparison({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '主流 MoE 模型配置对比',
+      colModel: '模型',
+      colYear: '年份',
+    },
+    en: {
+      title: 'Mainstream MoE Model Configuration Comparison',
+      colModel: 'Model',
+      colYear: 'Year',
+    },
+  }[locale];
+
+  const cols: { key: keyof MoEModel; label: string }[] = [
+    { key: 'name', label: t.colModel },
+    { key: 'totalParams', label: 'Total Params' },
+    { key: 'activeParams', label: 'Active Params' },
+    { key: 'numExperts', label: 'Experts' },
+    { key: 'topK', label: 'Top-K' },
+    { key: 'sharedExperts', label: 'Shared' },
+    { key: 'year', label: t.colYear },
+  ];
   const colWidths = [120, 75, 75, 60, 50, 50, 50];
   const tableW = colWidths.reduce((a, b) => a + b, 0);
   const tableX = (W - tableW) / 2;
@@ -45,7 +57,7 @@ export default function MoEModelComparison() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full my-6">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="11" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        主流 MoE 模型配置对比
+        {t.title}
       </text>
 
       {/* Header */}

@@ -22,12 +22,13 @@ const TOKENS: { token: string; prob: number }[] = [
   { token: 'Laos', prob: 0.02 },
 ];
 
-function ColumnChart({ title, tokens, kept, color, note }: {
+function ColumnChart({ title, tokens, kept, color, note, keepLabel }: {
   title: string;
   tokens: typeof TOKENS;
   kept: boolean[];
   color: string;
   note: string;
+  keepLabel: string;
 }) {
   const keptCount = kept.filter(Boolean).length;
   const totalKeptProb = tokens.reduce((s, t, i) => kept[i] ? s + t.prob : s, 0);
@@ -65,7 +66,7 @@ function ColumnChart({ title, tokens, kept, color, note }: {
           backgroundColor: `${color}15`,
           color,
         }}>
-          保留 {keptCount} 个 token
+          {keepLabel.replace('{count}', keptCount.toString())}
         </span>
       </div>
       <div className="text-[9px] text-gray-400 text-center mt-0.5">{note}</div>
@@ -73,7 +74,30 @@ function ColumnChart({ title, tokens, kept, color, note }: {
   );
 }
 
-export default function SamplingStrategyComparison() {
+export default function SamplingStrategyComparison({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      topKLabel: 'Top-k:',
+      topPLabel: 'Top-p:',
+      greedyTitle: 'Greedy',
+      greedyNote: '只选最高概率',
+      topKNote: '固定保留前 {k} 个',
+      topPNote: '动态保留 {count} 个 (Σ≥{p})',
+      keepTokens: '保留 {count} 个 token',
+      bottomNote: 'Top-p 会根据分布的确定性动态调整保留数量 — 尖锐分布保留少、平坦分布保留多',
+    },
+    en: {
+      topKLabel: 'Top-k:',
+      topPLabel: 'Top-p:',
+      greedyTitle: 'Greedy',
+      greedyNote: 'Pick highest probability only',
+      topKNote: 'Fixed top {k} tokens',
+      topPNote: 'Dynamic {count} tokens (Σ≥{p})',
+      keepTokens: 'Keep {count} tokens',
+      bottomNote: 'Top-p dynamically adjusts retained count based on distribution certainty — sharp distributions keep few, flat distributions keep many',
+    },
+  }[locale];
+
   const [k, setK] = useState(5);
   const [p, setP] = useState(0.9);
 
@@ -100,14 +124,14 @@ export default function SamplingStrategyComparison() {
       <div className="grid grid-cols-2 gap-4">
         <div className="flex items-center gap-2">
           <label className="text-xs text-gray-600 whitespace-nowrap">
-            Top-k: <span className="font-mono font-bold" style={{ color: COLORS.orange }}>{k}</span>
+            {t.topKLabel} <span className="font-mono font-bold" style={{ color: COLORS.orange }}>{k}</span>
           </label>
           <input type="range" min={1} max={15} step={1} value={k}
             onChange={e => setK(parseInt(e.target.value))} className="flex-1" />
         </div>
         <div className="flex items-center gap-2">
           <label className="text-xs text-gray-600 whitespace-nowrap">
-            Top-p: <span className="font-mono font-bold" style={{ color: COLORS.purple }}>{p.toFixed(2)}</span>
+            {t.topPLabel} <span className="font-mono font-bold" style={{ color: COLORS.purple }}>{p.toFixed(2)}</span>
           </label>
           <input type="range" min={0.5} max={1.0} step={0.05} value={p}
             onChange={e => setP(parseFloat(e.target.value))} className="flex-1" />
@@ -117,11 +141,12 @@ export default function SamplingStrategyComparison() {
       {/* Three columns */}
       <div className="flex gap-3 border border-gray-200 rounded-lg p-3 bg-white">
         <ColumnChart
-          title="Greedy"
+          title={t.greedyTitle}
           tokens={TOKENS}
           kept={greedyKept}
           color={COLORS.primary}
-          note="只选最高概率"
+          note={t.greedyNote}
+          keepLabel={t.keepTokens}
         />
         <div className="w-px bg-gray-200" />
         <ColumnChart
@@ -129,7 +154,8 @@ export default function SamplingStrategyComparison() {
           tokens={TOKENS}
           kept={topKKept}
           color={COLORS.orange}
-          note={`固定保留前 ${k} 个`}
+          note={t.topKNote.replace('{k}', k.toString())}
+          keepLabel={t.keepTokens}
         />
         <div className="w-px bg-gray-200" />
         <ColumnChart
@@ -137,12 +163,13 @@ export default function SamplingStrategyComparison() {
           tokens={TOKENS}
           kept={topPKept}
           color={COLORS.purple}
-          note={`动态保留 ${topPCount} 个 (Σ≥${p})`}
+          note={t.topPNote.replace('{count}', topPCount.toString()).replace('{p}', p.toString())}
+          keepLabel={t.keepTokens}
         />
       </div>
 
       <p className="text-xs text-gray-500 text-center">
-        Top-p 会根据分布的确定性<strong>动态调整</strong>保留数量 — 尖锐分布保留少、平坦分布保留多
+        {t.bottomNote}
       </p>
     </div>
   );

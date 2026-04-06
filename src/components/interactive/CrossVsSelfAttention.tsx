@@ -37,17 +37,47 @@ function Arrow({ x1, y1, x2, y2, id }: {
   );
 }
 
-const steps = [
+export default function CrossVsSelfAttention({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      selfTitle: 'Self-Attention',
+      selfHeader: 'Self-Attention: Q, K, V 来自同一序列',
+      inputSeq: 'Input Sequence X',
+      selfAttention: 'Attention(Q, K, V)',
+      selfNote: '所有 Q, K, V 都从相同的输入 X 投影得到',
+      crossTitle: 'Cross-Attention',
+      crossHeader: 'Cross-Attention: Q 来自 Decoder，K/V 来自 Encoder',
+      decoderHidden: 'Decoder Hidden (Y)',
+      encoderOutput: 'Encoder Output (X)',
+      crossAttention: 'Attention(Q, K, V)',
+      crossNote: 'Q 来自 decoder 自身，K/V 来自外部 encoder — 用于翻译、多模态等跨序列场景',
+    },
+    en: {
+      selfTitle: 'Self-Attention',
+      selfHeader: 'Self-Attention: Q, K, V from the same sequence',
+      inputSeq: 'Input Sequence X',
+      selfAttention: 'Attention(Q, K, V)',
+      selfNote: 'All Q, K, V projected from the same input X',
+      crossTitle: 'Cross-Attention',
+      crossHeader: 'Cross-Attention: Q from Decoder, K/V from Encoder',
+      decoderHidden: 'Decoder Hidden (Y)',
+      encoderOutput: 'Encoder Output (X)',
+      crossAttention: 'Attention(Q, K, V)',
+      crossNote: 'Q from decoder itself, K/V from external encoder — for translation, multimodal, cross-sequence scenarios',
+    },
+  }[locale];
+
+  const steps = [
   {
-    title: 'Self-Attention',
+    title: t.selfTitle,
     content: (
       <StepSvg h={220}>
         <text x={W / 2} y={20} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Self-Attention: Q, K, V 来自同一序列
+          {t.selfHeader}
         </text>
 
-        <Box x={200} y={35} w={180} h={35} label="Input Sequence X"
+        <Box x={200} y={35} w={180} h={35} label={t.inputSeq}
           fill="#dbeafe" stroke={COLORS.primary} />
 
         {[
@@ -63,28 +93,28 @@ const steps = [
         ))}
 
         <Arrow x1={290} y1={125} x2={290} y2={150} id="csa-s-att" />
-        <Box x={200} y={150} w={180} h={35} label="Attention(Q, K, V)"
+        <Box x={200} y={150} w={180} h={35} label={t.selfAttention}
           fill="#fef3c7" stroke={COLORS.orange} />
 
         <text x={W / 2} y={210} textAnchor="middle" fontSize="9" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          所有 Q, K, V 都从相同的输入 X 投影得到
+          {t.selfNote}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'Cross-Attention',
+    title: t.crossTitle,
     content: (
       <StepSvg h={240}>
         <text x={W / 2} y={20} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Cross-Attention: Q 来自 Decoder，K/V 来自 Encoder
+          {t.crossHeader}
         </text>
 
-        <Box x={30} y={40} w={160} h={35} label="Decoder Hidden (Y)"
+        <Box x={30} y={40} w={160} h={35} label={t.decoderHidden}
           fill="#dbeafe" stroke={COLORS.primary} />
-        <Box x={390} y={40} w={160} h={35} label="Encoder Output (X)"
+        <Box x={390} y={40} w={160} h={35} label={t.encoderOutput}
           fill="#dcfce7" stroke={COLORS.green} />
 
         <Arrow x1={110} y1={75} x2={150} y2={105} id="csa-c-q" />
@@ -99,18 +129,17 @@ const steps = [
           fill="#f8fafc" stroke={COLORS.green} />
 
         <Arrow x1={290} y1={135} x2={290} y2={160} id="csa-c-att" />
-        <Box x={200} y={160} w={180} h={35} label="Attention(Q, K, V)"
+        <Box x={200} y={160} w={180} h={35} label={t.crossAttention}
           fill="#fef3c7" stroke={COLORS.orange} />
 
         <text x={W / 2} y={220} textAnchor="middle" fontSize="9" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          Q 来自 decoder 自身，K/V 来自外部 encoder — 用于翻译、多模态等跨序列场景
+          {t.crossNote}
         </text>
       </StepSvg>
     ),
   },
 ];
 
-export default function CrossVsSelfAttention() {
   return <StepNavigator steps={steps} />;
 }

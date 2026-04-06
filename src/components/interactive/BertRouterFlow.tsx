@@ -1,22 +1,90 @@
 import React, { useState } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
-const STEPS = [
-  { label: 'Query 输入', detail: '用户的原始问题' },
-  { label: 'Tokenize', detail: 'BERT WordPiece 分词' },
-  { label: 'BERT Encoder', detail: '提取 [CLS] 语义向量' },
-  { label: 'Linear + Sigmoid', detail: '二分类: P(需要强模型)' },
-  { label: '阈值判断', detail: 'P > τ ? 强模型 : 弱模型' },
-];
 
-const EXAMPLES = [
-  { query: '"帮我翻译 hello world"', prob: 0.12, result: 'weak', reason: '简单翻译任务' },
-  { query: '"比较康德和黑格尔的哲学"', prob: 0.91, result: 'strong', reason: '需要深度推理' },
-  { query: '"1+1等于几"', prob: 0.05, result: 'weak', reason: '极简数学问题' },
-  { query: '"分析这段代码的安全漏洞"', prob: 0.85, result: 'strong', reason: '复杂代码分析' },
-];
+export default function BertRouterFlow({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'BERT Router 流程',
+      query: 'Query 输入',
+      queryDetail: '用户的原始问题',
+      tokenize: 'Tokenize',
+      tokenizeDetail: 'BERT WordPiece 分词',
+      bertEncoder: 'BERT Encoder',
+      bertEncoderDetail: '提取 [CLS] 语义向量',
+      linearSigmoid: 'Linear + Sigmoid',
+      linearSigmoidDetail: '二分类: P(需要强模型)',
+      threshold: '阈值判断',
+      thresholdDetail: 'P > τ ? 强模型 : 弱模型',
+      example1Query: '"帮我翻译 hello world"',
+      example1Reason: '简单翻译任务',
+      example2Query: '"比较康德和黑格尔的哲学"',
+      example2Reason: '需要深度推理',
+      example3Query: '"1+1等于几"',
+      example3Reason: '极简数学问题',
+      example4Query: '"分析这段代码的安全漏洞"',
+      example4Reason: '复杂代码分析',
+      exampleQuery: '示例 Query:',
+      probLabel: 'P(需要强模型) = ',
+      thresholdLabel: 'τ = ',
+      strongModel: '强模型 (GPT-4)',
+      weakModel: '弱模型 (Llama-8B)',
+      strongCost: '成本: $0.03/1K tokens',
+      weakCost: '成本: $0.0002/1K tokens',
+      strongNote: '使用最高质量',
+      weakNote: '节省 99.3%',
+      thresholdNote: '阈值 τ 可调：降低 τ → 更多 query 用强模型（质量↑ 成本↑）· 提高 τ → 更多用弱模型（质量↓ 成本↓）',
+      thresholdSlider: '阈值 τ:',
+    },
+    en: {
+      title: 'BERT Router Flow',
+      query: 'Query Input',
+      queryDetail: "User's original question",
+      tokenize: 'Tokenize',
+      tokenizeDetail: 'BERT WordPiece tokenization',
+      bertEncoder: 'BERT Encoder',
+      bertEncoderDetail: 'Extract [CLS] semantic vector',
+      linearSigmoid: 'Linear + Sigmoid',
+      linearSigmoidDetail: 'Binary classification: P(needs strong model)',
+      threshold: 'Threshold Decision',
+      thresholdDetail: 'P > τ ? strong : weak',
+      example1Query: '"Translate hello world"',
+      example1Reason: 'Simple translation',
+      example2Query: '"Compare Kant and Hegel\'s philosophy"',
+      example2Reason: 'Requires deep reasoning',
+      example3Query: '"What is 1+1"',
+      example3Reason: 'Trivial math',
+      example4Query: '"Analyze security vulnerabilities in this code"',
+      example4Reason: 'Complex code analysis',
+      exampleQuery: 'Example Query:',
+      probLabel: 'P(needs strong model) = ',
+      thresholdLabel: 'τ = ',
+      strongModel: 'Strong Model (GPT-4)',
+      weakModel: 'Weak Model (Llama-8B)',
+      strongCost: 'Cost: $0.03/1K tokens',
+      weakCost: 'Cost: $0.0002/1K tokens',
+      strongNote: 'Highest quality',
+      weakNote: 'Save 99.3%',
+      thresholdNote: 'Adjustable threshold τ: Lower τ → more queries use strong model (quality↑ cost↑) · Higher τ → more use weak model (quality↓ cost↓)',
+      thresholdSlider: 'Threshold τ:',
+    },
+  }[locale];
 
-export default function BertRouterFlow() {
+  const STEPS = [
+    { label: t.query, detail: t.queryDetail },
+    { label: t.tokenize, detail: t.tokenizeDetail },
+    { label: t.bertEncoder, detail: t.bertEncoderDetail },
+    { label: t.linearSigmoid, detail: t.linearSigmoidDetail },
+    { label: t.threshold, detail: t.thresholdDetail },
+  ];
+
+  const EXAMPLES = [
+    { query: t.example1Query, prob: 0.12, result: 'weak', reason: t.example1Reason },
+    { query: t.example2Query, prob: 0.91, result: 'strong', reason: t.example2Reason },
+    { query: t.example3Query, prob: 0.05, result: 'weak', reason: t.example3Reason },
+    { query: t.example4Query, prob: 0.85, result: 'strong', reason: t.example4Reason },
+  ];
+
   const [exampleIdx, setExampleIdx] = useState(0);
   const [threshold, setThreshold] = useState(0.5);
 
@@ -29,7 +97,7 @@ export default function BertRouterFlow() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="25" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          BERT Router 流程
+          {t.title}
         </text>
 
         {/* Flow steps */}
@@ -57,7 +125,7 @@ export default function BertRouterFlow() {
         {/* Example selector */}
         <g transform="translate(30, 125)">
           <text x="0" y="0" fontFamily={FONTS.sans} fontSize="12" fontWeight="600" fill={COLORS.dark}>
-            示例 Query:
+            {t.exampleQuery}
           </text>
           {EXAMPLES.map((e, i) => (
             <g key={i} transform={`translate(${i * 135}, 10)`}
@@ -78,7 +146,7 @@ export default function BertRouterFlow() {
         {/* Probability bar */}
         <g transform="translate(30, 175)">
           <text x="0" y="0" fontFamily={FONTS.sans} fontSize="12" fontWeight="600" fill={COLORS.dark}>
-            P(需要强模型) = {ex.prob.toFixed(2)}
+            {t.probLabel}{ex.prob.toFixed(2)}
           </text>
           <rect x="0" y="10" width="520" height="24" rx="4" fill={COLORS.light} stroke={COLORS.mid} strokeWidth="1" />
           <rect x="0" y="10" width={ex.prob * 520} height="24" rx="4"
@@ -87,7 +155,7 @@ export default function BertRouterFlow() {
                 stroke={COLORS.dark} strokeWidth="2" strokeDasharray="4,2" />
           <text x={threshold * 520} y="50" textAnchor="middle"
                 fontFamily={FONTS.mono} fontSize="10" fill={COLORS.dark}>
-            τ = {threshold.toFixed(2)}
+            {t.thresholdLabel}{threshold.toFixed(2)}
           </text>
         </g>
 
@@ -99,7 +167,7 @@ export default function BertRouterFlow() {
           <text x="125" y="22" textAnchor="middle" fontFamily={FONTS.sans}
                 fontSize="14" fontWeight="700"
                 fill={decision === 'strong' ? COLORS.red : COLORS.green}>
-            → {decision === 'strong' ? '强模型 (GPT-4)' : '弱模型 (Llama-8B)'}
+            → {decision === 'strong' ? t.strongModel : t.weakModel}
           </text>
           <text x="125" y="40" textAnchor="middle" fontFamily={FONTS.sans}
                 fontSize="10" fill={COLORS.mid}>
@@ -110,25 +178,25 @@ export default function BertRouterFlow() {
                 fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1" />
           <text x="400" y="20" textAnchor="middle" fontFamily={FONTS.sans}
                 fontSize="11" fill={COLORS.dark}>
-            {decision === 'strong' ? '成本: $0.03/1K tokens' : '成本: $0.0002/1K tokens'}
+            {decision === 'strong' ? t.strongCost : t.weakCost}
           </text>
           <text x="400" y="38" textAnchor="middle" fontFamily={FONTS.mono}
                 fontSize="10" fill={COLORS.mid}>
-            {decision === 'weak' ? '节省 99.3%' : '使用最高质量'}
+            {decision === 'weak' ? t.weakNote : t.strongNote}
           </text>
         </g>
 
         {/* Note about threshold */}
         <g transform="translate(30, 305)">
           <text x="0" y="0" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
-            阈值 τ 可调：降低 τ → 更多 query 用强模型（质量↑ 成本↑）· 提高 τ → 更多用弱模型（质量↓ 成本↓）
+            {t.thresholdNote}
           </text>
         </g>
       </svg>
 
       {/* Threshold slider */}
       <div className="flex items-center justify-center gap-3 mt-2">
-        <span className="text-sm text-gray-500">阈值 τ:</span>
+        <span className="text-sm text-gray-500">{t.thresholdSlider}</span>
         <input type="range" min="0" max="100" value={threshold * 100}
                onChange={e => setThreshold(Number(e.target.value) / 100)}
                className="w-48 accent-blue-700" />

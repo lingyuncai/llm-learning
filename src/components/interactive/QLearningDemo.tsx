@@ -25,7 +25,32 @@ const WALLS = [[1, 1]];
 const isWall = (r: number, c: number) => WALLS.some(([wr, wc]) => wr === r && wc === c);
 const isTerminal = (r: number, c: number) => (r === 0 && c === 3) || (r === 1 && c === 3);
 
-export default function QLearningDemo() {
+export default function QLearningDemo({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Q-Learning 实时学习演示',
+      params: '已训练',
+      episodes: '轮',
+      train1: '训练 1 轮',
+      train50: '训练 50 轮',
+      stop: '停止',
+      reset: '重置',
+      policy: '学到的策略',
+      footer: '每格四角显示 Q(s,a) 值 | 颜色深浅 = Q 值大小 | ε-greedy 探索',
+    },
+    en: {
+      title: 'Q-Learning Live Demo',
+      params: 'Trained',
+      episodes: 'episodes',
+      train1: 'Train 1 Episode',
+      train50: 'Train 50 Episodes',
+      stop: 'Stop',
+      reset: 'Reset',
+      policy: 'Learned Policy',
+      footer: 'Q(s,a) values at corners | Color intensity = Q magnitude | ε-greedy exploration',
+    },
+  }[locale];
+
   const initQ = () => Array.from({ length: GRID }, () =>
     Array.from({ length: GRID }, () => [0, 0, 0, 0])
   );
@@ -117,10 +142,10 @@ export default function QLearningDemo() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={22} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          Q-Learning 实时学习演示
+          {t.title}
         </text>
         <text x={W / 2} y={40} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          α={alpha} γ={gamma} ε={epsilon} | 已训练 {episodes} 轮
+          α={alpha} γ={gamma} ε={epsilon} | {t.params} {episodes} {t.episodes}
         </text>
 
         {/* Q-Table grid */}
@@ -163,9 +188,9 @@ export default function QLearningDemo() {
 
         {/* Controls */}
         {[
-          { label: '训练 1 轮', x: 280, action: 'one' },
-          { label: '训练 50 轮', x: 370, action: 'fifty' },
-          { label: running ? '停止' : '重置', x: 460, action: running ? 'stop' : 'reset' },
+          { label: t.train1, x: 280, action: 'one' },
+          { label: t.train50, x: 370, action: 'fifty' },
+          { label: running ? t.stop : t.reset, x: 460, action: running ? 'stop' : 'reset' },
         ].map(btn => (
           <g key={btn.action}
             onClick={() => {
@@ -184,7 +209,7 @@ export default function QLearningDemo() {
 
         {/* Right side: Best policy derived from Q */}
         <text x={400} y={OY} textAnchor="middle" fontSize={12} fontWeight={600} fill={COLORS.dark}>
-          学到的策略
+          {t.policy}
         </text>
         {Array.from({ length: GRID }, (_, r) =>
           Array.from({ length: GRID }, (_, c) => {
@@ -206,7 +231,7 @@ export default function QLearningDemo() {
         )}
 
         <text x={30} y={H - 10} fontSize={9} fill={COLORS.mid}>
-          每格四角显示 Q(s,a) 值 | 颜色深浅 = Q 值大小 | ε-greedy 探索
+          {t.footer}
         </text>
       </svg>
     </div>

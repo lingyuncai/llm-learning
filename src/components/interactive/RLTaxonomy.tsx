@@ -27,7 +27,22 @@ const NODES: TaxNode[] = [
   { id: 'rlhf', label: 'RLHF / DPO / GRPO', desc: '将 RL 用于 LLM 对齐：从人类偏好中学习', examples: 'InstructGPT, ChatGPT, DeepSeek-R1', x: 400, y: 330, color: COLORS.purple, llm: true },
 ];
 
-export default function RLTaxonomy() {
+export default function RLTaxonomy({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'RL 方法分类树',
+      llmRelated: '= LLM 对齐相关',
+      clickToView: '点击节点查看详情 | 紫色圆点标记 = LLM 对齐相关路径',
+      examples: '代表算法：',
+    },
+    en: {
+      title: 'RL Methods Taxonomy',
+      llmRelated: '= LLM Alignment Related',
+      clickToView: 'Click node to view details | Purple dot = LLM alignment related path',
+      examples: 'Representative algorithms:',
+    },
+  }[locale];
+
   const [active, setActive] = useState<string | null>(null);
 
   const edges: [string, string][] = [
@@ -43,7 +58,7 @@ export default function RLTaxonomy() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={22} textAnchor="middle" fontSize={14} fontWeight={700} fill={COLORS.dark}>
-          RL 方法分类树
+          {t.title}
         </text>
 
         {/* Edges */}
@@ -79,7 +94,7 @@ export default function RLTaxonomy() {
 
         {/* LLM badge legend */}
         <circle cx={30} cy={H - 60} r={6} fill={COLORS.purple} stroke="#fff" strokeWidth={1} />
-        <text x={42} y={H - 56} fontSize={10} fill={COLORS.mid}>= LLM 对齐相关</text>
+        <text x={42} y={H - 56} fontSize={10} fill={COLORS.mid}>{t.llmRelated}</text>
 
         {/* Detail panel */}
         {activeNode && (
@@ -93,13 +108,13 @@ export default function RLTaxonomy() {
               {activeNode.desc}
             </text>
             <text x={45} y={H - 38} fontSize={10} fill={COLORS.mid}>
-              代表算法：{activeNode.examples}
+              {t.examples}{activeNode.examples}
             </text>
           </g>
         )}
 
         <text x={W / 2} y={H - 6} textAnchor="middle" fontSize={9} fill={COLORS.mid}>
-          点击节点查看详情 | 紫色圆点标记 = LLM 对齐相关路径
+          {t.clickToView}
         </text>
       </svg>
     </div>

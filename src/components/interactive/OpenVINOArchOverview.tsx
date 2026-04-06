@@ -3,7 +3,24 @@ import { COLORS, FONTS } from './shared/colors';
 
 type Stage = 'frontend' | 'core' | 'plugin' | null;
 
-const OpenVINOArchOverview: React.FC = () => {
+const OpenVINOArchOverview: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      clickToCollapse: 'Click to collapse',
+      modelImport: 'Model Import',
+      deviceExecution: 'Device Execution',
+      deviceSpecificBinary: 'Device-specific binary',
+      clickEachStage: 'Click each stage to expand details',
+    },
+    en: {
+      clickToCollapse: 'Click to collapse',
+      modelImport: 'Model Import',
+      deviceExecution: 'Device Execution',
+      deviceSpecificBinary: 'Device-specific binary',
+      clickEachStage: 'Click each stage to expand details',
+    },
+  }[locale];
+
   const [expanded, setExpanded] = useState<Stage>(null);
 
   return (
@@ -71,7 +88,7 @@ const OpenVINOArchOverview: React.FC = () => {
                 (legacy)
               </text>
               <text x={90} y={280} textAnchor="middle" fontFamily={FONTS.mono} fontSize={9} fill={COLORS.mid}>
-                Click to collapse
+                {t.clickToCollapse}
               </text>
             </>
           ) : (
@@ -83,7 +100,7 @@ const OpenVINOArchOverview: React.FC = () => {
               fontSize={12}
               fill={COLORS.dark}
             >
-              Model Import
+              {t.modelImport}
             </text>
           )}
         </g>
@@ -168,7 +185,7 @@ const OpenVINOArchOverview: React.FC = () => {
                 Dead code elim
               </text>
               <text x={285} y={290} textAnchor="middle" fontFamily={FONTS.mono} fontSize={9} fill={COLORS.mid}>
-                Click to collapse
+                {t.clickToCollapse}
               </text>
             </>
           ) : (
@@ -248,7 +265,7 @@ const OpenVINOArchOverview: React.FC = () => {
                 AUTO/MULTI/HETERO
               </text>
               <text x={485} y={280} textAnchor="middle" fontFamily={FONTS.mono} fontSize={9} fill={COLORS.mid}>
-                Click to collapse
+                {t.clickToCollapse}
               </text>
             </>
           ) : (
@@ -260,7 +277,7 @@ const OpenVINOArchOverview: React.FC = () => {
               fontSize={12}
               fill={COLORS.dark}
             >
-              Device Execution
+              {t.deviceExecution}
             </text>
           )}
         </g>
@@ -276,12 +293,12 @@ const OpenVINOArchOverview: React.FC = () => {
           markerEnd="url(#arrowhead-arch)"
         />
         <text x={485} y={350} textAnchor="middle" fontFamily={FONTS.mono} fontSize={10} fill={COLORS.mid}>
-          Device-specific binary
+          {t.deviceSpecificBinary}
         </text>
 
         {/* Legend */}
         <text x={10} y={370} fontFamily={FONTS.mono} fontSize={10} fill={COLORS.mid}>
-          Click each stage to expand details
+          {t.clickEachStage}
         </text>
       </svg>
     </div>

@@ -28,7 +28,26 @@ const EDGES: [string, string][] = [
   ['root', 'a'], ['root', 'b'], ['a', 'a1'], ['a', 'a2'], ['b', 'b1'],
 ];
 
-export default function RadixTreeEviction() {
+export default function RadixTreeEviction({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      evictNext: 'LRU 淘汰下一个',
+      reset: '重置',
+      memory: '显存',
+      evicted: '已淘汰',
+      evictionLog: '淘汰日志:',
+      evictedMsg: (label: string, time: number, blocks: number) => `淘汰 "${label}" (${time}s ago, ${blocks} blocks)`,
+    },
+    en: {
+      evictNext: 'LRU Evict Next',
+      reset: 'Reset',
+      memory: 'Memory',
+      evicted: 'Evicted',
+      evictionLog: 'Eviction Log:',
+      evictedMsg: (label: string, time: number, blocks: number) => `Evicted "${label}" (${time}s ago, ${blocks} blocks)`,
+    },
+  }[locale];
+
   const [nodes, setNodes] = useState<EvictNode[]>(INITIAL_NODES);
   const [evictionLog, setEvictionLog] = useState<string[]>([]);
   const [memoryUsed, setMemoryUsed] = useState(
@@ -47,7 +66,7 @@ export default function RadixTreeEviction() {
     const victim = leaves.reduce((oldest, n) => n.lastAccess > oldest.lastAccess ? n : oldest);
 
     setNodes(prev => prev.map(n => n.id === victim.id ? { ...n, evicted: true } : n));
-    setEvictionLog(prev => [...prev, `淘汰 "${victim.label}" (${victim.lastAccess}s ago, ${victim.kvBlocks} blocks)`]);
+    setEvictionLog(prev => [...prev, t.evictedMsg(victim.label, victim.lastAccess, victim.kvBlocks)]);
     setMemoryUsed(prev => prev - victim.kvBlocks);
   };
 
@@ -69,7 +88,7 @@ export default function RadixTreeEviction() {
             background: COLORS.red, color: '#fff', fontSize: 13, fontFamily: FONTS.sans,
           }}
         >
-          LRU 淘汰下一个
+          {t.evictNext}
         </button>
         <button
           onClick={reset}
@@ -78,10 +97,10 @@ export default function RadixTreeEviction() {
             background: COLORS.light, color: COLORS.dark, fontSize: 13, fontFamily: FONTS.sans,
           }}
         >
-          重置
+          {t.reset}
         </button>
         <span style={{ fontSize: 12, color: COLORS.mid, marginLeft: 8 }}>
-          显存: {memoryUsed}/{memoryTotal} blocks
+          {t.memory}: {memoryUsed}/{memoryTotal} blocks
         </span>
         {/* Memory bar */}
         <svg width={120} height={16}>
@@ -127,7 +146,7 @@ export default function RadixTreeEviction() {
               {n.evicted && (
                 <text x={n.x} y={n.y + 25} fontSize={10} fill={COLORS.red}
                   fontFamily={FONTS.sans} textAnchor="middle" fontWeight={600}>
-                  已淘汰
+                  {t.evicted}
                 </text>
               )}
             </g>
@@ -138,7 +157,7 @@ export default function RadixTreeEviction() {
       {/* Eviction log */}
       {evictionLog.length > 0 && (
         <div style={{ marginTop: 8, padding: '8px 12px', background: COLORS.bgAlt, borderRadius: 6, fontSize: 12 }}>
-          <div style={{ fontWeight: 600, marginBottom: 4, color: COLORS.dark }}>淘汰日志:</div>
+          <div style={{ fontWeight: 600, marginBottom: 4, color: COLORS.dark }}>{t.evictionLog}</div>
           {evictionLog.map((log, i) => (
             <div key={i} style={{ color: COLORS.red, fontFamily: FONTS.mono, fontSize: 11 }}>
               {i + 1}. {log}

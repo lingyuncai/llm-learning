@@ -11,36 +11,89 @@ interface Turn {
   newMessage: string;
 }
 
-const TURNS: Turn[] = [
-  {
-    label: '第 1 轮',
-    systemPrompt: 'You are a helpful assistant...',
-    history: [],
-    newMessage: '什么是 PagedAttention？',
-  },
-  {
-    label: '第 2 轮',
-    systemPrompt: 'You are a helpful assistant...',
-    history: ['什么是 PagedAttention？', 'PagedAttention 是一种...'],
-    newMessage: '它和虚拟内存有什么关系？',
-  },
-  {
-    label: '第 3 轮',
-    systemPrompt: 'You are a helpful assistant...',
-    history: ['什么是 PagedAttention？', 'PagedAttention 是一种...', '它和虚拟内存有什么关系？', '两者的核心思想...'],
-    newMessage: '能举个具体例子吗？',
-  },
-];
-
 const TOKEN_H = 22;
 const TOKEN_GAP = 2;
 const LEFT_X = 20;
 const RIGHT_X = 300;
 const BAR_W = 250;
 
-export default function PrefixReuseMotivation() {
+function getTurns(locale: 'zh' | 'en'): Turn[] {
+  return locale === 'zh' ? [
+    {
+      label: '第 1 轮',
+      systemPrompt: 'You are a helpful assistant...',
+      history: [],
+      newMessage: '什么是 PagedAttention？',
+    },
+    {
+      label: '第 2 轮',
+      systemPrompt: 'You are a helpful assistant...',
+      history: ['什么是 PagedAttention？', 'PagedAttention 是一种...'],
+      newMessage: '它和虚拟内存有什么关系？',
+    },
+    {
+      label: '第 3 轮',
+      systemPrompt: 'You are a helpful assistant...',
+      history: ['什么是 PagedAttention？', 'PagedAttention 是一种...', '它和虚拟内存有什么关系？', '两者的核心思想...'],
+      newMessage: '能举个具体例子吗？',
+    },
+  ] : [
+    {
+      label: 'Turn 1',
+      systemPrompt: 'You are a helpful assistant...',
+      history: [],
+      newMessage: 'What is PagedAttention?',
+    },
+    {
+      label: 'Turn 2',
+      systemPrompt: 'You are a helpful assistant...',
+      history: ['What is PagedAttention?', 'PagedAttention is a...'],
+      newMessage: 'How is it related to virtual memory?',
+    },
+    {
+      label: 'Turn 3',
+      systemPrompt: 'You are a helpful assistant...',
+      history: ['What is PagedAttention?', 'PagedAttention is a...', 'How is it related to virtual memory?', 'The core idea...'],
+      newMessage: 'Can you give a concrete example?',
+    },
+  ];
+}
+
+export default function PrefixReuseMotivation({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      enableCache: '启用前缀缓存',
+      inputTokenSequence: '输入 Token 序列',
+      prefillCompute: 'Prefill 计算量',
+      noCache: '无缓存',
+      withCache: '有缓存',
+      savings: '节省',
+      computeAmount: '计算量',
+      enableToSee: '开启缓存以查看节省效果 ↑',
+      systemPromptLabel: 'System Prompt',
+      historyLabel: 'History',
+      newMessageLabel: 'New Message',
+      cachedSkipLabel: 'Cached (skip)',
+    },
+    en: {
+      enableCache: 'Enable Prefix Cache',
+      inputTokenSequence: 'Input Token Sequence',
+      prefillCompute: 'Prefill Compute',
+      noCache: 'No Cache',
+      withCache: 'With Cache',
+      savings: 'Savings',
+      computeAmount: 'compute',
+      enableToSee: 'Enable cache to see savings ↑',
+      systemPromptLabel: 'System Prompt',
+      historyLabel: 'History',
+      newMessageLabel: 'New Message',
+      cachedSkipLabel: 'Cached (skip)',
+    },
+  }[locale];
+
   const [cacheEnabled, setCacheEnabled] = useState(false);
   const [activeTurn, setActiveTurn] = useState(2);
+  const TURNS = getTurns(locale);
   const turn = TURNS[activeTurn];
 
   // Build token blocks for display
@@ -85,14 +138,14 @@ export default function PrefixReuseMotivation() {
             checked={cacheEnabled}
             onChange={() => setCacheEnabled(!cacheEnabled)}
           />
-          启用前缀缓存
+          {t.enableCache}
         </label>
       </div>
 
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
         {/* Left: Token blocks */}
         <text x={LEFT_X} y={20} fontSize={13} fontWeight={600} fill={COLORS.dark} fontFamily={FONTS.sans}>
-          输入 Token 序列
+          {t.inputTokenSequence}
         </text>
         {blocks.map((block, i) => {
           const y = 35 + i * (TOKEN_H + TOKEN_GAP + 18);
@@ -120,12 +173,12 @@ export default function PrefixReuseMotivation() {
 
         {/* Right: Compute comparison */}
         <text x={RIGHT_X} y={20} fontSize={13} fontWeight={600} fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Prefill 计算量
+          {t.prefillCompute}
         </text>
 
         {/* Without cache */}
         <text x={RIGHT_X} y={50} fontSize={12} fill={COLORS.mid} fontFamily={FONTS.sans}>
-          无缓存
+          {t.noCache}
         </text>
         <rect x={RIGHT_X} y={56} width={(totalTokens / totalTokens) * 230} height={24} rx={4} fill={COLORS.red} opacity={0.7} />
         <text x={RIGHT_X + 6} y={73} fontSize={11} fill="#fff" fontFamily={FONTS.mono}>
@@ -134,7 +187,7 @@ export default function PrefixReuseMotivation() {
 
         {/* With cache */}
         <text x={RIGHT_X} y={105} fontSize={12} fill={COLORS.mid} fontFamily={FONTS.sans}>
-          有缓存
+          {t.withCache}
         </text>
         <rect
           x={RIGHT_X} y={111}
@@ -149,21 +202,21 @@ export default function PrefixReuseMotivation() {
         {/* Savings */}
         {cacheEnabled && (
           <text x={RIGHT_X} y={158} fontSize={13} fontWeight={600} fill={COLORS.green} fontFamily={FONTS.sans}>
-            节省 {Math.round((reusableTokens / totalTokens) * 100)}% 计算量
+            {t.savings} {Math.round((reusableTokens / totalTokens) * 100)}% {t.computeAmount}
           </text>
         )}
         {!cacheEnabled && (
           <text x={RIGHT_X} y={158} fontSize={12} fill={COLORS.mid} fontFamily={FONTS.sans}>
-            开启缓存以查看节省效果 ↑
+            {t.enableToSee}
           </text>
         )}
 
         {/* Legend */}
         {[
-          { label: 'System Prompt', color: COLORS.primary },
-          { label: 'History', color: COLORS.green },
-          { label: 'New Message', color: COLORS.orange },
-          { label: 'Cached (skip)', color: COLORS.highlight },
+          { label: t.systemPromptLabel, color: COLORS.primary },
+          { label: t.historyLabel, color: COLORS.green },
+          { label: t.newMessageLabel, color: COLORS.orange },
+          { label: t.cachedSkipLabel, color: COLORS.highlight },
         ].map((item, i) => (
           <g key={i} transform={`translate(${RIGHT_X}, ${H - 80 + i * 18})`}>
             <rect width={12} height={12} rx={2} fill={item.color} opacity={0.8} />

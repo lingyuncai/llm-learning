@@ -57,17 +57,58 @@ function denseAttn(i: number, j: number): number {
   return 0.3 + 0.5 * Math.cos((i - j) * 0.8) + 0.2 * Math.sin(i * 0.5 + j * 0.3);
 }
 
-export default function SSDAttentionEquivalence() {
+export default function SSDAttentionEquivalence({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: '1. SSM → Semiseparable Matrix',
+      step1Header: 'SSM 递推展开为矩阵乘法 Y = M · U',
+      step1SemiSep: 'Semiseparable 结构：',
+      step1Causal: '因果 + 指数衰减结构',
+      step1Footer: 'SSM 递推 xₖ = Āxₖ₋₁ + B̄uₖ 展开后等价于一个结构化矩阵乘法',
+      step2Title: '2. Attention → Dense Matrix',
+      step2Header: 'Attention 计算 Y = softmax(QK^T) · V',
+      step2Dense: 'Dense 结构：',
+      step2DataDep: '因果 + 任意值（data-dependent）',
+      step2Footer: 'Attention score matrix 是完全 dense 的 — 每对 token 独立计算权重',
+      step3Title: '3. SSM ≈ 结构化的 Attention',
+      step3Header: 'State Space Duality (Mamba-2)',
+      step3LowRank: '低秩结构 → O(N) 计算',
+      step3FullRank: '全秩 → O(N²) 计算',
+      step3KeyInsight: '"SSM 是加了结构约束的 Attention"',
+      step3Explanation: 'Semiseparable 结构 = 因果 mask + 指数衰减 → 用 chunk-wise 算法加速',
+      step3Speedup: 'Mamba-2 利用此对偶性，比 Mamba-1 快 2-8×',
+    },
+    en: {
+      step1Title: '1. SSM → Semiseparable Matrix',
+      step1Header: 'SSM recurrence unrolled to matrix multiplication Y = M · U',
+      step1SemiSep: 'Semiseparable structure:',
+      step1Causal: 'Causal + exponential decay structure',
+      step1Footer: 'SSM recurrence xₖ = Āxₖ₋₁ + B̄uₖ expands to a structured matrix multiplication',
+      step2Title: '2. Attention → Dense Matrix',
+      step2Header: 'Attention computation Y = softmax(QK^T) · V',
+      step2Dense: 'Dense structure:',
+      step2DataDep: 'Causal + arbitrary values (data-dependent)',
+      step2Footer: 'Attention score matrix is fully dense — weights computed independently for each token pair',
+      step3Title: '3. SSM ≈ Structured Attention',
+      step3Header: 'State Space Duality (Mamba-2)',
+      step3LowRank: 'Low-rank structure → O(N) computation',
+      step3FullRank: 'Full-rank → O(N²) computation',
+      step3KeyInsight: '"SSM is Attention with structural constraints"',
+      step3Explanation: 'Semiseparable structure = causal mask + exponential decay → accelerated with chunk-wise algorithms',
+      step3Speedup: 'Mamba-2 leverages this duality for 2-8× speedup over Mamba-1',
+    },
+  }[locale];
+
   const cell = 28;
 
   const steps = [
     {
-      title: '1. SSM → Semiseparable Matrix',
+      title: t.step1Title,
       content: (
         <svg viewBox={`0 0 ${W} 300`} className="w-full">
           <text x={W / 2} y={25} textAnchor="middle" fontSize="13" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            SSM 递推展开为矩阵乘法 Y = M · U
+            {t.step1Header}
           </text>
 
           <MatrixViz x={50} y={55} size={N} data={semiSep} label="M (semiseparable)" cellSize={cell} />
@@ -92,7 +133,7 @@ export default function SSDAttentionEquivalence() {
           <rect x={330} y={60} width={220} height={80} rx={6}
             fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
           <text x={340} y={80} fontSize="9" fontWeight="600"
-            fill={COLORS.dark} fontFamily={FONTS.sans}>Semiseparable 结构：</text>
+            fill={COLORS.dark} fontFamily={FONTS.sans}>{t.step1SemiSep}</text>
           <text x={340} y={96} fontSize="8" fill={COLORS.mid} fontFamily={FONTS.mono}>
             M[i,j] = C·Ā^(i-j)·B̄  (j ≤ i)
           </text>
@@ -100,23 +141,23 @@ export default function SSDAttentionEquivalence() {
             M[i,j] = 0             (j {'>'} i)
           </text>
           <text x={340} y={130} fontSize="9" fill={COLORS.primary} fontFamily={FONTS.sans}>
-            因果 + 指数衰减结构
+            {t.step1Causal}
           </text>
 
           <text x={W / 2} y={280} textAnchor="middle" fontSize="10"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            SSM 递推 xₖ = Āxₖ₋₁ + B̄uₖ 展开后等价于一个结构化矩阵乘法
+            {t.step1Footer}
           </text>
         </svg>
       ),
     },
     {
-      title: '2. Attention → Dense Matrix',
+      title: t.step2Title,
       content: (
         <svg viewBox={`0 0 ${W} 300`} className="w-full">
           <text x={W / 2} y={25} textAnchor="middle" fontSize="13" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            Attention 计算 Y = softmax(QK^T) · V
+            {t.step2Header}
           </text>
 
           <MatrixViz x={50} y={55} size={N} data={denseAttn} label="softmax(QKᵀ) (dense)" cellSize={cell} />
@@ -139,7 +180,7 @@ export default function SSDAttentionEquivalence() {
           <rect x={330} y={60} width={220} height={80} rx={6}
             fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
           <text x={340} y={80} fontSize="9" fontWeight="600"
-            fill={COLORS.dark} fontFamily={FONTS.sans}>Dense 结构：</text>
+            fill={COLORS.dark} fontFamily={FONTS.sans}>{t.step2Dense}</text>
           <text x={340} y={96} fontSize="8" fill={COLORS.mid} fontFamily={FONTS.mono}>
             A[i,j] = softmax(qᵢ·kⱼ)  (j ≤ i)
           </text>
@@ -147,29 +188,29 @@ export default function SSDAttentionEquivalence() {
             A[i,j] = 0                (j {'>'} i)
           </text>
           <text x={340} y={130} fontSize="9" fill={COLORS.orange} fontFamily={FONTS.sans}>
-            因果 + 任意值（data-dependent）
+            {t.step2DataDep}
           </text>
 
           <text x={W / 2} y={280} textAnchor="middle" fontSize="10"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            Attention score matrix 是完全 dense 的 — 每对 token 独立计算权重
+            {t.step2Footer}
           </text>
         </svg>
       ),
     },
     {
-      title: '3. SSM ≈ 结构化的 Attention',
+      title: t.step3Title,
       content: (
         <svg viewBox={`0 0 ${W} 300`} className="w-full">
           <text x={W / 2} y={25} textAnchor="middle" fontSize="14" fontWeight="700"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            State Space Duality (Mamba-2)
+            {t.step3Header}
           </text>
 
           {/* SSM matrix */}
           <MatrixViz x={30} y={55} size={N} data={semiSep} label="SSM: Semiseparable" cellSize={24} />
           <text x={30} y={55 + N * 24 + 18} fontSize="9" fill={COLORS.primary} fontFamily={FONTS.sans}>
-            低秩结构 → O(N) 计算
+            {t.step3LowRank}
           </text>
 
           {/* vs */}
@@ -179,7 +220,7 @@ export default function SSDAttentionEquivalence() {
           {/* Attention matrix */}
           <MatrixViz x={320} y={55} size={N} data={denseAttn} label="Attention: Dense" cellSize={24} />
           <text x={320} y={55 + N * 24 + 18} fontSize="9" fill={COLORS.orange} fontFamily={FONTS.sans}>
-            全秩 → O(N²) 计算
+            {t.step3FullRank}
           </text>
 
           {/* Key insight box */}
@@ -187,15 +228,15 @@ export default function SSDAttentionEquivalence() {
             fill={COLORS.bgAlt} stroke={COLORS.primary} strokeWidth="2" />
           <text x={290} y={232} textAnchor="middle" fontSize="12" fontWeight="700"
             fill={COLORS.primary} fontFamily={FONTS.sans}>
-            "SSM 是加了结构约束的 Attention"
+            {t.step3KeyInsight}
           </text>
           <text x={290} y={252} textAnchor="middle" fontSize="10"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            Semiseparable 结构 = 因果 mask + 指数衰减 → 用 chunk-wise 算法加速
+            {t.step3Explanation}
           </text>
           <text x={290} y={268} textAnchor="middle" fontSize="10"
             fill={COLORS.green} fontFamily={FONTS.sans}>
-            Mamba-2 利用此对偶性，比 Mamba-1 快 2-8×
+            {t.step3Speedup}
           </text>
         </svg>
       ),

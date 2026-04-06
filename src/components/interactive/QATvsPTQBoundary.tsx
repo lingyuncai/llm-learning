@@ -3,7 +3,35 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const H = 300;
 
-export default function QATvsPTQBoundary() {
+export default function QATvsPTQBoundary({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'QAT vs PTQ 精度边界：Perplexity 增长曲线',
+      xAxis: 'Bit Width (位宽)',
+      yAxis: 'Perplexity 增长 (%)',
+      ptqLabel: 'PTQ (Post-Training)',
+      qatLabel: 'QAT (Quantization-Aware)',
+      crossPoint: '交叉点',
+      crossBit: '~3 bit',
+      regionTitle: '极低比特区域 (≤3 bit)',
+      regionLine1: 'QAT 显著优于 PTQ',
+      regionLine2: 'PTQ 精度快速崩溃',
+      regionLine3: '需训练时量化感知',
+    },
+    en: {
+      title: 'QAT vs PTQ Accuracy Boundary: Perplexity Growth Curve',
+      xAxis: 'Bit Width',
+      yAxis: 'Perplexity Growth (%)',
+      ptqLabel: 'PTQ (Post-Training)',
+      qatLabel: 'QAT (Quantization-Aware)',
+      crossPoint: 'Crossing',
+      crossBit: '~3 bit',
+      regionTitle: 'Ultra-low bit region (≤3 bit)',
+      regionLine1: 'QAT significantly better than PTQ',
+      regionLine2: 'PTQ accuracy collapses rapidly',
+      regionLine3: 'Requires quantization-aware training',
+    },
+  }[locale];
   const ptqPoints = [
     { bit: 8, ppl: 0.5 },
     { bit: 6, ppl: 0.8 },
@@ -35,7 +63,7 @@ export default function QATvsPTQBoundary() {
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y="20" textAnchor="middle" fontSize="14" fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        QAT vs PTQ 精度边界：Perplexity 增长曲线
+        {t.title}
       </text>
 
       <g>
@@ -74,7 +102,7 @@ export default function QATvsPTQBoundary() {
         ))}
 
         <text x={W / 2} y={H - 10} textAnchor="middle" fontSize="11" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          Bit Width (位宽)
+          {t.xAxis}
         </text>
         <text
           x={margin.left - 45}
@@ -85,7 +113,7 @@ export default function QATvsPTQBoundary() {
           fontFamily={FONTS.sans}
           transform={`rotate(-90, ${margin.left - 45}, ${margin.top + chartH / 2})`}
         >
-          Perplexity 增长 (%)
+          {t.yAxis}
         </text>
 
         <path d={ptqPath} fill="none" stroke={COLORS.red} strokeWidth="3" />
@@ -100,34 +128,34 @@ export default function QATvsPTQBoundary() {
 
         <circle cx={xScale(3)} cy={yScale(3.2)} r="6" fill="none" stroke={COLORS.purple} strokeWidth="2" strokeDasharray="3,2" />
         <text x={xScale(3) + 12} y={yScale(3.2) - 8} fontSize="10" fill={COLORS.purple} fontFamily={FONTS.sans}>
-          交叉点
+          {t.crossPoint}
         </text>
         <text x={xScale(3) + 12} y={yScale(3.2) + 5} fontSize="9" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          ~3 bit
+          {t.crossBit}
         </text>
 
         <rect x={W - 170} y={margin.top + 10} width="150" height="60" fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1" rx="3" />
         <line x1={W - 155} x2={W - 135} y1={margin.top + 30} y2={margin.top + 30} stroke={COLORS.red} strokeWidth="3" />
         <text x={W - 130} y={margin.top + 34} fontSize="10" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          PTQ (Post-Training)
+          {t.ptqLabel}
         </text>
         <line x1={W - 155} x2={W - 135} y1={margin.top + 55} y2={margin.top + 55} stroke={COLORS.green} strokeWidth="3" />
         <text x={W - 130} y={margin.top + 59} fontSize="10" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          QAT (Quantization-Aware)
+          {t.qatLabel}
         </text>
 
         <rect x={margin.left + 10} y={margin.top + chartH - 90} width="200" height="75" fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth="1.5" rx="3" />
         <text x={margin.left + 110} y={margin.top + chartH - 72} textAnchor="middle" fontSize="10" fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          极低比特区域 (≤3 bit)
+          {t.regionTitle}
         </text>
         <text x={margin.left + 110} y={margin.top + chartH - 58} textAnchor="middle" fontSize="9" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          QAT 显著优于 PTQ
+          {t.regionLine1}
         </text>
         <text x={margin.left + 110} y={margin.top + chartH - 45} textAnchor="middle" fontSize="9" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          PTQ 精度快速崩溃
+          {t.regionLine2}
         </text>
         <text x={margin.left + 110} y={margin.top + chartH - 32} textAnchor="middle" fontSize="9" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          需训练时量化感知
+          {t.regionLine3}
         </text>
       </g>
     </svg>

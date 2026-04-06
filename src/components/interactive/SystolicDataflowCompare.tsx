@@ -2,6 +2,10 @@
 // Static SVG: Output-stationary vs Weight-stationary systolic array comparison
 import { COLORS, FONTS } from './shared/colors';
 
+interface SystolicDataflowCompareProps {
+  locale?: 'zh' | 'en';
+}
+
 const W = 580;
 const H = 320;
 const HALF = W / 2 - 10;
@@ -17,11 +21,11 @@ function Arrow({ x1, y1, x2, y2, color }: {
   );
 }
 
-function PeGrid3x3({ offsetX, title, subtitle, peLabel, stayLabel, stayColor,
+function PeGrid3x3({ offsetX, title, subtitle, peLabel, stayLabel, stayColor, stayDesc,
   flowH, flowHColor, flowHLabel, flowV, flowVColor, flowVLabel,
 }: {
   offsetX: number; title: string; subtitle: string; peLabel: string;
-  stayLabel: string; stayColor: string;
+  stayLabel: string; stayColor: string; stayDesc: string;
   flowH: boolean; flowHColor: string; flowHLabel: string;
   flowV: boolean; flowVColor: string; flowVLabel: string;
 }) {
@@ -106,17 +110,56 @@ function PeGrid3x3({ offsetX, title, subtitle, peLabel, stayLabel, stayColor,
         fill="white" stroke={stayColor} strokeWidth={1} />
       <text x={offsetX + HALF / 2} y={H - 48} textAnchor="middle" fontSize="9"
         fontWeight="600" fill={stayColor} fontFamily={FONTS.sans}>
-        固定: {stayLabel}
+        {stayLabel}
       </text>
       <text x={offsetX + HALF / 2} y={H - 34} textAnchor="middle" fontSize="8"
         fill="#64748b" fontFamily={FONTS.sans}>
-        {title === 'Output-Stationary' ? '部分和 C 留在 PE 中累加，A/B 流过' : '权重 B 预加载到 PE，A 流过，部分和向下传递'}
+        {stayDesc}
       </text>
     </g>
   );
 }
 
-export default function SystolicDataflowCompare() {
+export default function SystolicDataflowCompare({ locale = 'zh' }: SystolicDataflowCompareProps) {
+  const t = {
+    zh: {
+      outputStationary: {
+        title: 'Output-Stationary',
+        subtitle: 'C 留在 PE，A 和 B 流动',
+        stayLabel: '固定: 输出矩阵 C',
+        stayDesc: '部分和 C 留在 PE 中累加，A/B 流过',
+        flowHLabel: 'A 行 →',
+        flowVLabel: 'B 列 ↓',
+      },
+      weightStationary: {
+        title: 'Weight-Stationary',
+        subtitle: 'B 预加载到 PE，A 流动，部分和传递',
+        stayLabel: '固定: 权重矩阵 B',
+        stayDesc: '权重 B 预加载到 PE，A 流过，部分和向下传递',
+        flowHLabel: 'A 行 →',
+        flowVLabel: '部分和 ↓',
+      },
+    },
+    en: {
+      outputStationary: {
+        title: 'Output-Stationary',
+        subtitle: 'C stays in PE, A and B flow',
+        stayLabel: 'Fixed: Output Matrix C',
+        stayDesc: 'Partial sum C accumulates in PE, A/B flow through',
+        flowHLabel: 'A rows →',
+        flowVLabel: 'B cols ↓',
+      },
+      weightStationary: {
+        title: 'Weight-Stationary',
+        subtitle: 'B preloaded, A flows, partial sums propagate',
+        stayLabel: 'Fixed: Weight Matrix B',
+        stayDesc: 'Weights B preloaded to PE, A flows, partial sums propagate down',
+        flowHLabel: 'A rows →',
+        flowVLabel: 'Partial sums ↓',
+      },
+    },
+  }[locale];
+
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img"
       aria-label="Output-stationary vs weight-stationary systolic array comparison">
@@ -133,13 +176,14 @@ export default function SystolicDataflowCompare() {
       {/* Left: Output-Stationary */}
       <PeGrid3x3
         offsetX={0}
-        title="Output-Stationary"
-        subtitle="C 留在 PE，A 和 B 流动"
+        title={t.outputStationary.title}
+        subtitle={t.outputStationary.subtitle}
         peLabel="C[i][j]"
-        stayLabel="输出矩阵 C"
+        stayLabel={t.outputStationary.stayLabel}
         stayColor={COLORS.orange}
-        flowH={true} flowHColor={COLORS.primary} flowHLabel="A 行 →"
-        flowV={true} flowVColor={COLORS.green} flowVLabel="B 列 ↓"
+        stayDesc={t.outputStationary.stayDesc}
+        flowH={true} flowHColor={COLORS.primary} flowHLabel={t.outputStationary.flowHLabel}
+        flowV={true} flowVColor={COLORS.green} flowVLabel={t.outputStationary.flowVLabel}
       />
 
       {/* Divider */}
@@ -149,13 +193,14 @@ export default function SystolicDataflowCompare() {
       {/* Right: Weight-Stationary */}
       <PeGrid3x3
         offsetX={W / 2 + 10}
-        title="Weight-Stationary"
-        subtitle="B 预加载到 PE，A 流动，部分和传递"
+        title={t.weightStationary.title}
+        subtitle={t.weightStationary.subtitle}
         peLabel="B[i][j]"
-        stayLabel="权重矩阵 B"
+        stayLabel={t.weightStationary.stayLabel}
         stayColor={COLORS.purple}
-        flowH={true} flowHColor={COLORS.primary} flowHLabel="A 行 →"
-        flowV={true} flowVColor={COLORS.orange} flowVLabel="部分和 ↓"
+        stayDesc={t.weightStationary.stayDesc}
+        flowH={true} flowHColor={COLORS.primary} flowHLabel={t.weightStationary.flowHLabel}
+        flowV={true} flowVColor={COLORS.orange} flowVLabel={t.weightStationary.flowVLabel}
       />
     </svg>
   );

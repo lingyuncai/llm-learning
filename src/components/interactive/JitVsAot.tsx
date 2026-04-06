@@ -1,34 +1,77 @@
 import React, { useState } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
-const JitVsAot: React.FC = () => {
+const JitVsAot: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
   const [mode, setMode] = useState<'jit' | 'aot'>('jit');
+
+  const t = {
+    zh: {
+      title: 'JIT vs AOT 编译策略',
+      compileTime: '编译时机',
+      startupLatency: '启动延迟',
+      optimization: '优化程度',
+      binarySize: '二进制大小',
+      typicalUsers: '典型使用者',
+      jitRuntime: '运行时 (Runtime)',
+      jitBuildTime: '构建时 (Build-time)',
+      highLatency: '高 (首次需编译)',
+      lowLatency: '低 (预编译完成)',
+      highOpt: '高 (运行时信息)',
+      mediumOpt: '中 (静态分析)',
+      smallBinary: '小 (SPIR-V)',
+      largeBinary: '大 (多目标 ISA)',
+      jitUsers: 'oneDNN, SYCL runtime',
+      aotUsers: 'OpenVINO model cache',
+      jitExplanation: 'JIT: SPIR-V → IGC 运行时编译，灵活但有启动延迟，适合通用库',
+      aotExplanation: 'AOT: 离线预编译多架构 ISA，启动快但体积大，适合推理部署',
+    },
+    en: {
+      title: 'JIT vs AOT Compilation Strategy',
+      compileTime: 'Compilation Timing',
+      startupLatency: 'Startup Latency',
+      optimization: 'Optimization Level',
+      binarySize: 'Binary Size',
+      typicalUsers: 'Typical Users',
+      jitRuntime: 'Runtime',
+      jitBuildTime: 'Build-time',
+      highLatency: 'High (first-run compile)',
+      lowLatency: 'Low (pre-compiled)',
+      highOpt: 'High (runtime info)',
+      mediumOpt: 'Medium (static analysis)',
+      smallBinary: 'Small (SPIR-V)',
+      largeBinary: 'Large (multi-target ISA)',
+      jitUsers: 'oneDNN, SYCL runtime',
+      aotUsers: 'OpenVINO model cache',
+      jitExplanation: 'JIT: SPIR-V → IGC runtime compilation, flexible but with startup latency, suitable for general libraries',
+      aotExplanation: 'AOT: Offline pre-compilation of multi-architecture ISA, fast startup but large size, suitable for inference deployment',
+    },
+  }[locale];
 
   const dimensions = [
     {
-      label: '编译时机',
-      jit: { text: '运行时 (Runtime)', color: COLORS.orange },
-      aot: { text: '构建时 (Build-time)', color: COLORS.green },
+      label: t.compileTime,
+      jit: { text: t.jitRuntime, color: COLORS.orange },
+      aot: { text: t.jitBuildTime, color: COLORS.green },
     },
     {
-      label: '启动延迟',
-      jit: { text: '高 (首次需编译)', color: COLORS.red },
-      aot: { text: '低 (预编译完成)', color: COLORS.green },
+      label: t.startupLatency,
+      jit: { text: t.highLatency, color: COLORS.red },
+      aot: { text: t.lowLatency, color: COLORS.green },
     },
     {
-      label: '优化程度',
-      jit: { text: '高 (运行时信息)', color: COLORS.green },
-      aot: { text: '中 (静态分析)', color: COLORS.orange },
+      label: t.optimization,
+      jit: { text: t.highOpt, color: COLORS.green },
+      aot: { text: t.mediumOpt, color: COLORS.orange },
     },
     {
-      label: '二进制大小',
-      jit: { text: '小 (SPIR-V)', color: COLORS.green },
-      aot: { text: '大 (多目标 ISA)', color: COLORS.orange },
+      label: t.binarySize,
+      jit: { text: t.smallBinary, color: COLORS.green },
+      aot: { text: t.largeBinary, color: COLORS.orange },
     },
     {
-      label: '典型使用者',
-      jit: { text: 'oneDNN, SYCL runtime', color: COLORS.primary },
-      aot: { text: 'OpenVINO model cache', color: COLORS.purple },
+      label: t.typicalUsers,
+      jit: { text: t.jitUsers, color: COLORS.primary },
+      aot: { text: t.aotUsers, color: COLORS.purple },
     },
   ];
 
@@ -37,7 +80,7 @@ const JitVsAot: React.FC = () => {
       <svg viewBox="0 0 580 340" className="w-full">
         {/* Title */}
         <text x="290" y="25" fontFamily={FONTS.sans} fontSize="14" fill={COLORS.dark} fontWeight="700" textAnchor="middle">
-          JIT vs AOT 编译策略
+          {t.title}
         </text>
 
         {/* Toggle buttons */}
@@ -141,9 +184,7 @@ const JitVsAot: React.FC = () => {
         {/* Bottom explanation */}
         <rect x="30" y="315" width="520" height="18" fill={mode === 'jit' ? COLORS.orange : COLORS.green} opacity="0.15" rx="3" />
         <text x="290" y="327" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.dark} textAnchor="middle">
-          {mode === 'jit'
-            ? 'JIT: SPIR-V → IGC 运行时编译，灵活但有启动延迟，适合通用库'
-            : 'AOT: 离线预编译多架构 ISA，启动快但体积大，适合推理部署'}
+          {mode === 'jit' ? t.jitExplanation : t.aotExplanation}
         </text>
       </svg>
     </div>

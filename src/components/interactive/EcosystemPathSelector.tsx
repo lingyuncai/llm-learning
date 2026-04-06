@@ -25,7 +25,18 @@ function layerHeight(nodeCount: number): number {
   return LABEL_H + 4 + rows * (NODE_PILL_H + NODE_PILL_GAP) + 4;
 }
 
-export default function EcosystemPathSelector() {
+export default function EcosystemPathSelector({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      selectScenario: '选择一个场景，查看技术栈路径',
+      ggmlSpanNote: '(= operator lib + kernel)',
+    },
+    en: {
+      selectScenario: 'Select a scenario to view tech stack path',
+      ggmlSpanNote: '(= operator lib + kernel)',
+    },
+  }[locale];
+
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
   const activePath = ECO_PATHS.find(p => p.id === selectedPath) ?? null;
@@ -124,7 +135,7 @@ export default function EcosystemPathSelector() {
                         <text x={nx + NODE_PILL_W / 2} y={ny + NODE_PILL_H + 8}
                           dominantBaseline="middle" textAnchor="middle"
                           fontSize="7" fill={COLORS.orange} fontFamily={FONTS.sans}>
-                          (= operator lib + kernel)
+                          {t.ggmlSpanNote}
                         </text>
                       )}
                     </motion.g>
@@ -150,7 +161,7 @@ export default function EcosystemPathSelector() {
         </motion.p>
       ) : (
         <p className="text-xs text-gray-400 text-center">
-          选择一个场景，查看技术栈路径
+          {t.selectScenario}
         </p>
       )}
     </div>

@@ -1,24 +1,65 @@
 import React from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
-const SpirvVsPtx: React.FC = () => {
+const SpirvVsPtx: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      title: '编译链对比：SPIR-V (Intel) vs PTX (NVIDIA)',
+      intelPipeline: 'Intel DPC++/SYCL',
+      nvidiaPipeline: 'NVIDIA CUDA',
+      dpcppSycl: 'DPC++/SYCL',
+      clangFrontend: 'Clang Frontend',
+      llvmIr: 'LLVM IR',
+      spirv: 'SPIR-V',
+      spirvStandard: 'Khronos 标准',
+      igc: 'IGC (JIT)',
+      xe2Isa: 'Xe2 ISA',
+      cudaCpp: 'CUDA C++',
+      nvccFrontend: 'NVCC Frontend',
+      ptx: 'PTX',
+      ptxProprietary: 'NVIDIA 专有',
+      ptxas: 'ptxas',
+      sass: 'SASS',
+      note: 'SPIR-V 是 Khronos 开放标准，支持多厂商 GPU；PTX 是 NVIDIA 专有格式，仅限自家硬件',
+    },
+    en: {
+      title: 'Compilation Pipeline Comparison: SPIR-V (Intel) vs PTX (NVIDIA)',
+      intelPipeline: 'Intel DPC++/SYCL',
+      nvidiaPipeline: 'NVIDIA CUDA',
+      dpcppSycl: 'DPC++/SYCL',
+      clangFrontend: 'Clang Frontend',
+      llvmIr: 'LLVM IR',
+      spirv: 'SPIR-V',
+      spirvStandard: 'Khronos Standard',
+      igc: 'IGC (JIT)',
+      xe2Isa: 'Xe2 ISA',
+      cudaCpp: 'CUDA C++',
+      nvccFrontend: 'NVCC Frontend',
+      ptx: 'PTX',
+      ptxProprietary: 'NVIDIA Proprietary',
+      ptxas: 'ptxas',
+      sass: 'SASS',
+      note: 'SPIR-V is Khronos open standard supporting multi-vendor GPUs; PTX is NVIDIA proprietary format for their hardware only',
+    },
+  }[locale];
+
   return (
     <div className="my-6 p-4 border rounded-lg">
       <svg viewBox="0 0 580 380" className="w-full">
         {/* Title */}
         <text x="290" y="20" fontFamily={FONTS.sans} fontSize="14" fill={COLORS.dark} fontWeight="700" textAnchor="middle">
-          编译链对比：SPIR-V (Intel) vs PTX (NVIDIA)
+          {t.title}
         </text>
 
         {/* Intel Pipeline (Left) */}
         <text x="145" y="50" fontFamily={FONTS.sans} fontSize="12" fill={COLORS.primary} fontWeight="700" textAnchor="middle">
-          Intel DPC++/SYCL
+          {t.intelPipeline}
         </text>
 
         {/* Stage 1: Source */}
         <rect x="70" y="65" width="150" height="35" fill={COLORS.primary} opacity="0.15" stroke={COLORS.primary} strokeWidth="2" rx="4" />
         <text x="145" y="87" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} textAnchor="middle">
-          DPC++/SYCL
+          {t.dpcppSycl}
         </text>
 
         {/* Arrow */}
@@ -32,7 +73,7 @@ const SpirvVsPtx: React.FC = () => {
         {/* Stage 2: Clang */}
         <rect x="70" y="115" width="150" height="35" fill={COLORS.primary} opacity="0.2" stroke={COLORS.primary} strokeWidth="1.5" rx="4" />
         <text x="145" y="137" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} textAnchor="middle">
-          Clang Frontend
+          {t.clangFrontend}
         </text>
 
         {/* Arrow */}
@@ -41,7 +82,7 @@ const SpirvVsPtx: React.FC = () => {
         {/* Stage 3: LLVM IR */}
         <rect x="70" y="165" width="150" height="35" fill={COLORS.orange} opacity="0.2" stroke={COLORS.orange} strokeWidth="1.5" rx="4" />
         <text x="145" y="187" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} textAnchor="middle">
-          LLVM IR
+          {t.llvmIr}
         </text>
 
         {/* Arrow */}
@@ -50,10 +91,10 @@ const SpirvVsPtx: React.FC = () => {
         {/* Stage 4: SPIR-V */}
         <rect x="70" y="215" width="150" height="35" fill={COLORS.primary} opacity="0.25" stroke={COLORS.primary} strokeWidth="2" rx="4" />
         <text x="145" y="233" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} fontWeight="600" textAnchor="middle">
-          SPIR-V
+          {t.spirv}
         </text>
         <text x="145" y="246" fontFamily={FONTS.sans} fontSize="9" fill={COLORS.mid} textAnchor="middle">
-          Khronos 标准
+          {t.spirvStandard}
         </text>
 
         {/* Arrow */}
@@ -62,7 +103,7 @@ const SpirvVsPtx: React.FC = () => {
         {/* Stage 5: IGC */}
         <rect x="70" y="265" width="150" height="35" fill={COLORS.purple} opacity="0.2" stroke={COLORS.purple} strokeWidth="1.5" rx="4" />
         <text x="145" y="287" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} textAnchor="middle">
-          IGC (JIT)
+          {t.igc}
         </text>
 
         {/* Arrow */}
@@ -71,18 +112,18 @@ const SpirvVsPtx: React.FC = () => {
         {/* Stage 6: Xe2 ISA */}
         <rect x="70" y="315" width="150" height="35" fill={COLORS.primary} opacity="0.3" stroke={COLORS.primary} strokeWidth="2" rx="4" />
         <text x="145" y="337" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} fontWeight="600" textAnchor="middle">
-          Xe2 ISA
+          {t.xe2Isa}
         </text>
 
         {/* NVIDIA Pipeline (Right) */}
         <text x="435" y="50" fontFamily={FONTS.sans} fontSize="12" fill={COLORS.green} fontWeight="700" textAnchor="middle">
-          NVIDIA CUDA
+          {t.nvidiaPipeline}
         </text>
 
         {/* Stage 1: Source */}
         <rect x="360" y="65" width="150" height="35" fill={COLORS.green} opacity="0.15" stroke={COLORS.green} strokeWidth="2" rx="4" />
         <text x="435" y="87" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} textAnchor="middle">
-          CUDA C++
+          {t.cudaCpp}
         </text>
 
         {/* Arrow */}
@@ -96,7 +137,7 @@ const SpirvVsPtx: React.FC = () => {
         {/* Stage 2: NVCC */}
         <rect x="360" y="115" width="150" height="35" fill={COLORS.green} opacity="0.2" stroke={COLORS.green} strokeWidth="1.5" rx="4" />
         <text x="435" y="137" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} textAnchor="middle">
-          NVCC Frontend
+          {t.nvccFrontend}
         </text>
 
         {/* Arrow */}
@@ -105,7 +146,7 @@ const SpirvVsPtx: React.FC = () => {
         {/* Stage 3: LLVM IR */}
         <rect x="360" y="165" width="150" height="35" fill={COLORS.orange} opacity="0.2" stroke={COLORS.orange} strokeWidth="1.5" rx="4" />
         <text x="435" y="187" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} textAnchor="middle">
-          LLVM IR
+          {t.llvmIr}
         </text>
 
         {/* Arrow */}
@@ -114,10 +155,10 @@ const SpirvVsPtx: React.FC = () => {
         {/* Stage 4: PTX */}
         <rect x="360" y="215" width="150" height="35" fill={COLORS.green} opacity="0.25" stroke={COLORS.green} strokeWidth="2" rx="4" />
         <text x="435" y="233" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} fontWeight="600" textAnchor="middle">
-          PTX
+          {t.ptx}
         </text>
         <text x="435" y="246" fontFamily={FONTS.sans} fontSize="9" fill={COLORS.mid} textAnchor="middle">
-          NVIDIA 专有
+          {t.ptxProprietary}
         </text>
 
         {/* Arrow */}
@@ -126,7 +167,7 @@ const SpirvVsPtx: React.FC = () => {
         {/* Stage 5: ptxas */}
         <rect x="360" y="265" width="150" height="35" fill={COLORS.green} opacity="0.2" stroke={COLORS.green} strokeWidth="1.5" rx="4" />
         <text x="435" y="287" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} textAnchor="middle">
-          ptxas
+          {t.ptxas}
         </text>
 
         {/* Arrow */}
@@ -135,7 +176,7 @@ const SpirvVsPtx: React.FC = () => {
         {/* Stage 6: SASS */}
         <rect x="360" y="315" width="150" height="35" fill={COLORS.green} opacity="0.3" stroke={COLORS.green} strokeWidth="2" rx="4" />
         <text x="435" y="337" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark} fontWeight="600" textAnchor="middle">
-          SASS
+          {t.sass}
         </text>
 
         {/* Horizontal connection lines (dashed) */}
@@ -147,7 +188,7 @@ const SpirvVsPtx: React.FC = () => {
         {/* Callout box */}
         <rect x="30" y="362" width="520" height="15" fill={COLORS.highlight} opacity="0.3" rx="3" />
         <text x="290" y="372" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.dark} textAnchor="middle">
-          SPIR-V 是 Khronos 开放标准，支持多厂商 GPU；PTX 是 NVIDIA 专有格式，仅限自家硬件
+          {t.note}
         </text>
       </svg>
     </div>

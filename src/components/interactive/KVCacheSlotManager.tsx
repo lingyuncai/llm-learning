@@ -13,14 +13,33 @@ interface Slot {
   active: boolean;
 }
 
-const INITIAL_SLOTS: Slot[] = [
-  { id: 1, label: 'Req A', tokensUsed: 180, maxTokens: 512, active: true },
-  { id: 2, label: 'Req B', tokensUsed: 45, maxTokens: 512, active: true },
-  { id: 3, label: '(空闲)', tokensUsed: 0, maxTokens: 512, active: false },
-  { id: 4, label: '(空闲)', tokensUsed: 0, maxTokens: 512, active: false },
-];
+export default function KVCacheSlotManager({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      newRequest: '+ 新请求',
+      title: 'KV Cache Slot 管理器',
+      capacity: 'slots × 512 tokens = {0} tokens 总容量 | 利用率: {1}%',
+      idle: '(空闲)',
+      slot: 'Slot',
+      clickToRelease: '点击活跃请求可释放 slot | 固定大小 slot: 简单但可能浪费空间 (vs PagedAttention)',
+    },
+    en: {
+      newRequest: '+ New Request',
+      title: 'KV Cache Slot Manager',
+      capacity: 'slots × 512 tokens = {0} tokens total capacity | Utilization: {1}%',
+      idle: '(idle)',
+      slot: 'Slot',
+      clickToRelease: 'Click active request to release slot | Fixed-size slot: simple but may waste space (vs PagedAttention)',
+    },
+  }[locale];
 
-export default function KVCacheSlotManager() {
+  const INITIAL_SLOTS: Slot[] = [
+    { id: 1, label: 'Req A', tokensUsed: 180, maxTokens: 512, active: true },
+    { id: 2, label: 'Req B', tokensUsed: 45, maxTokens: 512, active: true },
+    { id: 3, label: t.idle, tokensUsed: 0, maxTokens: 512, active: false },
+    { id: 4, label: t.idle, tokensUsed: 0, maxTokens: 512, active: false },
+  ];
+
   const [slots, setSlots] = useState<Slot[]>(INITIAL_SLOTS);
   const [nextReqId, setNextReqId] = useState(3);
 
@@ -40,7 +59,7 @@ export default function KVCacheSlotManager() {
 
   const completeRequest = (idx: number) => {
     const newSlots = [...slots];
-    newSlots[idx] = { ...newSlots[idx], label: '(空闲)', tokensUsed: 0, active: false };
+    newSlots[idx] = { ...newSlots[idx], label: t.idle, tokensUsed: 0, active: false };
     setSlots(newSlots);
   };
 
@@ -54,18 +73,18 @@ export default function KVCacheSlotManager() {
         <button onClick={addRequest}
           className="px-3 py-1 text-xs rounded-full border border-blue-400 bg-blue-50 text-blue-700 hover:bg-blue-100"
           disabled={!slots.some(s => !s.active)}>
-          + 新请求
+          {t.newRequest}
         </button>
       </div>
 
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          KV Cache Slot 管理器
+          {t.title}
         </text>
         <text x={W / 2} y={33} textAnchor="middle" fontSize="7" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          {slots.length} slots × 512 tokens = {totalCapacity} tokens 总容量 | 利用率: {utilization}%
+          {slots.length} {t.capacity.replace('{0}', totalCapacity.toString()).replace('{1}', utilization)}
         </text>
 
         {/* Slots */}
@@ -97,7 +116,7 @@ export default function KVCacheSlotManager() {
               {/* Slot number */}
               <text x={x + slotW / 2} y={barY + barH + 15} textAnchor="middle"
                 fontSize="7" fill={COLORS.mid} fontFamily={FONTS.sans}>
-                Slot {i}
+                {t.slot} {i}
               </text>
             </g>
           );
@@ -105,7 +124,7 @@ export default function KVCacheSlotManager() {
 
         <text x={W / 2} y={H - 12} textAnchor="middle" fontSize="7" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          点击活跃请求可释放 slot | 固定大小 slot: 简单但可能浪费空间 (vs PagedAttention)
+          {t.clickToRelease}
         </text>
       </svg>
     </div>

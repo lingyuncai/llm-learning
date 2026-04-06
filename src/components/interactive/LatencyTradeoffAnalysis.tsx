@@ -1,7 +1,53 @@
 import React, { useState } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
-export default function LatencyTradeoffAnalysis() {
+export default function LatencyTradeoffAnalysis({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '延迟 Tradeoff 分析',
+      warning: '⚠️ 本地 ≠ 低延迟 — 总延迟取决于多个因素',
+      local: '本地',
+      cloud: '云端',
+      prefill: 'Prefill',
+      generate: 'Generate',
+      network: 'Net',
+      gen: 'Gen',
+      localAdvantage: '✓ 零网络延迟 · ✗ 消费级硬件 prefill 慢、生成慢',
+      cloudAdvantage: '✗ 网络往返 + 排队 · ✓ A100/H100 快速计算',
+      localFaster: '🟢 本地更快',
+      cloudFaster: '🔵 云端更快',
+      vs: 'vs',
+      insightTitle: '关键洞察',
+      insightDetail1: '简短 query + 强本地硬件 → 本地可能更快。长生成 + 弱硬件 → 云端大概率更快。',
+      insightDetail2: '延迟路由需要实时估算两端总延迟，不能简单假设"本地更快"。',
+      queryComplexity: 'Query 复杂度:',
+      localHardware: '本地硬件:',
+      networkLatency: '网络延迟:',
+      cloudLoad: '云端负载:',
+    },
+    en: {
+      title: 'Latency Tradeoff Analysis',
+      warning: '⚠️ Local ≠ Low Latency — total latency depends on multiple factors',
+      local: 'Local',
+      cloud: 'Cloud',
+      prefill: 'Prefill',
+      generate: 'Generate',
+      network: 'Net',
+      gen: 'Gen',
+      localAdvantage: '✓ Zero network latency · ✗ Consumer hardware slow prefill & generation',
+      cloudAdvantage: '✗ Network round-trip + queuing · ✓ A100/H100 fast compute',
+      localFaster: '🟢 Local faster',
+      cloudFaster: '🔵 Cloud faster',
+      vs: 'vs',
+      insightTitle: 'Key Insight',
+      insightDetail1: 'Short query + powerful local hardware → local may be faster. Long generation + weak hardware → cloud likely faster.',
+      insightDetail2: 'Latency routing requires real-time estimation of total latency on both sides, cannot simply assume "local is faster".',
+      queryComplexity: 'Query complexity:',
+      localHardware: 'Local hardware:',
+      networkLatency: 'Network latency:',
+      cloudLoad: 'Cloud load:',
+    },
+  }[locale];
   const [queryComplexity, setQueryComplexity] = useState(50); // tokens to generate
   const [localHardware, setLocalHardware] = useState(50); // 0=weak CPU, 100=M4 Max
   const [networkLatency, setNetworkLatency] = useState(30); // ms round trip
@@ -33,17 +79,17 @@ export default function LatencyTradeoffAnalysis() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="22" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          延迟 Tradeoff 分析
+          {t.title}
         </text>
         <text x={W / 2} y="40" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="11" fill={COLORS.mid}>
-          ⚠️ 本地 ≠ 低延迟 — 总延迟取决于多个因素
+          {t.warning}
         </text>
 
         {/* Local breakdown */}
         <g transform="translate(0, 60)">
           <text x="20" y="15" fontFamily={FONTS.sans} fontSize="13" fontWeight="700" fill={COLORS.green}>
-            本地 ({Math.round(localTotal)}ms)
+            {t.local} ({Math.round(localTotal)}ms)
           </text>
 
           {/* Stacked bar */}
@@ -53,22 +99,22 @@ export default function LatencyTradeoffAnalysis() {
                 width={Math.min((localGenerate / maxLatency) * barW, barW - (localPrefill / maxLatency) * barW)} height="24" rx="3" fill="#4caf50" />
 
           <text x={barL + 5} y="18" fontFamily={FONTS.mono} fontSize="9" fill={COLORS.dark}>
-            Prefill {Math.round(localPrefill)}ms
+            {t.prefill} {Math.round(localPrefill)}ms
           </text>
           <text x={barL + (localPrefill / maxLatency) * barW + 5} y="18"
                 fontFamily={FONTS.mono} fontSize="9" fill="#fff">
-            Generate {Math.round(localGenerate)}ms ({localTPS.toFixed(0)} tok/s)
+            {t.generate} {Math.round(localGenerate)}ms ({localTPS.toFixed(0)} tok/s)
           </text>
 
           <text x={barL} y="42" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
-            ✓ 零网络延迟 · ✗ 消费级硬件 prefill 慢、生成慢
+            {t.localAdvantage}
           </text>
         </g>
 
         {/* Cloud breakdown */}
         <g transform="translate(0, 120)">
           <text x="20" y="15" fontFamily={FONTS.sans} fontSize="13" fontWeight="700" fill={COLORS.primary}>
-            云端 ({Math.round(cloudTotal)}ms)
+            {t.cloud} ({Math.round(cloudTotal)}ms)
           </text>
 
           <rect x={barL} y="2" width={barW} height="24" rx="3" fill={COLORS.light} />
@@ -85,15 +131,15 @@ export default function LatencyTradeoffAnalysis() {
                 width={(cloudGenerate / maxLatency) * barW} height="24" rx="3" fill="#42a5f5" />
 
           <text x={barL + 3} y="18" fontFamily={FONTS.mono} fontSize="8" fill="#fff">
-            Net {Math.round(cloudNetwork)}ms
+            {t.network} {Math.round(cloudNetwork)}ms
           </text>
           <text x={barL + ((cloudNetwork + cloudQueue + cloudPrefill) / maxLatency) * barW + 3} y="18"
                 fontFamily={FONTS.mono} fontSize="8" fill="#fff">
-            Gen {Math.round(cloudGenerate)}ms ({cloudTPS} tok/s)
+            {t.gen} {Math.round(cloudGenerate)}ms ({cloudTPS} tok/s)
           </text>
 
           <text x={barL} y="42" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
-            ✗ 网络往返 + 排队 · ✓ A100/H100 快速计算
+            {t.cloudAdvantage}
           </text>
         </g>
 
@@ -106,8 +152,8 @@ export default function LatencyTradeoffAnalysis() {
                 fontSize="13" fontWeight="700"
                 fill={winner === 'local' ? COLORS.green : COLORS.primary}>
             {winner === 'local'
-              ? `🟢 本地更快 (${Math.round(localTotal)}ms vs ${Math.round(cloudTotal)}ms)`
-              : `🔵 云端更快 (${Math.round(cloudTotal)}ms vs ${Math.round(localTotal)}ms)`}
+              ? `${t.localFaster} (${Math.round(localTotal)}ms ${t.vs} ${Math.round(cloudTotal)}ms)`
+              : `${t.cloudFaster} (${Math.round(cloudTotal)}ms ${t.vs} ${Math.round(localTotal)}ms)`}
           </text>
         </g>
 
@@ -116,13 +162,13 @@ export default function LatencyTradeoffAnalysis() {
           <rect x="0" y="0" width="500" height="52" rx="4"
                 fill="#fef3c7" stroke={COLORS.orange} strokeWidth="1.5" />
           <text x="15" y="18" fontFamily={FONTS.sans} fontSize="11" fontWeight="600" fill={COLORS.dark}>
-            关键洞察
+            {t.insightTitle}
           </text>
           <text x="15" y="36" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.dark}>
-            简短 query + 强本地硬件 → 本地可能更快。长生成 + 弱硬件 → 云端大概率更快。
+            {t.insightDetail1}
           </text>
           <text x="15" y="48" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
-            延迟路由需要实时估算两端总延迟，不能简单假设"本地更快"。
+            {t.insightDetail2}
           </text>
         </g>
       </svg>
@@ -130,28 +176,28 @@ export default function LatencyTradeoffAnalysis() {
       {/* Sliders */}
       <div className="grid grid-cols-2 gap-3 mt-3 text-sm">
         <div className="flex items-center gap-2">
-          <span className="text-gray-600 w-24">Query 复杂度:</span>
+          <span className="text-gray-600 w-24">{t.queryComplexity}</span>
           <input type="range" min="5" max="100" value={queryComplexity}
                  onChange={e => setQueryComplexity(Number(e.target.value))}
                  className="flex-1 accent-blue-700" />
           <span className="font-mono text-gray-500 w-16">{queryComplexity * 3} tok</span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-gray-600 w-24">本地硬件:</span>
+          <span className="text-gray-600 w-24">{t.localHardware}</span>
           <input type="range" min="0" max="100" value={localHardware}
                  onChange={e => setLocalHardware(Number(e.target.value))}
                  className="flex-1 accent-green-700" />
           <span className="font-mono text-gray-500 w-16">{localTPS.toFixed(0)} t/s</span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-gray-600 w-24">网络延迟:</span>
+          <span className="text-gray-600 w-24">{t.networkLatency}</span>
           <input type="range" min="5" max="200" value={networkLatency}
                  onChange={e => setNetworkLatency(Number(e.target.value))}
                  className="flex-1 accent-red-700" />
           <span className="font-mono text-gray-500 w-16">{networkLatency}ms</span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-gray-600 w-24">云端负载:</span>
+          <span className="text-gray-600 w-24">{t.cloudLoad}</span>
           <input type="range" min="0" max="100" value={cloudLoad}
                  onChange={e => setCloudLoad(Number(e.target.value))}
                  className="flex-1 accent-orange-700" />

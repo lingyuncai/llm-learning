@@ -66,7 +66,60 @@ function Matrix({ data, x, y, label, colorFn }: {
   );
 }
 
-export default function KVQuantSensitivity() {
+export default function KVQuantSensitivity({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: '1. 原始 Attention Scores',
+      step1Formula: 'S = QK^T / √d (全精度)',
+      step1MatrixLabel: 'Attention Scores S',
+      step1Description: 'Baseline: 全精度 Q 和 K 计算的 attention scores',
+      step2Title: '2. 量化 Key → Score 误差',
+      step2Formula: 'S\' = Q · quant(K)^T / √d',
+      step2Matrix1Label: 'S\' (Key 量化后)',
+      step2Matrix2Label: '误差热力图',
+      step2Error: '点积放大了 Key 量化误差',
+      step2MaxError: 'max error = ',
+      step3Title: '3. 量化 Value → Output 误差',
+      step3Formula: 'O\' = softmax(S) · quant(V)',
+      step3Matrix1Label: 'O\' (Value 量化后)',
+      step3Matrix2Label: '误差热力图',
+      step3Error: '加权求和有平均效应，误差较小',
+      step3MaxError: 'max error = ',
+      step4Title: '4. 结论：Key 需要更高精度',
+      step4MainTitle: 'KV Quantization Sensitivity',
+      step4KeyTitle: 'Key 量化误差: 高',
+      step4KeyDetail: 'Q·K 点积放大量化噪声 → Key 需要 FP16/FP8',
+      step4ValueTitle: 'Value 量化误差: 低',
+      step4ValueDetail: '加权求和平均噪声 → Value 可用 INT8/INT4',
+      step4Strategy: '实践策略: 非对称量化 (Key INT8 + Value INT4)',
+    },
+    en: {
+      step1Title: '1. Original Attention Scores',
+      step1Formula: 'S = QK^T / √d (full precision)',
+      step1MatrixLabel: 'Attention Scores S',
+      step1Description: 'Baseline: attention scores computed with full-precision Q and K',
+      step2Title: '2. Key Quantization → Score Error',
+      step2Formula: 'S\' = Q · quant(K)^T / √d',
+      step2Matrix1Label: 'S\' (after Key quant)',
+      step2Matrix2Label: 'Error Heatmap',
+      step2Error: 'Dot product amplifies Key quantization error',
+      step2MaxError: 'max error = ',
+      step3Title: '3. Value Quantization → Output Error',
+      step3Formula: 'O\' = softmax(S) · quant(V)',
+      step3Matrix1Label: 'O\' (after Value quant)',
+      step3Matrix2Label: 'Error Heatmap',
+      step3Error: 'Weighted sum averages out noise, error is small',
+      step3MaxError: 'max error = ',
+      step4Title: '4. Conclusion: Key needs higher precision',
+      step4MainTitle: 'KV Quantization Sensitivity',
+      step4KeyTitle: 'Key quantization error: High',
+      step4KeyDetail: 'Q·K dot product amplifies noise → Key needs FP16/FP8',
+      step4ValueTitle: 'Value quantization error: Low',
+      step4ValueDetail: 'Weighted sum averages noise → Value can use INT8/INT4',
+      step4Strategy: 'Practical strategy: Asymmetric quantization (Key INT8 + Value INT4)',
+    },
+  }[locale];
+
   const errK = S_ORIG.map((row, i) => row.map((v, j) => Math.abs(v - S_KQUANT[i][j])));
   const errV = O_ORIG.map((row, i) => row.map((v, j) => Math.abs(v - O_VQUANT[i][j])));
   const maxErrK = Math.max(...errK.flat());
@@ -74,90 +127,90 @@ export default function KVQuantSensitivity() {
 
   const steps = [
     {
-      title: '1. 原始 Attention Scores',
+      title: t.step1Title,
       content: (
         <svg viewBox={`0 0 ${W} 280`} className="w-full">
           <text x={W / 2} y={25} textAnchor="middle" fontSize="13" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            S = QK^T / √d (全精度)
+            {t.step1Formula}
           </text>
-          <Matrix data={S_ORIG} x={190} y={50} label="Attention Scores S"
+          <Matrix data={S_ORIG} x={190} y={50} label={t.step1MatrixLabel}
             colorFn={valColor} />
           <text x={W / 2} y={240} textAnchor="middle" fontSize="11" fill={COLORS.mid} fontFamily={FONTS.sans}>
-            Baseline: 全精度 Q 和 K 计算的 attention scores
+            {t.step1Description}
           </text>
         </svg>
       ),
     },
     {
-      title: '2. 量化 Key → Score 误差',
+      title: t.step2Title,
       content: (
         <svg viewBox={`0 0 ${W} 280`} className="w-full">
           <text x={W / 2} y={25} textAnchor="middle" fontSize="13" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            S' = Q · quant(K)^T / √d
+            {t.step2Formula}
           </text>
-          <Matrix data={S_KQUANT} x={40} y={50} label="S' (Key 量化后)"
+          <Matrix data={S_KQUANT} x={40} y={50} label={t.step2Matrix1Label}
             colorFn={valColor} />
-          <Matrix data={errK} x={280} y={50} label="误差热力图"
+          <Matrix data={errK} x={280} y={50} label={t.step2Matrix2Label}
             colorFn={(v) => errColor(v, maxErrK)} />
           <text x={280} y={220} fontSize="10" fontWeight="600" fill={COLORS.red} fontFamily={FONTS.sans}>
-            点积放大了 Key 量化误差
+            {t.step2Error}
           </text>
           <text x={280} y={236} fontSize="10" fill={COLORS.mid} fontFamily={FONTS.sans}>
-            max error = {maxErrK.toFixed(3)}
+            {t.step2MaxError}{maxErrK.toFixed(3)}
           </text>
         </svg>
       ),
     },
     {
-      title: '3. 量化 Value → Output 误差',
+      title: t.step3Title,
       content: (
         <svg viewBox={`0 0 ${W} 280`} className="w-full">
           <text x={W / 2} y={25} textAnchor="middle" fontSize="13" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            O' = softmax(S) · quant(V)
+            {t.step3Formula}
           </text>
-          <Matrix data={O_VQUANT} x={40} y={50} label="O' (Value 量化后)"
+          <Matrix data={O_VQUANT} x={40} y={50} label={t.step3Matrix1Label}
             colorFn={valColor} />
-          <Matrix data={errV} x={280} y={50} label="误差热力图"
+          <Matrix data={errV} x={280} y={50} label={t.step3Matrix2Label}
             colorFn={(v) => errColor(v, maxErrV)} />
           <text x={280} y={220} fontSize="10" fontWeight="600" fill={COLORS.green} fontFamily={FONTS.sans}>
-            加权求和有平均效应，误差较小
+            {t.step3Error}
           </text>
           <text x={280} y={236} fontSize="10" fill={COLORS.mid} fontFamily={FONTS.sans}>
-            max error = {maxErrV.toFixed(3)}
+            {t.step3MaxError}{maxErrV.toFixed(3)}
           </text>
         </svg>
       ),
     },
     {
-      title: '4. 结论：Key 需要更高精度',
+      title: t.step4Title,
       content: (
         <svg viewBox={`0 0 ${W} 280`} className="w-full">
           <text x={W / 2} y={30} textAnchor="middle" fontSize="15" fontWeight="700"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            KV Quantization Sensitivity
+            {t.step4MainTitle}
           </text>
           <rect x={70} y={60} width={440} height={70} fill={COLORS.bgAlt}
             stroke={COLORS.red} strokeWidth="2" rx="6" />
           <text x={290} y={85} textAnchor="middle" fontSize="13" fontWeight="600"
-            fill={COLORS.red} fontFamily={FONTS.sans}>Key 量化误差: 高</text>
+            fill={COLORS.red} fontFamily={FONTS.sans}>{t.step4KeyTitle}</text>
           <text x={290} y={105} textAnchor="middle" fontSize="11"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            Q·K 点积放大量化噪声 → Key 需要 FP16/FP8
+            {t.step4KeyDetail}
           </text>
           <rect x={70} y={150} width={440} height={70} fill={COLORS.bgAlt}
             stroke={COLORS.green} strokeWidth="2" rx="6" />
           <text x={290} y={175} textAnchor="middle" fontSize="13" fontWeight="600"
-            fill={COLORS.green} fontFamily={FONTS.sans}>Value 量化误差: 低</text>
+            fill={COLORS.green} fontFamily={FONTS.sans}>{t.step4ValueTitle}</text>
           <text x={290} y={195} textAnchor="middle" fontSize="11"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            加权求和平均噪声 → Value 可用 INT8/INT4
+            {t.step4ValueDetail}
           </text>
           <text x={W / 2} y={255} textAnchor="middle" fontSize="11"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            实践策略: 非对称量化 (Key INT8 + Value INT4)
+            {t.step4Strategy}
           </text>
         </svg>
       ),

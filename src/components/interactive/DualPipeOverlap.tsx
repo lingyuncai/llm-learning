@@ -3,6 +3,8 @@
 import StepNavigator from '../primitives/StepNavigator';
 import { COLORS, FONTS } from './shared/colors';
 
+type Locale = 'zh' | 'en';
+
 const W = 560;
 const SVG_H = 260;
 
@@ -72,14 +74,90 @@ const ELEM_COLOR = COLORS.green;
 const ELEM_BG = '#dcfce7';
 const IDLE_BG = '#f1f5f9';
 
-const steps = [
+const steps = (locale: Locale) => {
+  const t = {
+    zh: {
+      step1Title: '串行执行 (baseline)',
+      step1Header: '传统串行: GEMM (Tensor Core) → Element-wise (CUDA Core) → GEMM → ...',
+      gemmLayer1: 'GEMM Layer 1',
+      gemmLayer2: 'GEMM Layer 2',
+      idle: '(空闲)',
+      actNorm: 'Act/Norm',
+      totalTime: '总时间 = GEMM + Act/Norm + GEMM + Act/Norm（串行叠加）',
+      problem: '问题: Tensor Core 和 CUDA Core 交替空闲，SM 利用率低',
+      problemDetail: 'GEMM 期间 CUDA Core 空闲 | Act/Norm 期间 Tensor Core 空闲',
+      step2Title: 'Dual-Pipe 重叠执行',
+      step2Header: 'Dual-Pipe: 不同 micro-batch 的 GEMM 与 Act/Norm 重叠执行',
+      gemmBatchA: 'GEMM (batch A)',
+      gemmBatchB: 'GEMM (batch B)',
+      gemmBatchC: 'GEMM (batch C)',
+      actNormA: 'Act/Norm (A)',
+      actNormB: 'Act/Norm (B)',
+      noPrevBatch: '(无前序 batch)',
+      overlapExec: '重叠执行',
+      shorterTime: '总时间缩短: Act/Norm 被"藏"在 GEMM 执行期间',
+      keyCondition: '关键: 不同 micro-batch 之间无数据依赖 — batch B 的 GEMM 和 batch A 的 Act/Norm 操作不同数据',
+      independentUnits: 'Tensor Core 和 CUDA Core 是独立功能单元，可同时处理不同 batch 的不同阶段',
+      step3Title: 'DeepSeek V3 实践',
+      step3Header: '实战: DeepSeek V3/R1 FP8 训练中的 Dual-Pipe 优化',
+      moeLayer: 'DeepSeek V3 MoE (Mixture of Experts) 层',
+      expertGemm: 'Expert GEMM (FP8)',
+      expertGemmSub: 'Tensor Core — 主要计算',
+      gateTopK: 'Gate / TopK / Norm',
+      gateTopKSub: 'CUDA Core — element-wise',
+      overlapResult: '重叠执行',
+      keyInnovation: '关键创新: FP8 量化 + Dual-Pipe 调度',
+      keyInnovationDetail: 'FP8 GEMM 在 Tensor Core 上执行 → 同时 CUDA Core 做 FP32 的 gate 计算和 normalization → SM 利用率提升',
+      generalApplication: 'Dual-pipe 不仅限于 DeepSeek — 任何"GEMM + element-wise"交替的网络都能受益',
+      transformerExample: '例: Transformer 中的 QKV projection (GEMM) + LayerNorm (element-wise) + FFN (GEMM) + GELU (element-wise)',
+      reference: '参考: DeepSeek-V3 Technical Report, Section 3.3',
+    },
+    en: {
+      step1Title: 'Serial Execution (baseline)',
+      step1Header: 'Traditional Serial: GEMM (Tensor Core) → Element-wise (CUDA Core) → GEMM → ...',
+      gemmLayer1: 'GEMM Layer 1',
+      gemmLayer2: 'GEMM Layer 2',
+      idle: '(Idle)',
+      actNorm: 'Act/Norm',
+      totalTime: 'Total time = GEMM + Act/Norm + GEMM + Act/Norm (serial accumulation)',
+      problem: 'Problem: Tensor Core and CUDA Core idle alternately, low SM utilization',
+      problemDetail: 'CUDA Core idle during GEMM | Tensor Core idle during Act/Norm',
+      step2Title: 'Dual-Pipe Overlapped Execution',
+      step2Header: 'Dual-Pipe: GEMM and Act/Norm of different micro-batches overlap',
+      gemmBatchA: 'GEMM (batch A)',
+      gemmBatchB: 'GEMM (batch B)',
+      gemmBatchC: 'GEMM (batch C)',
+      actNormA: 'Act/Norm (A)',
+      actNormB: 'Act/Norm (B)',
+      noPrevBatch: '(No prev batch)',
+      overlapExec: 'Overlapped',
+      shorterTime: 'Shorter total time: Act/Norm hidden in GEMM execution',
+      keyCondition: 'Key: No data dependency between micro-batches — batch B GEMM and batch A Act/Norm operate on different data',
+      independentUnits: 'Tensor Core and CUDA Core are independent units, can process different stages of different batches simultaneously',
+      step3Title: 'DeepSeek V3 Practice',
+      step3Header: 'In Practice: Dual-Pipe optimization in DeepSeek V3/R1 FP8 training',
+      moeLayer: 'DeepSeek V3 MoE (Mixture of Experts) Layer',
+      expertGemm: 'Expert GEMM (FP8)',
+      expertGemmSub: 'Tensor Core — main compute',
+      gateTopK: 'Gate / TopK / Norm',
+      gateTopKSub: 'CUDA Core — element-wise',
+      overlapResult: 'Overlapped',
+      keyInnovation: 'Key Innovation: FP8 quantization + Dual-Pipe scheduling',
+      keyInnovationDetail: 'FP8 GEMM on Tensor Core → simultaneously CUDA Core does FP32 gate compute and normalization → SM utilization boost',
+      generalApplication: 'Dual-pipe not limited to DeepSeek — any network with alternating "GEMM + element-wise" benefits',
+      transformerExample: 'e.g. Transformer: QKV projection (GEMM) + LayerNorm (element-wise) + FFN (GEMM) + GELU (element-wise)',
+      reference: 'Reference: DeepSeek-V3 Technical Report, Section 3.3',
+    },
+  }[locale];
+
+  return [
   {
-    title: '串行执行 (baseline)',
+    title: t.step1Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          传统串行: GEMM (Tensor Core) → Element-wise (CUDA Core) → GEMM → ...
+          {t.step1Header}
         </text>
 
         <TrackLabel x={88} y={60} label="Tensor Core" />
@@ -88,34 +166,34 @@ const steps = [
 
         {/* Layer 1 */}
         <Bar x={100} y={44} w={120} h={30}
-          label="GEMM Layer 1" sublabel="Tensor Core" color={GEMM_COLOR} bg={GEMM_BG} />
+          label={t.gemmLayer1} sublabel="Tensor Core" color={GEMM_COLOR} bg={GEMM_BG} />
         <Bar x={100} y={84} w={120} h={30}
-          label="(空闲)" color="#94a3b8" bg={IDLE_BG} />
+          label={t.idle} color="#94a3b8" bg={IDLE_BG} />
 
         {/* Elem-wise 1 */}
         <Bar x={224} y={44} w={60} h={30}
-          label="(空闲)" color="#94a3b8" bg={IDLE_BG} />
+          label={t.idle} color="#94a3b8" bg={IDLE_BG} />
         <Bar x={224} y={84} w={60} h={30}
-          label="Act/Norm" sublabel="CUDA Core" color={ELEM_COLOR} bg={ELEM_BG} />
+          label={t.actNorm} sublabel="CUDA Core" color={ELEM_COLOR} bg={ELEM_BG} />
 
         {/* Layer 2 */}
         <Bar x={288} y={44} w={120} h={30}
-          label="GEMM Layer 2" sublabel="Tensor Core" color={GEMM_COLOR} bg={GEMM_BG} />
+          label={t.gemmLayer2} sublabel="Tensor Core" color={GEMM_COLOR} bg={GEMM_BG} />
         <Bar x={288} y={84} w={120} h={30}
-          label="(空闲)" color="#94a3b8" bg={IDLE_BG} />
+          label={t.idle} color="#94a3b8" bg={IDLE_BG} />
 
         {/* Elem-wise 2 */}
         <Bar x={412} y={44} w={60} h={30}
-          label="(空闲)" color="#94a3b8" bg={IDLE_BG} />
+          label={t.idle} color="#94a3b8" bg={IDLE_BG} />
         <Bar x={412} y={84} w={60} h={30}
-          label="Act/Norm" sublabel="CUDA Core" color={ELEM_COLOR} bg={ELEM_BG} />
+          label={t.actNorm} sublabel="CUDA Core" color={ELEM_COLOR} bg={ELEM_BG} />
 
         {/* Total time */}
         <line x1={100} y1={145} x2={472} y2={145}
           stroke={COLORS.red} strokeWidth={1.5} />
         <text x={286} y={158} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.red} fontFamily={FONTS.sans}>
-          总时间 = GEMM + Act/Norm + GEMM + Act/Norm（串行叠加）
+          {t.totalTime}
         </text>
 
         {/* Problem annotation */}
@@ -123,22 +201,22 @@ const steps = [
           fill="#fee2e2" stroke={COLORS.red} strokeWidth={1} />
         <text x={280} y={186} textAnchor="middle" fontSize="9" fill={COLORS.red}
           fontFamily={FONTS.sans}>
-          问题: Tensor Core 和 CUDA Core 交替空闲，SM 利用率低
+          {t.problem}
         </text>
         <text x={280} y={200} textAnchor="middle" fontSize="8" fill="#64748b"
           fontFamily={FONTS.sans}>
-          GEMM 期间 CUDA Core 空闲 | Act/Norm 期间 Tensor Core 空闲
+          {t.problemDetail}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'Dual-Pipe 重叠执行',
+    title: t.step2Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Dual-Pipe: 不同 micro-batch 的 GEMM 与 Act/Norm 重叠执行
+          {t.step2Header}
         </text>
 
         <TrackLabel x={88} y={60} label="Tensor Core" />
@@ -147,28 +225,28 @@ const steps = [
 
         {/* Batch A GEMM */}
         <Bar x={100} y={44} w={120} h={30}
-          label="GEMM (batch A)" color={GEMM_COLOR} bg={GEMM_BG} />
+          label={t.gemmBatchA} color={GEMM_COLOR} bg={GEMM_BG} />
         <Bar x={100} y={84} w={120} h={30}
-          label="(无前序 batch)" color="#94a3b8" bg={IDLE_BG} />
+          label={t.noPrevBatch} color="#94a3b8" bg={IDLE_BG} />
 
         {/* Batch B GEMM + Batch A Act overlapped */}
         <Bar x={224} y={44} w={120} h={30}
-          label="GEMM (batch B)" color={GEMM_COLOR} bg={GEMM_BG} />
+          label={t.gemmBatchB} color={GEMM_COLOR} bg={GEMM_BG} />
         <Bar x={224} y={84} w={60} h={30}
-          label="Act/Norm (A)" color={ELEM_COLOR} bg={ELEM_BG} />
+          label={t.actNormA} color={ELEM_COLOR} bg={ELEM_BG} />
 
         {/* Batch C GEMM + Batch B Act overlapped */}
         <Bar x={348} y={44} w={120} h={30}
-          label="GEMM (batch C)" color={GEMM_COLOR} bg={GEMM_BG} />
+          label={t.gemmBatchC} color={GEMM_COLOR} bg={GEMM_BG} />
         <Bar x={348} y={84} w={60} h={30}
-          label="Act/Norm (B)" color={ELEM_COLOR} bg={ELEM_BG} />
+          label={t.actNormB} color={ELEM_COLOR} bg={ELEM_BG} />
 
         {/* Overlap highlight */}
         <rect x={224} y={40} width={120} height={80} rx={4}
           fill="none" stroke={COLORS.orange} strokeWidth={2} strokeDasharray="4 2" />
         <text x={284} y={135} textAnchor="middle" fontSize="7" fontWeight="600"
           fill={COLORS.orange} fontFamily={FONTS.sans}>
-          重叠执行
+          {t.overlapExec}
         </text>
 
         {/* Shorter total time */}
@@ -176,7 +254,7 @@ const steps = [
           stroke={COLORS.green} strokeWidth={1.5} />
         <text x={284} y={164} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.green} fontFamily={FONTS.sans}>
-          总时间缩短: Act/Norm 被"藏"在 GEMM 执行期间
+          {t.shorterTime}
         </text>
 
         {/* Condition */}
@@ -184,22 +262,22 @@ const steps = [
           fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
         <text x={280} y={194} textAnchor="middle" fontSize="9" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          关键: 不同 micro-batch 之间无数据依赖 — batch B 的 GEMM 和 batch A 的 Act/Norm 操作不同数据
+          {t.keyCondition}
         </text>
         <text x={280} y={210} textAnchor="middle" fontSize="8" fill="#64748b"
           fontFamily={FONTS.sans}>
-          Tensor Core 和 CUDA Core 是独立功能单元，可同时处理不同 batch 的不同阶段
+          {t.independentUnits}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'DeepSeek V3 实践',
+    title: t.step3Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          实战: DeepSeek V3/R1 FP8 训练中的 Dual-Pipe 优化
+          {t.step3Header}
         </text>
 
         {/* DeepSeek architecture */}
@@ -207,12 +285,12 @@ const steps = [
           fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
         <text x={280} y={58} textAnchor="middle" fontSize="10" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          DeepSeek V3 MoE (Mixture of Experts) 层
+          {t.moeLayer}
         </text>
 
         {/* GEMM: FP8 on Tensor Core */}
         <Bar x={50} y={68} w={140} h={32}
-          label="Expert GEMM (FP8)" sublabel="Tensor Core — 主要计算"
+          label={t.expertGemm} sublabel={t.expertGemmSub}
           color={GEMM_COLOR} bg={GEMM_BG} />
 
         {/* Overlap arrow */}
@@ -220,45 +298,46 @@ const steps = [
 
         {/* Element-wise on CUDA Core */}
         <Bar x={230} y={68} w={140} h={32}
-          label="Gate / TopK / Norm" sublabel="CUDA Core — element-wise"
+          label={t.gateTopK} sublabel={t.gateTopKSub}
           color={ELEM_COLOR} bg={ELEM_BG} />
 
         {/* Arrow to overlap */}
         <text x={390} y={88} fontSize="14" fill={COLORS.orange}>→</text>
         <Bar x={410} y={68} w={100} h={32}
-          label="重叠执行" color={COLORS.orange} bg="#fff7ed" />
+          label={t.overlapResult} color={COLORS.orange} bg="#fff7ed" />
 
         {/* Key insight */}
         <rect x={30} y={142} width={500} height={50} rx={5}
           fill="#dcfce7" stroke={COLORS.green} strokeWidth={1} />
         <text x={280} y={160} textAnchor="middle" fontSize="10" fontWeight="600"
           fill={COLORS.green} fontFamily={FONTS.sans}>
-          关键创新: FP8 量化 + Dual-Pipe 调度
+          {t.keyInnovation}
         </text>
         <text x={280} y={178} textAnchor="middle" fontSize="8" fill="#64748b"
           fontFamily={FONTS.sans}>
-          FP8 GEMM 在 Tensor Core 上执行 → 同时 CUDA Core 做 FP32 的 gate 计算和 normalization → SM 利用率提升
+          {t.keyInnovationDetail}
         </text>
 
         {/* Additional notes */}
         <text x={W / 2} y={210} textAnchor="middle" fontSize="9" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          Dual-pipe 不仅限于 DeepSeek — 任何"GEMM + element-wise"交替的网络都能受益
+          {t.generalApplication}
         </text>
         <text x={W / 2} y={228} textAnchor="middle" fontSize="8" fill="#64748b"
           fontFamily={FONTS.sans}>
-          例: Transformer 中的 QKV projection (GEMM) + LayerNorm (element-wise) + FFN (GEMM) + GELU (element-wise)
+          {t.transformerExample}
         </text>
 
         <text x={W / 2} y={252} textAnchor="middle" fontSize="8" fill="#94a3b8"
           fontFamily={FONTS.sans}>
-          参考: DeepSeek-V3 Technical Report, Section 3.3
+          {t.reference}
         </text>
       </StepSvg>
     ),
   },
 ];
+};
 
-export default function DualPipeOverlap() {
-  return <StepNavigator steps={steps} />;
+export default function DualPipeOverlap({ locale = 'zh' }: { locale?: Locale }) {
+  return <StepNavigator steps={steps(locale)} />;
 }

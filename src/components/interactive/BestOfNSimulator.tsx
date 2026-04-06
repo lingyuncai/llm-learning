@@ -4,7 +4,36 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const H = 380;
 
-export default function BestOfNSimulator() {
+export default function BestOfNSimulator({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Best-of-N Sampling',
+      subtitle: '生成 N 个回答 → 用 Verifier 选最好的',
+      nLabel: 'N = ',
+      accuracyTitle: '正确率 vs N',
+      costTitle: '计算成本 (相对)',
+      summaryPrefix: 'N=',
+      accuracyLabel: ': 正确率 ',
+      costLabel: ' | 成本 ',
+      noteN1: '提升有限，样本太少',
+      noteN2: '性价比较好，准确率显著提升而成本可控',
+      noteN3: 'N 继续增大收益递减，但成本线性增长 — 需要 compute-optimal 策略',
+    },
+    en: {
+      title: 'Best-of-N Sampling',
+      subtitle: 'Generate N responses → Verifier selects the best',
+      nLabel: 'N = ',
+      accuracyTitle: 'Accuracy vs N',
+      costTitle: 'Compute Cost (relative)',
+      summaryPrefix: 'N=',
+      accuracyLabel: ': Accuracy ',
+      costLabel: ' | Cost ',
+      noteN1: 'Limited improvement, sample too small',
+      noteN2: 'Good cost-performance ratio, significant accuracy improvement with manageable cost',
+      noteN3: 'Diminishing returns as N increases, but cost grows linearly — requires compute-optimal strategy',
+    },
+  }[locale];
+
   const [n, setN] = useState(8);
 
   const data = useMemo(() => {
@@ -26,14 +55,14 @@ export default function BestOfNSimulator() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          Best-of-N Sampling
+          {t.title}
         </text>
         <text x={W / 2} y={42} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          生成 N 个回答 → 用 Verifier 选最好的
+          {t.subtitle}
         </text>
 
         <text x={W / 2} y={64} textAnchor="middle" fontSize={12} fontWeight={600} fill={COLORS.primary} fontFamily={FONTS.mono}>
-          N = {n}
+          {t.nLabel}{n}
         </text>
         {[1, 2, 4, 8, 16, 32, 64].map((ni, i) => (
           <g key={ni} onClick={() => setN(ni)} style={{ cursor: 'pointer' }}>
@@ -45,7 +74,7 @@ export default function BestOfNSimulator() {
         ))}
 
         <text x={chartX + chartW / 2} y={chartY - 4} textAnchor="middle" fontSize={11} fontWeight={600} fill={COLORS.dark}>
-          正确率 vs N
+          {t.accuracyTitle}
         </text>
         <rect x={chartX} y={chartY} width={chartW} height={chartH} fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth={1} rx={4} />
         {data.map((d, i) => {
@@ -68,7 +97,7 @@ export default function BestOfNSimulator() {
         })}
 
         <text x={chart2X + chart2W / 2} y={chartY - 4} textAnchor="middle" fontSize={11} fontWeight={600} fill={COLORS.dark}>
-          计算成本 (相对)
+          {t.costTitle}
         </text>
         <rect x={chart2X} y={chartY} width={chart2W} height={chartH} fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth={1} rx={4} />
         {data.map((d, i) => {
@@ -92,12 +121,12 @@ export default function BestOfNSimulator() {
 
         <rect x={40} y={H - 62} width={500} height={48} rx={6} fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth={1} />
         <text x={50} y={H - 42} fontSize={11} fontWeight={600} fill={COLORS.orange}>
-          N={n}: 正确率 {(currentData.accuracy * 100).toFixed(1)}% | 成本 {currentData.cost}x
+          {t.summaryPrefix}{n}{t.accuracyLabel}{(currentData.accuracy * 100).toFixed(1)}%{t.costLabel}{currentData.cost}x
         </text>
         <text x={50} y={H - 24} fontSize={10} fill={COLORS.mid}>
-          {n <= 2 ? '提升有限，样本太少' :
-           n <= 16 ? '性价比较好，准确率显著提升而成本可控' :
-           'N 继续增大收益递减，但成本线性增长 — 需要 compute-optimal 策略'}
+          {n <= 2 ? t.noteN1 :
+           n <= 16 ? t.noteN2 :
+           t.noteN3}
         </text>
       </svg>
     </div>

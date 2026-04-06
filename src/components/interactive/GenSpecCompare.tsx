@@ -2,7 +2,36 @@ import { useState } from 'react';
 import { motion } from 'motion/react';
 import { COLORS, FONTS } from './shared/colors';
 
-export default function GenSpecCompare() {
+interface GenSpecCompareProps {
+  locale?: 'zh' | 'en';
+}
+
+export default function GenSpecCompare({ locale = 'zh' }: GenSpecCompareProps) {
+  const t = {
+    zh: {
+      title: '代际对比：Lunar Lake vs Panther Lake',
+      subtitle: '切换查看不同代次规格',
+      euCount: 'EU Count',
+      xmxTops: 'XMX TOPS (INT8)',
+      slmPerCore: 'SLM per Xe-core',
+      l2Cache: 'L2 Cache',
+      memBandwidth: 'Memory Bandwidth',
+      improvement: '提升',
+      summary: 'Panther Lake 显著提升了 AI 算力和内存子系统，更适合大规模推理工作负载',
+    },
+    en: {
+      title: 'Generation Comparison: Lunar Lake vs Panther Lake',
+      subtitle: 'Switch to view different generation specs',
+      euCount: 'EU Count',
+      xmxTops: 'XMX TOPS (INT8)',
+      slmPerCore: 'SLM per Xe-core',
+      l2Cache: 'L2 Cache',
+      memBandwidth: 'Memory Bandwidth',
+      improvement: 'improvement',
+      summary: 'Panther Lake significantly improves AI compute and memory subsystem, better suited for large-scale inference workloads',
+    },
+  }[locale];
+
   const [selected, setSelected] = useState<'lunar' | 'panther'>('lunar');
 
   const W = 580;
@@ -36,7 +65,7 @@ export default function GenSpecCompare() {
 
   const metrics = [
     {
-      label: 'EU Count',
+      label: t.euCount,
       value: current.euCount,
       max: maxEU,
       unit: '',
@@ -44,7 +73,7 @@ export default function GenSpecCompare() {
       improvement: ((specs.panther.euCount - specs.lunar.euCount) / specs.lunar.euCount) * 100,
     },
     {
-      label: 'XMX TOPS (INT8)',
+      label: t.xmxTops,
       value: current.xmxTops,
       max: maxTops,
       unit: ' TOPS',
@@ -52,7 +81,7 @@ export default function GenSpecCompare() {
       improvement: ((specs.panther.xmxTops - specs.lunar.xmxTops) / specs.lunar.xmxTops) * 100,
     },
     {
-      label: 'SLM per Xe-core',
+      label: t.slmPerCore,
       value: current.slm,
       max: maxSLM,
       unit: ' KB',
@@ -60,7 +89,7 @@ export default function GenSpecCompare() {
       improvement: ((specs.panther.slm - specs.lunar.slm) / specs.lunar.slm) * 100,
     },
     {
-      label: 'L2 Cache',
+      label: t.l2Cache,
       value: current.l2,
       max: maxL2,
       unit: ' MB',
@@ -68,7 +97,7 @@ export default function GenSpecCompare() {
       improvement: ((specs.panther.l2 - specs.lunar.l2) / specs.lunar.l2) * 100,
     },
     {
-      label: 'Memory Bandwidth',
+      label: t.memBandwidth,
       value: current.bandwidth,
       max: maxBW,
       unit: ' GB/s',
@@ -82,8 +111,8 @@ export default function GenSpecCompare() {
     <div className="my-6 p-4 border rounded-lg bg-white">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold mb-2">代际对比：Lunar Lake vs Panther Lake</h3>
-          <p className="text-sm text-gray-600">切换查看不同代次规格</p>
+          <h3 className="text-lg font-semibold mb-2">{t.title}</h3>
+          <p className="text-sm text-gray-600">{t.subtitle}</p>
         </div>
         <div className="flex gap-2">
           <button
@@ -201,7 +230,7 @@ export default function GenSpecCompare() {
                     fontWeight="bold"
                     fontFamily={FONTS.sans}
                   >
-                    +{metric.improvement.toFixed(0)}% 提升
+                    +{metric.improvement.toFixed(0)}% {t.improvement}
                   </text>
                 </g>
               )}
@@ -222,7 +251,7 @@ export default function GenSpecCompare() {
               fontWeight="600"
               fontFamily={FONTS.sans}
             >
-              Panther Lake 显著提升了 AI 算力和内存子系统，更适合大规模推理工作负载
+              {t.summary}
             </text>
           </g>
         )}

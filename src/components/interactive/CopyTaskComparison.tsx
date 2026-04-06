@@ -7,7 +7,46 @@ const H = 420;
 const SOURCE = ['A', 'B', 'C', 'D'];
 const SEP = '|';
 
-export default function CopyTaskComparison() {
+export default function CopyTaskComparison({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Copying Task：Transformer vs SSM',
+      subtitle: '任务：将分隔符前的 token 精确复制到后半段',
+      transformerLabel: 'Transformer',
+      ssmLabel: 'SSM',
+      transformerResult: '精确复制',
+      transformerNote: 'Attention 直接连线到源 token → 精确复制',
+      transformerAccuracy: '准确率',
+      transformerAccuracyValue: '100% (任意长度)',
+      transformerExplanation1: 'Attention 矩阵的每个位置可以直接访问任意历史 token',
+      transformerExplanation2: 'Transformer 两层即可 copy 指数长度字符串 (Jelassi et al. 2024)',
+      ssmStateLabel: '固定大小状态向量 x ∈ ℝᴺ',
+      ssmStateNote: '信息经过状态压缩，越早的 token 衰减越多',
+      ssmResult: 'SSM 状态压缩 → 远距离 token 信息衰减',
+      ssmAccuracy: '准确率',
+      ssmExplanation1: 'N 维状态无法精确存储 M 个 token (M >> N)：信息必然丢失',
+      ssmExplanation2: '序列越长，准确率下降越明显 — SSM 的根本局限',
+    },
+    en: {
+      title: 'Copying Task: Transformer vs SSM',
+      subtitle: 'Task: Precisely copy tokens before separator to second half',
+      transformerLabel: 'Transformer',
+      ssmLabel: 'SSM',
+      transformerResult: 'Precise Copy',
+      transformerNote: 'Attention directly connects to source tokens → precise copy',
+      transformerAccuracy: 'Accuracy',
+      transformerAccuracyValue: '100% (any length)',
+      transformerExplanation1: 'Each position in Attention matrix can directly access any historical token',
+      transformerExplanation2: 'Two-layer Transformer can copy exponential-length strings (Jelassi et al. 2024)',
+      ssmStateLabel: 'Fixed-size state vector x ∈ ℝᴺ',
+      ssmStateNote: 'Information compressed through state, earlier tokens decay more',
+      ssmResult: 'SSM state compression → distant token information decay',
+      ssmAccuracy: 'Accuracy',
+      ssmExplanation1: 'N-dim state cannot precisely store M tokens (M >> N): information loss inevitable',
+      ssmExplanation2: 'Longer sequences → accuracy drops — fundamental SSM limitation',
+    },
+  }[locale];
+
   const [mode, setMode] = useState<'transformer' | 'ssm'>('transformer');
 
   const tokenW = 48;
@@ -23,11 +62,11 @@ export default function CopyTaskComparison() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Copying Task：Transformer vs SSM
+        {t.title}
       </text>
       <text x={W / 2} y={40} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        任务：将分隔符前的 token 精确复制到后半段
+        {t.subtitle}
       </text>
 
       {/* Toggle */}
@@ -38,7 +77,7 @@ export default function CopyTaskComparison() {
             stroke={mode === m ? COLORS.primary : COLORS.light} strokeWidth="1" />
           <text x={235 + i * 120} y={64} textAnchor="middle" fontSize="10"
             fontWeight="600" fill={mode === m ? '#fff' : COLORS.mid} fontFamily={FONTS.sans}>
-            {m === 'transformer' ? 'Transformer' : 'SSM'}
+            {m === 'transformer' ? t.transformerLabel : t.ssmLabel}
           </text>
         </g>
       ))}
@@ -95,26 +134,26 @@ export default function CopyTaskComparison() {
 
           <text x={W / 2} y={seqY + tokenH + 110} textAnchor="middle" fontSize="11"
             fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            Attention 直接连线到源 token → 精确复制
+            {t.transformerNote}
           </text>
 
           {/* Accuracy bar */}
           <text x={60} y={280} fontSize="10" fontWeight="600"
-            fill={COLORS.mid} fontFamily={FONTS.sans}>准确率</text>
+            fill={COLORS.mid} fontFamily={FONTS.sans}>{t.transformerAccuracy}</text>
           <rect x={120} y={268} width={380} height={18} rx={9}
             fill={COLORS.green} opacity="0.9" />
           <text x={310} y={281} textAnchor="middle" fontSize="10"
-            fontWeight="700" fill="#fff" fontFamily={FONTS.mono}>100% (任意长度)</text>
+            fontWeight="700" fill="#fff" fontFamily={FONTS.mono}>{t.transformerAccuracyValue}</text>
 
           <rect x={60} y={310} width={460} height={60} rx={6}
             fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
           <text x={290} y={332} textAnchor="middle" fontSize="11"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            Attention 矩阵的每个位置可以直接访问任意历史 token
+            {t.transformerExplanation1}
           </text>
           <text x={290} y={352} textAnchor="middle" fontSize="10"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            Transformer 两层即可 copy 指数长度字符串 (Jelassi et al. 2024)
+            {t.transformerExplanation2}
           </text>
         </g>
       ) : (
@@ -124,11 +163,11 @@ export default function CopyTaskComparison() {
             fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
           <text x={290} y={seqY + tokenH + 30} textAnchor="middle" fontSize="10"
             fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            固定大小状态向量 x ∈ ℝᴺ
+            {t.ssmStateLabel}
           </text>
           <text x={290} y={seqY + tokenH + 48} textAnchor="middle" fontSize="9"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            信息经过状态压缩，越早的 token 衰减越多
+            {t.ssmStateNote}
           </text>
 
           {/* Result tokens with degradation */}
@@ -154,12 +193,12 @@ export default function CopyTaskComparison() {
 
           <text x={W / 2} y={seqY + tokenH + 128} textAnchor="middle" fontSize="11"
             fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            SSM 状态压缩 → 远距离 token 信息衰减
+            {t.ssmResult}
           </text>
 
           {/* Accuracy bars per position */}
           <text x={60} y={268} fontSize="10" fontWeight="600"
-            fill={COLORS.mid} fontFamily={FONTS.sans}>准确率</text>
+            fill={COLORS.mid} fontFamily={FONTS.sans}>{t.ssmAccuracy}</text>
           {SOURCE.map((_, i) => {
             const barW = ssmAccuracy[i] * 380;
             const x = 120;
@@ -185,11 +224,11 @@ export default function CopyTaskComparison() {
             fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
           <text x={290} y={380} textAnchor="middle" fontSize="10"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            N 维状态无法精确存储 M 个 token (M &gt;&gt; N)：信息必然丢失
+            {t.ssmExplanation1}
           </text>
           <text x={290} y={394} textAnchor="middle" fontSize="9"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            序列越长，准确率下降越明显 — SSM 的根本局限
+            {t.ssmExplanation2}
           </text>
         </g>
       )}

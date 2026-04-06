@@ -8,16 +8,52 @@ interface RadarPoint {
   value: number;
 }
 
-const NpuVsIgpu: React.FC = () => {
+interface NpuVsIgpuProps {
+  locale?: 'zh' | 'en';
+}
+
+const NpuVsIgpu: React.FC<NpuVsIgpuProps> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      axes: [
+        '吞吐量 (Throughput)',
+        '延迟 (Latency)',
+        '功耗效率 (Power Efficiency)',
+        '灵活性 (Flexibility)',
+        '模型支持 (Model Support)',
+      ],
+      npuLabel: 'NPU (AI Boost)',
+      igpuLabel: 'iGPU (Xe2)',
+      npuAdvantage: 'NPU 优势：低功耗，固定模型高效',
+      igpuAdvantage: 'iGPU 优势：灵活性强，模型支持广',
+      npuButton: 'NPU',
+      igpuButton: 'iGPU',
+      compareButton: '对比',
+    },
+    en: {
+      axes: [
+        'Throughput',
+        'Latency',
+        'Power Efficiency',
+        'Flexibility',
+        'Model Support',
+      ],
+      npuLabel: 'NPU (AI Boost)',
+      igpuLabel: 'iGPU (Xe2)',
+      npuAdvantage: 'NPU Advantage: Low power, efficient for fixed models',
+      igpuAdvantage: 'iGPU Advantage: High flexibility, broad model support',
+      npuButton: 'NPU',
+      igpuButton: 'iGPU',
+      compareButton: 'Compare',
+    },
+  }[locale];
+
   const [mode, setMode] = useState<Mode>('both');
 
-  const axes = [
-    { name: '吞吐量 (Throughput)', angle: -90 },
-    { name: '延迟 (Latency)', angle: -18 },
-    { name: '功耗效率 (Power Efficiency)', angle: 54 },
-    { name: '灵活性 (Flexibility)', angle: 126 },
-    { name: '模型支持 (Model Support)', angle: 198 },
-  ];
+  const axes = t.axes.map((name, i) => ({
+    name,
+    angle: [-90, -18, 54, 126, 198][i],
+  }));
 
   // Values 0-100
   const npuData = [60, 85, 95, 30, 40]; // High power efficiency, good latency, limited flexibility
@@ -114,12 +150,12 @@ const NpuVsIgpu: React.FC = () => {
         <g transform="translate(40, 330)">
           <rect x="0" y="0" width="16" height="16" fill={COLORS.primary} opacity="0.5" />
           <text x="22" y="12" fontSize="12" fontFamily={FONTS.sans} fill={COLORS.dark}>
-            NPU (AI Boost)
+            {t.npuLabel}
           </text>
 
           <rect x="150" y="0" width="16" height="16" fill={COLORS.green} opacity="0.5" />
           <text x="172" y="12" fontSize="12" fontFamily={FONTS.sans} fill={COLORS.dark}>
-            iGPU (Xe2)
+            {t.igpuLabel}
           </text>
         </g>
 
@@ -127,10 +163,10 @@ const NpuVsIgpu: React.FC = () => {
         <g transform="translate(320, 320)">
           <rect x="0" y="0" width="240" height="48" fill={COLORS.bgAlt} rx="4" />
           <text x="10" y="18" fontSize="11" fontFamily={FONTS.sans} fill={COLORS.dark}>
-            NPU 优势：低功耗，固定模型高效
+            {t.npuAdvantage}
           </text>
           <text x="10" y="36" fontSize="11" fontFamily={FONTS.sans} fill={COLORS.dark}>
-            iGPU 优势：灵活性强，模型支持广
+            {t.igpuAdvantage}
           </text>
         </g>
       </svg>
@@ -145,7 +181,7 @@ const NpuVsIgpu: React.FC = () => {
               : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
           }`}
         >
-          NPU
+          {t.npuButton}
         </button>
         <button
           onClick={() => setMode('igpu')}
@@ -155,7 +191,7 @@ const NpuVsIgpu: React.FC = () => {
               : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
           }`}
         >
-          iGPU
+          {t.igpuButton}
         </button>
         <button
           onClick={() => setMode('both')}
@@ -165,7 +201,7 @@ const NpuVsIgpu: React.FC = () => {
               : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
           }`}
         >
-          对比
+          {t.compareButton}
         </button>
       </div>
     </div>

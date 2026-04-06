@@ -90,7 +90,36 @@ function reorderMatrix(scores: number[][], map: number[]): number[][] {
   return result;
 }
 
-export default function PermutationInvariance() {
+export default function PermutationInvariance({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: '原始序列的 Attention',
+      step1Note: '无位置编码时，Attention 分数只取决于 token 内容',
+      step2Title: '打乱顺序 → 分数不变',
+      step2Note: '行列随 token 重排，但每对 token 之间的分数',
+      step2NoteStrong: '完全一致',
+      step2Example: '例：(The, cat) 仍是 0.35，无论它们在什么位置',
+      step3Title: '加入位置编码 → 分数改变',
+      step3Note: '位置编码让模型能区分',
+      step3Example1: '"狗咬人"',
+      step3Example2: '"人咬狗"',
+      step3Highlight: '黄色高亮 = 与无 PE 时有显著差异的分数',
+    },
+    en: {
+      step1Title: 'Attention on Original Sequence',
+      step1Note: 'Without positional encoding, attention scores depend only on token content',
+      step2Title: 'Shuffle Order → Scores Unchanged',
+      step2Note: 'Rows/columns reorder with tokens, but scores between each pair',
+      step2NoteStrong: 'remain identical',
+      step2Example: 'Example: (The, cat) still 0.35, regardless of position',
+      step3Title: 'Add Positional Encoding → Scores Change',
+      step3Note: 'Positional encoding allows model to distinguish',
+      step3Example1: '"dog bites man"',
+      step3Example2: '"man bites dog"',
+      step3Highlight: 'Yellow highlight = scores significantly different from no-PE case',
+    },
+  }[locale];
+
   const reorderedScores = reorderMatrix(ATTN_SCORES, SHUFFLE_MAP);
 
   // Find cells that changed between no-PE and with-PE
@@ -105,62 +134,62 @@ export default function PermutationInvariance() {
 
   const steps = [
     {
-      title: '原始序列的 Attention',
+      title: t.step1Title,
       content: (
         <div className="space-y-3">
           <div className="flex items-center justify-center gap-2 mb-2">
-            {TOKENS_ORIGINAL.map((t, i) => (
+            {TOKENS_ORIGINAL.map((token, i) => (
               <span key={i} className="px-2 py-1 rounded text-sm font-mono"
                 style={{ backgroundColor: COLORS.valid, color: COLORS.primary }}>
-                {t}
+                {token}
               </span>
             ))}
           </div>
           <AttnMatrix tokens={TOKENS_ORIGINAL} scores={ATTN_SCORES} />
           <p className="text-sm text-gray-600 text-center">
-            无位置编码时，Attention 分数只取决于 token 内容
+            {t.step1Note}
           </p>
         </div>
       ),
     },
     {
-      title: '打乱顺序 → 分数不变',
+      title: t.step2Title,
       content: (
         <div className="space-y-3">
           <div className="flex items-center justify-center gap-2 mb-2">
-            {TOKENS_SHUFFLED.map((t, i) => (
+            {TOKENS_SHUFFLED.map((token, i) => (
               <span key={i} className="px-2 py-1 rounded text-sm font-mono"
                 style={{ backgroundColor: COLORS.waste, color: COLORS.red }}>
-                {t}
+                {token}
               </span>
             ))}
           </div>
           <AttnMatrix tokens={TOKENS_SHUFFLED} scores={reorderedScores} />
           <p className="text-sm text-gray-600 text-center">
-            行列随 token 重排，但每对 token 之间的分数<strong>完全一致</strong>
+            {t.step2Note}<strong>{t.step2NoteStrong}</strong>
             <br />
-            <span className="text-xs">例：(The, cat) 仍是 0.35，无论它们在什么位置</span>
+            <span className="text-xs">{t.step2Example}</span>
           </p>
         </div>
       ),
     },
     {
-      title: '加入位置编码 → 分数改变',
+      title: t.step3Title,
       content: (
         <div className="space-y-3">
           <div className="flex items-center justify-center gap-2 mb-2">
-            {TOKENS_ORIGINAL.map((t, i) => (
+            {TOKENS_ORIGINAL.map((token, i) => (
               <span key={i} className="px-2 py-1 rounded text-sm font-mono"
                 style={{ backgroundColor: COLORS.highlight, color: COLORS.dark }}>
-                {t}<sub className="text-[9px] ml-0.5">+PE({i})</sub>
+                {token}<sub className="text-[9px] ml-0.5">+PE({i})</sub>
               </span>
             ))}
           </div>
           <AttnMatrix tokens={TOKENS_ORIGINAL} scores={ATTN_WITH_PE} highlight={changedCells} />
           <p className="text-sm text-gray-600 text-center">
-            位置编码让模型能区分 <strong>"狗咬人"</strong> 和 <strong>"人咬狗"</strong>
+            {t.step3Note} <strong>{t.step3Example1}</strong> {locale === 'zh' ? '和' : 'and'} <strong>{t.step3Example2}</strong>
             <br />
-            <span className="text-xs">黄色高亮 = 与无 PE 时有显著差异的分数</span>
+            <span className="text-xs">{t.step3Highlight}</span>
           </p>
         </div>
       ),

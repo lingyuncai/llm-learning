@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
+type Locale = 'zh' | 'en';
+
 // Simulated price series (10 time steps)
 const TIME_STEPS = 10;
 const MODELS_DATA = [
@@ -18,7 +20,36 @@ function getRouterChoice(t: number): number {
   return 0; // default: GPT-4 (highest quality)
 }
 
-export default function DynamicPriceAdaptation() {
+export default function DynamicPriceAdaptation({ locale = 'zh' }: { locale?: Locale }) {
+  const t = {
+    zh: {
+      title: '动态价格适应',
+      subtitle: 'API 价格波动时路由策略自动调整',
+      currentTime: '当前: T=',
+      routingDecision: '路由决策:',
+      price: '价格:',
+      priceUnit: '/M tokens',
+      strategyTitle: '动态路由策略',
+      strategyRule: 'GPT-4 价格 > $35 → 降级到 Claude · Claude 价格 > $17 → 降级到 Llama',
+      onlineLearning: '在线学习 (Bandit/RL) 可以自动发现这些规律，无需手动设定阈值',
+      selfHosted: 'Llama-70B 自部署，价格恒定 — 这是 self-hosted 模型的优势',
+      timeStepLabel: '时间步:',
+    },
+    en: {
+      title: 'Dynamic Price Adaptation',
+      subtitle: 'Routing strategy auto-adjusts to API price fluctuations',
+      currentTime: 'Current: T=',
+      routingDecision: 'Routing:',
+      price: 'Price:',
+      priceUnit: '/M tokens',
+      strategyTitle: 'Dynamic Routing Strategy',
+      strategyRule: 'GPT-4 price > $35 → fallback to Claude · Claude price > $17 → fallback to Llama',
+      onlineLearning: 'Online learning (Bandit/RL) can auto-discover these patterns without manual threshold tuning',
+      selfHosted: 'Llama-70B self-hosted, constant price — advantage of self-hosted models',
+      timeStepLabel: 'Time step:',
+    },
+  }[locale];
+
   const [timeStep, setTimeStep] = useState(0);
 
   const W = 580, H = 340;
@@ -35,11 +66,11 @@ export default function DynamicPriceAdaptation() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="22" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          动态价格适应
+          {t.title}
         </text>
         <text x={W / 2} y="40" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="10" fill={COLORS.mid}>
-          API 价格波动时路由策略自动调整 · 当前: T={timeStep}
+          {t.subtitle} · {t.currentTime}{timeStep}
         </text>
 
         {/* Axes */}
@@ -87,7 +118,7 @@ export default function DynamicPriceAdaptation() {
                 stroke={MODELS_DATA[choice].color} strokeWidth="1.5" />
           <text x="65" y="20" textAnchor="middle" fontFamily={FONTS.sans}
                 fontSize="10" fontWeight="600" fill={COLORS.dark}>
-            T={timeStep} 路由决策:
+            T={timeStep} {t.routingDecision}
           </text>
           <text x="65" y="40" textAnchor="middle" fontFamily={FONTS.sans}
                 fontSize="12" fontWeight="700" fill={MODELS_DATA[choice].color}>
@@ -95,7 +126,7 @@ export default function DynamicPriceAdaptation() {
           </text>
           <text x="65" y="58" textAnchor="middle" fontFamily={FONTS.mono}
                 fontSize="9" fill={COLORS.mid}>
-            价格: ${MODELS_DATA[choice].priceVariation[timeStep]}/M tokens
+            {t.price} ${MODELS_DATA[choice].priceVariation[timeStep]}{t.priceUnit}
           </text>
         </g>
 
@@ -104,23 +135,23 @@ export default function DynamicPriceAdaptation() {
           <rect x="0" y="0" width="520" height="75" rx="4"
                 fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1" />
           <text x="15" y="20" fontFamily={FONTS.sans} fontSize="11" fontWeight="600" fill={COLORS.dark}>
-            动态路由策略
+            {t.strategyTitle}
           </text>
           <text x="15" y="38" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.dark}>
-            GPT-4 价格 {'>'} $35 → 降级到 Claude · Claude 价格 {'>'} $17 → 降级到 Llama
+            {t.strategyRule}
           </text>
           <text x="15" y="56" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.mid}>
-            在线学习 (Bandit/RL) 可以自动发现这些规律，无需手动设定阈值
+            {t.onlineLearning}
           </text>
           <text x="15" y="70" fontFamily={FONTS.sans} fontSize="9" fill={COLORS.mid}>
-            Llama-70B 自部署，价格恒定 — 这是 self-hosted 模型的优势
+            {t.selfHosted}
           </text>
         </g>
       </svg>
 
       {/* Time slider */}
       <div className="flex items-center justify-center gap-3 mt-2">
-        <span className="text-sm text-gray-500">时间步:</span>
+        <span className="text-sm text-gray-500">{t.timeStepLabel}</span>
         <input type="range" min="0" max={TIME_STEPS - 1} value={timeStep}
                onChange={e => setTimeStep(Number(e.target.value))}
                className="w-64 accent-blue-700" />

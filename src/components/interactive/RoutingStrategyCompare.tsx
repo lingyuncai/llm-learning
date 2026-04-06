@@ -33,21 +33,49 @@ const expertStartX = 80;
 const tokenGap = 120;
 const expertGap = 120;
 
+export default function RoutingStrategyCompare({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      tokenChoiceTitle: 'Token-Choice',
+      tokenChoiceHeading: 'Token-Choice Routing: 每个 token 选 top-K expert',
+      expertChoiceTitle: 'Expert-Choice',
+      expertChoiceHeading: 'Expert-Choice Routing: 每个 expert 选 top-K token',
+      tokensLabel: 'Tokens:',
+      expertsLabel: 'Experts:',
+      tokenChoiceNote: '每个 token 的视角出发 — 简单，但 expert 负载可能不均',
+      tokenChoiceUsers: '采用者：Mixtral (top-2), Switch Transformer (top-1), DeepSeek-V3 (top-8)',
+      expertChoiceNote: '每个 expert 的视角出发 — 负载天然均匀，但某些 token 可能被丢弃',
+      expertChoiceUsers: '采用者：部分 Switch Transformer 变体',
+    },
+    en: {
+      tokenChoiceTitle: 'Token-Choice',
+      tokenChoiceHeading: 'Token-Choice Routing: Each token picks top-K experts',
+      expertChoiceTitle: 'Expert-Choice',
+      expertChoiceHeading: 'Expert-Choice Routing: Each expert picks top-K tokens',
+      tokensLabel: 'Tokens:',
+      expertsLabel: 'Experts:',
+      tokenChoiceNote: 'From each token\'s perspective — simple, but expert load may be imbalanced',
+      tokenChoiceUsers: 'Adopters: Mixtral (top-2), Switch Transformer (top-1), DeepSeek-V3 (top-8)',
+      expertChoiceNote: 'From each expert\'s perspective — naturally balanced load, but some tokens may be dropped',
+      expertChoiceUsers: 'Adopters: Some Switch Transformer variants',
+    },
+  }[locale];
+
 const steps = [
   {
-    title: 'Token-Choice',
+    title: t.tokenChoiceTitle,
     content: (
       <StepSvg h={260}>
         <text x={W / 2} y={22} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Token-Choice Routing: 每个 token 选 top-K expert
+          {t.tokenChoiceHeading}
         </text>
 
         <text x={20} y={tokenY + 15} fontSize="8" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          Tokens:
+          {t.tokensLabel}
         </text>
         <text x={20} y={expertY + 15} fontSize="8" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          Experts:
+          {t.expertsLabel}
         </text>
 
         {/* Tokens */}
@@ -96,29 +124,29 @@ const steps = [
 
         <text x={W / 2} y={215} textAnchor="middle" fontSize="9" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          每个 token 的视角出发 — 简单，但 expert 负载可能不均
+          {t.tokenChoiceNote}
         </text>
         <text x={W / 2} y={235} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          采用者：Mixtral (top-2), Switch Transformer (top-1), DeepSeek-V3 (top-8)
+          {t.tokenChoiceUsers}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'Expert-Choice',
+    title: t.expertChoiceTitle,
     content: (
       <StepSvg h={260}>
         <text x={W / 2} y={22} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Expert-Choice Routing: 每个 expert 选 top-K token
+          {t.expertChoiceHeading}
         </text>
 
         <text x={20} y={tokenY + 15} fontSize="8" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          Tokens:
+          {t.tokensLabel}
         </text>
         <text x={20} y={expertY + 15} fontSize="8" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          Experts:
+          {t.expertsLabel}
         </text>
 
         {TOKENS.map((t, i) => (
@@ -165,17 +193,16 @@ const steps = [
 
         <text x={W / 2} y={215} textAnchor="middle" fontSize="9" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          每个 expert 的视角出发 — 负载天然均匀，但某些 token 可能被丢弃
+          {t.expertChoiceNote}
         </text>
         <text x={W / 2} y={235} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          采用者：部分 Switch Transformer 变体
+          {t.expertChoiceUsers}
         </text>
       </StepSvg>
     ),
   },
 ];
 
-export default function RoutingStrategyCompare() {
   return <StepNavigator steps={steps} />;
 }

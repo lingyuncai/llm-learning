@@ -2,28 +2,67 @@
 import React from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
-const BenchmarkDashboard: React.FC = () => {
+const BenchmarkDashboard: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      title: 'OpenVINO benchmark_app 输出 (模拟)',
+      measuring: '[Step 10/11] Measuring performance',
+      count: '[ INFO ] Count:      1000 iterations',
+      duration: '[ INFO ] Duration:   10023.45 ms',
+      latencyLabel: '[ INFO ] Latency:',
+      median: '[ INFO ]    Median:   9.82 ms',
+      average: '[ INFO ]    Average:  10.02 ms',
+      min: '[ INFO ]    Min:      8.15 ms',
+      max: '[ INFO ]    Max:      25.67 ms',
+      p99: '[ INFO ]    P99:      15.23 ms',
+      throughput: '[ INFO ] Throughput: 99.77 FPS',
+      medianAnnotation: '最稳定指标，受异常值影响最小',
+      p99Annotation: '99th percentile，用于 SLA',
+      maxAnnotation: '首次推理最慢（kernel 编译），用 cache 消除',
+      throughputAnnotation: 'FPS = 1000 / avg_latency × nireq',
+      footerCmd: 'benchmark_app -m model.xml -d GPU -niter 1000',
+    },
+    en: {
+      title: 'OpenVINO benchmark_app Output (Simulated)',
+      measuring: '[Step 10/11] Measuring performance',
+      count: '[ INFO ] Count:      1000 iterations',
+      duration: '[ INFO ] Duration:   10023.45 ms',
+      latencyLabel: '[ INFO ] Latency:',
+      median: '[ INFO ]    Median:   9.82 ms',
+      average: '[ INFO ]    Average:  10.02 ms',
+      min: '[ INFO ]    Min:      8.15 ms',
+      max: '[ INFO ]    Max:      25.67 ms',
+      p99: '[ INFO ]    P99:      15.23 ms',
+      throughput: '[ INFO ] Throughput: 99.77 FPS',
+      medianAnnotation: 'Most stable metric, least affected by outliers',
+      p99Annotation: '99th percentile, used for SLA',
+      maxAnnotation: 'First inference slowest (kernel compilation), eliminated with cache',
+      throughputAnnotation: 'FPS = 1000 / avg_latency × nireq',
+      footerCmd: 'benchmark_app -m model.xml -d GPU -niter 1000',
+    },
+  }[locale];
+
   const W = 580;
   const H = 380;
 
   const outputLines = [
-    { text: '[Step 10/11] Measuring performance', highlight: false },
-    { text: '[ INFO ] Count:      1000 iterations', highlight: false },
-    { text: '[ INFO ] Duration:   10023.45 ms', highlight: false },
-    { text: '[ INFO ] Latency:', highlight: false },
-    { text: '[ INFO ]    Median:   9.82 ms', highlight: 'median' },
-    { text: '[ INFO ]    Average:  10.02 ms', highlight: false },
-    { text: '[ INFO ]    Min:      8.15 ms', highlight: false },
-    { text: '[ INFO ]    Max:      25.67 ms', highlight: 'max' },
-    { text: '[ INFO ]    P99:      15.23 ms', highlight: 'p99' },
-    { text: '[ INFO ] Throughput: 99.77 FPS', highlight: 'throughput' },
+    { text: t.measuring, highlight: false },
+    { text: t.count, highlight: false },
+    { text: t.duration, highlight: false },
+    { text: t.latencyLabel, highlight: false },
+    { text: t.median, highlight: 'median' },
+    { text: t.average, highlight: false },
+    { text: t.min, highlight: false },
+    { text: t.max, highlight: 'max' },
+    { text: t.p99, highlight: 'p99' },
+    { text: t.throughput, highlight: 'throughput' },
   ];
 
   const annotations = [
-    { key: 'median', label: '最稳定指标，受异常值影响最小', x: 320, y: 145, targetY: 145 },
-    { key: 'p99', label: '99th percentile，用于 SLA', x: 320, y: 225, targetY: 225 },
-    { key: 'max', label: '首次推理最慢（kernel 编译），用 cache 消除', x: 320, y: 185, targetY: 185 },
-    { key: 'throughput', label: 'FPS = 1000 / avg_latency × nireq', x: 320, y: 265, targetY: 265 },
+    { key: 'median', label: t.medianAnnotation, x: 320, y: 145, targetY: 145 },
+    { key: 'p99', label: t.p99Annotation, x: 320, y: 225, targetY: 225 },
+    { key: 'max', label: t.maxAnnotation, x: 320, y: 185, targetY: 185 },
+    { key: 'throughput', label: t.throughputAnnotation, x: 320, y: 265, targetY: 265 },
   ];
 
   return (
@@ -53,7 +92,7 @@ const BenchmarkDashboard: React.FC = () => {
           fill={COLORS.dark}
           fontFamily={FONTS.sans}
         >
-          OpenVINO benchmark_app 输出 (模拟)
+          {t.title}
         </text>
 
         {/* Console output box */}
@@ -130,7 +169,7 @@ const BenchmarkDashboard: React.FC = () => {
           fontFamily={FONTS.sans}
           fontStyle="italic"
         >
-          benchmark_app -m model.xml -d GPU -niter 1000
+          {t.footerCmd}
         </text>
       </svg>
     </div>

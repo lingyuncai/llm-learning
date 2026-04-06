@@ -18,7 +18,28 @@ function getLoadDistribution(alpha: number): number[] {
   return raw.map(v => v / total);
 }
 
-export default function LoadBalanceViz() {
+export default function LoadBalanceViz({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      auxLossCoeff: 'Aux Loss 系数',
+      title: 'Expert 负载分布',
+      noAuxLoss: '无 aux loss: 少数 expert 承担大部分 token（expert collapse）',
+      sufficientAuxLoss: 'aux loss 足够大: 负载接近均匀',
+      increasingAuxLoss: 'aux loss 逐渐增大: 负载趋于均衡',
+      ideal: 'ideal',
+      formulaLabel: 'L_aux = α · N · Σᵢ fᵢ · Pᵢ （fᵢ = 实际接收比例, Pᵢ = router 分配概率均值）',
+    },
+    en: {
+      auxLossCoeff: 'Aux Loss Coefficient',
+      title: 'Expert Load Distribution',
+      noAuxLoss: 'No aux loss: few experts handle most tokens (expert collapse)',
+      sufficientAuxLoss: 'Aux loss sufficient: load nearly uniform',
+      increasingAuxLoss: 'Aux loss increasing: load balancing',
+      ideal: 'ideal',
+      formulaLabel: 'L_aux = α · N · Σᵢ fᵢ · Pᵢ (fᵢ = actual receive ratio, Pᵢ = router allocation prob mean)',
+    },
+  }[locale];
+
   const [alpha, setAlpha] = useState(0);
 
   const loads = useMemo(() => getLoadDistribution(alpha), [alpha]);
@@ -35,7 +56,7 @@ export default function LoadBalanceViz() {
     <div className="my-6">
       <div className="flex items-center justify-center gap-4 mb-3">
         <label className="text-xs text-gray-500">
-          Aux Loss 系数 α = {alpha.toFixed(3)}
+          {t.auxLossCoeff} α = {alpha.toFixed(3)}
           <input type="range" min={0} max={0.1} step={0.005} value={alpha}
             onChange={e => setAlpha(Number(e.target.value))} className="ml-2 w-40" />
         </label>
@@ -43,15 +64,15 @@ export default function LoadBalanceViz() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y={22} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Expert 负载分布 (α = {alpha.toFixed(3)})
+          {t.title} (α = {alpha.toFixed(3)})
         </text>
         <text x={W / 2} y={40} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
           {alpha === 0
-            ? '无 aux loss: 少数 expert 承担大部分 token（expert collapse）'
+            ? t.noAuxLoss
             : alpha >= 0.08
-              ? 'aux loss 足够大: 负载接近均匀'
-              : 'aux loss 逐渐增大: 负载趋于均衡'}
+              ? t.sufficientAuxLoss
+              : t.increasingAuxLoss}
         </text>
 
         {/* Ideal load line */}
@@ -64,7 +85,7 @@ export default function LoadBalanceViz() {
                 stroke={COLORS.green} strokeWidth={1} strokeDasharray="4,3" />
               <text x={idealX} y={barStartY - 8} textAnchor="middle"
                 fontSize="7" fill={COLORS.green} fontFamily={FONTS.sans}>
-                ideal = {(idealLoad * 100).toFixed(1)}%
+                {t.ideal} = {(idealLoad * 100).toFixed(1)}%
               </text>
             </g>
           );
@@ -96,7 +117,7 @@ export default function LoadBalanceViz() {
         {/* Formula */}
         <text x={W / 2} y={H - 18} textAnchor="middle" fontSize="8"
           fill={COLORS.mid} fontFamily={FONTS.mono}>
-          L_aux = α · N · Σᵢ fᵢ · Pᵢ （fᵢ = 实际接收比例, Pᵢ = router 分配概率均值）
+          {t.formulaLabel}
         </text>
       </svg>
     </div>

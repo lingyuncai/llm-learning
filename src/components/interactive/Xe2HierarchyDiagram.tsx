@@ -3,7 +3,7 @@ import { COLORS, FONTS } from './shared/colors';
 
 type Level = 'gpu' | 'slice' | 'xecore' | 'eu' | null;
 
-export default function Xe2HierarchyDiagram() {
+export default function Xe2HierarchyDiagram({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [expanded, setExpanded] = useState<Level>(null);
 
   const W = 580;
@@ -13,11 +13,44 @@ export default function Xe2HierarchyDiagram() {
     setExpanded(expanded === level ? null : level);
   };
 
+  const t = {
+    zh: {
+      title: 'Xe2 架构层次',
+      subtitle: '点击各层级查看内部结构（以 Lunar Lake 为例）',
+      gpu: 'GPU',
+      lunarLake: 'Lunar Lake iGPU',
+      slice: 'Slice (1x)',
+      sliceDesc: '包含 4 个 Xe-core',
+      xeCoreLabel: 'Xe-core',
+      euCount: '16 EUs',
+      euDetail: '每个 Xe-core 内的 16 个 EU (部分示意):',
+      euTitle: 'Execution Unit (EU)',
+      vectorEngine: '• Vector Engine (SIMD8 ALU)',
+      xmxEngine: '• XMX Matrix Engine',
+      threadSlots: '• 8 Thread Slots, 128 GRF/thread',
+    },
+    en: {
+      title: 'Xe2 Architecture Hierarchy',
+      subtitle: 'Click each level to view internal structure (Lunar Lake example)',
+      gpu: 'GPU',
+      lunarLake: 'Lunar Lake iGPU',
+      slice: 'Slice (1x)',
+      sliceDesc: 'Contains 4 Xe-cores',
+      xeCoreLabel: 'Xe-core',
+      euCount: '16 EUs',
+      euDetail: '16 EUs within each Xe-core (partial view):',
+      euTitle: 'Execution Unit (EU)',
+      vectorEngine: '• Vector Engine (SIMD8 ALU)',
+      xmxEngine: '• XMX Matrix Engine',
+      threadSlots: '• 8 Thread Slots, 128 GRF/thread',
+    },
+  }[locale];
+
   return (
     <div className="my-6 p-4 border rounded-lg bg-white">
       <div className="mb-3">
-        <h3 className="text-lg font-semibold mb-2">Xe2 架构层次</h3>
-        <p className="text-sm text-gray-600">点击各层级查看内部结构（以 Lunar Lake 为例）</p>
+        <h3 className="text-lg font-semibold mb-2">{t.title}</h3>
+        <p className="text-sm text-gray-600">{t.subtitle}</p>
       </div>
 
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
@@ -45,7 +78,7 @@ export default function Xe2HierarchyDiagram() {
             fontFamily={FONTS.sans}
             style={{ pointerEvents: 'none' }}
           >
-            GPU
+            {t.gpu}
           </text>
           <text
             x={290}
@@ -56,7 +89,7 @@ export default function Xe2HierarchyDiagram() {
             fontFamily={FONTS.sans}
             style={{ pointerEvents: 'none' }}
           >
-            Lunar Lake iGPU
+            {t.lunarLake}
           </text>
         </g>
 
@@ -86,7 +119,7 @@ export default function Xe2HierarchyDiagram() {
               fontFamily={FONTS.sans}
               style={{ pointerEvents: 'none' }}
             >
-              Slice (1x)
+              {t.slice}
             </text>
             <text
               x={290}
@@ -97,7 +130,7 @@ export default function Xe2HierarchyDiagram() {
               fontFamily={FONTS.sans}
               style={{ pointerEvents: 'none' }}
             >
-              包含 4 个 Xe-core
+              {t.sliceDesc}
             </text>
           </g>
         )}
@@ -133,7 +166,7 @@ export default function Xe2HierarchyDiagram() {
                     fontFamily={FONTS.sans}
                     style={{ pointerEvents: 'none' }}
                   >
-                    Xe-core {i}
+                    {t.xeCoreLabel} {i}
                   </text>
                   <text
                     x={x + 50}
@@ -144,7 +177,7 @@ export default function Xe2HierarchyDiagram() {
                     fontFamily={FONTS.sans}
                     style={{ pointerEvents: 'none' }}
                   >
-                    16 EUs
+                    {t.euCount}
                   </text>
                 </g>
               );
@@ -164,7 +197,7 @@ export default function Xe2HierarchyDiagram() {
               fontWeight="600"
               fontFamily={FONTS.sans}
             >
-              每个 Xe-core 内的 16 个 EU (部分示意):
+              {t.euDetail}
             </text>
             {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => {
               const x = 90 + i * 60;
@@ -227,7 +260,7 @@ export default function Xe2HierarchyDiagram() {
               fontWeight="bold"
               fontFamily={FONTS.sans}
             >
-              Execution Unit (EU)
+              {t.euTitle}
             </text>
             <text
               x={290}
@@ -237,7 +270,7 @@ export default function Xe2HierarchyDiagram() {
               fontSize={11}
               fontFamily={FONTS.sans}
             >
-              • Vector Engine (SIMD8 ALU)
+              {t.vectorEngine}
             </text>
             <text
               x={290}
@@ -247,7 +280,7 @@ export default function Xe2HierarchyDiagram() {
               fontSize={11}
               fontFamily={FONTS.sans}
             >
-              • XMX Matrix Engine
+              {t.xmxEngine}
             </text>
             <text
               x={290}
@@ -257,7 +290,7 @@ export default function Xe2HierarchyDiagram() {
               fontSize={11}
               fontFamily={FONTS.sans}
             >
-              • 8 Thread Slots, 128 GRF/thread
+              {t.threadSlots}
             </text>
           </g>
         )}

@@ -30,78 +30,154 @@ function TokenBox({ x, y, text, variant }: {
   );
 }
 
+export default function PrefixCacheHit({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: 'Step 1: 首次请求 — 完整 Prefill',
+      request: '请求:',
+      fullPrefill: '→ 完整 prefill',
+      tokens: 'tokens',
+      kvCacheState: 'KV Cache 状态:',
+      cached: '✓ 缓存了',
+      kvOf: '个 token 的 KV',
+      hashStored: '存入 prefix cache 索引',
+      step2Title: 'Step 2: 新请求 — 前缀匹配',
+      newRequest: '新请求:',
+      prefixMatch: '前缀匹配:',
+      cacheHit: '→ 命中缓存! 前',
+      kvReuse: '个 token 的 KV 可复用',
+      divergeAt: '→ 从位置',
+      startDiverge: '开始分歧 → 只需 prefill',
+      newToken: '个新 token',
+      longestPrefix: '最长公共前缀:',
+      step3Title: 'Step 3: 复用 KV Cache — 节省计算',
+      strategy: '执行策略:',
+      kvDirectReuse: '← KV 直接复用 (跳过 prefill)',
+      onlyPrefillThis: '← 仅 prefill 此 token',
+      oneForward: '次 forward',
+      savePrefill: '节省',
+      prefillCompute: 'prefill 计算 =',
+      ttftReduction: 'TTFT 降低',
+      typicalScenario: '典型场景: system prompt 复用 (可能 1000+ tokens 全部命中缓存)',
+      // Example texts for Step 1
+      explainQuantum: '解释量子计算',
+      explain: '解释',
+      quantum: '量子',
+      compute: '计算',
+      // Example texts for Step 2
+      explainEntangle: '解释量子纠缠',
+      entangle: '纠缠',
+    },
+    en: {
+      step1Title: 'Step 1: First Request — Full Prefill',
+      request: 'Request:',
+      fullPrefill: '→ full prefill',
+      tokens: 'tokens',
+      kvCacheState: 'KV Cache state:',
+      cached: '✓ Cached KV for',
+      kvOf: 'tokens',
+      hashStored: 'stored in prefix cache index',
+      step2Title: 'Step 2: New Request — Prefix Match',
+      newRequest: 'New request:',
+      prefixMatch: 'Prefix match:',
+      cacheHit: '→ cache hit! KV for first',
+      kvReuse: 'tokens reusable',
+      divergeAt: '→ diverges at position',
+      startDiverge: '→ only need to prefill',
+      newToken: 'new token',
+      longestPrefix: 'Longest common prefix:',
+      step3Title: 'Step 3: Reuse KV Cache — Save Computation',
+      strategy: 'Execution strategy:',
+      kvDirectReuse: '← KV direct reuse (skip prefill)',
+      onlyPrefillThis: '← only prefill this token',
+      oneForward: 'forward',
+      savePrefill: 'Save',
+      prefillCompute: 'prefill compute =',
+      ttftReduction: 'TTFT reduction',
+      typicalScenario: 'Typical scenario: system prompt reuse (potentially 1000+ tokens all cache hits)',
+      // Example texts for Step 1
+      explainQuantum: 'Explain quantum computing',
+      explain: 'Explain',
+      quantum: 'quantum',
+      compute: 'computing',
+      // Example texts for Step 2
+      explainEntangle: 'Explain quantum entanglement',
+      entangle: 'entanglement',
+    },
+  }[locale];
+
 const steps = [
   {
-    title: 'Step 1: 首次请求 — 完整 Prefill',
+    title: t.step1Title,
     content: (
       <StepSvg h={150}>
         <text x={20} y={20} fontSize="8" fontWeight="600" fill={COLORS.dark}
-          fontFamily={FONTS.sans}>请求: "解释量子计算"</text>
-        <TokenBox x={20} y={30} text="解释" variant="neutral" />
-        <TokenBox x={90} y={30} text="量子" variant="neutral" />
-        <TokenBox x={160} y={30} text="计算" variant="neutral" />
+          fontFamily={FONTS.sans}>{t.request} "{t.explainQuantum}"</text>
+        <TokenBox x={20} y={30} text={t.explain} variant="neutral" />
+        <TokenBox x={90} y={30} text={t.quantum} variant="neutral" />
+        <TokenBox x={160} y={30} text={t.compute} variant="neutral" />
         <text x={250} y={47} fontSize="7" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          → 完整 prefill (3 tokens)
+          {t.fullPrefill} (3 {t.tokens})
         </text>
 
         <text x={20} y={82} fontSize="7" fontWeight="600" fill={COLORS.primary}
-          fontFamily={FONTS.sans}>KV Cache 状态:</text>
-        <TokenBox x={20} y={90} text="解释" variant="cached" />
-        <TokenBox x={90} y={90} text="量子" variant="cached" />
-        <TokenBox x={160} y={90} text="计算" variant="cached" />
+          fontFamily={FONTS.sans}>{t.kvCacheState}</text>
+        <TokenBox x={20} y={90} text={t.explain} variant="cached" />
+        <TokenBox x={90} y={90} text={t.quantum} variant="cached" />
+        <TokenBox x={160} y={90} text={t.compute} variant="cached" />
         <text x={250} y={107} fontSize="7" fill={COLORS.primary} fontFamily={FONTS.sans}>
-          ✓ 缓存了 3 个 token 的 KV
+          {t.cached} 3 {t.kvOf}
         </text>
         <text x={W / 2} y={135} textAnchor="middle" fontSize="7" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          hash("解释量子计算") → 存入 prefix cache 索引
+          hash("{t.explainQuantum}") → {t.hashStored}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'Step 2: 新请求 — 前缀匹配',
+    title: t.step2Title,
     content: (
       <StepSvg h={150}>
         <text x={20} y={20} fontSize="8" fontWeight="600" fill={COLORS.dark}
-          fontFamily={FONTS.sans}>新请求: "解释量子纠缠"</text>
-        <TokenBox x={20} y={30} text="解释" variant="reused" />
-        <TokenBox x={90} y={30} text="量子" variant="reused" />
-        <TokenBox x={160} y={30} text="纠缠" variant="new" />
+          fontFamily={FONTS.sans}>{t.newRequest} "{t.explainEntangle}"</text>
+        <TokenBox x={20} y={30} text={t.explain} variant="reused" />
+        <TokenBox x={90} y={30} text={t.quantum} variant="reused" />
+        <TokenBox x={160} y={30} text={t.entangle} variant="new" />
 
         <text x={20} y={82} fontSize="7" fontWeight="600" fill={COLORS.green}
-          fontFamily={FONTS.sans}>前缀匹配:</text>
+          fontFamily={FONTS.sans}>{t.prefixMatch}</text>
         <text x={20} y={96} fontSize="7" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          hash("解释量子") → 命中缓存! 前 2 个 token 的 KV 可复用
+          hash("{t.explain}{t.quantum}") {t.cacheHit} 2 {t.kvReuse}
         </text>
         <text x={20} y={112} fontSize="7" fill={COLORS.orange} fontFamily={FONTS.sans}>
-          "纠缠" ≠ "计算" → 从位置 2 开始分歧 → 只需 prefill 1 个新 token
+          "{t.entangle}" ≠ "{t.compute}" {t.divergeAt} 2 {t.startDiverge} 1 {t.newToken}
         </text>
         <text x={W / 2} y={140} textAnchor="middle" fontSize="7" fontWeight="600"
           fill={COLORS.green} fontFamily={FONTS.sans}>
-          最长公共前缀: "解释量子" (2 tokens)
+          {t.longestPrefix} "{t.explain}{t.quantum}" (2 {t.tokens})
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'Step 3: 复用 KV Cache — 节省计算',
+    title: t.step3Title,
     content: (
       <StepSvg h={170}>
         <text x={20} y={20} fontSize="8" fontWeight="600" fill={COLORS.dark}
-          fontFamily={FONTS.sans}>执行策略:</text>
+          fontFamily={FONTS.sans}>{t.strategy}</text>
 
         {/* Reused tokens */}
-        <TokenBox x={20} y={35} text="解释" variant="reused" />
-        <TokenBox x={90} y={35} text="量子" variant="reused" />
+        <TokenBox x={20} y={35} text={t.explain} variant="reused" />
+        <TokenBox x={90} y={35} text={t.quantum} variant="reused" />
         <text x={170} y={52} fontSize="7" fill={COLORS.green} fontFamily={FONTS.sans}>
-          ← KV 直接复用 (跳过 prefill)
+          {t.kvDirectReuse}
         </text>
 
         {/* New token */}
-        <TokenBox x={20} y={70} text="纠缠" variant="new" />
+        <TokenBox x={20} y={70} text={t.entangle} variant="new" />
         <text x={100} y={87} fontSize="7" fill={COLORS.orange} fontFamily={FONTS.sans}>
-          ← 仅 prefill 此 token (1 次 forward)
+          {t.onlyPrefillThis} (1 {t.oneForward})
         </text>
 
         {/* Stats */}
@@ -109,17 +185,16 @@ const steps = [
           fill="#f0fdf4" stroke={COLORS.green} strokeWidth={1} />
         <text x={290} y={128} textAnchor="middle" fontSize="8" fontWeight="600"
           fill={COLORS.green} fontFamily={FONTS.sans}>
-          节省 2/3 prefill 计算 = ~67% TTFT 降低
+          {t.savePrefill} 2/3 {t.prefillCompute} ~67% {t.ttftReduction}
         </text>
         <text x={290} y={142} textAnchor="middle" fontSize="7" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          典型场景: system prompt 复用 (可能 1000+ tokens 全部命中缓存)
+          {t.typicalScenario}
         </text>
       </StepSvg>
     ),
   },
 ];
 
-export default function PrefixCacheHit() {
   return <StepNavigator steps={steps} />;
 }

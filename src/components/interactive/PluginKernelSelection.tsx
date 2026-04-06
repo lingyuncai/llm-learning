@@ -2,9 +2,19 @@ import React, { useState } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
 type Operator = 'matmul' | 'softmax' | 'layernorm';
+type Locale = 'zh' | 'en';
 
-const PluginKernelSelection: React.FC = () => {
+const PluginKernelSelection: React.FC<{ locale?: Locale }> = ({ locale = 'zh' }) => {
   const [selected, setSelected] = useState<Operator>('matmul');
+
+  const t = {
+    zh: {
+      strategy: '策略：oneDNN primitives 首选（利用硬件加速单元），OpenCL 作为通用 fallback',
+    },
+    en: {
+      strategy: 'Strategy: Prefer oneDNN primitives (leverage hardware acceleration units), OpenCL as generic fallback',
+    },
+  }[locale];
 
   const renderFlowchart = () => {
     switch (selected) {
@@ -205,7 +215,7 @@ const PluginKernelSelection: React.FC = () => {
 
       <div className="mt-4 p-3 bg-blue-50 border-l-4 border-blue-600 rounded">
         <p className="text-sm text-gray-700 font-mono">
-          <strong>策略：</strong>oneDNN primitives 首选（利用硬件加速单元），OpenCL 作为通用 fallback
+          {t.strategy}
         </p>
       </div>
     </div>

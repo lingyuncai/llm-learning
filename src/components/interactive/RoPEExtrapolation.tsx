@@ -34,7 +34,32 @@ function computeThetas(method: ScalingMethod, seqLen: number): number[] {
   });
 }
 
-export default function RoPEExtrapolation() {
+export default function RoPEExtrapolation({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      seqLength: '序列长度',
+      title: '各维度对的最大角度覆盖 (训练长度={train}, 当前={current})',
+      noScaling: '无缩放 — 超出训练范围的角度（红色区域）可能导致性能下降',
+      ntkScaling: 'NTK-aware: 修改基数压缩高频角度到训练范围内',
+      yarnScaling: 'YaRN: 对不同频率分量使用不同缩放因子（混合策略）',
+      dimPair: 'dim pair',
+      trainRange: '训练范围 (0 ~ {train})',
+      angleInRange: '角度在范围内',
+      angleOutRange: '角度超出范围',
+    },
+    en: {
+      seqLength: 'Sequence Length',
+      title: 'Max Angle Coverage per Dim Pair (train length={train}, current={current})',
+      noScaling: 'No scaling — angles beyond training range (red area) may degrade performance',
+      ntkScaling: 'NTK-aware: Modify base to compress high-freq angles into training range',
+      yarnScaling: 'YaRN: Different scaling factors for different frequency components (hybrid strategy)',
+      dimPair: 'dim pair',
+      trainRange: 'Training range (0 ~ {train})',
+      angleInRange: 'Angle in range',
+      angleOutRange: 'Angle out of range',
+    },
+  }[locale];
+
   const [seqLen, setSeqLen] = useState(TRAIN_LEN);
   const [method, setMethod] = useState<ScalingMethod>('none');
 
@@ -56,7 +81,7 @@ export default function RoPEExtrapolation() {
     <div className="my-6">
       <div className="flex flex-wrap gap-4 mb-3 items-center justify-center">
         <label className="text-xs text-gray-500">
-          序列长度: {seqLen.toLocaleString()}
+          {t.seqLength}: {seqLen.toLocaleString()}
           <input type="range" min={TRAIN_LEN} max={TRAIN_LEN * 4} step={512}
             value={seqLen}
             onChange={e => setSeqLen(Number(e.target.value))} className="ml-2 w-32" />
@@ -78,21 +103,17 @@ export default function RoPEExtrapolation() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          各维度对的最大角度覆盖 (训练长度={TRAIN_LEN}, 当前={seqLen.toLocaleString()})
+          {t.title.replace('{train}', TRAIN_LEN.toString()).replace('{current}', seqLen.toLocaleString())}
         </text>
 
         <text x={W / 2} y={38} textAnchor="middle" fontSize="8" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          {method === 'none'
-            ? '无缩放 — 超出训练范围的角度（红色区域）可能导致性能下降'
-            : method === 'ntk'
-              ? 'NTK-aware: 修改基数压缩高频角度到训练范围内'
-              : 'YaRN: 对不同频率分量使用不同缩放因子（混合策略）'}
+          {method === 'none' ? t.noScaling : method === 'ntk' ? t.ntkScaling : t.yarnScaling}
         </text>
 
         {/* Dim pair labels */}
         <text x={barX - 5} y={barStartY - 8} textAnchor="end" fontSize="7"
-          fill={COLORS.mid} fontFamily={FONTS.sans}>dim pair</text>
+          fill={COLORS.mid} fontFamily={FONTS.sans}>{t.dimPair}</text>
 
         {Array.from({ length: NUM_PAIRS }, (_, i) => {
           const y = barStartY + i * (barH + barGap);
@@ -136,17 +157,17 @@ export default function RoPEExtrapolation() {
             <g>
               <rect x={140} y={ly} width={12} height={10} rx={2} fill="#dcfce7" opacity={0.6} />
               <text x={156} y={ly + 8} fontSize="7" fill={COLORS.dark} fontFamily={FONTS.sans}>
-                训练范围 (0 ~ {TRAIN_LEN})
+                {t.trainRange.replace('{train}', TRAIN_LEN.toString())}
               </text>
 
               <rect x={280} y={ly} width={12} height={10} rx={2} fill={COLORS.green} opacity={0.5} />
               <text x={296} y={ly + 8} fontSize="7" fill={COLORS.dark} fontFamily={FONTS.sans}>
-                角度在范围内
+                {t.angleInRange}
               </text>
 
               <rect x={380} y={ly} width={12} height={10} rx={2} fill={COLORS.red} opacity={0.5} />
               <text x={396} y={ly + 8} fontSize="7" fill={COLORS.dark} fontFamily={FONTS.sans}>
-                角度超出范围
+                {t.angleOutRange}
               </text>
             </g>
           );

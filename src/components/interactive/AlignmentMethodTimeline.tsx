@@ -12,18 +12,31 @@ interface Milestone {
   color: string;
 }
 
-const MILESTONES: Milestone[] = [
-  { date: '2017', label: 'RLHF 论文', desc: 'Christiano et al. 提出用人类偏好训练 RL agent', tech: 'Deep RL from Human Preferences', color: COLORS.primary },
-  { date: '2019', label: 'Fine-Tuning LM', desc: 'Ziegler et al. 首次将 RLHF 应用于语言模型', tech: 'PPO + Reward Model', color: COLORS.primary },
-  { date: '2022.1', label: 'InstructGPT', desc: 'OpenAI 3 阶段 pipeline: SFT → RM → PPO', tech: 'SFT + RM + PPO (1.3B 优于 175B)', color: COLORS.green },
-  { date: '2022.11', label: 'ChatGPT', desc: '基于 InstructGPT 方法训练，引爆 AI 革命', tech: 'RLHF at scale', color: COLORS.green },
-  { date: '2023.7', label: 'Llama 2', desc: 'Meta 开源 RLHF 模型，推动开源对齐', tech: 'RLHF + Safety RM', color: COLORS.orange },
-  { date: '2023.12', label: 'DPO', desc: 'Rafailov et al. 直接从偏好优化，去掉 RM 和 PPO', tech: 'Direct Preference Optimization', color: COLORS.purple },
-  { date: '2024.2', label: 'GRPO', desc: 'DeepSeek 组采样去掉 Critic，降低训练成本', tech: 'Group Relative Policy Optimization', color: COLORS.red },
-  { date: '2025.1', label: 'DeepSeek-R1', desc: 'RL 训练涌现 reasoning 能力，开启 thinking 时代', tech: 'GRPO + Rule Reward', color: COLORS.red },
-];
+export default function AlignmentMethodTimeline({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const MILESTONES: Milestone[] = locale === 'zh' ? [
+    { date: '2017', label: 'RLHF 论文', desc: 'Christiano et al. 提出用人类偏好训练 RL agent', tech: 'Deep RL from Human Preferences', color: COLORS.primary },
+    { date: '2019', label: 'Fine-Tuning LM', desc: 'Ziegler et al. 首次将 RLHF 应用于语言模型', tech: 'PPO + Reward Model', color: COLORS.primary },
+    { date: '2022.1', label: 'InstructGPT', desc: 'OpenAI 3 阶段 pipeline: SFT → RM → PPO', tech: 'SFT + RM + PPO (1.3B 优于 175B)', color: COLORS.green },
+    { date: '2022.11', label: 'ChatGPT', desc: '基于 InstructGPT 方法训练，引爆 AI 革命', tech: 'RLHF at scale', color: COLORS.green },
+    { date: '2023.7', label: 'Llama 2', desc: 'Meta 开源 RLHF 模型，推动开源对齐', tech: 'RLHF + Safety RM', color: COLORS.orange },
+    { date: '2023.12', label: 'DPO', desc: 'Rafailov et al. 直接从偏好优化，去掉 RM 和 PPO', tech: 'Direct Preference Optimization', color: COLORS.purple },
+    { date: '2024.2', label: 'GRPO', desc: 'DeepSeek 组采样去掉 Critic，降低训练成本', tech: 'Group Relative Policy Optimization', color: COLORS.red },
+    { date: '2025.1', label: 'DeepSeek-R1', desc: 'RL 训练涌现 reasoning 能力，开启 thinking 时代', tech: 'GRPO + Rule Reward', color: COLORS.red },
+  ] : [
+    { date: '2017', label: 'RLHF Paper', desc: 'Christiano et al. propose training RL agents with human preferences', tech: 'Deep RL from Human Preferences', color: COLORS.primary },
+    { date: '2019', label: 'Fine-Tuning LM', desc: 'Ziegler et al. first apply RLHF to language models', tech: 'PPO + Reward Model', color: COLORS.primary },
+    { date: '2022.1', label: 'InstructGPT', desc: 'OpenAI 3-stage pipeline: SFT → RM → PPO', tech: 'SFT + RM + PPO (1.3B beats 175B)', color: COLORS.green },
+    { date: '2022.11', label: 'ChatGPT', desc: 'Trained with InstructGPT method, sparked AI revolution', tech: 'RLHF at scale', color: COLORS.green },
+    { date: '2023.7', label: 'Llama 2', desc: 'Meta open-sources RLHF model, advancing open alignment', tech: 'RLHF + Safety RM', color: COLORS.orange },
+    { date: '2023.12', label: 'DPO', desc: 'Rafailov et al. optimize directly from preferences, removing RM and PPO', tech: 'Direct Preference Optimization', color: COLORS.purple },
+    { date: '2024.2', label: 'GRPO', desc: 'DeepSeek group sampling removes Critic, reducing training cost', tech: 'Group Relative Policy Optimization', color: COLORS.red },
+    { date: '2025.1', label: 'DeepSeek-R1', desc: 'RL training enables emergent reasoning, opens thinking era', tech: 'GRPO + Rule Reward', color: COLORS.red },
+  ];
 
-export default function AlignmentMethodTimeline() {
+  const t = {
+    zh: { title: 'LLM 对齐方法演进时间线', hover: 'Hover 查看每个里程碑的详细信息' },
+    en: { title: 'LLM Alignment Method Timeline', hover: 'Hover to see milestone details' },
+  }[locale];
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   const timelineX = 100;
@@ -34,7 +47,7 @@ export default function AlignmentMethodTimeline() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          LLM 对齐方法演进时间线
+          {t.title}
         </text>
 
         {/* Timeline line */}
@@ -91,7 +104,7 @@ export default function AlignmentMethodTimeline() {
         )}
 
         <text x={W / 2} y={H - 10} textAnchor="middle" fontSize={9} fill={COLORS.mid}>
-          Hover 查看每个里程碑的详细信息
+          {t.hover}
         </text>
       </svg>
     </div>

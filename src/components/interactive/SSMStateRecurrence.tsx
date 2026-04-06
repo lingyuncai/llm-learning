@@ -47,32 +47,75 @@ function TokenBox({ x, y, token, active }: {
   );
 }
 
-export default function SSMStateRecurrence() {
+export default function SSMStateRecurrence({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: '1. 初始状态 x₀ = 0',
+      step1Header: 'SSM 初始化：空状态向量',
+      step1Desc: '状态向量 x ∈ ℝᴺ 是 SSM 的"记忆"— 固定大小，不随序列增长',
+      step1Size: 'N 通常为 16-64，远小于序列长度',
+      step2Title: '2. 输入 u₁ → 更新状态',
+      step2Projection: 'B̄ 投影',
+      step2Mapping: 'B̄ 矩阵将输入 token 的 embedding 映射到状态空间',
+      step2Write: '"写入"操作：决定输入信息如何编码到状态中',
+      step2Output: '输出 y₁ = C · x₁（C 矩阵"读出"状态信息）',
+      step3Title: '3. 输入 u₂ → 混合新旧信息',
+      step3OldState: 'x₁ (旧状态)',
+      step3Decay: '× Ā (衰减)',
+      step3NewState: 'x₂ (新状态)',
+      step3Control: 'Ā 控制旧信息保留多少，B̄ 控制新信息写入多少',
+      step4Title: '4. 对比 Attention：内存开销',
+      step4Header: '推理缓存对比',
+      step4AttnCache: '缓存 O(n) — 每个 token 都要存',
+      step4SsmCache: '缓存 O(1) — 固定大小',
+    },
+    en: {
+      step1Title: '1. Initial state x₀ = 0',
+      step1Header: 'SSM initialization: empty state vector',
+      step1Desc: 'State vector x ∈ ℝᴺ is SSM\'s "memory" — fixed size, does not grow with sequence',
+      step1Size: 'N is typically 16-64, much smaller than sequence length',
+      step2Title: '2. Input u₁ → update state',
+      step2Projection: 'B̄ projection',
+      step2Mapping: 'B̄ matrix maps input token embedding to state space',
+      step2Write: '"Write" operation: determines how input information is encoded into state',
+      step2Output: 'Output y₁ = C · x₁ (C matrix "reads" state information)',
+      step3Title: '3. Input u₂ → mix old and new information',
+      step3OldState: 'x₁ (old state)',
+      step3Decay: '× Ā (decay)',
+      step3NewState: 'x₂ (new state)',
+      step3Control: 'Ā controls how much old info to retain, B̄ controls how much new info to write',
+      step4Title: '4. Compare with Attention: memory overhead',
+      step4Header: 'Inference cache comparison',
+      step4AttnCache: 'Cache O(n) — every token must be stored',
+      step4SsmCache: 'Cache O(1) — fixed size',
+    },
+  }[locale];
+
   const N = 4; // state dim
 
   const steps = [
     {
-      title: '1. 初始状态 x₀ = 0',
+      title: t.step1Title,
       content: (
         <svg viewBox={`0 0 ${W} 200`} className="w-full">
           <text x={W / 2} y={25} textAnchor="middle" fontSize="13" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            SSM 初始化：空状态向量
+            {t.step1Header}
           </text>
           <StateVector x={120} y={60} values={[0, 0, 0, 0]} label="x₀ (state)" dim={N} />
           <text x={W / 2} y={130} textAnchor="middle" fontSize="11"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            状态向量 x ∈ ℝᴺ 是 SSM 的"记忆"— 固定大小，不随序列增长
+            {t.step1Desc}
           </text>
           <text x={W / 2} y={155} textAnchor="middle" fontSize="10"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            N 通常为 16-64，远小于序列长度
+            {t.step1Size}
           </text>
         </svg>
       ),
     },
     {
-      title: '2. 输入 u₁ → 更新状态',
+      title: t.step2Title,
       content: (
         <svg viewBox={`0 0 ${W} 240`} className="w-full">
           <text x={W / 2} y={25} textAnchor="middle" fontSize="13" fontWeight="600"
@@ -82,28 +125,28 @@ export default function SSMStateRecurrence() {
           <TokenBox x={30} y={55} token="The" active={true} />
           <text x={100} y={74} fontSize="16" fill={COLORS.primary} fontFamily={FONTS.mono}>→</text>
           <text x={120} y={74} fontSize="10" fontWeight="600"
-            fill={COLORS.primary} fontFamily={FONTS.sans}>B̄ 投影</text>
+            fill={COLORS.primary} fontFamily={FONTS.sans}>{t.step2Projection}</text>
           <text x={180} y={74} fontSize="16" fill={COLORS.primary} fontFamily={FONTS.mono}>→</text>
           <StateVector x={200} y={55} values={[0.12, -0.08, 0.35, 0.21]} label="x₁" dim={N} />
           <rect x={40} y={120} width={500} height={50} rx={6}
             fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
           <text x={290} y={140} textAnchor="middle" fontSize="11"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            B̄ 矩阵将输入 token 的 embedding 映射到状态空间
+            {t.step2Mapping}
           </text>
           <text x={290} y={158} textAnchor="middle" fontSize="10"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            "写入"操作：决定输入信息如何编码到状态中
+            {t.step2Write}
           </text>
           <text x={290} y={200} textAnchor="middle" fontSize="11" fontWeight="600"
             fill={COLORS.green} fontFamily={FONTS.sans}>
-            输出 y₁ = C · x₁（C 矩阵"读出"状态信息）
+            {t.step2Output}
           </text>
         </svg>
       ),
     },
     {
-      title: '3. 输入 u₂ → 混合新旧信息',
+      title: t.step3Title,
       content: (
         <svg viewBox={`0 0 ${W} 260`} className="w-full">
           <text x={W / 2} y={25} textAnchor="middle" fontSize="13" fontWeight="600"
@@ -111,32 +154,32 @@ export default function SSMStateRecurrence() {
             x₂ = Ā · x₁ + B̄ · u₂
           </text>
           {/* Old state */}
-          <StateVector x={30} y={55} values={[0.12, -0.08, 0.35, 0.21]} label="x₁ (旧状态)" dim={N} />
+          <StateVector x={30} y={55} values={[0.12, -0.08, 0.35, 0.21]} label={t.step3OldState} dim={N} />
           <text x={240} y={80} fontSize="11" fontWeight="600"
-            fill={COLORS.orange} fontFamily={FONTS.sans}>× Ā (衰减)</text>
+            fill={COLORS.orange} fontFamily={FONTS.sans}>{t.step3Decay}</text>
           {/* New input */}
           <TokenBox x={30} y={120} token="cat" active={true} />
           <text x={100} y={139} fontSize="16" fill={COLORS.primary} fontFamily={FONTS.mono}>→</text>
           <text x={120} y={139} fontSize="10" fontWeight="600"
-            fill={COLORS.primary} fontFamily={FONTS.sans}>B̄ 投影</text>
+            fill={COLORS.primary} fontFamily={FONTS.sans}>{t.step2Projection}</text>
           <text x={350} y={110} fontSize="20" fontWeight="700"
             fill={COLORS.dark} fontFamily={FONTS.sans}>+</text>
           {/* Result */}
-          <StateVector x={120} y={170} values={[0.09, 0.24, 0.18, 0.43]} label="x₂ (新状态)" dim={N} />
+          <StateVector x={120} y={170} values={[0.09, 0.24, 0.18, 0.43]} label={t.step3NewState} dim={N} />
           <text x={290} y={235} textAnchor="middle" fontSize="11"
             fill={COLORS.mid} fontFamily={FONTS.sans}>
-            Ā 控制旧信息保留多少，B̄ 控制新信息写入多少
+            {t.step3Control}
           </text>
         </svg>
       ),
     },
     {
-      title: '4. 对比 Attention：内存开销',
+      title: t.step4Title,
       content: (
         <svg viewBox={`0 0 ${W} 280`} className="w-full">
           <text x={W / 2} y={25} textAnchor="middle" fontSize="14" fontWeight="700"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            推理缓存对比
+            {t.step4Header}
           </text>
           {/* Attention side */}
           <text x={145} y={55} textAnchor="middle" fontSize="12" fontWeight="600"
@@ -151,7 +194,7 @@ export default function SSMStateRecurrence() {
           ))}
           <text x={145} y={120} textAnchor="middle" fontSize="10"
             fill={COLORS.red} fontFamily={FONTS.sans}>
-            缓存 O(n) — 每个 token 都要存
+            {t.step4AttnCache}
           </text>
           {/* SSM side */}
           <text x={435} y={55} textAnchor="middle" fontSize="12" fontWeight="600"
@@ -162,7 +205,7 @@ export default function SSMStateRecurrence() {
             fill={COLORS.dark} fontFamily={FONTS.mono}>x ∈ ℝᴺ (N=16~64)</text>
           <text x={435} y={120} textAnchor="middle" fontSize="10"
             fill={COLORS.green} fontFamily={FONTS.sans}>
-            缓存 O(1) — 固定大小
+            {t.step4SsmCache}
           </text>
           {/* Bar chart */}
           {[

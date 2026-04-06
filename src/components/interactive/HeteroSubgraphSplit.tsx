@@ -1,7 +1,44 @@
 import React, { useState, useMemo } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
-const HeteroSubgraphSplit: React.FC = () => {
+const HeteroSubgraphSplit: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      title: '异构计算图切分点配置',
+      layerStack: 'Transformer 模型层',
+      splitPoint: '切分点',
+      npu: 'NPU',
+      gpu: 'GPU',
+      metricsTitle: '运行指标',
+      npuLoad: 'NPU 负载',
+      gpuLoad: 'GPU 负载',
+      commOverhead: '通信开销',
+      estimatedLatency: '预估延迟',
+      insight: '💡 切分点越少，设备间数据传输开销越低；负载均衡时整体延迟最优',
+      sliderLabel: 'NPU/GPU 切分点',
+      allGpu: '全部 GPU',
+      balanced: '均衡',
+      allNpu: '全部 NPU',
+    },
+    en: {
+      title: 'Heterogeneous Compute Graph Split Point Configuration',
+      layerStack: 'Transformer Model Layers',
+      splitPoint: 'Split Point',
+      npu: 'NPU',
+      gpu: 'GPU',
+      metricsTitle: 'Runtime Metrics',
+      npuLoad: 'NPU Load',
+      gpuLoad: 'GPU Load',
+      commOverhead: 'Communication Overhead',
+      estimatedLatency: 'Estimated Latency',
+      insight: '💡 Fewer split points reduce inter-device data transfer overhead; load balancing optimizes overall latency',
+      sliderLabel: 'NPU/GPU Split Point',
+      allGpu: 'All GPU',
+      balanced: 'Balanced',
+      allNpu: 'All NPU',
+    },
+  }[locale];
+
   const [splitPoint, setSplitPoint] = useState<number>(50); // 0-100%
 
   const layers = [
@@ -54,13 +91,13 @@ const HeteroSubgraphSplit: React.FC = () => {
       <svg viewBox="0 0 580 380" className="w-full">
         {/* Title */}
         <text x="290" y="20" textAnchor="middle" fontSize="14" fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          异构计算图切分点配置
+          {t.title}
         </text>
 
         {/* Left: Layer stack */}
         <g transform="translate(40, 40)">
           <text x="100" y="-10" textAnchor="middle" fontSize="11" fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            Transformer 模型层
+            {t.layerStack}
           </text>
 
           {layers.map((layer, i) => {
@@ -114,20 +151,20 @@ const HeteroSubgraphSplit: React.FC = () => {
             fill={COLORS.orange}
             fontFamily={FONTS.sans}
           >
-            切分点
+            {t.splitPoint}
           </text>
 
           {/* Device labels */}
           <g transform={`translate(210, ${Math.min(20, splitLineY - 60)})`}>
             <rect x="0" y="0" width="10" height="10" fill={COLORS.primary} opacity="0.6" />
             <text x="15" y="9" fontSize="10" fill={COLORS.dark} fontFamily={FONTS.sans}>
-              NPU
+              {t.npu}
             </text>
           </g>
           <g transform={`translate(210, ${Math.max(splitLineY - 20, totalHeight - 20)})`}>
             <rect x="0" y="0" width="10" height="10" fill={COLORS.green} opacity="0.6" />
             <text x="15" y="9" fontSize="10" fill={COLORS.dark} fontFamily={FONTS.sans}>
-              GPU
+              {t.gpu}
             </text>
           </g>
         </g>
@@ -137,12 +174,12 @@ const HeteroSubgraphSplit: React.FC = () => {
           <rect x="0" y="0" width="220" height="240" fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1" rx="6" />
 
           <text x="110" y="25" textAnchor="middle" fontSize="12" fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            运行指标
+            {t.metricsTitle}
           </text>
 
           {/* NPU Load */}
           <text x="20" y="55" fontSize="11" fontWeight="500" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            NPU 负载
+            {t.npuLoad}
           </text>
           <rect x="20" y="62" width="180" height="18" fill={COLORS.light} rx="2" />
           <rect
@@ -159,7 +196,7 @@ const HeteroSubgraphSplit: React.FC = () => {
 
           {/* GPU Load */}
           <text x="20" y="105" fontSize="11" fontWeight="500" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            GPU 负载
+            {t.gpuLoad}
           </text>
           <rect x="20" y="112" width="180" height="18" fill={COLORS.light} rx="2" />
           <rect
@@ -176,7 +213,7 @@ const HeteroSubgraphSplit: React.FC = () => {
 
           {/* Communication Overhead */}
           <text x="20" y="155" fontSize="11" fontWeight="500" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            通信开销
+            {t.commOverhead}
           </text>
           <rect x="20" y="162" width="180" height="18" fill={COLORS.light} rx="2" />
           <rect
@@ -193,7 +230,7 @@ const HeteroSubgraphSplit: React.FC = () => {
 
           {/* Latency */}
           <text x="20" y="205" fontSize="11" fontWeight="500" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            预估延迟
+            {t.estimatedLatency}
           </text>
           <text x="110" y="228" textAnchor="middle" fontSize="16" fontWeight="700" fill={COLORS.primary} fontFamily={FONTS.mono}>
             {metrics.latency} ms
@@ -204,7 +241,7 @@ const HeteroSubgraphSplit: React.FC = () => {
         <g transform="translate(40, 340)">
           <rect x="0" y="0" width="500" height="28" fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth="1" rx="4" />
           <text x="250" y="18" textAnchor="middle" fontSize="11" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            💡 切分点越少，设备间数据传输开销越低；负载均衡时整体延迟最优
+            {t.insight}
           </text>
         </g>
       </svg>
@@ -212,7 +249,7 @@ const HeteroSubgraphSplit: React.FC = () => {
       {/* Slider control */}
       <div className="mt-4 px-2">
         <label className="block text-sm font-medium text-gray-700 mb-2">
-          NPU/GPU 切分点: {splitPoint}%
+          {t.sliderLabel}: {splitPoint}%
         </label>
         <input
           type="range"
@@ -223,9 +260,9 @@ const HeteroSubgraphSplit: React.FC = () => {
           className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
         />
         <div className="flex justify-between text-xs text-gray-500 mt-1">
-          <span>全部 GPU</span>
-          <span>均衡</span>
-          <span>全部 NPU</span>
+          <span>{t.allGpu}</span>
+          <span>{t.balanced}</span>
+          <span>{t.allNpu}</span>
         </div>
       </div>
     </div>

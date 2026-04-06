@@ -22,14 +22,95 @@ const NODES: AlgoNode[] = [
   { id: 'ppo', label: 'PPO', x: 480, y: 260, improvement: 'Clipped Objective 限制更新', detail: 'Proximal Policy Optimization：用 clip(ratio, 1-ε, 1+ε) 限制策略更新幅度，防止步长过大导致性能崩溃。RLHF 的核心算法。', color: COLORS.orange },
 ];
 
-export default function PGAlgorithmFamily() {
+export default function PGAlgorithmFamily({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Policy Gradient 算法演进',
+      subtitle: '点击节点查看每步改进的详情',
+      rlhfNote: '↑ RLHF 核心算法',
+      improvement: '核心改进：',
+      nodes: {
+        reinforce: {
+          label: 'REINFORCE',
+          improvement: '最基础的 Policy Gradient',
+          detail: '采样完整 trajectory → 计算 return G → 更新 θ += α·∇log π·G。简单但方差极高，收敛慢。',
+        },
+        baseline: {
+          label: 'REINFORCE\n+ Baseline',
+          improvement: '引入 Baseline 降低方差',
+          detail: '用 return 减去 baseline b(s)，通常 b(s) = V(s) 的滑动平均。方差降低但仍需完整 trajectory。',
+        },
+        ac: {
+          label: 'Actor-Critic',
+          improvement: '用网络近似 V(s) 作 baseline',
+          detail: 'Critic 网络学习 V(s) 替代简单平均。可以每步更新（不需完整 trajectory），学习效率大幅提升。',
+        },
+        a2c: {
+          label: 'A2C',
+          improvement: '同步并行 + Advantage',
+          detail: 'Advantage Actor-Critic：多个 worker 并行采样，同步更新。用 Advantage A = Q-V 替代 raw return。',
+        },
+        ppo: {
+          label: 'PPO',
+          improvement: 'Clipped Objective 限制更新',
+          detail: 'Proximal Policy Optimization：用 clip(ratio, 1-ε, 1+ε) 限制策略更新幅度，防止步长过大导致性能崩溃。RLHF 的核心算法。',
+        },
+      },
+      edges: [
+        '+ baseline b(s)',
+        '+ Critic 网络',
+        '+ 并行采样',
+        '+ Clipped Trust Region',
+      ],
+    },
+    en: {
+      title: 'Policy Gradient Algorithm Evolution',
+      subtitle: 'Click nodes to see details of each improvement',
+      rlhfNote: '↑ Core algorithm for RLHF',
+      improvement: 'Key improvement:',
+      nodes: {
+        reinforce: {
+          label: 'REINFORCE',
+          improvement: 'Most basic Policy Gradient',
+          detail: 'Sample full trajectory → compute return G → update θ += α·∇log π·G. Simple but extremely high variance, slow convergence.',
+        },
+        baseline: {
+          label: 'REINFORCE\n+ Baseline',
+          improvement: 'Introduce Baseline to reduce variance',
+          detail: 'Subtract baseline b(s) from return, typically b(s) = moving avg of V(s). Variance reduced but still needs full trajectory.',
+        },
+        ac: {
+          label: 'Actor-Critic',
+          improvement: 'Use network to approximate V(s) as baseline',
+          detail: 'Critic network learns V(s) to replace simple average. Can update every step (no full trajectory needed), learning efficiency greatly improved.',
+        },
+        a2c: {
+          label: 'A2C',
+          improvement: 'Synchronous parallel + Advantage',
+          detail: 'Advantage Actor-Critic: multiple workers sample in parallel, sync updates. Use Advantage A = Q-V instead of raw return.',
+        },
+        ppo: {
+          label: 'PPO',
+          improvement: 'Clipped Objective limits updates',
+          detail: 'Proximal Policy Optimization: use clip(ratio, 1-ε, 1+ε) to limit policy update magnitude, prevent performance collapse from large steps. Core algorithm for RLHF.',
+        },
+      },
+      edges: [
+        '+ baseline b(s)',
+        '+ Critic network',
+        '+ parallel sampling',
+        '+ Clipped Trust Region',
+      ],
+    },
+  }[locale];
+
   const [active, setActive] = useState<string | null>(null);
 
-  const edges: [string, string, string][] = [
-    ['reinforce', 'baseline', '+ baseline b(s)'],
-    ['baseline', 'ac', '+ Critic 网络'],
-    ['ac', 'a2c', '+ 并行采样'],
-    ['a2c', 'ppo', '+ Clipped Trust Region'],
+  const edges: [string, string][] = [
+    ['reinforce', 'baseline'],
+    ['baseline', 'ac'],
+    ['ac', 'a2c'],
+    ['a2c', 'ppo'],
   ];
 
   const nodeMap = Object.fromEntries(NODES.map(n => [n.id, n]));
@@ -39,19 +120,20 @@ export default function PGAlgorithmFamily() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          Policy Gradient 算法演进
+          {t.title}
         </text>
         <text x={W / 2} y={42} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          点击节点查看每步改进的详情
+          {t.subtitle}
         </text>
 
         {/* Edges */}
-        {edges.map(([from, to, label], i) => {
-          const f = nodeMap[from], t = nodeMap[to];
-          const mx = (f.x + t.x) / 2, my = (f.y + t.y) / 2;
+        {edges.map(([from, to], i) => {
+          const f = nodeMap[from], edgeTo = nodeMap[to];
+          const mx = (f.x + edgeTo.x) / 2, my = (f.y + edgeTo.y) / 2;
+          const label = t.edges[i];
           return (
             <g key={i}>
-              <line x1={f.x} y1={f.y + 20} x2={t.x} y2={t.y - 20}
+              <line x1={f.x} y1={f.y + 20} x2={edgeTo.x} y2={edgeTo.y - 20}
                 stroke={COLORS.light} strokeWidth={2} markerEnd="url(#arrowPG)" />
               <rect x={mx - 60} y={my - 10} width={120} height={18} rx={4}
                 fill="rgba(255,255,255,0.95)" stroke={COLORS.light} strokeWidth={0.5} />
@@ -71,6 +153,7 @@ export default function PGAlgorithmFamily() {
         {NODES.map(node => {
           const isActive = active === node.id;
           const isPPO = node.id === 'ppo';
+          const nodeT = t.nodes[node.id as keyof typeof t.nodes];
           return (
             <g key={node.id}
               onClick={() => setActive(isActive ? null : node.id)}
@@ -84,7 +167,7 @@ export default function PGAlgorithmFamily() {
               )}
               <text x={node.x} y={node.y + 4} textAnchor="middle" fontSize={11} fontWeight={700}
                 fill={isActive ? '#fff' : node.color}>
-                {node.label.split('\n').map((line, li) => (
+                {nodeT.label.split('\n').map((line, li) => (
                   <tspan key={li} x={node.x} dy={li === 0 ? 0 : 14}>{line}</tspan>
                 ))}
               </text>
@@ -94,7 +177,7 @@ export default function PGAlgorithmFamily() {
 
         {/* PPO badge */}
         <text x={480} y={300} textAnchor="middle" fontSize={9} fill={COLORS.purple} fontWeight={600}>
-          ↑ RLHF 核心算法
+          {t.rlhfNote}
         </text>
 
         {/* Detail panel */}
@@ -103,16 +186,16 @@ export default function PGAlgorithmFamily() {
             <rect x={30} y={H - 90} width={520} height={75} rx={8}
               fill={COLORS.bgAlt} stroke={activeNode.color} strokeWidth={1.5} />
             <text x={45} y={H - 72} fontSize={12} fontWeight={700} fill={activeNode.color}>
-              {activeNode.label.replace('\n', ' ')}
+              {t.nodes[activeNode.id as keyof typeof t.nodes].label.replace('\n', ' ')}
             </text>
             <text x={45} y={H - 55} fontSize={11} fontWeight={600} fill={COLORS.dark}>
-              核心改进：{activeNode.improvement}
+              {t.improvement}{t.nodes[activeNode.id as keyof typeof t.nodes].improvement}
             </text>
             <text x={45} y={H - 35} fontSize={10} fill={COLORS.mid}>
-              {activeNode.detail.substring(0, 80)}
+              {t.nodes[activeNode.id as keyof typeof t.nodes].detail.substring(0, 80)}
             </text>
             <text x={45} y={H - 20} fontSize={10} fill={COLORS.mid}>
-              {activeNode.detail.substring(80)}
+              {t.nodes[activeNode.id as keyof typeof t.nodes].detail.substring(80)}
             </text>
           </g>
         )}

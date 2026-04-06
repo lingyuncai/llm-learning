@@ -33,7 +33,22 @@ function formatMem(bytes: number): string {
   return `${(bytes / 1e3).toFixed(0)} KB`;
 }
 
-export default function KVCacheMemoryCalculator() {
+export default function KVCacheMemoryCalculator({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'KV Cache 显存对比',
+      seqLength: 'Sequence Length:',
+      tokens: 'tokens',
+      modelWeight: '模型权重:',
+    },
+    en: {
+      title: 'KV Cache Memory Comparison',
+      seqLength: 'Sequence Length:',
+      tokens: 'tokens',
+      modelWeight: 'Model Weight:',
+    },
+  }[locale];
+
   const [preset, setPreset] = useState<ModelPreset>('llama3-8b');
   const [seqLenLog, setSeqLenLog] = useState(11); // 2^11 = 2048
 
@@ -60,7 +75,7 @@ export default function KVCacheMemoryCalculator() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y="22" textAnchor="middle" fontSize="14" fontWeight="600"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        KV Cache 显存对比 ({config.name})
+        {t.title} ({config.name})
       </text>
 
       {/* Model preset buttons */}
@@ -79,11 +94,11 @@ export default function KVCacheMemoryCalculator() {
 
       {/* Sequence length slider label */}
       <text x={chartX} y={chartY - 25} fontSize="11" fill={COLORS.mid} fontFamily={FONTS.sans}>
-        Sequence Length:
+        {t.seqLength}
       </text>
       <text x={chartX + 105} y={chartY - 25} fontSize="11" fontWeight="600"
         fill={COLORS.dark} fontFamily={FONTS.mono}>
-        {seqLen.toLocaleString()} tokens
+        {seqLen.toLocaleString()} {t.tokens}
       </text>
 
       {/* Slider track (SVG-based) */}
@@ -120,7 +135,7 @@ export default function KVCacheMemoryCalculator() {
                 stroke={COLORS.red} strokeWidth="1" strokeDasharray="4,2" opacity={0.6} />
               <text x={chartX + chartW - 2} y={y - 4} textAnchor="end"
                 fontSize="9" fill={COLORS.red} fontFamily={FONTS.sans}>
-                模型权重: {config.weightGB} GB
+                {t.modelWeight} {config.weightGB} GB
               </text>
             </>
           );

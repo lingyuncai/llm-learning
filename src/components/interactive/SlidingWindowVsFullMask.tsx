@@ -4,7 +4,32 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const H = 320;
 
-export default function SlidingWindowVsFullMask() {
+export default function SlidingWindowVsFullMask({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      seqLength: '序列长度',
+      windowSize: '窗口大小',
+      fullCausal: 'Full Causal Mask',
+      slidingWindow: 'Sliding Window Mask (w={w})',
+      keyPosition: 'Key position',
+      comparison: '计算量对比',
+      full: 'Full',
+      swa: 'SWA',
+      less: 'less',
+    },
+    en: {
+      seqLength: 'Sequence length',
+      windowSize: 'Window size',
+      fullCausal: 'Full Causal Mask',
+      slidingWindow: 'Sliding Window Mask (w={w})',
+      keyPosition: 'Key position',
+      comparison: 'Computation Comparison',
+      full: 'Full',
+      swa: 'SWA',
+      less: 'less',
+    },
+  }[locale];
+
   const [seqLen, setSeqLen] = useState(8);
   const [windowSize, setWindowSize] = useState(3);
 
@@ -43,26 +68,26 @@ export default function SlidingWindowVsFullMask() {
     <div className="my-6">
       <div className="flex gap-4 mb-3 items-center justify-center">
         <label className="text-xs text-gray-500">
-          序列长度 n={seqLen}
+          {t.seqLength} n={seqLen}
           <input type="range" min={4} max={16} step={1} value={seqLen}
             onChange={e => setSeqLen(Number(e.target.value))} className="ml-2 w-24" />
         </label>
         <label className="text-xs text-gray-500">
-          窗口大小 w={windowSize}
+          {t.windowSize} w={windowSize}
           <input type="range" min={1} max={seqLen} step={1} value={windowSize}
             onChange={e => setWindowSize(Number(e.target.value))} className="ml-2 w-24" />
         </label>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 4} y={20} textAnchor="middle" fontSize="11" fontWeight="700"
-          fill={COLORS.dark} fontFamily={FONTS.sans}>Full Causal Mask</text>
+          fill={COLORS.dark} fontFamily={FONTS.sans}>{t.fullCausal}</text>
         <text x={3 * W / 4} y={20} textAnchor="middle" fontSize="11" fontWeight="700"
-          fill={COLORS.dark} fontFamily={FONTS.sans}>Sliding Window Mask (w={windowSize})</text>
+          fill={COLORS.dark} fontFamily={FONTS.sans}>{t.slidingWindow.replace('{w}', String(windowSize))}</text>
 
         <text x={leftX + gridW / 2} y={42} textAnchor="middle" fontSize="8"
-          fill={COLORS.mid} fontFamily={FONTS.sans}>Key position</text>
+          fill={COLORS.mid} fontFamily={FONTS.sans}>{t.keyPosition}</text>
         <text x={rightX + gridW / 2} y={42} textAnchor="middle" fontSize="8"
-          fill={COLORS.mid} fontFamily={FONTS.sans}>Key position</text>
+          fill={COLORS.mid} fontFamily={FONTS.sans}>{t.keyPosition}</text>
 
         {renderMask(leftX, false)}
         {renderMask(rightX, true)}
@@ -80,10 +105,10 @@ export default function SlidingWindowVsFullMask() {
             <g>
               <text x={W / 2} y={barY} textAnchor="middle" fontSize="10" fontWeight="600"
                 fill={COLORS.dark} fontFamily={FONTS.sans}>
-                计算量对比
+                {t.comparison}
               </text>
               <text x={W / 2 - maxBarW / 2 - 5} y={barY + 20} textAnchor="end" fontSize="8"
-                fill={COLORS.mid} fontFamily={FONTS.sans}>Full</text>
+                fill={COLORS.mid} fontFamily={FONTS.sans}>{t.full}</text>
               <rect x={W / 2 - maxBarW / 2} y={barY + 12} width={fullBarW} height={12} rx={3}
                 fill="#93c5fd" opacity={0.6} />
               <text x={W / 2 + maxBarW / 2 + 4} y={barY + 22} fontSize="8" fontWeight="600"
@@ -92,12 +117,12 @@ export default function SlidingWindowVsFullMask() {
               </text>
 
               <text x={W / 2 - maxBarW / 2 - 5} y={barY + 38} textAnchor="end" fontSize="8"
-                fill={COLORS.mid} fontFamily={FONTS.sans}>SWA</text>
+                fill={COLORS.mid} fontFamily={FONTS.sans}>{t.swa}</text>
               <rect x={W / 2 - maxBarW / 2} y={barY + 30} width={swBarW} height={12} rx={3}
                 fill={COLORS.primary} opacity={0.7} />
               <text x={W / 2 - maxBarW / 2 + swBarW + 4} y={barY + 40} fontSize="8" fontWeight="600"
                 fill={COLORS.primary} fontFamily={FONTS.mono}>
-                O(nw) = {swOps} ({saving}% less)
+                O(nw) = {swOps} ({saving}% {t.less})
               </text>
             </g>
           );

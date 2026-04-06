@@ -1,7 +1,32 @@
 import { useState } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
-export default function MemoryHierarchyStack() {
+export default function MemoryHierarchyStack({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '内存层次结构',
+      subtitle: '切换 iGPU / dGPU 查看差异',
+      igpuTitle: 'iGPU (集成显卡)',
+      dgpuTitle: 'dGPU (独立显卡)',
+      systemMemory: 'System Memory',
+      systemMemoryCapacity: 'LPDDR5x (shared)',
+      hbmGddr: 'HBM / GDDR6',
+      hbmCapacity: 'Dedicated VRAM',
+      igpuWarning: '⚠️ iGPU 与 CPU 共享系统内存带宽，这是性能瓶颈的关键',
+    },
+    en: {
+      title: 'Memory Hierarchy',
+      subtitle: 'Switch iGPU / dGPU to compare',
+      igpuTitle: 'iGPU (Integrated GPU)',
+      dgpuTitle: 'dGPU (Discrete GPU)',
+      systemMemory: 'System Memory',
+      systemMemoryCapacity: 'LPDDR5x (shared)',
+      hbmGddr: 'HBM / GDDR6',
+      hbmCapacity: 'Dedicated VRAM',
+      igpuWarning: '⚠️ iGPU shares system memory bandwidth with CPU - key bottleneck',
+    },
+  }[locale];
+
   const [mode, setMode] = useState<'igpu' | 'dgpu'>('igpu');
 
   const W = 580;
@@ -13,8 +38,8 @@ export default function MemoryHierarchyStack() {
     { name: 'L1 Cache', capacity: '64KB/Xe-core', bandwidth: '~1 TB/s', width: 260, y: 200 },
     { name: 'L2 Cache', capacity: '4MB (shared)', bandwidth: '~500 GB/s', width: 360, y: 270 },
     {
-      name: 'System Memory',
-      capacity: 'LPDDR5x (shared)',
+      name: t.systemMemory,
+      capacity: t.systemMemoryCapacity,
       bandwidth: '~90 GB/s',
       width: 480,
       y: 340,
@@ -26,7 +51,7 @@ export default function MemoryHierarchyStack() {
     { name: 'SLM', capacity: '128KB/Xe-core', bandwidth: '~2 TB/s', width: 200, y: 130 },
     { name: 'L1 Cache', capacity: '64KB/Xe-core', bandwidth: '~1 TB/s', width: 260, y: 200 },
     { name: 'L2 Cache', capacity: '16-32MB', bandwidth: '~800 GB/s', width: 360, y: 270 },
-    { name: 'HBM / GDDR6', capacity: 'Dedicated VRAM', bandwidth: '~1 TB/s', width: 480, y: 340 },
+    { name: t.hbmGddr, capacity: t.hbmCapacity, bandwidth: '~1 TB/s', width: 480, y: 340 },
   ];
 
   const levels = mode === 'igpu' ? igpuLevels : dgpuLevels;
@@ -35,8 +60,8 @@ export default function MemoryHierarchyStack() {
     <div className="my-6 p-4 border rounded-lg bg-white">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold mb-2">内存层次结构</h3>
-          <p className="text-sm text-gray-600">切换 iGPU / dGPU 查看差异</p>
+          <h3 className="text-lg font-semibold mb-2">{t.title}</h3>
+          <p className="text-sm text-gray-600">{t.subtitle}</p>
         </div>
         <div className="flex gap-2">
           <button
@@ -73,7 +98,7 @@ export default function MemoryHierarchyStack() {
           fontWeight="bold"
           fontFamily={FONTS.sans}
         >
-          {mode === 'igpu' ? 'iGPU (集成显卡)' : 'dGPU (独立显卡)'}
+          {mode === 'igpu' ? t.igpuTitle : t.dgpuTitle}
         </text>
 
         {/* Memory Hierarchy Stack */}
@@ -168,7 +193,7 @@ export default function MemoryHierarchyStack() {
               fontWeight="600"
               fontFamily={FONTS.sans}
             >
-              ⚠️ iGPU 与 CPU 共享系统内存带宽，这是性能瓶颈的关键
+              {t.igpuWarning}
             </text>
           </g>
         )}

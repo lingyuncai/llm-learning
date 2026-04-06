@@ -69,28 +69,47 @@ function MaskGrid({ x, y, mask, labels, title, subtitle }: {
   );
 }
 
-export default function TreeAttentionMask() {
+export default function TreeAttentionMask({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      causalTitle: 'Standard Causal Mask',
+      causalSubtitle: '每个 token 看到所有之前的 token',
+      treeTitle: 'Tree Attention Mask',
+      treeSubtitle: '每个 token 只看到自己的祖先路径',
+      mainExplanation: 'Tree mask 允许不同分支并行验证: "is" 不会看到 "sat/on"，"dog" 不会看到 "cat" 分支',
+      subExplanation: '一次 forward pass 验证所有路径 → 选择最长被接受路径',
+    },
+    en: {
+      causalTitle: 'Standard Causal Mask',
+      causalSubtitle: 'Each token sees all previous tokens',
+      treeTitle: 'Tree Attention Mask',
+      treeSubtitle: 'Each token only sees its ancestor path',
+      mainExplanation: 'Tree mask enables parallel branch verification: "is" doesn\'t see "sat/on", "dog" doesn\'t see "cat" branch',
+      subExplanation: 'One forward pass validates all paths → select longest accepted path',
+    },
+  }[locale];
+
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img"
       aria-label="Tree attention mask vs causal mask comparison">
 
       <MaskGrid x={10} y={30} mask={CAUSAL} labels={TOKENS}
-        title="Standard Causal Mask"
-        subtitle="每个 token 看到所有之前的 token" />
+        title={t.causalTitle}
+        subtitle={t.causalSubtitle} />
 
       <MaskGrid x={300} y={30} mask={TREE_MASK} labels={TREE_LABELS}
-        title="Tree Attention Mask"
-        subtitle="每个 token 只看到自己的祖先路径" />
+        title={t.treeTitle}
+        subtitle={t.treeSubtitle} />
 
       <rect x={40} y={H - 50} width={500} height={40} rx={4}
         fill="#dbeafe" stroke={COLORS.primary} strokeWidth={1} />
       <text x={W / 2} y={H - 28} textAnchor="middle" fontSize="8" fontWeight="600"
         fill={COLORS.primary} fontFamily={FONTS.sans}>
-        Tree mask 允许不同分支并行验证: "is" 不会看到 "sat/on"，"dog" 不会看到 "cat" 分支
+        {t.mainExplanation}
       </text>
       <text x={W / 2} y={H - 14} textAnchor="middle" fontSize="7"
         fill="#64748b" fontFamily={FONTS.sans}>
-        一次 forward pass 验证所有路径 → 选择最长被接受路径
+        {t.subExplanation}
       </text>
     </svg>
   );

@@ -39,7 +39,30 @@ const STAGES: Stage[] = [
   },
 ];
 
-export default function RLHFPipeline() {
+export default function RLHFPipeline({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'RLHF 三阶段流水线',
+      subtitle: '点击每个阶段查看详细数据流',
+      stage: '阶段',
+      inputs: '输入：',
+      outputs: '输出：',
+      clickToView: '← 点击上方阶段查看详情 →',
+      summary: 'SFT: 学会遵循指令 → RM: 量化人类偏好 → PPO: 优化策略使 LLM 对齐',
+      context: '这是 InstructGPT (2022) 和 ChatGPT 使用的核心训练流程',
+    },
+    en: {
+      title: 'RLHF Three-Stage Pipeline',
+      subtitle: 'Click each stage to view detailed data flow',
+      stage: 'Stage',
+      inputs: 'Inputs:',
+      outputs: 'Outputs:',
+      clickToView: '← Click stage above to view details →',
+      summary: 'SFT: Learn to follow instructions → RM: Quantify human preferences → PPO: Optimize policy for LLM alignment',
+      context: 'This is the core training pipeline used by InstructGPT (2022) and ChatGPT',
+    },
+  }[locale];
+
   const [activeStage, setActiveStage] = useState<string | null>(null);
   const active = STAGES.find(s => s.id === activeStage);
 
@@ -50,10 +73,10 @@ export default function RLHFPipeline() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          RLHF 三阶段流水线
+          {t.title}
         </text>
         <text x={W / 2} y={42} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          点击每个阶段查看详细数据流
+          {t.subtitle}
         </text>
 
         {/* Stage boxes */}
@@ -99,13 +122,13 @@ export default function RLHFPipeline() {
           <g>
             <rect x={30} y={170} width={520} height={230} rx={8} fill={COLORS.bgAlt} stroke={active.color} strokeWidth={1.5} />
             <text x={50} y={195} fontSize={14} fontWeight={700} fill={active.color}>
-              阶段 {STAGES.indexOf(active) + 1}: {active.label.replace('\n', ' ')}
+              {t.stage} {STAGES.indexOf(active) + 1}: {active.label.replace('\n', ' ')}
             </text>
 
-            <text x={50} y={220} fontSize={11} fontWeight={600} fill={COLORS.dark}>输入：</text>
+            <text x={50} y={220} fontSize={11} fontWeight={600} fill={COLORS.dark}>{t.inputs}</text>
             <text x={100} y={220} fontSize={11} fill={COLORS.mid}>{active.inputs}</text>
 
-            <text x={50} y={244} fontSize={11} fontWeight={600} fill={COLORS.dark}>输出：</text>
+            <text x={50} y={244} fontSize={11} fontWeight={600} fill={COLORS.dark}>{t.outputs}</text>
             <text x={100} y={244} fontSize={11} fill={COLORS.mid}>{active.outputs}</text>
 
             <text x={50} y={268} fontSize={11} fontWeight={600} fill={COLORS.dark}>Loss：</text>
@@ -121,13 +144,13 @@ export default function RLHFPipeline() {
           <g>
             <rect x={30} y={170} width={520} height={230} rx={8} fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth={1} />
             <text x={W / 2} y={250} textAnchor="middle" fontSize={13} fill={COLORS.mid}>
-              ← 点击上方阶段查看详情 →
+              {t.clickToView}
             </text>
             <text x={W / 2} y={280} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-              SFT: 学会遵循指令 → RM: 量化人类偏好 → PPO: 优化策略使 LLM 对齐
+              {t.summary}
             </text>
             <text x={W / 2} y={310} textAnchor="middle" fontSize={10} fill={COLORS.mid}>
-              这是 InstructGPT (2022) 和 ChatGPT 使用的核心训练流程
+              {t.context}
             </text>
           </g>
         )}

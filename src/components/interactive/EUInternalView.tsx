@@ -1,8 +1,45 @@
 import { useState } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
-export default function EUInternalView() {
+export default function EUInternalView({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [hoveredPart, setHoveredPart] = useState<string | null>(null);
+
+  const t = {
+    zh: {
+      title: 'EU (Execution Unit) 内部结构',
+      subtitle: '悬停查看各部件规格',
+      euLabel: 'Execution Unit (EU)',
+      vectorEngine: 'Vector Engine',
+      vectorSublabel: 'SIMD8 ALU',
+      vectorTooltip: 'FP32: 8 ops/cycle\nFP16: 16 ops/cycle\nINT32: 8 ops/cycle',
+      xmxEngine: 'XMX Engine',
+      xmxSublabel: 'Matrix Accelerator',
+      xmxTooltip: 'INT8: 128 ops/cycle\nBF16: 64 ops/cycle\nFP16: 64 ops/cycle',
+      grf: 'GRF',
+      grfSublabel: 'General Register File',
+      grfTooltip: '128 × 32B registers/thread\n4KB per thread\n32KB total per EU',
+      threads: 'Thread Slots',
+      threadsSublabel: '8 Concurrent Threads',
+      threadsTooltip: '8 hardware threads\nRapid context switching\nZero-overhead scheduling',
+    },
+    en: {
+      title: 'EU (Execution Unit) Internal Structure',
+      subtitle: 'Hover to view component specs',
+      euLabel: 'Execution Unit (EU)',
+      vectorEngine: 'Vector Engine',
+      vectorSublabel: 'SIMD8 ALU',
+      vectorTooltip: 'FP32: 8 ops/cycle\nFP16: 16 ops/cycle\nINT32: 8 ops/cycle',
+      xmxEngine: 'XMX Engine',
+      xmxSublabel: 'Matrix Accelerator',
+      xmxTooltip: 'INT8: 128 ops/cycle\nBF16: 64 ops/cycle\nFP16: 64 ops/cycle',
+      grf: 'GRF',
+      grfSublabel: 'General Register File',
+      grfTooltip: '128 × 32B registers/thread\n4KB per thread\n32KB total per EU',
+      threads: 'Thread Slots',
+      threadsSublabel: '8 Concurrent Threads',
+      threadsTooltip: '8 hardware threads\nRapid context switching\nZero-overhead scheduling',
+    },
+  }[locale];
 
   const W = 580;
   const H = 360;
@@ -14,9 +51,9 @@ export default function EUInternalView() {
       y: 60,
       width: 220,
       height: 100,
-      label: 'Vector Engine',
-      sublabel: 'SIMD8 ALU',
-      tooltip: 'FP32: 8 ops/cycle\nFP16: 16 ops/cycle\nINT32: 8 ops/cycle',
+      label: t.vectorEngine,
+      sublabel: t.vectorSublabel,
+      tooltip: t.vectorTooltip,
       color: COLORS.primary,
     },
     {
@@ -25,9 +62,9 @@ export default function EUInternalView() {
       y: 60,
       width: 220,
       height: 100,
-      label: 'XMX Engine',
-      sublabel: 'Matrix Accelerator',
-      tooltip: 'INT8: 128 ops/cycle\nBF16: 64 ops/cycle\nFP16: 64 ops/cycle',
+      label: t.xmxEngine,
+      sublabel: t.xmxSublabel,
+      tooltip: t.xmxTooltip,
       color: COLORS.orange,
     },
     {
@@ -36,9 +73,9 @@ export default function EUInternalView() {
       y: 190,
       width: 220,
       height: 100,
-      label: 'GRF',
-      sublabel: 'General Register File',
-      tooltip: '128 × 32B registers/thread\n4KB per thread\n32KB total per EU',
+      label: t.grf,
+      sublabel: t.grfSublabel,
+      tooltip: t.grfTooltip,
       color: COLORS.green,
     },
     {
@@ -47,9 +84,9 @@ export default function EUInternalView() {
       y: 190,
       width: 220,
       height: 100,
-      label: 'Thread Slots',
-      sublabel: '8 Concurrent Threads',
-      tooltip: '8 hardware threads\nRapid context switching\nZero-overhead scheduling',
+      label: t.threads,
+      sublabel: t.threadsSublabel,
+      tooltip: t.threadsTooltip,
       color: COLORS.purple,
     },
   ];
@@ -57,8 +94,8 @@ export default function EUInternalView() {
   return (
     <div className="my-6 p-4 border rounded-lg bg-white">
       <div className="mb-3">
-        <h3 className="text-lg font-semibold mb-2">EU (Execution Unit) 内部结构</h3>
-        <p className="text-sm text-gray-600">悬停查看各部件规格</p>
+        <h3 className="text-lg font-semibold mb-2">{t.title}</h3>
+        <p className="text-sm text-gray-600">{t.subtitle}</p>
       </div>
 
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
@@ -83,7 +120,7 @@ export default function EUInternalView() {
           fontWeight="bold"
           fontFamily={FONTS.sans}
         >
-          Execution Unit (EU)
+          {t.euLabel}
         </text>
 
         {/* Parts */}

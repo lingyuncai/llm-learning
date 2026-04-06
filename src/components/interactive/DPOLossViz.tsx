@@ -4,8 +4,27 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const H = 380;
 
-export default function DPOLossViz() {
+export default function DPOLossViz({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [beta, setBeta] = useState(0.1);
+
+  const t = {
+    zh: {
+      title: 'DPO Loss 函数可视化',
+      preferredLower: 'preferred 概率 < rejected',
+      preferredHigher: 'preferred 概率 > rejected',
+      gradientLabel: '梯度 → 推高 preferred',
+      formula: 'L_DPO = -log σ(β · margin)',
+      explanation: 'β 越大 → loss 曲线越陡 → 对偏好差异更敏感 | β 越小 → 更平缓 → 容忍更大偏差',
+    },
+    en: {
+      title: 'DPO Loss Function Visualization',
+      preferredLower: 'preferred prob < rejected',
+      preferredHigher: 'preferred prob > rejected',
+      gradientLabel: 'gradient → push up preferred',
+      formula: 'L_DPO = -log σ(β · margin)',
+      explanation: 'Higher β → steeper loss curve → more sensitive to preference gap | Lower β → smoother → tolerates larger deviation',
+    },
+  }[locale];
 
   const chartX = 60, chartY = 90, chartW = 460, chartH = 200;
   const xMin = -4, xMax = 4;
@@ -31,7 +50,7 @@ export default function DPOLossViz() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          DPO Loss 函数可视化
+          {t.title}
         </text>
 
         {/* Beta selector */}
@@ -62,10 +81,10 @@ export default function DPOLossViz() {
           fill={COLORS.green} opacity={0.04} />
 
         <text x={toChartX(-2)} y={chartY + 16} textAnchor="middle" fontSize={9} fill={COLORS.red}>
-          preferred 概率 {'<'} rejected
+          {t.preferredLower}
         </text>
         <text x={toChartX(2)} y={chartY + 16} textAnchor="middle" fontSize={9} fill={COLORS.green}>
-          preferred 概率 {'>'} rejected
+          {t.preferredHigher}
         </text>
 
         {/* Loss curve */}
@@ -75,7 +94,7 @@ export default function DPOLossViz() {
         <line x1={toChartX(-2)} y1={toChartY(dpoLoss(-2))} x2={toChartX(-1)} y2={toChartY(dpoLoss(-2))}
           stroke={COLORS.green} strokeWidth={2} markerEnd="url(#arrowDPO)" />
         <text x={toChartX(-1.5)} y={toChartY(dpoLoss(-2)) - 8} textAnchor="middle" fontSize={8} fill={COLORS.green}>
-          梯度 → 推高 preferred
+          {t.gradientLabel}
         </text>
 
         <defs>
@@ -94,10 +113,10 @@ export default function DPOLossViz() {
         {/* Explanation */}
         <rect x={40} y={H - 52} width={500} height={40} rx={6} fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth={1} />
         <text x={50} y={H - 34} fontSize={10} fontWeight={600} fill={COLORS.orange} fontFamily={FONTS.mono}>
-          L_DPO = -log σ(β · margin)
+          {t.formula}
         </text>
         <text x={50} y={H - 18} fontSize={10} fill={COLORS.mid}>
-          β 越大 → loss 曲线越陡 → 对偏好差异更敏感 | β 越小 → 更平缓 → 容忍更大偏差
+          {t.explanation}
         </text>
       </svg>
     </div>

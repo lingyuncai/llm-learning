@@ -5,6 +5,10 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const H = 420;
 
+interface GemmInTransformerProps {
+  locale?: 'zh' | 'en';
+}
+
 // A single box in the transformer flow
 function FlowBox({ x, y, w, h, label, sublabel, isGemm, color }: {
   x: number; y: number; w: number; h: number;
@@ -42,7 +46,28 @@ function Arrow({ x1, y1, x2, y2 }: { x1: number; y1: number; x2: number; y2: num
   );
 }
 
-export default function GemmInTransformer() {
+export default function GemmInTransformer({ locale = 'zh' }: GemmInTransformerProps) {
+  const t = {
+    zh: {
+      title: 'Transformer Block 中的 GEMM 操作',
+      subtitle: '蓝色标注 = 矩阵乘法 (占计算量 90%+)。S = seq_len, H = hidden_dim',
+      input: 'Input Embedding (S×H)',
+      multiHeadAttention: 'Multi-Head Attention',
+      addLayerNorm: 'Add & LayerNorm',
+      ffn: 'Feed-Forward Network',
+      summary: '每个 Transformer 层包含 6 个 GEMM — 它们决定了推理和训练的计算时间',
+    },
+    en: {
+      title: 'GEMM Operations in Transformer Block',
+      subtitle: 'Blue highlight = matrix multiplication (90%+ of compute). S = seq_len, H = hidden_dim',
+      input: 'Input Embedding (S×H)',
+      multiHeadAttention: 'Multi-Head Attention',
+      addLayerNorm: 'Add & LayerNorm',
+      ffn: 'Feed-Forward Network',
+      summary: 'Each Transformer layer contains 6 GEMMs — they determine inference and training time',
+    },
+  }[locale];
+
   // Layout: vertical flow of a single Transformer decoder layer
   const colX = W / 2;
   const boxW = 180;
@@ -70,23 +95,23 @@ export default function GemmInTransformer() {
 
       <text x={W / 2} y={18} textAnchor="middle" fontSize="13" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Transformer Block 中的 GEMM 操作
+        {t.title}
       </text>
       <text x={W / 2} y={34} textAnchor="middle" fontSize="9" fill="#64748b"
         fontFamily={FONTS.sans}>
-        蓝色标注 = 矩阵乘法 (占计算量 90%+)。S = seq_len, H = hidden_dim
+        {t.subtitle}
       </text>
 
       {/* Input */}
       <FlowBox x={colX - boxW / 2} y={44} w={boxW} h={24}
-        label="Input Embedding (S×H)" isGemm={false} color="" />
+        label={t.input} isGemm={false} color="" />
       <Arrow x1={colX} y1={68} x2={colX} y2={78} />
 
       {/* Multi-Head Attention block */}
       <rect x={60} y={78} width={460} height={138} rx={6}
         fill="none" stroke="#cbd5e1" strokeWidth={1} strokeDasharray="4 2" />
       <text x={70} y={92} fontSize="8" fontWeight="600" fill="#64748b"
-        fontFamily={FONTS.sans}>Multi-Head Attention</text>
+        fontFamily={FONTS.sans}>{t.multiHeadAttention}</text>
 
       {/* QKV */}
       <FlowBox x={colX - gemmW / 2} y={98} w={gemmW} h={28}
@@ -110,14 +135,14 @@ export default function GemmInTransformer() {
       {/* Add & Norm */}
       <Arrow x1={colX} y1={206} x2={colX} y2={222} />
       <FlowBox x={colX - boxW / 2} y={222} w={boxW} h={22}
-        label="Add & LayerNorm" isGemm={false} color="" />
+        label={t.addLayerNorm} isGemm={false} color="" />
       <Arrow x1={colX} y1={244} x2={colX} y2={254} />
 
       {/* FFN block */}
       <rect x={60} y={254} width={460} height={88} rx={6}
         fill="none" stroke="#cbd5e1" strokeWidth={1} strokeDasharray="4 2" />
       <text x={70} y={268} fontSize="8" fontWeight="600" fill="#64748b"
-        fontFamily={FONTS.sans}>Feed-Forward Network</text>
+        fontFamily={FONTS.sans}>{t.ffn}</text>
 
       <FlowBox x={colX - gemmW - 10} y={274} w={gemmW} h={28}
         label={gemms[4].label} sublabel={gemms[4].dim} isGemm={true} color={gemms[4].color} />
@@ -128,14 +153,14 @@ export default function GemmInTransformer() {
       {/* Add & Norm */}
       <Arrow x1={colX} y1={302} x2={colX} y2={348} />
       <FlowBox x={colX - boxW / 2} y={348} w={boxW} h={22}
-        label="Add & LayerNorm" isGemm={false} color="" />
+        label={t.addLayerNorm} isGemm={false} color="" />
 
       {/* Summary */}
       <rect x={40} y={H - 38} width={500} height={30} rx={5}
         fill="#dbeafe" stroke={COLORS.primary} strokeWidth={1} />
       <text x={W / 2} y={H - 20} textAnchor="middle" fontSize="9" fontWeight="600"
         fill={COLORS.primary} fontFamily={FONTS.sans}>
-        每个 Transformer 层包含 6 个 GEMM — 它们决定了推理和训练的计算时间
+        {t.summary}
       </text>
     </svg>
   );

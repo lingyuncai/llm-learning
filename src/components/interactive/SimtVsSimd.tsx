@@ -2,15 +2,71 @@ import React from 'react';
 import StepNavigator from '../primitives/StepNavigator';
 import { COLORS, FONTS } from './shared/colors';
 
-const SimtVsSimd: React.FC = () => {
+const SimtVsSimd: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      title1: 'SIMT 模型 (CUDA)',
+      subtitle1: 'SIMT: 32 个独立线程 (Warp)，每个线程有自己的 PC',
+      desc1: '每个线程维护独立的程序计数器，硬件在运行时锁步执行',
+      title2: 'SIMD 模型 (Xe2)',
+      subtitle2: 'SIMD: 编译器向量化，一条指令操作多个数据通道',
+      simdLanes: 'SIMD8/16 数据通道',
+      desc2a: '编译器将标量代码向量化为 SIMD 指令',
+      desc2b: '一个 EU 同时处理多个数据元素 (SIMD8/16/32)',
+      title3: '分支处理差异',
+      subtitle3a: 'SIMT (运行时掩码)',
+      subtitle3b: 'SIMD (编译时 Predication)',
+      branchDesc1: '活跃线程执行，其他线程被掩码',
+      branchDesc2: '分支另一侧，掩码反转',
+      branchDesc3: '编译器生成 predicated 指令',
+      branchDesc4: '所有通道执行，结果由 predicate 控制',
+      title4: '对编程的影响',
+      subtitle4: '编程模型对比',
+      headerSimt: 'SIMT (CUDA)',
+      headerSimd: 'SIMD (Xe2)',
+      row1a: '"Think in threads" — 每个线程一个任务',
+      row2a: '显式线程索引 (threadIdx, blockIdx)',
+      row3a: '分支分化由硬件处理 (自动掩码)',
+      row1b: '"Think in vectors" — 向量化思维',
+      row2b: '抽象线程索引 (work-item, sub-group)',
+      row3b: '编译器优化分支 (predication, 循环展开)',
+    },
+    en: {
+      title1: 'SIMT Model (CUDA)',
+      subtitle1: 'SIMT: 32 independent threads (Warp), each with its own PC',
+      desc1: 'Each thread maintains independent program counter, hardware executes in lockstep at runtime',
+      title2: 'SIMD Model (Xe2)',
+      subtitle2: 'SIMD: Compiler vectorization, one instruction operates on multiple data lanes',
+      simdLanes: 'SIMD8/16 Data Lanes',
+      desc2a: 'Compiler vectorizes scalar code to SIMD instructions',
+      desc2b: 'One EU processes multiple data elements simultaneously (SIMD8/16/32)',
+      title3: 'Branch Handling Differences',
+      subtitle3a: 'SIMT (Runtime Masking)',
+      subtitle3b: 'SIMD (Compile-time Predication)',
+      branchDesc1: 'Active threads execute, others masked',
+      branchDesc2: 'Other branch side, mask inverted',
+      branchDesc3: 'Compiler generates predicated instructions',
+      branchDesc4: 'All lanes execute, results controlled by predicate',
+      title4: 'Programming Impact',
+      subtitle4: 'Programming Model Comparison',
+      headerSimt: 'SIMT (CUDA)',
+      headerSimd: 'SIMD (Xe2)',
+      row1a: '"Think in threads" — one task per thread',
+      row2a: 'Explicit thread indices (threadIdx, blockIdx)',
+      row3a: 'Branch divergence handled by hardware (auto masking)',
+      row1b: '"Think in vectors" — vectorization mindset',
+      row2b: 'Abstract thread indices (work-item, sub-group)',
+      row3b: 'Compiler optimizes branches (predication, loop unrolling)',
+    },
+  }[locale];
   const steps = [
     {
-      title: 'SIMT 模型 (CUDA)',
+      title: t.title1,
       content: (
         <div className="my-6 p-4 border rounded-lg">
           <svg viewBox="0 0 580 160" className="w-full">
             <text x="290" y="25" textAnchor="middle" fontSize="14" fontWeight="bold" fill={COLORS.dark}>
-              SIMT: 32 个独立线程 (Warp)，每个线程有自己的 PC
+              {t.subtitle1}
             </text>
 
             {/* 32 threads in a 4x8 grid */}
@@ -43,19 +99,19 @@ const SimtVsSimd: React.FC = () => {
             })}
 
             <text x="290" y="155" textAnchor="middle" fontSize="12" fill={COLORS.mid}>
-              每个线程维护独立的程序计数器，硬件在运行时锁步执行
+              {t.desc1}
             </text>
           </svg>
         </div>
       ),
     },
     {
-      title: 'SIMD 模型 (Xe2)',
+      title: t.title2,
       content: (
         <div className="my-6 p-4 border rounded-lg">
           <svg viewBox="0 0 580 160" className="w-full">
             <text x="290" y="25" textAnchor="middle" fontSize="14" fontWeight="bold" fill={COLORS.dark}>
-              SIMD: 编译器向量化，一条指令操作多个数据通道
+              {t.subtitle2}
             </text>
 
             {/* Single instruction box */}
@@ -98,7 +154,7 @@ const SimtVsSimd: React.FC = () => {
 
             {/* SIMD lanes */}
             <text x="430" y="45" textAnchor="middle" fontSize="11" fontWeight="bold" fill={COLORS.dark}>
-              SIMD8/16 数据通道
+              {t.simdLanes}
             </text>
             {Array.from({ length: 8 }, (_, i) => {
               const x = 340 + i * 45;
@@ -122,25 +178,25 @@ const SimtVsSimd: React.FC = () => {
             })}
 
             <text x="290" y="135" textAnchor="middle" fontSize="12" fill={COLORS.mid}>
-              编译器将标量代码向量化为 SIMD 指令
+              {t.desc2a}
             </text>
             <text x="290" y="155" textAnchor="middle" fontSize="11" fill={COLORS.mid}>
-              一个 EU 同时处理多个数据元素 (SIMD8/16/32)
+              {t.desc2b}
             </text>
           </svg>
         </div>
       ),
     },
     {
-      title: '分支处理差异',
+      title: t.title3,
       content: (
         <div className="my-6 p-4 border rounded-lg">
           <svg viewBox="0 0 580 160" className="w-full">
             <text x="145" y="25" textAnchor="middle" fontSize="13" fontWeight="bold" fill={COLORS.dark}>
-              SIMT (运行时掩码)
+              {t.subtitle3a}
             </text>
             <text x="435" y="25" textAnchor="middle" fontSize="13" fontWeight="bold" fill={COLORS.dark}>
-              SIMD (编译时 Predication)
+              {t.subtitle3b}
             </text>
 
             {/* SIMT branch */}
@@ -166,7 +222,7 @@ const SimtVsSimd: React.FC = () => {
               );
             })}
             <text x="145" y="105" textAnchor="middle" fontSize="10" fill={COLORS.mid}>
-              活跃线程执行，其他线程被掩码
+              {t.branchDesc1}
             </text>
 
             {/* Inactive threads (odd) */}
@@ -187,12 +243,12 @@ const SimtVsSimd: React.FC = () => {
               );
             })}
             <text x="145" y="155" textAnchor="middle" fontSize="10" fill={COLORS.mid}>
-              分支另一侧，掩码反转
+              {t.branchDesc2}
             </text>
 
             {/* SIMD predication */}
             <text x="435" y="50" textAnchor="middle" fontSize="10" fontFamily={FONTS.mono} fill={COLORS.mid}>
-              编译器生成 predicated 指令
+              {t.branchDesc3}
             </text>
 
             <rect
@@ -227,61 +283,61 @@ const SimtVsSimd: React.FC = () => {
             </text>
 
             <text x="435" y="155" textAnchor="middle" fontSize="10" fill={COLORS.mid}>
-              所有通道执行，结果由 predicate 控制
+              {t.branchDesc4}
             </text>
           </svg>
         </div>
       ),
     },
     {
-      title: '对编程的影响',
+      title: t.title4,
       content: (
         <div className="my-6 p-4 border rounded-lg">
           <svg viewBox="0 0 580 160" className="w-full">
             <text x="290" y="25" textAnchor="middle" fontSize="14" fontWeight="bold" fill={COLORS.dark}>
-              编程模型对比
+              {t.subtitle4}
             </text>
 
             {/* SIMT column */}
             <rect x="40" y="45" width="240" height="30" fill={COLORS.primary} fillOpacity="0.2" stroke={COLORS.primary} strokeWidth="1.5" />
             <text x="160" y="65" textAnchor="middle" fontSize="12" fontWeight="bold" fill={COLORS.dark}>
-              SIMT (CUDA)
+              {t.headerSimt}
             </text>
 
             <rect x="40" y="75" width="240" height="25" fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
             <text x="50" y="92" fontSize="10" fill={COLORS.dark}>
-              "Think in threads" — 每个线程一个任务
+              {t.row1a}
             </text>
 
             <rect x="40" y="100" width="240" height="25" fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
             <text x="50" y="117" fontSize="10" fill={COLORS.dark}>
-              显式线程索引 (threadIdx, blockIdx)
+              {t.row2a}
             </text>
 
             <rect x="40" y="125" width="240" height="25" fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
             <text x="50" y="142" fontSize="10" fill={COLORS.dark}>
-              分支分化由硬件处理 (自动掩码)
+              {t.row3a}
             </text>
 
             {/* SIMD column */}
             <rect x="300" y="45" width="240" height="30" fill={COLORS.green} fillOpacity="0.2" stroke={COLORS.green} strokeWidth="1.5" />
             <text x="420" y="65" textAnchor="middle" fontSize="12" fontWeight="bold" fill={COLORS.dark}>
-              SIMD (Xe2)
+              {t.headerSimd}
             </text>
 
             <rect x="300" y="75" width="240" height="25" fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
             <text x="310" y="92" fontSize="10" fill={COLORS.dark}>
-              "Think in vectors" — 向量化思维
+              {t.row1b}
             </text>
 
             <rect x="300" y="100" width="240" height="25" fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
             <text x="310" y="117" fontSize="10" fill={COLORS.dark}>
-              抽象线程索引 (work-item, sub-group)
+              {t.row2b}
             </text>
 
             <rect x="300" y="125" width="240" height="25" fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
             <text x="310" y="142" fontSize="10" fill={COLORS.dark}>
-              编译器优化分支 (predication, 循环展开)
+              {t.row3b}
             </text>
           </svg>
         </div>

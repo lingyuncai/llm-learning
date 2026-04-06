@@ -3,7 +3,30 @@ import { COLORS, FONTS } from './shared/colors';
 
 type Format = 'nchw' | 'nchw16c' | 'nchw32c';
 
-const MemoryFormatViz: React.FC = () => {
+const MemoryFormatViz: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      title: 'Memory Format 可视化',
+      nchwDesc: '标准布局：通道按顺序排列，每个通道存储完整的 H×W 特征图。适合通道间操作，但向量化效率低。',
+      nchw16cDesc: 'Blocked 布局：16 个通道打包为一组，H×W 位置的 16 通道连续存储。SIMD16 友好，EU 执行单元可一次加载向量。',
+      nchw32cDesc: 'Blocked 布局：32 个通道打包为一组，最适合 XMX (Xe Matrix Extensions) 和 SIMD32。内存访问与计算单元完美对齐。',
+      nchw32cLabel: 'C0-C31 (全部 32 个通道打包)',
+      shapeLabel: 'Shape',
+      calloutTitle: '💡 Blocked format 让连续地址对应 SIMD lanes',
+      calloutDesc: '向量化效率最高：一次内存访问加载完整的 SIMD 向量，无需 gather/scatter',
+    },
+    en: {
+      title: 'Memory Format Visualization',
+      nchwDesc: 'Standard layout: channels in sequential order, each channel stores complete H×W feature map. Good for cross-channel ops, but low vectorization efficiency.',
+      nchw16cDesc: 'Blocked layout: 16 channels packed as a group, 16 channels at H×W location stored contiguously. SIMD16 friendly, EU can load vector in one access.',
+      nchw32cDesc: 'Blocked layout: 32 channels packed as a group, optimal for XMX (Xe Matrix Extensions) and SIMD32. Memory access perfectly aligned with compute units.',
+      nchw32cLabel: 'C0-C31 (all 32 channels packed)',
+      shapeLabel: 'Shape',
+      calloutTitle: '💡 Blocked format maps contiguous addresses to SIMD lanes',
+      calloutDesc: 'Highest vectorization efficiency: single memory access loads full SIMD vector, no gather/scatter',
+    },
+  }[locale];
+
   const [format, setFormat] = useState<Format>('nchw');
 
   // Tensor: N=1, C=32, H=4, W=4
@@ -151,7 +174,7 @@ const MemoryFormatViz: React.FC = () => {
 
     cells.push(
       <text key="label" x={290} y={30} fontSize="11" fontWeight="600" fill={COLORS.primary} textAnchor="middle">
-        C0-C31 (全部 32 个通道打包)
+        {t.nchw32cLabel}
       </text>
     );
 
@@ -161,17 +184,17 @@ const MemoryFormatViz: React.FC = () => {
   const getDescription = () => {
     switch (format) {
       case 'nchw':
-        return '标准布局：通道按顺序排列，每个通道存储完整的 H×W 特征图。适合通道间操作，但向量化效率低。';
+        return t.nchwDesc;
       case 'nchw16c':
-        return 'Blocked 布局：16 个通道打包为一组，H×W 位置的 16 通道连续存储。SIMD16 友好，EU 执行单元可一次加载向量。';
+        return t.nchw16cDesc;
       case 'nchw32c':
-        return 'Blocked 布局：32 个通道打包为一组，最适合 XMX (Xe Matrix Extensions) 和 SIMD32。内存访问与计算单元完美对齐。';
+        return t.nchw32cDesc;
     }
   };
 
   return (
     <div className="my-6 p-4 border rounded-lg bg-white">
-      <h3 className="text-lg font-semibold mb-3 text-gray-800">Memory Format 可视化</h3>
+      <h3 className="text-lg font-semibold mb-3 text-gray-800">{t.title}</h3>
 
       {/* Format selector */}
       <div className="flex gap-2 mb-4">
@@ -215,7 +238,7 @@ const MemoryFormatViz: React.FC = () => {
       {/* Tensor info */}
       <div className="mb-3 text-sm text-gray-600">
         <span className="font-mono bg-gray-100 px-2 py-1 rounded">
-          Shape: [N={N}, C={C}, H={H}, W={W}]
+          {t.shapeLabel}: [N={N}, C={C}, H={H}, W={W}]
         </span>
       </div>
 
@@ -228,10 +251,10 @@ const MemoryFormatViz: React.FC = () => {
         {/* Callout */}
         <rect x="10" y="320" width="560" height="50" rx="6" fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth="1.5" />
         <text x="290" y="340" fontSize="11" fontWeight="600" textAnchor="middle" fill={COLORS.dark}>
-          💡 Blocked format 让连续地址对应 SIMD lanes
+          {t.calloutTitle}
         </text>
         <text x="290" y="357" fontSize="10" textAnchor="middle" fill={COLORS.mid}>
-          向量化效率最高：一次内存访问加载完整的 SIMD 向量，无需 gather/scatter
+          {t.calloutDesc}
         </text>
       </svg>
     </div>

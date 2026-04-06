@@ -26,26 +26,57 @@ function FlowBox({ x, y, w, h, label, sub, fill, stroke }: {
   );
 }
 
-export default function MLADataFlow() {
+export default function MLADataFlow({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'MLA: Multi-Latent Attention 数据流',
+      subtitle: '只缓存低维 c_KV（如 512 维），推理时解压为完整 K、V',
+      hiddenState: 'Hidden\nState h',
+      compress: 'Compress\nW_DKV',
+      cache: 'Cache\nc_KV',
+      cacheNote: '(小!)',
+      toK: 'W_UK → K',
+      toV: 'W_UV → V',
+      attention: 'Attention\nOutput',
+      cachePoint: '缓存点 — 大幅节省显存',
+      optimization: '推理优化：W_UK 可吸收进 W_Q，避免显式解压 K — 进一步减少计算',
+      adopters: '采用者：DeepSeek-V2, DeepSeek-V3, DeepSeek-R1',
+    },
+    en: {
+      title: 'MLA: Multi-Latent Attention Data Flow',
+      subtitle: 'Cache only low-dim c_KV (e.g. 512-dim), decompress to full K, V at inference',
+      hiddenState: 'Hidden\nState h',
+      compress: 'Compress\nW_DKV',
+      cache: 'Cache\nc_KV',
+      cacheNote: '(small!)',
+      toK: 'W_UK → K',
+      toV: 'W_UV → V',
+      attention: 'Attention\nOutput',
+      cachePoint: 'Cache point — significant memory savings',
+      optimization: 'Inference optimization: W_UK can be absorbed into W_Q, avoiding explicit K decompression — further reduces computation',
+      adopters: 'Adopters: DeepSeek-V2, DeepSeek-V3, DeepSeek-R1',
+    },
+  }[locale];
+
   const boxes = [
-    { x: 10, y: 60, w: 90, h: 50, label: 'Hidden\nState h', sub: 'd_model', fill: '#dbeafe', stroke: COLORS.primary },
-    { x: 120, y: 60, w: 90, h: 50, label: 'Compress\nW_DKV', sub: 'd → d_c', fill: '#fef3c7', stroke: COLORS.orange },
-    { x: 230, y: 55, w: 90, h: 60, label: 'Cache\nc_KV', sub: 'd_c (小!)', fill: '#dcfce7', stroke: COLORS.green },
-    { x: 340, y: 40, w: 90, h: 40, label: 'W_UK → K', sub: 'd_c → d_k', fill: '#fef3c7', stroke: COLORS.orange },
-    { x: 340, y: 90, w: 90, h: 40, label: 'W_UV → V', sub: 'd_c → d_v', fill: '#fef3c7', stroke: COLORS.orange },
-    { x: 470, y: 60, w: 90, h: 50, label: 'Attention\nOutput', sub: '', fill: '#dbeafe', stroke: COLORS.primary },
+    { x: 10, y: 60, w: 90, h: 50, label: t.hiddenState, sub: 'd_model', fill: '#dbeafe', stroke: COLORS.primary },
+    { x: 120, y: 60, w: 90, h: 50, label: t.compress, sub: 'd → d_c', fill: '#fef3c7', stroke: COLORS.orange },
+    { x: 230, y: 55, w: 90, h: 60, label: t.cache, sub: `d_c ${t.cacheNote}`, fill: '#dcfce7', stroke: COLORS.green },
+    { x: 340, y: 40, w: 90, h: 40, label: t.toK, sub: 'd_c → d_k', fill: '#fef3c7', stroke: COLORS.orange },
+    { x: 340, y: 90, w: 90, h: 40, label: t.toV, sub: 'd_c → d_v', fill: '#fef3c7', stroke: COLORS.orange },
+    { x: 470, y: 60, w: 90, h: 50, label: t.attention, sub: '', fill: '#dbeafe', stroke: COLORS.primary },
   ];
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full my-6">
       <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        MLA: Multi-Latent Attention 数据流
+        {t.title}
       </text>
 
       <text x={W / 2} y={36} textAnchor="middle" fontSize="8" fill={COLORS.mid}
         fontFamily={FONTS.sans}>
-        只缓存低维 c_KV（如 512 维），推理时解压为完整 K、V
+        {t.subtitle}
       </text>
 
       {boxes.map((b, i) => (
@@ -84,18 +115,18 @@ export default function MLADataFlow() {
         fill={COLORS.green} opacity={0.12} stroke={COLORS.green} strokeWidth={1} strokeDasharray="3,2" />
       <text x={276} y={140} textAnchor="middle" fontSize="7" fontWeight="600"
         fill={COLORS.green} fontFamily={FONTS.sans}>
-        缓存点 — 大幅节省显存
+        {t.cachePoint}
       </text>
 
       {/* Bottom note */}
       <text x={W / 2} y={175} textAnchor="middle" fontSize="8" fill={COLORS.mid}
         fontFamily={FONTS.sans}>
-        推理优化：W_UK 可吸收进 W_Q，避免显式解压 K — 进一步减少计算
+        {t.optimization}
       </text>
 
       <text x={W / 2} y={192} textAnchor="middle" fontSize="8" fontWeight="600"
         fill={COLORS.green} fontFamily={FONTS.sans}>
-        采用者：DeepSeek-V2, DeepSeek-V3, DeepSeek-R1
+        {t.adopters}
       </text>
     </svg>
   );

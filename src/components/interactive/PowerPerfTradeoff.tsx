@@ -10,29 +10,58 @@ interface DataPoint {
   color: string;
 }
 
-const PowerPerfTradeoff: React.FC = () => {
+const PowerPerfTradeoff: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      title: '功耗-性能权衡曲线',
+      throughput: '吞吐量 (infer/s)',
+      power: '功耗 (Watts)',
+      pureNPU: '纯 NPU',
+      hybrid: 'GPU+NPU 混合',
+      pureGPU: '纯 GPU',
+      infoLine1: '💡 续航优先场景 → 纯 NPU；插电高性能场景 → GPU 或混合',
+      infoLine2: '混合方案在多数场景下提供最佳能效比 (吞吐/瓦特)',
+      smallModel: '小模型 (7B)',
+      mediumModel: '中模型 (13B)',
+      largeModel: '大模型 (70B)',
+    },
+    en: {
+      title: 'Power-Performance Tradeoff Curve',
+      throughput: 'Throughput (infer/s)',
+      power: 'Power (Watts)',
+      pureNPU: 'Pure NPU',
+      hybrid: 'GPU+NPU Hybrid',
+      pureGPU: 'Pure GPU',
+      infoLine1: '💡 Battery-first → Pure NPU; Plugged-in high-perf → GPU or Hybrid',
+      infoLine2: 'Hybrid offers best efficiency (throughput/watt) in most scenarios',
+      smallModel: 'Small (7B)',
+      mediumModel: 'Medium (13B)',
+      largeModel: 'Large (70B)',
+    },
+  }[locale];
+
   const [modelSize, setModelSize] = useState<ModelSize>('medium');
 
   const dataPoints = useMemo(() => {
     const configs: Record<ModelSize, DataPoint[]> = {
       small: [
-        { label: '纯 NPU', power: 5, throughput: 45, color: COLORS.primary },
-        { label: 'GPU+NPU 混合', power: 12, throughput: 60, color: COLORS.orange },
-        { label: '纯 GPU', power: 18, throughput: 70, color: COLORS.green },
+        { label: t.pureNPU, power: 5, throughput: 45, color: COLORS.primary },
+        { label: t.hybrid, power: 12, throughput: 60, color: COLORS.orange },
+        { label: t.pureGPU, power: 18, throughput: 70, color: COLORS.green },
       ],
       medium: [
-        { label: '纯 NPU', power: 8, throughput: 28, color: COLORS.primary },
-        { label: 'GPU+NPU 混合', power: 20, throughput: 55, color: COLORS.orange },
-        { label: '纯 GPU', power: 30, throughput: 75, color: COLORS.green },
+        { label: t.pureNPU, power: 8, throughput: 28, color: COLORS.primary },
+        { label: t.hybrid, power: 20, throughput: 55, color: COLORS.orange },
+        { label: t.pureGPU, power: 30, throughput: 75, color: COLORS.green },
       ],
       large: [
-        { label: '纯 NPU', power: 12, throughput: 15, color: COLORS.primary },
-        { label: 'GPU+NPU 混合', power: 35, throughput: 45, color: COLORS.orange },
-        { label: '纯 GPU', power: 50, throughput: 80, color: COLORS.green },
+        { label: t.pureNPU, power: 12, throughput: 15, color: COLORS.primary },
+        { label: t.hybrid, power: 35, throughput: 45, color: COLORS.orange },
+        { label: t.pureGPU, power: 50, throughput: 80, color: COLORS.green },
       ],
     };
     return configs[modelSize];
-  }, [modelSize]);
+  }, [modelSize, t]);
 
   // Scale for axes
   const maxPower = 60;
@@ -54,7 +83,7 @@ const PowerPerfTradeoff: React.FC = () => {
       <svg viewBox="0 0 580 360" className="w-full">
         {/* Title */}
         <text x="290" y="20" textAnchor="middle" fontSize="14" fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          功耗-性能权衡曲线
+          {t.title}
         </text>
 
         {/* Y axis */}
@@ -75,7 +104,7 @@ const PowerPerfTradeoff: React.FC = () => {
           fill={COLORS.dark}
           fontFamily={FONTS.sans}
         >
-          吞吐量 (infer/s)
+          {t.throughput}
         </text>
 
         {/* Y axis ticks */}
@@ -128,7 +157,7 @@ const PowerPerfTradeoff: React.FC = () => {
           fill={COLORS.dark}
           fontFamily={FONTS.sans}
         >
-          功耗 (Watts)
+          {t.power}
         </text>
 
         {/* X axis ticks */}
@@ -206,10 +235,10 @@ const PowerPerfTradeoff: React.FC = () => {
         <g transform="translate(60, 305)">
           <rect x="0" y="0" width="400" height="40" fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1" rx="4" />
           <text x="200" y="16" textAnchor="middle" fontSize="11" fill={COLORS.dark} fontFamily={FONTS.sans}>
-            💡 续航优先场景 → 纯 NPU；插电高性能场景 → GPU 或混合
+            {t.infoLine1}
           </text>
           <text x="200" y="32" textAnchor="middle" fontSize="10" fill={COLORS.mid} fontFamily={FONTS.sans}>
-            混合方案在多数场景下提供最佳能效比 (吞吐/瓦特)
+            {t.infoLine2}
           </text>
         </g>
       </svg>
@@ -224,7 +253,7 @@ const PowerPerfTradeoff: React.FC = () => {
               : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
           }`}
         >
-          小模型 (7B)
+          {t.smallModel}
         </button>
         <button
           onClick={() => setModelSize('medium')}
@@ -234,7 +263,7 @@ const PowerPerfTradeoff: React.FC = () => {
               : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
           }`}
         >
-          中模型 (13B)
+          {t.mediumModel}
         </button>
         <button
           onClick={() => setModelSize('large')}
@@ -244,7 +273,7 @@ const PowerPerfTradeoff: React.FC = () => {
               : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
           }`}
         >
-          大模型 (70B)
+          {t.largeModel}
         </button>
       </div>
     </div>

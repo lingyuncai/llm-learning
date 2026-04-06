@@ -38,7 +38,7 @@ function MiniHeatmap({ data, color, label, size = 60 }: {
   );
 }
 
-export default function UptrainingPooling() {
+export default function UptrainingPooling({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const allWeights = useMemo(() =>
     Array.from({ length: h }, (_, i) => genWeights(42 + i * 17)), []);
 
@@ -56,13 +56,44 @@ export default function UptrainingPooling() {
       );
     }), [allWeights]);
 
+  const t = {
+    zh: {
+      step1Title: `Step 1: ${h} 个 KV Head 权重矩阵`,
+      step1P: `原始 MHA 模型有 ${h} 个独立的 KV head，每个都有自己的权重矩阵。`,
+      step2Title: `Step 2: 分组 (g=${g}，每组 ${headsPerGroup} 个)`,
+      step2P: `将 ${h} 个 head 分为 ${g} 组，每组 ${headsPerGroup} 个 head。`,
+      group: '组',
+      step3Title: 'Step 3: 均值池化',
+      step3P: `组内取均值：${headsPerGroup} 个权重矩阵 → 1 个权重矩阵。${h} 个 head → ${g} 个 head。`,
+      step4Title: 'Step 4: Uptraining',
+      step4P: '用少量数据（约原训练量的 5%）微调，恢复因池化带来的质量损失。',
+      fineTuned: '✓ 微调完成',
+      result: '结果：',
+      resultText: `从 ${h} 个 KV head 缩减到 ${g} 个，KV Cache 缩小 ${h / g}×，质量接近原始 MHA。`,
+    },
+    en: {
+      step1Title: `Step 1: ${h} KV Head Weight Matrices`,
+      step1P: `Original MHA model has ${h} independent KV heads, each with its own weight matrix.`,
+      step2Title: `Step 2: Grouping (g=${g}, ${headsPerGroup} per group)`,
+      step2P: `Divide ${h} heads into ${g} groups, ${headsPerGroup} heads per group.`,
+      group: 'Group',
+      step3Title: 'Step 3: Mean Pooling',
+      step3P: `Average within group: ${headsPerGroup} weight matrices → 1 weight matrix. ${h} heads → ${g} heads.`,
+      step4Title: 'Step 4: Uptraining',
+      step4P: 'Fine-tune with small amount of data (~5% of original training) to recover quality loss from pooling.',
+      fineTuned: '✓ Fine-tuned',
+      result: 'Result:',
+      resultText: `Reduced from ${h} KV heads to ${g}, KV Cache shrinks ${h / g}×, quality close to original MHA.`,
+    },
+  }[locale];
+
   const steps = [
     {
-      title: `Step 1: ${h} 个 KV Head 权重矩阵`,
+      title: t.step1Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            原始 MHA 模型有 {h} 个独立的 KV head，每个都有自己的权重矩阵。
+            {t.step1P}
           </p>
           <div className="flex flex-wrap justify-center gap-2">
             {allWeights.map((w, i) => (
@@ -73,17 +104,17 @@ export default function UptrainingPooling() {
       ),
     },
     {
-      title: `Step 2: 分组 (g=${g}，每组 ${headsPerGroup} 个)`,
+      title: t.step2Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            将 {h} 个 head 分为 {g} 组，每组 {headsPerGroup} 个 head。
+            {t.step2P}
           </p>
           <div className="flex flex-wrap justify-center gap-6">
             {Array.from({ length: g }, (_, gi) => (
               <div key={gi} className="p-2 border-2 rounded-lg" style={{ borderColor: HEAD_COLORS[gi] }}>
                 <div className="text-xs font-semibold mb-1 text-center" style={{ color: HEAD_COLORS[gi] }}>
-                  组 {gi + 1}
+                  {t.group} {gi + 1}
                 </div>
                 <div className="flex gap-1">
                   {Array.from({ length: headsPerGroup }, (_, hi) => {
@@ -99,11 +130,11 @@ export default function UptrainingPooling() {
       ),
     },
     {
-      title: 'Step 3: 均值池化',
+      title: t.step3Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            组内取均值：{headsPerGroup} 个权重矩阵 → 1 个权重矩阵。{h} 个 head → {g} 个 head。
+            {t.step3P}
           </p>
           <div className="flex justify-center gap-8">
             {pooled.map((w, gi) => (
@@ -114,28 +145,27 @@ export default function UptrainingPooling() {
       ),
     },
     {
-      title: 'Step 4: Uptraining',
+      title: t.step4Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            用少量数据（约原训练量的 5%）微调，恢复因池化带来的质量损失。
+            {t.step4P}
           </p>
           <div className="flex justify-center gap-8">
             {pooled.map((w, gi) => (
               <div key={gi} className="flex flex-col items-center">
                 <MiniHeatmap data={w} color={HEAD_COLORS[gi]} label={`GQA KV${gi + 1}`} size={80} />
-                <span className="text-[9px] text-green-600 mt-1 font-semibold">✓ 微调完成</span>
+                <span className="text-[9px] text-green-600 mt-1 font-semibold">{t.fineTuned}</span>
               </div>
             ))}
           </div>
           <div className="mt-3 p-2 bg-green-50 rounded text-xs text-green-800">
-            <strong>结果：</strong>从 {h} 个 KV head 缩减到 {g} 个，
-            KV Cache 缩小 {h / g}×，质量接近原始 MHA。
+            <strong>{t.result}</strong>{t.resultText}
           </div>
         </div>
       ),
     },
   ];
 
-  return <StepNavigator steps={steps} />;
+  return <StepNavigator steps={steps} locale={locale} />;
 }

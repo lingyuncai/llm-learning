@@ -32,8 +32,31 @@ function entropy(probs: number[]): number {
   }, 0);
 }
 
-export default function TemperatureDistribution() {
+export default function TemperatureDistribution({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [temp, setTemp] = useState(1.0);
+
+  const t = {
+    zh: {
+      temperature: 'Temperature',
+      standard: '标准',
+      greedy: 'Greedy',
+      uniform: '均匀',
+      entropy: 'Entropy (H)',
+      perplexity: 'Perplexity (2ᴴ)',
+      greedyChoice: 'Greedy 选择',
+      trend: 'T < 1 → 分布更尖锐（确定性高）；T > 1 → 分布更平坦（多样性高）',
+    },
+    en: {
+      temperature: 'Temperature',
+      standard: 'Standard',
+      greedy: 'Greedy',
+      uniform: 'Uniform',
+      entropy: 'Entropy (H)',
+      perplexity: 'Perplexity (2ᴴ)',
+      greedyChoice: 'Greedy Choice',
+      trend: 'T < 1 → Sharper distribution (high certainty); T > 1 → Flatter distribution (high diversity)',
+    },
+  }[locale];
   const logits = TOKEN_DATA.map(d => d.logit);
   const probs = useMemo(() => softmax(logits, temp), [temp]);
   const H = useMemo(() => entropy(probs), [probs]);
@@ -57,7 +80,7 @@ export default function TemperatureDistribution() {
       {/* Temperature slider */}
       <div className="flex items-center gap-4">
         <label className="text-sm font-medium text-gray-700 whitespace-nowrap">
-          Temperature: <span className="font-mono font-bold" style={{ color: COLORS.primary }}>{temp.toFixed(1)}</span>
+          {t.temperature}: <span className="font-mono font-bold" style={{ color: COLORS.primary }}>{temp.toFixed(1)}</span>
         </label>
         <input
           type="range"
@@ -69,9 +92,9 @@ export default function TemperatureDistribution() {
           className="flex-1"
         />
         <div className="flex gap-3 text-xs text-gray-500">
-          <span>T→0: Greedy</span>
-          <span>T=1: 标准</span>
-          <span>T→∞: 均匀</span>
+          <span>T→0: {t.greedy}</span>
+          <span>T=1: {t.standard}</span>
+          <span>T→∞: {t.uniform}</span>
         </div>
       </div>
 
@@ -137,21 +160,21 @@ export default function TemperatureDistribution() {
       {/* Stats */}
       <div className="flex items-center justify-center gap-6 text-sm">
         <div className="text-center">
-          <div className="text-xs text-gray-500">Entropy (H)</div>
+          <div className="text-xs text-gray-500">{t.entropy}</div>
           <div className="font-mono font-bold" style={{ color: COLORS.orange }}>{H.toFixed(2)} bits</div>
         </div>
         <div className="text-center">
-          <div className="text-xs text-gray-500">Perplexity (2ᴴ)</div>
+          <div className="text-xs text-gray-500">{t.perplexity}</div>
           <div className="font-mono font-bold" style={{ color: COLORS.red }}>{ppl.toFixed(2)}</div>
         </div>
         <div className="text-center">
-          <div className="text-xs text-gray-500">Greedy 选择</div>
+          <div className="text-xs text-gray-500">{t.greedyChoice}</div>
           <div className="font-mono font-bold" style={{ color: COLORS.primary }}>{TOKEN_DATA[greedyIdx].token}</div>
         </div>
       </div>
 
       <p className="text-xs text-gray-500 text-center">
-        T &lt; 1 → 分布更尖锐（确定性高）；T &gt; 1 → 分布更平坦（多样性高）
+        {t.trend}
       </p>
     </div>
   );

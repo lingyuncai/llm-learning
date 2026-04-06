@@ -18,7 +18,27 @@ const MODELS: ModelSpec[] = [
   { name: 'Llama3-70B Q4_K_M', sizeGB: 40.0, kvPerTokenMB: 0.4 },
 ];
 
-export default function MemoryBudgetCalculator() {
+export default function MemoryBudgetCalculator({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      gpuVram: 'GPU VRAM: {vram} GB',
+      systemRam: 'System RAM: {ram} GB',
+      title: '内存预算计算器 (ctx={ctx})',
+      gpuVramLabel: 'GPU VRAM ({vram} GB)',
+      systemRamLabel: 'System RAM ({ram} GB)',
+      cannotFit: '{model}: 需要 {size} GB, 放不下!',
+      summary: '模型大小 = 权重 + KV Cache ({ctx} tokens) | GPU 放不下则降级到 CPU',
+    },
+    en: {
+      gpuVram: 'GPU VRAM: {vram} GB',
+      systemRam: 'System RAM: {ram} GB',
+      title: 'Memory Budget Calculator (ctx={ctx})',
+      gpuVramLabel: 'GPU VRAM ({vram} GB)',
+      systemRamLabel: 'System RAM ({ram} GB)',
+      cannotFit: '{model}: needs {size} GB, cannot fit!',
+      summary: 'Model size = weights + KV Cache ({ctx} tokens) | Falls back to CPU if GPU insufficient',
+    },
+  }[locale];
   const [vramGB, setVramGB] = useState(8);
   const [ramGB, setRamGB] = useState(16);
   const [selectedModels, setSelectedModels] = useState<Set<number>>(new Set([1]));
@@ -44,12 +64,12 @@ export default function MemoryBudgetCalculator() {
     <div>
       <div className="grid grid-cols-2 gap-4 mb-3 text-xs">
         <div>
-          <label className="text-gray-600">GPU VRAM: {vramGB} GB</label>
+          <label className="text-gray-600">{t.gpuVram.replace('{vram}', vramGB.toString())}</label>
           <input type="range" min={0} max={24} step={1} value={vramGB}
             onChange={e => setVramGB(parseInt(e.target.value))} className="w-full" />
         </div>
         <div>
-          <label className="text-gray-600">System RAM: {ramGB} GB</label>
+          <label className="text-gray-600">{t.systemRam.replace('{ram}', ramGB.toString())}</label>
           <input type="range" min={8} max={128} step={8} value={ramGB}
             onChange={e => setRamGB(parseInt(e.target.value))} className="w-full" />
         </div>
@@ -71,18 +91,18 @@ export default function MemoryBudgetCalculator() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          内存预算计算器 (ctx={contextLen})
+          {t.title.replace('{ctx}', contextLen.toString())}
         </text>
 
         {/* VRAM bar */}
         <text x={20} y={50} fontSize="8" fontWeight="600" fill={COLORS.green}
-          fontFamily={FONTS.sans}>GPU VRAM ({vramGB} GB)</text>
+          fontFamily={FONTS.sans}>{t.gpuVramLabel.replace('{vram}', vramGB.toString())}</text>
         <rect x={20} y={55} width={W - 40} height={30} rx={4}
           fill="#f1f5f9" stroke="#e2e8f0" strokeWidth={1} />
 
         {/* RAM bar */}
         <text x={20} y={110} fontSize="8" fontWeight="600" fill={COLORS.primary}
-          fontFamily={FONTS.sans}>System RAM ({ramGB} GB)</text>
+          fontFamily={FONTS.sans}>{t.systemRamLabel.replace('{ram}', ramGB.toString())}</text>
         <rect x={20} y={115} width={W - 40} height={30} rx={4}
           fill="#f1f5f9" stroke="#e2e8f0" strokeWidth={1} />
 
@@ -124,7 +144,7 @@ export default function MemoryBudgetCalculator() {
               return (
                 <text key={i} x={W / 2} y={170 + i * 15} textAnchor="middle"
                   fontSize="7" fill={COLORS.red} fontFamily={FONTS.sans}>
-                  {p.model.name}: 需要 {p.totalNeed.toFixed(1)} GB, 放不下!
+                  {t.cannotFit.replace('{model}', p.model.name).replace('{size}', p.totalNeed.toFixed(1))}
                 </text>
               );
             }
@@ -134,7 +154,7 @@ export default function MemoryBudgetCalculator() {
         {/* Summary */}
         <text x={W / 2} y={H - 30} textAnchor="middle" fontSize="7" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          模型大小 = 权重 + KV Cache ({contextLen} tokens) | GPU 放不下则降级到 CPU
+          {t.summary.replace('{ctx}', contextLen.toString())}
         </text>
       </svg>
     </div>

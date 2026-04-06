@@ -10,7 +10,36 @@ interface Step {
   reward: number;
 }
 
-export default function REINFORCETrajectory() {
+export default function REINFORCETrajectory({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'REINFORCE：采样 Trajectory → 计算 Return → 更新',
+      subtitle: (gamma: number) => `γ = ${gamma} | 每次采样一条完整轨迹，计算折扣回报`,
+      returnLabel: 'G₀ (Return)',
+      historyTitle: '历史采样 Return 分布（观察方差）',
+      sampleLabel: (i: number) => `采样 ${i}`,
+      updateRule: 'REINFORCE 更新规则：',
+      updateDesc: 'Gₜ > 0 → 增大该动作概率 | Gₜ < 0 → 减小该动作概率 | 多次采样才能得到可靠的梯度估计',
+      sampleBtn: '采样轨迹',
+      sampling: '采样中...',
+      reset: '重置',
+      varianceNote: '多次采样观察 Return 的方差 — 这就是 REINFORCE 的核心问题',
+    },
+    en: {
+      title: 'REINFORCE: Sample Trajectory → Compute Return → Update',
+      subtitle: (gamma: number) => `γ = ${gamma} | Sample complete trajectory, compute discounted return`,
+      returnLabel: 'G₀ (Return)',
+      historyTitle: 'Sampled Return Distribution (Observe Variance)',
+      sampleLabel: (i: number) => `Sample ${i}`,
+      updateRule: 'REINFORCE Update Rule:',
+      updateDesc: 'Gₜ > 0 → increase action prob | Gₜ < 0 → decrease action prob | Multiple samples needed for reliable gradient',
+      sampleBtn: 'Sample Trajectory',
+      sampling: 'Sampling...',
+      reset: 'Reset',
+      varianceNote: 'Sample multiple times to observe return variance — core problem of REINFORCE',
+    },
+  }[locale];
+
   const [trajectories, setTrajectories] = useState<{ steps: Step[]; totalReturn: number }[]>([]);
   const [sampling, setSampling] = useState(false);
   const gamma = 0.9;
@@ -54,10 +83,10 @@ export default function REINFORCETrajectory() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          REINFORCE：采样 Trajectory → 计算 Return → 更新
+          {t.title}
         </text>
         <text x={W / 2} y={44} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          γ = {gamma} | 每次采样一条完整轨迹，计算折扣回报
+          {t.subtitle(gamma)}
         </text>
 
         {/* Current trajectory visualization */}
@@ -100,7 +129,7 @@ export default function REINFORCETrajectory() {
             <rect x={ox + 4 * stepW - 80} y={oy} width={100} height={40} rx={6}
               fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth={1} />
             <text x={ox + 4 * stepW - 30} y={oy + 16} textAnchor="middle" fontSize={10} fontWeight={600} fill={COLORS.orange}>
-              G₀ (Return)
+              {t.returnLabel}
             </text>
             <text x={ox + 4 * stepW - 30} y={oy + 33} textAnchor="middle" fontSize={12} fontWeight={700} fontFamily={FONTS.mono}
               fill={trajectories[trajectories.length - 1].totalReturn > 0 ? COLORS.green : COLORS.red}>
@@ -112,7 +141,7 @@ export default function REINFORCETrajectory() {
 
         {/* Historical returns (showing variance) */}
         <text x={ox} y={oy + 90} fontSize={12} fontWeight={600} fill={COLORS.dark}>
-          历史采样 Return 分布（观察方差）
+          {t.historyTitle}
         </text>
         {trajectories.map((traj, i) => {
           const x = ox + i * 110;
@@ -128,7 +157,7 @@ export default function REINFORCETrajectory() {
                 {traj.totalReturn > 0 ? '+' : ''}{traj.totalReturn}
               </text>
               <text x={x + 45} y={oy + 164} textAnchor="middle" fontSize={8} fill={COLORS.mid}>
-                采样 {i + 1}
+                {t.sampleLabel(i + 1)}
               </text>
             </g>
           );
@@ -137,13 +166,13 @@ export default function REINFORCETrajectory() {
         {/* REINFORCE pseudocode */}
         <rect x={ox} y={oy + 180} width={520} height={70} rx={6} fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth={1} />
         <text x={ox + 10} y={oy + 198} fontSize={10} fontWeight={600} fill={COLORS.dark}>
-          REINFORCE 更新规则：
+          {t.updateRule}
         </text>
         <text x={ox + 10} y={oy + 216} fontSize={10} fontFamily={FONTS.mono} fill={COLORS.primary}>
           θ ← θ + α · ∇log π(aₜ|sₜ;θ) · Gₜ
         </text>
         <text x={ox + 10} y={oy + 236} fontSize={9} fill={COLORS.mid}>
-          Gₜ {'>'} 0 → 增大该动作概率 | Gₜ {'<'} 0 → 减小该动作概率 | 多次采样才能得到可靠的梯度估计
+          {t.updateDesc}
         </text>
 
         {/* Controls */}
@@ -151,16 +180,16 @@ export default function REINFORCETrajectory() {
           <rect x={ox} y={H - 42} width={100} height={28} rx={5}
             fill={sampling ? COLORS.masked : COLORS.primary} />
           <text x={ox + 50} y={H - 24} textAnchor="middle" fontSize={12} fontWeight={600} fill="#fff">
-            {sampling ? '采样中...' : '采样轨迹'}
+            {sampling ? t.sampling : t.sampleBtn}
           </text>
         </g>
         <g onClick={reset} style={{ cursor: 'pointer' }}>
           <rect x={ox + 120} y={H - 42} width={60} height={28} rx={5} fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth={1} />
-          <text x={ox + 150} y={H - 24} textAnchor="middle" fontSize={11} fill={COLORS.dark}>重置</text>
+          <text x={ox + 150} y={H - 24} textAnchor="middle" fontSize={11} fill={COLORS.dark}>{t.reset}</text>
         </g>
 
         <text x={W - 30} y={H - 10} textAnchor="end" fontSize={9} fill={COLORS.mid}>
-          多次采样观察 Return 的方差 — 这就是 REINFORCE 的核心问题
+          {t.varianceNote}
         </text>
       </svg>
     </div>

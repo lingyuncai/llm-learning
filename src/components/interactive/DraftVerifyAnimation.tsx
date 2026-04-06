@@ -62,10 +62,43 @@ function VerifyArrow({ x, y, width }: { x: number; y: number; width: number }) {
   );
 }
 
-export default function DraftVerifyAnimation() {
+export default function DraftVerifyAnimation({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: 'Draft: 小模型快速生成',
+      step1Sub: 'Draft model 自回归生成 K=4 个候选 token（速度快，但不够准确）',
+      step2Title: 'Verify: 大模型一次验证',
+      step2Sub: 'Target model 对 4 个候选做一次 forward pass（类似 Prefill），同时获得所有位置的概率',
+      step3Title: 'Rejection Sampling',
+      step3Sub: '逐位置比较 draft 概率 q 和 target 概率 p — "brown" 在位置 3 被拒绝',
+      step4Title: '重新采样 + 最终序列',
+      step4Sub: '从拒绝位置用修正分布 norm(max(0, p−q)) 重新采样 → 最终分布与只用大模型完全一致',
+      fastAuto: '快速自回归',
+      parallelForward: '并行 forward pass',
+      parallelVerify: '1 forward pass 并行验证',
+      resample: '重新采样',
+      finalOutput: '本轮产出 3 个有效 token（2 accepted + 1 resampled）',
+    },
+    en: {
+      step1Title: 'Draft: Fast generation with small model',
+      step1Sub: 'Draft model autoregressively generates K=4 candidate tokens (fast but less accurate)',
+      step2Title: 'Verify: Single verification by large model',
+      step2Sub: 'Target model does one forward pass on 4 candidates (like Prefill), obtaining all position probabilities at once',
+      step3Title: 'Rejection Sampling',
+      step3Sub: 'Compare draft prob q and target prob p position-wise — "brown" at position 3 is rejected',
+      step4Title: 'Resample + Final sequence',
+      step4Sub: 'Resample from rejection position using corrected distribution norm(max(0, p−q)) → final distribution identical to using large model only',
+      fastAuto: 'Fast autoregressive',
+      parallelForward: 'Parallel forward pass',
+      parallelVerify: '1 forward pass parallel verify',
+      resample: 'Resample',
+      finalOutput: '3 valid tokens this round (2 accepted + 1 resampled)',
+    },
+  }[locale];
+
   const steps = useMemo(() => [
     {
-      title: 'Draft: 小模型快速生成',
+      title: t.step1Title,
       content: (
         <div className="space-y-2">
           <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="w-full">
@@ -76,7 +109,7 @@ export default function DraftVerifyAnimation() {
             </defs>
             {/* Draft model label */}
             <text x={START_X} y={25} fontSize="10" fontWeight="600" fill={COLORS.orange}
-              fontFamily="system-ui">Draft Model (68M) — 快速自回归</text>
+              fontFamily="system-ui">Draft Model (68M) — {t.fastAuto}</text>
             {/* Draft tokens appear one by one */}
             {DRAFT_TOKENS.map((t, i) => (
               <TokenBox key={i}
@@ -102,13 +135,13 @@ export default function DraftVerifyAnimation() {
             ))}
           </svg>
           <p className="text-sm text-gray-600 text-center">
-            Draft model 自回归生成 K=4 个候选 token（速度快，但不够准确）
+            {t.step1Sub}
           </p>
         </div>
       ),
     },
     {
-      title: 'Verify: 大模型一次验证',
+      title: t.step2Title,
       content: (
         <div className="space-y-2">
           <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="w-full">
@@ -118,7 +151,7 @@ export default function DraftVerifyAnimation() {
               </marker>
             </defs>
             <text x={START_X} y={20} fontSize="10" fontWeight="600" fill={COLORS.primary}
-              fontFamily="system-ui">Target Model (7B) — 并行 forward pass</text>
+              fontFamily="system-ui">Target Model (7B) — {t.parallelForward}</text>
             {/* All tokens with target probs */}
             {DRAFT_TOKENS.map((t, i) => (
               <TokenBox key={i}
@@ -139,13 +172,13 @@ export default function DraftVerifyAnimation() {
             />
           </svg>
           <p className="text-sm text-gray-600 text-center">
-            Target model 对 4 个候选做<strong>一次</strong> forward pass（类似 Prefill），同时获得所有位置的概率
+            {t.step2Sub}
           </p>
         </div>
       ),
     },
     {
-      title: 'Rejection Sampling',
+      title: t.step3Title,
       content: (
         <div className="space-y-2">
           <svg viewBox={`0 0 ${SVG_W} ${SVG_H + 20}`} className="w-full">
@@ -201,13 +234,13 @@ export default function DraftVerifyAnimation() {
             </text>
           </svg>
           <p className="text-sm text-gray-600 text-center">
-            逐位置比较 draft 概率 q 和 target 概率 p — "brown" 在位置 3 被拒绝
+            {t.step3Sub}
           </p>
         </div>
       ),
     },
     {
-      title: '重新采样 + 最终序列',
+      title: t.step4Title,
       content: (
         <div className="space-y-2">
           <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="w-full">
@@ -242,7 +275,7 @@ export default function DraftVerifyAnimation() {
                       y={TOKEN_Y - 8}
                       textAnchor="middle" fontSize="8" fill={COLORS.orange}
                       fontFamily="system-ui" fontWeight="600">
-                      重新采样
+                      {t.resample}
                     </text>
                   )}
                 </motion.g>
@@ -256,11 +289,11 @@ export default function DraftVerifyAnimation() {
               animate={{ opacity: 1 }}
               transition={{ delay: 0.6 }}
             >
-              本轮产出 3 个有效 token（2 accepted + 1 resampled）
+              {t.finalOutput}
             </motion.text>
           </svg>
           <p className="text-sm text-gray-600 text-center">
-            从拒绝位置用修正分布 norm(max(0, p−q)) 重新采样 → <strong>最终分布与只用大模型完全一致</strong>
+            {t.step4Sub}
           </p>
         </div>
       ),

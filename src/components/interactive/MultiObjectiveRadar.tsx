@@ -7,16 +7,32 @@ interface Approach {
   color: string;
 }
 
-const DIMS = ['低成本', '低延迟', '隐私保护', '回答质量', '离线可用'];
+export default function MultiObjectiveRadar({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '多目标雷达图',
+      dimensions: ['低成本', '低延迟', '隐私保护', '回答质量', '离线可用'],
+      approaches: ['纯本地', '纯云端', 'ConsRoute', 'Apple Intelligence'],
+      selectApproach: '方案选择:',
+      scoreLabel: '评分 (0-100)',
+    },
+    en: {
+      title: 'Multi-Objective Radar Chart',
+      dimensions: ['Low Cost', 'Low Latency', 'Privacy', 'Quality', 'Offline'],
+      approaches: ['Pure Local', 'Pure Cloud', 'ConsRoute', 'Apple Intelligence'],
+      selectApproach: 'Select Approach:',
+      scoreLabel: 'Scores (0-100)',
+    },
+  }[locale];
 
-const APPROACHES: Approach[] = [
-  { name: '纯本地', scores: [95, 60, 100, 50, 100], color: COLORS.green },
-  { name: '纯云端', scores: [20, 70, 20, 95, 0], color: COLORS.red },
-  { name: 'ConsRoute', scores: [75, 70, 70, 85, 60], color: COLORS.primary },
-  { name: 'Apple Intelligence', scores: [80, 75, 95, 80, 70], color: COLORS.orange },
-];
+  const DIMS = t.dimensions;
 
-export default function MultiObjectiveRadar() {
+  const APPROACHES: Approach[] = [
+    { name: t.approaches[0], scores: [95, 60, 100, 50, 100], color: COLORS.green },
+    { name: t.approaches[1], scores: [20, 70, 20, 95, 0], color: COLORS.red },
+    { name: t.approaches[2], scores: [75, 70, 70, 85, 60], color: COLORS.primary },
+    { name: t.approaches[3], scores: [80, 75, 95, 80, 70], color: COLORS.orange },
+  ];
   const [selected, setSelected] = useState<Set<number>>(new Set([0, 1, 2]));
 
   const W = 580, H = 420;
@@ -42,7 +58,7 @@ export default function MultiObjectiveRadar() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="22" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          多目标雷达图
+          {t.title}
         </text>
 
         {/* Grid circles */}
@@ -87,7 +103,7 @@ export default function MultiObjectiveRadar() {
         {/* Toggle buttons */}
         <g transform="translate(420, 80)">
           <text x="0" y="0" fontFamily={FONTS.sans} fontSize="12" fontWeight="600" fill={COLORS.dark}>
-            方案选择:
+            {t.selectApproach}
           </text>
           {APPROACHES.map((a, i) => (
             <g key={a.name} transform={`translate(0, ${10 + i * 32})`}
@@ -107,7 +123,7 @@ export default function MultiObjectiveRadar() {
           {/* Score table for selected */}
           <g transform="translate(0, 150)">
             <text x="0" y="0" fontFamily={FONTS.sans} fontSize="10" fontWeight="600" fill={COLORS.mid}>
-              评分 (0-100)
+              {t.scoreLabel}
             </text>
             {Array.from(selected).map((ai, si) => (
               <text key={ai} x="0" y={16 + si * 14} fontFamily={FONTS.mono} fontSize="9" fill={APPROACHES[ai].color}>

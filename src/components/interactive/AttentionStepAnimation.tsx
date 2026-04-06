@@ -146,9 +146,60 @@ function MatrixWithMask({
   );
 }
 
-export default function AttentionStepAnimation() {
+export default function AttentionStepAnimation({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const S = 4;
   const dk = 3;
+
+  const t = {
+    zh: {
+      step1Title: 'Q 和 K 矩阵',
+      step1Desc: '从上一步的线性投影中，我们已经得到了 Q 和 K 矩阵，形状都是 (S=4, d_k=3)。接下来要计算它们之间的注意力分数。',
+      step2Title: 'QK^T — 注意力原始分数',
+      step2Desc: '计算 QK^T：每个 Query 向量与所有 Key 向量做点积。结果是一个 (S, S) = (4, 4) 的矩阵，第 i 行第 j 列表示 token i 对 token j 的"原始关注度"。',
+      step2Highlight: '高亮：Q 的第 1 行 · K^T 的第 1 列 = 分数矩阵 [1,1] 位置',
+      step3Title: '缩放 ÷ √d_k',
+      step3Desc: '将分数除以 √d_k = √3 ≈ 1.73。当 d_k 较大时，点积的方差与 d_k 成正比，会导致 softmax 进入梯度极小的饱和区。缩放使方差恢复为 1，保持梯度健康。',
+      step3Why: '为什么？假设 q 和 k 的每个分量独立、均值 0、方差 1，则点积 q·k 的方差 = d_k。除以 √d_k 后方差变为 1，防止 softmax 输出趋近 one-hot。',
+      step4Title: '因果遮罩（Causal Mask）',
+      step4Desc: '在 Decoder（自回归模型）中，token i 不能看到它后面的 token。将矩阵上三角（j > i 的位置）设为 -∞，这样 softmax 后对应位置的权重变为 0。',
+      step4Note: '注意：Encoder 中的 Self-Attention 通常不使用因果遮罩（因为可以双向看）。这里展示的是 Decoder 场景。Encoder 只在有 padding token 时使用 padding mask。',
+      step5Title: 'Softmax — 行归一化',
+      step5Desc: '对每一行做 softmax：将原始分数转化为概率分布（每行和为 1）。被遮罩为 -∞ 的位置经过 softmax 后变为 0。',
+      step5Stability: '数值稳定性：实际实现中，softmax 会先减去每行的最大值： softmax(x_i) = exp(x_i - max(x)) / Σexp(x_j - max(x))。这不改变结果，但能防止 exp() 溢出。',
+      step6Title: '乘以 V — 加权求和',
+      step6Desc: '最后一步：注意力权重矩阵乘以 V，得到输出。每个 token 的输出是所有 Value 向量的加权平均，权重就是注意力分数。输出形状为 (S, d_k) = (4, 3)。',
+      step6Complete: '完整流程： Output = softmax(QK^T / √d_k) · V',
+      step6Summary: '每个 token 的输出 = 根据 Query-Key 相似度，对所有 Value 做加权平均。',
+      scaled: '缩放后',
+      masked: '遮罩后',
+      weights: '注意力权重',
+      output: 'Output',
+    },
+    en: {
+      step1Title: 'Q and K Matrices',
+      step1Desc: 'From the previous linear projection step, we have obtained Q and K matrices, both with shape (S=4, d_k=3). Next we compute attention scores between them.',
+      step2Title: 'QK^T — Raw Attention Scores',
+      step2Desc: 'Compute QK^T: each Query vector dot-products with all Key vectors. Result is a (S, S) = (4, 4) matrix, where element [i,j] represents "raw attention" from token i to token j.',
+      step2Highlight: 'Highlight: Q row 1 · K^T col 1 = score matrix position [1,1]',
+      step3Title: 'Scale ÷ √d_k',
+      step3Desc: 'Divide scores by √d_k = √3 ≈ 1.73. When d_k is large, dot product variance scales with d_k, causing softmax to enter gradient-killing saturation. Scaling restores variance to 1, keeping gradients healthy.',
+      step3Why: 'Why? Assuming q and k components are independent with mean 0 and variance 1, dot product q·k has variance = d_k. Dividing by √d_k brings variance to 1, preventing softmax from becoming one-hot.',
+      step4Title: 'Causal Mask',
+      step4Desc: 'In Decoder (autoregressive models), token i cannot see tokens after it. Set upper triangle (positions where j > i) to -∞, so softmax makes those weights 0.',
+      step4Note: 'Note: Self-Attention in Encoder typically does not use causal mask (bidirectional). This shows Decoder scenario. Encoder only uses padding mask when padding tokens exist.',
+      step5Title: 'Softmax — Row Normalization',
+      step5Desc: 'Apply softmax to each row: convert raw scores to probability distribution (each row sums to 1). Positions masked to -∞ become 0 after softmax.',
+      step5Stability: 'Numerical stability: In practice, softmax subtracts row max first: softmax(x_i) = exp(x_i - max(x)) / Σexp(x_j - max(x)). This doesn\'t change result but prevents exp() overflow.',
+      step6Title: 'Multiply by V — Weighted Sum',
+      step6Desc: 'Final step: attention weight matrix multiplies V to get output. Each token\'s output is a weighted average of all Value vectors, weighted by attention scores. Output shape is (S, d_k) = (4, 3).',
+      step6Complete: 'Complete flow: Output = softmax(QK^T / √d_k) · V',
+      step6Summary: 'Each token\'s output = weighted average of all Values, weighted by Query-Key similarity.',
+      scaled: 'Scaled',
+      masked: 'Masked',
+      weights: 'Attention Weights',
+      output: 'Output',
+    },
+  }[locale];
 
   // Use pre-seeded Q, K, V matrices (as if already projected)
   const Q = useMemo(() => seededValues(S, dk, 100), []);
@@ -168,14 +219,11 @@ export default function AttentionStepAnimation() {
 
   const steps = [
     {
-      title: 'Q 和 K 矩阵',
+      title: t.step1Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            从上一步的线性投影中，我们已经得到了 <code className="bg-gray-100 px-1 rounded">Q</code> 和{' '}
-            <code className="bg-gray-100 px-1 rounded">K</code> 矩阵，形状都是{' '}
-            <span className="font-mono text-primary-700">(S=4, d_k=3)</span>。
-            接下来要计算它们之间的注意力分数。
+            {t.step1Desc}
           </p>
           <div className="flex flex-wrap justify-center items-center gap-6">
             <MatrixGrid
@@ -201,13 +249,11 @@ export default function AttentionStepAnimation() {
       ),
     },
     {
-      title: 'QK^T — 注意力原始分数',
+      title: t.step2Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            计算 <code className="bg-gray-100 px-1 rounded">QK^T</code>：每个 Query 向量与所有 Key 向量做点积。
-            结果是一个 <span className="font-mono text-primary-700">(S, S) = (4, 4)</span> 的矩阵，
-            第 <em>i</em> 行第 <em>j</em> 列表示 token <em>i</em> 对 token <em>j</em> 的"原始关注度"。
+            {t.step2Desc}
           </p>
           <div className="flex flex-wrap justify-center items-center gap-4">
             <MatrixGrid
@@ -241,19 +287,17 @@ export default function AttentionStepAnimation() {
             />
           </div>
           <p className="text-xs text-gray-500 mt-2 text-center">
-            高亮：Q 的第 1 行 · K^T 的第 1 列 = 分数矩阵 [1,1] 位置
+            {t.step2Highlight}
           </p>
         </div>
       ),
     },
     {
-      title: '缩放 ÷ √d_k',
+      title: t.step3Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            将分数除以 <code className="bg-gray-100 px-1 rounded">√d_k = √3 ≈ 1.73</code>。
-            当 d_k 较大时，点积的方差与 d_k 成正比，会导致 softmax 进入梯度极小的饱和区。
-            缩放使方差恢复为 1，保持梯度健康。
+            {t.step3Desc}
           </p>
           <div className="flex flex-wrap justify-center items-center gap-4">
             <MatrixGrid
@@ -277,26 +321,22 @@ export default function AttentionStepAnimation() {
             />
           </div>
           <div className="mt-3 p-2 bg-blue-50 rounded text-xs text-blue-800">
-            <strong>为什么？</strong>假设 q 和 k 的每个分量独立、均值 0、方差 1，则点积 q·k 的方差 = d_k。
-            除以 √d_k 后方差变为 1，防止 softmax 输出趋近 one-hot。
+            <strong>{locale === 'zh' ? '为什么？' : 'Why?'}</strong>{t.step3Why}
           </div>
         </div>
       ),
     },
     {
-      title: '因果遮罩（Causal Mask）',
+      title: t.step4Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            在 Decoder（自回归模型）中，token <em>i</em> 不能看到它后面的 token。
-            将矩阵上三角（<em>j {'>'} i</em> 的位置）设为{' '}
-            <code className="bg-gray-100 px-1 rounded">-∞</code>，
-            这样 softmax 后对应位置的权重变为 0。
+            {t.step4Desc}
           </p>
           <div className="flex flex-wrap justify-center items-center gap-4">
             <MatrixGrid
               data={scaled}
-              label="缩放后"
+              label={t.scaled}
               shape="(4, 4)"
               rowLabels={tokenLabels}
               colLabels={tokenLabels}
@@ -306,7 +346,7 @@ export default function AttentionStepAnimation() {
             <span className="text-xl text-gray-500 font-bold">=</span>
             <MatrixWithMask
               data={masked}
-              label="遮罩后"
+              label={t.masked}
               shape="(4, 4)"
               rowLabels={tokenLabels}
               colLabels={tokenLabels}
@@ -314,24 +354,22 @@ export default function AttentionStepAnimation() {
             />
           </div>
           <div className="mt-3 p-2 bg-amber-50 rounded text-xs text-amber-800">
-            <strong>注意：</strong>Encoder 中的 Self-Attention 通常不使用因果遮罩（因为可以双向看）。
-            这里展示的是 Decoder 场景。Encoder 只在有 padding token 时使用 padding mask。
+            <strong>{locale === 'zh' ? '注意：' : 'Note:'}</strong>{t.step4Note}
           </div>
         </div>
       ),
     },
     {
-      title: 'Softmax — 行归一化',
+      title: t.step5Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            对每一行做 softmax：将原始分数转化为概率分布（每行和为 1）。
-            被遮罩为 -∞ 的位置经过 softmax 后变为 0。
+            {t.step5Desc}
           </p>
           <div className="flex flex-wrap justify-center items-center gap-4">
             <MatrixWithMask
               data={masked}
-              label="遮罩后"
+              label={t.masked}
               shape="(4, 4)"
               rowLabels={tokenLabels}
               colLabels={tokenLabels}
@@ -340,7 +378,7 @@ export default function AttentionStepAnimation() {
             <span className="text-xl text-gray-500 font-bold">softmax→</span>
             <MatrixGrid
               data={weights}
-              label="注意力权重"
+              label={t.weights}
               shape="(4, 4)"
               rowLabels={tokenLabels}
               colLabels={tokenLabels}
@@ -349,26 +387,22 @@ export default function AttentionStepAnimation() {
             />
           </div>
           <div className="mt-3 p-2 bg-purple-50 rounded text-xs text-purple-800">
-            <strong>数值稳定性：</strong>实际实现中，softmax 会先减去每行的最大值：
-            <code className="bg-purple-100 px-1 rounded ml-1">softmax(x_i) = exp(x_i - max(x)) / Σexp(x_j - max(x))</code>。
-            这不改变结果，但能防止 exp() 溢出。
+            <strong>{locale === 'zh' ? '数值稳定性：' : 'Numerical stability:'}</strong>{t.step5Stability}
           </div>
         </div>
       ),
     },
     {
-      title: '乘以 V — 加权求和',
+      title: t.step6Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            最后一步：注意力权重矩阵乘以 V，得到输出。
-            每个 token 的输出是所有 Value 向量的加权平均，权重就是注意力分数。
-            输出形状为 <span className="font-mono text-primary-700">(S, d_k) = (4, 3)</span>。
+            {t.step6Desc}
           </p>
           <div className="flex flex-wrap justify-center items-center gap-4">
             <MatrixGrid
               data={weights}
-              label="权重"
+              label={t.weights}
               shape="(4, 4)"
               rowLabels={tokenLabels}
               colLabels={tokenLabels}
@@ -390,7 +424,7 @@ export default function AttentionStepAnimation() {
             <span className="text-xl text-gray-500 font-bold">=</span>
             <MatrixGrid
               data={output}
-              label="Output"
+              label={t.output}
               shape="(4, 3)"
               rowLabels={tokenLabels}
               colLabels={dkLabels}
@@ -399,12 +433,12 @@ export default function AttentionStepAnimation() {
             />
           </div>
           <div className="mt-4 p-3 bg-gray-50 rounded text-sm text-gray-600">
-            <strong>完整流程：</strong>
+            <strong>{locale === 'zh' ? '完整流程：' : 'Complete flow:'}</strong>
             <code className="text-xs bg-gray-100 px-1 rounded">
-              Output = softmax(QK^T / √d_k) · V
+              {t.step6Complete}
             </code>
             <br />
-            每个 token 的输出 = 根据 Query-Key 相似度，对所有 Value 做加权平均。
+            {t.step6Summary}
           </div>
         </div>
       ),

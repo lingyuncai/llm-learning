@@ -6,15 +6,25 @@ const H = 420;
 
 type Phase = 'action' | 'reward' | 'critic' | 'advantage' | 'update';
 
-const PHASES: { id: Phase; label: string; desc: string }[] = [
-  { id: 'action', label: '1. Actor 输出动作', desc: 'Actor 网络 π(a|s;θ) 根据当前状态 s 输出动作概率分布，采样动作 a' },
-  { id: 'reward', label: '2. 环境返回', desc: '执行动作 a 后，环境返回即时奖励 r 和下一个状态 s\'' },
-  { id: 'critic', label: '3. Critic 评估', desc: 'Critic 网络 V(s;w) 分别估计当前状态 V(s) 和下一状态 V(s\') 的价值' },
-  { id: 'advantage', label: '4. 计算 Advantage', desc: 'A = r + γ·V(s\') - V(s)，即 TD error，衡量"这个动作比预期好多少"' },
-  { id: 'update', label: '5. 双网络更新', desc: 'Actor: θ += α·∇log π(a|s)·A | Critic: w -= β·∇(V(s) - (r+γV(s\')))²' },
-];
+export default function ActorCriticArchitecture({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const PHASES: { id: Phase; label: string; desc: string }[] = locale === 'zh' ? [
+    { id: 'action', label: '1. Actor 输出动作', desc: 'Actor 网络 π(a|s;θ) 根据当前状态 s 输出动作概率分布，采样动作 a' },
+    { id: 'reward', label: '2. 环境返回', desc: '执行动作 a 后，环境返回即时奖励 r 和下一个状态 s\'' },
+    { id: 'critic', label: '3. Critic 评估', desc: 'Critic 网络 V(s;w) 分别估计当前状态 V(s) 和下一状态 V(s\') 的价值' },
+    { id: 'advantage', label: '4. 计算 Advantage', desc: 'A = r + γ·V(s\') - V(s)，即 TD error，衡量"这个动作比预期好多少"' },
+    { id: 'update', label: '5. 双网络更新', desc: 'Actor: θ += α·∇log π(a|s)·A | Critic: w -= β·∇(V(s) - (r+γV(s\')))²' },
+  ] : [
+    { id: 'action', label: '1. Actor Output', desc: 'Actor network π(a|s;θ) outputs action probability distribution, samples action a' },
+    { id: 'reward', label: '2. Environment Return', desc: 'After executing action a, environment returns reward r and next state s\'' },
+    { id: 'critic', label: '3. Critic Evaluation', desc: 'Critic network V(s;w) estimates current state V(s) and next state V(s\')' },
+    { id: 'advantage', label: '4. Compute Advantage', desc: 'A = r + γ·V(s\') - V(s), TD error, measures "how much better than expected"' },
+    { id: 'update', label: '5. Dual Network Update', desc: 'Actor: θ += α·∇log π(a|s)·A | Critic: w -= β·∇(V(s) - (r+γV(s\')))²' },
+  ];
 
-export default function ActorCriticArchitecture() {
+  const t = {
+    zh: { title: 'Actor-Critic 架构：双网络协同' },
+    en: { title: 'Actor-Critic Architecture: Dual Network' },
+  }[locale];
   const [phase, setPhase] = useState<Phase>('action');
   const pi = PHASES.findIndex(p => p.id === phase);
 
@@ -32,7 +42,7 @@ export default function ActorCriticArchitecture() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          Actor-Critic 架构：双网络协同
+          {t.title}
         </text>
 
         {/* Actor box */}

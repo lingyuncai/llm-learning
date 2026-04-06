@@ -3,8 +3,29 @@ import { COLORS, FONTS } from './shared/colors';
 
 type Mode = 'first' | 'cached';
 
-const ModelCacheFlow: React.FC = () => {
+const ModelCacheFlow: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
   const [mode, setMode] = useState<Mode>('first');
+
+  const t = {
+    zh: {
+      firstLoad: '{t.firstLoad}',
+      cachedLoad: '{t.cachedLoad}',
+      firstLoadTitle: '{t.firstLoad}流程（无缓存）',
+      cachedLoadTitle: '{t.cachedLoad}流程',
+      totalTime: '总耗时',
+      compileRatio: '编译阶段占比',
+      speedup: '加速比',
+    },
+    en: {
+      firstLoad: 'First Load',
+      cachedLoad: 'Cached Load',
+      firstLoadTitle: 'First Load Process (No Cache)',
+      cachedLoadTitle: 'Cached Load Process',
+      totalTime: 'Total Time',
+      compileRatio: 'Compile Phase Ratio',
+      speedup: 'Speedup',
+    },
+  }[locale];
 
   return (
     <div className="my-6 p-4 border rounded-lg bg-white">
@@ -17,7 +38,7 @@ const ModelCacheFlow: React.FC = () => {
               : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
           }`}
         >
-          首次加载
+          {t.firstLoad}
         </button>
         <button
           onClick={() => setMode('cached')}
@@ -27,7 +48,7 @@ const ModelCacheFlow: React.FC = () => {
               : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
           }`}
         >
-          缓存加载
+          {t.cachedLoad}
         </button>
       </div>
 
@@ -36,7 +57,7 @@ const ModelCacheFlow: React.FC = () => {
           <>
             {/* First load timeline */}
             <text x={10} y={30} fontFamily={FONTS.sans} fontSize={14} fontWeight="bold" fill={COLORS.dark}>
-              首次加载流程（无缓存）
+              {t.firstLoad}流程（无缓存）
             </text>
 
             {/* Timeline axis */}
@@ -94,7 +115,7 @@ const ModelCacheFlow: React.FC = () => {
           <>
             {/* Cached load timeline */}
             <text x={10} y={30} fontFamily={FONTS.sans} fontSize={14} fontWeight="bold" fill={COLORS.dark}>
-              缓存加载流程
+              {t.cachedLoad}流程
             </text>
 
             {/* Timeline axis */}

@@ -44,7 +44,22 @@ function quantErrors(act: number[][], mode: 'per-tensor' | 'per-channel'): numbe
   }
 }
 
-export default function ActivationOutlierViz() {
+export default function ActivationOutlierViz({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Activation Outlier 对量化的影响',
+      quantError: '量化误差',
+      annotation1: 'Per-tensor: Outlier 拉大 scale → 正常值精度崩溃 (红色)',
+      annotation2: 'Per-channel: 每个 channel 独立 scale → 误差均匀且小 (绿色)',
+    },
+    en: {
+      title: 'Activation Outlier Impact on Quantization',
+      quantError: 'Quantization Error',
+      annotation1: 'Per-tensor: Outliers inflate scale → normal values lose precision (red)',
+      annotation2: 'Per-channel: independent scale per channel → uniform small error (green)',
+    },
+  }[locale];
+
   const [mode, setMode] = useState<'per-tensor' | 'per-channel'>('per-tensor');
 
   const errors = useMemo(() => quantErrors(ACT, mode), [mode]);
@@ -77,7 +92,7 @@ export default function ActivationOutlierViz() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={20} textAnchor="middle" fontSize="14" fontWeight="600"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Activation Outlier 对量化的影响
+        {t.title}
       </text>
 
       {/* Activation heatmap */}
@@ -119,7 +134,7 @@ export default function ActivationOutlierViz() {
       {/* Error heatmap */}
       <text x={mapX} y={errY - 8} fontSize="10" fontWeight="600"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        量化误差 ({mode})
+        {t.quantError} ({mode})
       </text>
       {errors.map((row, i) => row.map((err, j) => (
         <rect key={`e-${i}-${j}`} x={mapX + j * cellW} y={errY + i * cellH}
@@ -130,9 +145,7 @@ export default function ActivationOutlierViz() {
       {/* Annotation */}
       <text x={W / 2} y={H - 10} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        {mode === 'per-tensor'
-          ? 'Per-tensor: Outlier 拉大 scale → 正常值精度崩溃 (红色)'
-          : 'Per-channel: 每个 channel 独立 scale → 误差均匀且小 (绿色)'}
+        {mode === 'per-tensor' ? t.annotation1 : t.annotation2}
       </text>
     </svg>
   );

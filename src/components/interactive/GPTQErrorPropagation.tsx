@@ -4,6 +4,10 @@ import { COLORS, FONTS } from './shared/colors';
 
 const W = 580;
 
+interface GPTQErrorPropagationProps {
+  locale?: 'zh' | 'en';
+}
+
 const ORIG = [
   [0.0312, -0.0187, 0.0456, -0.0089],
   [-0.0234, 0.0401, -0.0156, 0.0278],
@@ -18,7 +22,46 @@ const QUANT = [
   [-0.0375, 0.0125, -0.0375, 0.0438],
 ];
 
-export default function GPTQErrorPropagation() {
+export default function GPTQErrorPropagation({ locale = 'zh' }: GPTQErrorPropagationProps) {
+  const t = {
+    zh: {
+      step1Title: 'Step 1: 原始权重矩阵 W (FP16)',
+      step1Matrix: 'W (FP16) — Hessian H⁻¹ 引导量化顺序',
+      step1Note: 'GPTQ 逐列量化: 利用 Hessian 逆矩阵将误差最优地分散到后续列',
+      step2Title: 'Step 2: 量化第 1 列, 计算误差 δ₁',
+      step2Matrix: '量化第 1 列 → 计算误差 δ₁',
+      step3Title: 'Step 3: 误差传播到后续列 (Hessian 补偿)',
+      step3Matrix: '误差补偿: δ₁ × H⁻¹ → 第 2-4 列',
+      step3Note: '绿色 = 补偿后的值 (原始值 + 误差分配)',
+      step4Title: 'Step 4: 量化第 2 列, 继续传播',
+      step4Matrix: '量化第 2 列 → 补偿第 3-4 列',
+      step4Note: '逐列处理: 每列量化后误差补偿到右侧所有未量化列',
+      step5Title: 'Step 5: 最终结果 — GPTQ vs RTN',
+      step5Matrix: '最终量化矩阵 (INT4)',
+      rtnLabel: 'RTN (逐元素)',
+      gptqLabel: 'GPTQ (列级补偿)',
+      reduction: '↓ GPTQ 将 MSE 降低约 62%',
+    },
+    en: {
+      step1Title: 'Step 1: Original Weight Matrix W (FP16)',
+      step1Matrix: 'W (FP16) — Hessian H⁻¹ guides quantization order',
+      step1Note: 'GPTQ per-column quantization: uses Hessian inverse to optimally distribute error to subsequent columns',
+      step2Title: 'Step 2: Quantize column 1, compute error δ₁',
+      step2Matrix: 'Quantize column 1 → compute error δ₁',
+      step3Title: 'Step 3: Error propagation to subsequent columns (Hessian compensation)',
+      step3Matrix: 'Error compensation: δ₁ × H⁻¹ → columns 2-4',
+      step3Note: 'Green = compensated values (original value + error distribution)',
+      step4Title: 'Step 4: Quantize column 2, continue propagation',
+      step4Matrix: 'Quantize column 2 → compensate columns 3-4',
+      step4Note: 'Per-column processing: after quantizing each column, compensate error to all remaining columns',
+      step5Title: 'Step 5: Final Result — GPTQ vs RTN',
+      step5Matrix: 'Final Quantized Matrix (INT4)',
+      rtnLabel: 'RTN (element-wise)',
+      gptqLabel: 'GPTQ (column-level compensation)',
+      reduction: '↓ GPTQ reduces MSE by ~62%',
+    },
+  }[locale];
+
   const errors = useMemo(() =>
     ORIG.map((row, i) => row.map((v, j) => +(v - QUANT[i][j]).toFixed(4))), []
   );
@@ -70,23 +113,23 @@ export default function GPTQErrorPropagation() {
 
   const steps = [
     {
-      title: 'Step 1: 原始权重矩阵 W (FP16)',
+      title: t.step1Title,
       content: (
         <svg viewBox={`0 0 ${W} 300`} className="w-full">
-          <Matrix data={ORIG} title="W (FP16) — Hessian H⁻¹ 引导量化顺序" />
+          <Matrix data={ORIG} title={t.step1Matrix} />
           <text x={W / 2} y={250} textAnchor="middle" fontSize="8" fill={COLORS.mid}
             fontFamily={FONTS.sans}>
-            GPTQ 逐列量化: 利用 Hessian 逆矩阵将误差最优地分散到后续列
+            {t.step1Note}
           </text>
         </svg>
       ),
     },
     {
-      title: 'Step 2: 量化第 1 列, 计算误差 δ₁',
+      title: t.step2Title,
       content: (
         <svg viewBox={`0 0 ${W} 300`} className="w-full">
           <Matrix data={ORIG.map((row, i) => [QUANT[i][0], ...row.slice(1)])}
-            title="量化第 1 列 → 计算误差 δ₁"
+            title={t.step2Matrix}
             colBgs={[COLORS.highlight, undefined, undefined, undefined]} />
           <text x={matX + cellW * 4 + 15} y={matY + 10} fontSize="9" fontWeight="700"
             fill={COLORS.red} fontFamily={FONTS.sans}>δ₁</text>
@@ -100,11 +143,11 @@ export default function GPTQErrorPropagation() {
       ),
     },
     {
-      title: 'Step 3: 误差传播到后续列 (Hessian 补偿)',
+      title: t.step3Title,
       content: (
         <svg viewBox={`0 0 ${W} 300`} className="w-full">
           <Matrix data={ORIG.map((row, i) => [QUANT[i][0], ...compensated[i].slice(1)])}
-            title="误差补偿: δ₁ × H⁻¹ → 第 2-4 列"
+            title={t.step3Matrix}
             colBgs={['#e0e0e0', undefined, undefined, undefined]}
             colTcs={[COLORS.mid, COLORS.green, COLORS.green, COLORS.green]} />
           <defs>
@@ -120,49 +163,49 @@ export default function GPTQErrorPropagation() {
           ))}
           <text x={W / 2} y={250} textAnchor="middle" fontSize="8" fill={COLORS.green}
             fontFamily={FONTS.sans}>
-            绿色 = 补偿后的值 (原始值 + 误差分配)
+            {t.step3Note}
           </text>
         </svg>
       ),
     },
     {
-      title: 'Step 4: 量化第 2 列, 继续传播',
+      title: t.step4Title,
       content: (
         <svg viewBox={`0 0 ${W} 300`} className="w-full">
           <Matrix data={ORIG.map((row, i) => [QUANT[i][0], QUANT[i][1], ...compensated[i].slice(2)])}
-            title="量化第 2 列 → 补偿第 3-4 列"
+            title={t.step4Matrix}
             colBgs={['#e0e0e0', COLORS.highlight, undefined, undefined]}
             colTcs={[COLORS.mid, undefined, COLORS.green, COLORS.green]} />
           <text x={W / 2} y={250} textAnchor="middle" fontSize="8" fill={COLORS.mid}
             fontFamily={FONTS.sans}>
-            逐列处理: 每列量化后误差补偿到右侧所有未量化列
+            {t.step4Note}
           </text>
         </svg>
       ),
     },
     {
-      title: 'Step 5: 最终结果 — GPTQ vs RTN',
+      title: t.step5Title,
       content: (
         <svg viewBox={`0 0 ${W} 300`} className="w-full">
-          <Matrix data={QUANT} title="最终量化矩阵 (INT4)"
+          <Matrix data={QUANT} title={t.step5Matrix}
             colBgs={['#e0e0e0', '#e0e0e0', '#e0e0e0', '#e0e0e0']} />
           <rect x={100} y={230} width={170} height={50} rx={6}
             fill={COLORS.bgAlt} stroke={COLORS.red} strokeWidth={1.5} />
           <text x={185} y={252} textAnchor="middle" fontSize="10" fontWeight="600"
-            fill={COLORS.red} fontFamily={FONTS.sans}>RTN (逐元素)</text>
+            fill={COLORS.red} fontFamily={FONTS.sans}>{t.rtnLabel}</text>
           <text x={185} y={270} textAnchor="middle" fontSize="12" fontWeight="700"
             fill={COLORS.red} fontFamily={FONTS.mono}>MSE = 0.00082</text>
 
           <rect x={310} y={230} width={170} height={50} rx={6}
             fill={COLORS.bgAlt} stroke={COLORS.green} strokeWidth={1.5} />
           <text x={395} y={252} textAnchor="middle" fontSize="10" fontWeight="600"
-            fill={COLORS.green} fontFamily={FONTS.sans}>GPTQ (列级补偿)</text>
+            fill={COLORS.green} fontFamily={FONTS.sans}>{t.gptqLabel}</text>
           <text x={395} y={270} textAnchor="middle" fontSize="12" fontWeight="700"
             fill={COLORS.green} fontFamily={FONTS.mono}>MSE = 0.00031</text>
 
           <text x={W / 2} y={296} textAnchor="middle" fontSize="9" fill={COLORS.primary}
             fontFamily={FONTS.sans}>
-            ↓ GPTQ 将 MSE 降低约 62%
+            {t.reduction}
           </text>
         </svg>
       ),

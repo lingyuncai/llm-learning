@@ -4,38 +4,74 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const H = 420;
 
-// Ollama modules (blue)
-const OLLAMA_MODULES = [
-  { id: 'server', label: 'HTTP Server', x: 200, y: 50, w: 160, h: 32,
-    desc: 'Gin HTTP server, 处理 /api/chat, /api/generate 等 API 请求' },
-  { id: 'scheduler', label: 'Scheduler', x: 200, y: 100, w: 160, h: 32,
-    desc: '调度器: 管理模型加载/卸载, 请求排队, 内存预算' },
-  { id: 'llm', label: 'LLM Runner Manager', x: 200, y: 150, w: 160, h: 32,
-    desc: '管理 runner 子进程的启动、健康检查和生命周期' },
-];
 
-// llama.cpp modules (orange)
-const LLAMACPP_MODULES = [
-  { id: 'ollamarunner', label: 'ollamarunner', x: 80, y: 230, w: 140, h: 32,
-    desc: '纯 Go 推理引擎, ~21 架构, pipeline async 执行' },
-  { id: 'llamarunner', label: 'llamarunner', x: 340, y: 230, w: 140, h: 32,
-    desc: 'llama.cpp CGo 绑定, ~120+ 架构, 同步执行, 兼容性后备' },
-  { id: 'ggml', label: 'GGML Backend', x: 170, y: 310, w: 220, h: 32,
-    desc: '底层 tensor 计算库: 计算图构建、算子融合、多后端调度' },
-  { id: 'backends', label: 'CUDA / Metal / Vulkan / CPU', x: 120, y: 360, w: 320, h: 28,
-    desc: '硬件后端: CUDA (NVIDIA), Metal (Apple), Vulkan (跨平台), CPU (SIMD)' },
-];
+export default function OllamaArchitectureOverview({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Ollama + llama.cpp 双层架构',
+      processBoundary: '进程边界',
+      clickModule: '点击模块查看详情',
+      httpAnnotation: 'localhost HTTP',
+      httpServer: 'HTTP Server',
+      httpServerDesc: 'Gin HTTP server, 处理 /api/chat, /api/generate 等 API 请求',
+      scheduler: 'Scheduler',
+      schedulerDesc: '调度器: 管理模型加载/卸载, 请求排队, 内存预算',
+      llmRunner: 'LLM Runner Manager',
+      llmRunnerDesc: '管理 runner 子进程的启动、健康检查和生命周期',
+      ollamaRunner: 'ollamarunner',
+      ollamaRunnerDesc: '纯 Go 推理引擎, ~21 架构, pipeline async 执行',
+      llamaRunner: 'llamarunner',
+      llamaRunnerDesc: 'llama.cpp CGo 绑定, ~120+ 架构, 同步执行, 兼容性后备',
+      ggmlBackend: 'GGML Backend',
+      ggmlBackendDesc: '底层 tensor 计算库: 计算图构建、算子融合、多后端调度',
+      backends: 'CUDA / Metal / Vulkan / CPU',
+      backendsDesc: '硬件后端: CUDA (NVIDIA), Metal (Apple), Vulkan (跨平台), CPU (SIMD)',
+    },
+    en: {
+      title: 'Ollama + llama.cpp Two-Layer Architecture',
+      processBoundary: 'Process Boundary',
+      clickModule: 'Click module for details',
+      httpAnnotation: 'localhost HTTP',
+      httpServer: 'HTTP Server',
+      httpServerDesc: 'Gin HTTP server, handles /api/chat, /api/generate API requests',
+      scheduler: 'Scheduler',
+      schedulerDesc: 'Scheduler: manages model load/unload, request queue, memory budget',
+      llmRunner: 'LLM Runner Manager',
+      llmRunnerDesc: 'Manages runner subprocess startup, health checks, lifecycle',
+      ollamaRunner: 'ollamarunner',
+      ollamaRunnerDesc: 'Pure Go inference engine, ~21 architectures, pipeline async execution',
+      llamaRunner: 'llamarunner',
+      llamaRunnerDesc: 'llama.cpp CGo bindings, ~120+ architectures, sync execution, compatibility fallback',
+      ggmlBackend: 'GGML Backend',
+      ggmlBackendDesc: 'Low-level tensor library: compute graph building, operator fusion, multi-backend scheduling',
+      backends: 'CUDA / Metal / Vulkan / CPU',
+      backendsDesc: 'Hardware backends: CUDA (NVIDIA), Metal (Apple), Vulkan (cross-platform), CPU (SIMD)',
+    },
+  }[locale];
 
-export default function OllamaArchitectureOverview() {
+  // Update modules with translated descriptions
+  const ollamaModules = [
+    { id: 'server', label: t.httpServer, x: 200, y: 50, w: 160, h: 32, desc: t.httpServerDesc },
+    { id: 'scheduler', label: t.scheduler, x: 200, y: 100, w: 160, h: 32, desc: t.schedulerDesc },
+    { id: 'llm', label: t.llmRunner, x: 200, y: 150, w: 160, h: 32, desc: t.llmRunnerDesc },
+  ];
+
+  const llamacppModules = [
+    { id: 'ollamarunner', label: t.ollamaRunner, x: 80, y: 230, w: 140, h: 32, desc: t.ollamaRunnerDesc },
+    { id: 'llamarunner', label: t.llamaRunner, x: 340, y: 230, w: 140, h: 32, desc: t.llamaRunnerDesc },
+    { id: 'ggml', label: t.ggmlBackend, x: 170, y: 310, w: 220, h: 32, desc: t.ggmlBackendDesc },
+    { id: 'backends', label: t.backends, x: 120, y: 360, w: 320, h: 28, desc: t.backendsDesc },
+  ];
+
   const [selected, setSelected] = useState<string | null>(null);
-  const selModule = [...OLLAMA_MODULES, ...LLAMACPP_MODULES].find(m => m.id === selected);
+  const selModule = [...ollamaModules, ...llamacppModules].find(m => m.id === selected);
 
   return (
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Ollama + llama.cpp 双层架构
+          {t.title}
         </text>
 
         {/* Language boundary labels */}
@@ -50,11 +86,11 @@ export default function OllamaArchitectureOverview() {
         <line x1={50} y1={200} x2={530} y2={200}
           stroke="#94a3b8" strokeWidth={1} strokeDasharray="4,3" />
         <text x={540} y={204} fontSize="7" fill="#94a3b8" fontFamily={FONTS.sans}>
-          进程边界
+          {t.processBoundary}
         </text>
 
         {/* Ollama modules (blue) */}
-        {OLLAMA_MODULES.map(m => (
+        {ollamaModules.map(m => (
           <g key={m.id} onClick={() => setSelected(selected === m.id ? null : m.id)}
             style={{ cursor: 'pointer' }}>
             <rect x={m.x} y={m.y} width={m.w} height={m.h} rx={6}
@@ -68,7 +104,7 @@ export default function OllamaArchitectureOverview() {
         ))}
 
         {/* llama.cpp modules (orange) */}
-        {LLAMACPP_MODULES.map(m => (
+        {llamacppModules.map(m => (
           <g key={m.id} onClick={() => setSelected(selected === m.id ? null : m.id)}
             style={{ cursor: 'pointer' }}>
             <rect x={m.x} y={m.y} width={m.w} height={m.h} rx={6}
@@ -111,7 +147,7 @@ export default function OllamaArchitectureOverview() {
 
         {/* HTTP annotation */}
         <text x={280} y={214} textAnchor="middle" fontSize="7" fill="#94a3b8"
-          fontFamily={FONTS.sans}>localhost HTTP</text>
+          fontFamily={FONTS.sans}>{t.httpAnnotation}</text>
       </svg>
 
       {/* Detail panel */}
@@ -121,7 +157,7 @@ export default function OllamaArchitectureOverview() {
         </div>
       )}
       {!selModule && (
-        <p className="mt-2 text-xs text-gray-400 text-center">点击模块查看详情</p>
+        <p className="mt-2 text-xs text-gray-400 text-center">{t.clickModule}</p>
       )}
     </div>
   );

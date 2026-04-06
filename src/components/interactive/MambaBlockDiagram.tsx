@@ -24,7 +24,52 @@ function Block({ x, y, w, h, label, sublabel, color }: BlockProps) {
   );
 }
 
-export default function MambaBlockDiagram() {
+export default function MambaBlockDiagram({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Mamba Block 架构',
+      input: 'Input x',
+      residual: 'Residual',
+      linearExpand: 'Linear ↑',
+      expandSub: 'D → ED (expand)',
+      conv1d: 'Conv1d',
+      kernel: 'kernel=4',
+      siluActivation: 'SiLU (σ)',
+      activation: 'activation',
+      ssmSelective: 'SSM (Selective)',
+      ssmSub: 'Δ, B, C = f(input)',
+      siluGate: 'SiLU (gate)',
+      linearContract: 'Linear ↓',
+      contractSub: 'ED → D (contract)',
+      output: 'Output (B, L, D)',
+      noAttention: '无 Attention',
+      noMLP: '无 MLP',
+      comparedToTransformer: '比 Transformer',
+      simpler: 'block 更简洁',
+    },
+    en: {
+      title: 'Mamba Block Architecture',
+      input: 'Input x',
+      residual: 'Residual',
+      linearExpand: 'Linear ↑',
+      expandSub: 'D → ED (expand)',
+      conv1d: 'Conv1d',
+      kernel: 'kernel=4',
+      siluActivation: 'SiLU (σ)',
+      activation: 'activation',
+      ssmSelective: 'SSM (Selective)',
+      ssmSub: 'Δ, B, C = f(input)',
+      siluGate: 'SiLU (gate)',
+      linearContract: 'Linear ↓',
+      contractSub: 'ED → D (contract)',
+      output: 'Output (B, L, D)',
+      noAttention: 'No Attention',
+      noMLP: 'No MLP',
+      comparedToTransformer: 'Vs Transformer',
+      simpler: 'simpler block',
+    },
+  }[locale];
+
   const cx = W / 2;
   const bw = 160;
   const bh = 36;
@@ -44,12 +89,12 @@ export default function MambaBlockDiagram() {
 
       <text x={cx} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Mamba Block 架构
+        {t.title}
       </text>
 
       {/* Input */}
       <Block x={cx - bw / 2} y={42} w={bw} h={bh}
-        label="Input x" sublabel="(B, L, D)" color={COLORS.light} />
+        label={t.input} sublabel="(B, L, D)" color={COLORS.light} />
 
       {/* Residual arrow */}
       <line x1={cx + bw / 2 + 10} y1={60} x2={cx + bw / 2 + 40} y2={60}
@@ -58,14 +103,14 @@ export default function MambaBlockDiagram() {
         stroke={COLORS.mid} strokeWidth="1" strokeDasharray="4,2" />
       <text x={cx + bw / 2 + 50} y={250} fontSize="8" fill={COLORS.mid}
         fontFamily={FONTS.sans} transform={`rotate(90, ${cx + bw / 2 + 50}, 250)`}>
-        Residual
+        {t.residual}
       </text>
 
       {/* Linear projection expand */}
       <line x1={cx} y1={78} x2={cx} y2={98} stroke={COLORS.mid} strokeWidth="1.5"
         markerEnd="url(#mbd-arrow)" />
       <Block x={cx - bw / 2} y={100} w={bw} h={bh}
-        label="Linear ↑" sublabel="D → ED (expand)" color={COLORS.primary} />
+        label={t.linearExpand} sublabel={t.expandSub} color={COLORS.primary} />
 
       {/* Split into two branches */}
       <line x1={cx} y1={136} x2={cx} y2={150} stroke={COLORS.mid} strokeWidth="1.5" />
@@ -78,21 +123,21 @@ export default function MambaBlockDiagram() {
 
       {/* Left branch: Conv1d → SiLU → SSM */}
       <Block x={leftX} y={170} w={bw} h={bh}
-        label="Conv1d" sublabel="kernel=4" color={COLORS.orange} />
+        label={t.conv1d} sublabel={t.kernel} color={COLORS.orange} />
       <line x1={leftX + bw / 2} y1={206} x2={leftX + bw / 2} y2={220}
         stroke={COLORS.mid} strokeWidth="1.5" markerEnd="url(#mbd-arrow)" />
 
       <Block x={leftX} y={222} w={bw} h={bh}
-        label="SiLU (σ)" sublabel="activation" color={COLORS.green} />
+        label={t.siluActivation} sublabel={t.activation} color={COLORS.green} />
       <line x1={leftX + bw / 2} y1={258} x2={leftX + bw / 2} y2={272}
         stroke={COLORS.mid} strokeWidth="1.5" markerEnd="url(#mbd-arrow)" />
 
       <Block x={leftX} y={274} w={bw} h={bh}
-        label="SSM (Selective)" sublabel="Δ, B, C = f(input)" color={COLORS.primary} />
+        label={t.ssmSelective} sublabel={t.ssmSub} color={COLORS.primary} />
 
       {/* Right branch: SiLU gate */}
       <Block x={rightX} y={170} w={bw - 20} h={bh}
-        label="SiLU (gate)" sublabel="(B, L, ED)" color={COLORS.green} />
+        label={t.siluGate} sublabel="(B, L, ED)" color={COLORS.green} />
 
       {/* Gate arrow down to multiply level */}
       <line x1={rightX + (bw - 20) / 2} y1={206}
@@ -116,7 +161,7 @@ export default function MambaBlockDiagram() {
       <line x1={cx} y1={352} x2={cx} y2={372} stroke={COLORS.mid} strokeWidth="1.5"
         markerEnd="url(#mbd-arrow)" />
       <Block x={cx - bw / 2} y={374} w={bw} h={bh}
-        label="Linear ↓" sublabel="ED → D (contract)" color={COLORS.primary} />
+        label={t.linearContract} sublabel={t.contractSub} color={COLORS.primary} />
 
       {/* Add residual */}
       <line x1={cx} y1={410} x2={cx} y2={425} stroke={COLORS.mid} strokeWidth="1.5" />
@@ -132,20 +177,20 @@ export default function MambaBlockDiagram() {
       <line x1={cx} y1={440} x2={cx} y2={455} stroke={COLORS.mid} strokeWidth="1.5"
         markerEnd="url(#mbd-arrow)" />
       <text x={cx} y={468} textAnchor="middle" fontSize="10" fontWeight="600"
-        fill={COLORS.dark} fontFamily={FONTS.sans}>Output (B, L, D)</text>
+        fill={COLORS.dark} fontFamily={FONTS.sans}>{t.output}</text>
 
       {/* Annotation */}
       <text x={30} y={300} fontSize="8" fill={COLORS.mid} fontFamily={FONTS.sans}>
-        无 Attention
+        {t.noAttention}
       </text>
       <text x={30} y={312} fontSize="8" fill={COLORS.mid} fontFamily={FONTS.sans}>
-        无 MLP
+        {t.noMLP}
       </text>
       <text x={30} y={324} fontSize="8" fill={COLORS.mid} fontFamily={FONTS.sans}>
-        比 Transformer
+        {t.comparedToTransformer}
       </text>
       <text x={30} y={336} fontSize="8" fill={COLORS.mid} fontFamily={FONTS.sans}>
-        block 更简洁
+        {t.simpler}
       </text>
     </svg>
   );

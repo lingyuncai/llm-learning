@@ -38,7 +38,24 @@ function valueToColor(v: number): string {
   }
 }
 
-export default function SinusoidalHeatmap() {
+export default function SinusoidalHeatmap({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      sinChannel: 'sin 通道',
+      cosChannel: 'cos 通道',
+      position: 'Position',
+      dimension: 'Dimension (i)',
+      disclaimer: '低维度（左侧）变化频率高，高维度（右侧）变化频率低 — 每个位置有唯一的"频率指纹"',
+    },
+    en: {
+      sinChannel: 'sin channel',
+      cosChannel: 'cos channel',
+      position: 'Position',
+      dimension: 'Dimension (i)',
+      disclaimer: 'Low dimensions (left) vary at high frequency, high dimensions (right) at low frequency — each position has a unique "frequency fingerprint"',
+    },
+  }[locale];
+
   const [channel, setChannel] = useState<'sin' | 'cos'>('sin');
   const [hoverPos, setHoverPos] = useState<number | null>(null);
   const [hoverDim, setHoverDim] = useState<number | null>(null);
@@ -82,7 +99,7 @@ export default function SinusoidalHeatmap() {
                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
             }`}
           >
-            sin 通道
+            {t.sinChannel}
           </button>
           <button
             onClick={() => setChannel('cos')}
@@ -92,7 +109,7 @@ export default function SinusoidalHeatmap() {
                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
             }`}
           >
-            cos 通道
+            {t.cosChannel}
           </button>
         </div>
         {hoverPos !== null && hoverDim !== null && (
@@ -115,12 +132,12 @@ export default function SinusoidalHeatmap() {
           <text x={2} y={svgH / 2} textAnchor="middle" fontSize="8" fill={COLORS.mid}
             fontFamily="system-ui"
             transform={`rotate(-90, 8, ${svgH / 2})`}>
-            Position
+            {t.position}
           </text>
           {/* X-axis label */}
           <text x={labelPad + (NUM_DIM / 2) * cellSize / 2} y={labelPad - 6}
             textAnchor="middle" fontSize="8" fill={COLORS.mid} fontFamily="system-ui">
-            Dimension (i)
+            {t.dimension}
           </text>
           {/* Y tick marks */}
           {[0, 15, 31, 47, 63].map(p => (
@@ -168,7 +185,7 @@ export default function SinusoidalHeatmap() {
       </div>
 
       <p className="text-xs text-gray-500 text-center">
-        低维度（左侧）变化频率高，高维度（右侧）变化频率低 — 每个位置有唯一的"频率指纹"
+        {t.disclaimer}
       </p>
     </div>
   );

@@ -43,7 +43,36 @@ const CASES: HackCase[] = [
   },
 ];
 
-export default function RewardHackingGallery() {
+export default function RewardHackingGallery({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Reward Hacking 案例展',
+      subtitle: 'RM score 高 ≠ 真实质量高 — Goodhart\'s Law 的体现',
+      rmScore: 'RM Score',
+      trueQuality: '真实质量',
+      gap: 'Gap:',
+      rmThinks: 'RM 认为很好',
+      actualQuality: '实际质量很差',
+      outputExample: '模型输出示例：',
+      hackMechanism: 'Hack 机制：',
+      goodhartLaw: 'Goodhart\'s Law: "当一个度量成为目标时，它就不再是一个好的度量"',
+      solutions: '解决方案：更大更强的 RM、过程奖励 (PRM)、多样化训练数据、KL 约束、Constitutional AI',
+    },
+    en: {
+      title: 'Reward Hacking Gallery',
+      subtitle: 'High RM score ≠ High true quality — Manifestation of Goodhart\'s Law',
+      rmScore: 'RM Score',
+      trueQuality: 'True Quality',
+      gap: 'Gap:',
+      rmThinks: 'RM thinks it\'s good',
+      actualQuality: 'Actual quality is poor',
+      outputExample: 'Model Output Example:',
+      hackMechanism: 'Hack Mechanism:',
+      goodhartLaw: 'Goodhart\'s Law: "When a measure becomes a target, it ceases to be a good measure"',
+      solutions: 'Solutions: Larger RM, Process Reward Models (PRM), diverse training data, KL constraint, Constitutional AI',
+    },
+  }[locale];
+
   const [activeIdx, setActiveIdx] = useState(0);
   const active = CASES[activeIdx];
 
@@ -51,10 +80,10 @@ export default function RewardHackingGallery() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          Reward Hacking 案例展
+          {t.title}
         </text>
         <text x={W / 2} y={42} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          RM score 高 ≠ 真实质量高 — Goodhart's Law 的体现
+          {t.subtitle}
         </text>
 
         {CASES.map((c, i) => (
@@ -70,12 +99,12 @@ export default function RewardHackingGallery() {
         ))}
 
         <rect x={30} y={95} width={250} height={70} rx={8} fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth={1} />
-        <text x={45} y={115} fontSize={11} fontWeight={600} fill={COLORS.dark}>RM Score</text>
+        <text x={45} y={115} fontSize={11} fontWeight={600} fill={COLORS.dark}>{t.rmScore}</text>
         <rect x={130} y={103} width={active.rmScore * 130} height={14} rx={3} fill={COLORS.green} opacity={0.7} />
         <text x={130 + active.rmScore * 130 + 8} y={115} fontSize={10} fontWeight={600} fill={COLORS.green} fontFamily={FONTS.mono}>
           {active.rmScore.toFixed(2)}
         </text>
-        <text x={45} y={145} fontSize={11} fontWeight={600} fill={COLORS.dark}>真实质量</text>
+        <text x={45} y={145} fontSize={11} fontWeight={600} fill={COLORS.dark}>{t.trueQuality}</text>
         <rect x={130} y={133} width={active.quality * 130} height={14} rx={3} fill={COLORS.red} opacity={0.7} />
         <text x={130 + active.quality * 130 + 8} y={145} fontSize={10} fontWeight={600} fill={COLORS.red} fontFamily={FONTS.mono}>
           {active.quality.toFixed(2)}
@@ -83,17 +112,17 @@ export default function RewardHackingGallery() {
 
         <rect x={300} y={95} width={250} height={70} rx={8} fill={COLORS.waste} stroke={COLORS.red} strokeWidth={1} />
         <text x={425} y={115} textAnchor="middle" fontSize={20} fontWeight={700} fill={COLORS.red}>
-          Gap: {((active.rmScore - active.quality) * 100).toFixed(0)}%
+          {t.gap} {((active.rmScore - active.quality) * 100).toFixed(0)}%
         </text>
         <text x={425} y={138} textAnchor="middle" fontSize={10} fill={COLORS.dark}>
-          RM 认为很好
+          {t.rmThinks}
         </text>
         <text x={425} y={153} textAnchor="middle" fontSize={10} fill={COLORS.mid}>
-          实际质量很差
+          {t.actualQuality}
         </text>
 
         <rect x={30} y={175} width={520} height={90} rx={6} fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth={1} />
-        <text x={40} y={193} fontSize={10} fontWeight={600} fill={COLORS.dark}>模型输出示例：</text>
+        <text x={40} y={193} fontSize={10} fontWeight={600} fill={COLORS.dark}>{t.outputExample}</text>
         {active.example.split('\n').slice(0, 3).map((line, i) => (
           <text key={i} x={40} y={211 + i * 16} fontSize={10} fill={COLORS.mid}>
             {line.substring(0, 70)}{line.length > 70 ? '...' : ''}
@@ -101,17 +130,17 @@ export default function RewardHackingGallery() {
         ))}
 
         <rect x={30} y={275} width={520} height={50} rx={6} fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth={1} />
-        <text x={40} y={293} fontSize={10} fontWeight={600} fill={COLORS.orange}>Hack 机制：</text>
+        <text x={40} y={293} fontSize={10} fontWeight={600} fill={COLORS.orange}>{t.hackMechanism}</text>
         <text x={40} y={311} fontSize={10} fill={COLORS.dark}>
           {active.mechanism}
         </text>
 
         <rect x={30} y={335} width={520} height={48} rx={6} fill={COLORS.bgAlt} stroke={COLORS.primary} strokeWidth={1} />
         <text x={40} y={355} fontSize={10} fontWeight={600} fill={COLORS.primary}>
-          Goodhart's Law: "当一个度量成为目标时，它就不再是一个好的度量"
+          {t.goodhartLaw}
         </text>
         <text x={40} y={373} fontSize={10} fill={COLORS.mid}>
-          解决方案：更大更强的 RM、过程奖励 (PRM)、多样化训练数据、KL 约束、Constitutional AI
+          {t.solutions}
         </text>
       </svg>
     </div>

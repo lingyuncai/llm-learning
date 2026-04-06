@@ -19,8 +19,23 @@ const DATA: Series[] = [
   { name: 'Continuous Batch',  color: COLORS.green,   values: [5, 18, 34, 56, 72, 85] },
 ];
 
-export default function ThroughputBenchmark() {
+export default function ThroughputBenchmark({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [hovered, setHovered] = useState<{ series: number; point: number } | null>(null);
+
+  const t = {
+    zh: {
+      title: '吞吐量对比：三种批处理策略',
+      hoverHint: 'Hover 查看具体数值',
+      throughput: '吞吐量 (req/s)',
+      concurrency: '并发请求数',
+    },
+    en: {
+      title: 'Throughput Comparison: Three Batching Strategies',
+      hoverHint: 'Hover to see values',
+      throughput: 'Throughput (req/s)',
+      concurrency: 'Concurrent Requests',
+    },
+  }[locale];
 
   const chartX = 70;
   const chartY = 60;
@@ -35,11 +50,11 @@ export default function ThroughputBenchmark() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        吞吐量对比：三种批处理策略
+        {t.title}
       </text>
       <text x={W / 2} y={40} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        Hover 查看具体数值
+        {t.hoverHint}
       </text>
 
       {/* Y axis */}
@@ -56,7 +71,7 @@ export default function ThroughputBenchmark() {
       <text x={20} y={chartY + chartH / 2}
         textAnchor="middle" fontSize="9" fill={COLORS.mid} fontFamily={FONTS.sans}
         transform={`rotate(-90, 20, ${chartY + chartH / 2})`}>
-        吞吐量 (req/s)
+        {t.throughput}
       </text>
 
       {/* X axis */}
@@ -68,7 +83,7 @@ export default function ThroughputBenchmark() {
       ))}
       <text x={chartX + chartW / 2} y={chartY + chartH + 32}
         textAnchor="middle" fontSize="9" fill={COLORS.mid} fontFamily={FONTS.sans}>
-        并发请求数
+        {t.concurrency}
       </text>
 
       {/* Lines + dots */}

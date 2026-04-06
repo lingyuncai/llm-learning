@@ -45,7 +45,10 @@ const ILLUS_W = 320;
 const ILLUS_H = 160;
 
 /** Step 1: Computation graph with MatMul highlighted */
-function IllusFramework() {
+function IllusFramework({ locale }: { locale: 'zh' | 'en' }) {
+  const t = locale === 'zh'
+    ? { caption: 'model.forward() 执行计算图' }
+    : { caption: 'model.forward() executes computation graph' };
   const nodes = [
     { x: 40,  y: 40,  label: 'Embedding',  hl: false },
     { x: 160, y: 40,  label: 'LayerNorm',   hl: false },
@@ -75,13 +78,16 @@ function IllusFramework() {
         </g>
       ))}
       <text x={ILLUS_W/2} y={ILLUS_H-8} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily={FONTS.sans}>model.forward() 执行计算图</text>
+        fill="#94a3b8" fontFamily={FONTS.sans}>{t.caption}</text>
     </svg>
   );
 }
 
 /** Step 2: Graph optimizer fuses MatMul + BiasAdd */
-function IllusGraphOpt() {
+function IllusGraphOpt({ locale }: { locale: 'zh' | 'en' }) {
+  const t = locale === 'zh'
+    ? { fusion: '✦ MatMul + BiasAdd → FusedMatMul', caption: '算子融合：减少 kernel 启动次数' }
+    : { fusion: '✦ MatMul + BiasAdd → FusedMatMul', caption: 'Operator fusion: reduce kernel launches' };
   const nodes = [
     { x: 40,  y: 60, label: 'Embedding',     hl: false },
     { x: 160, y: 40, label: 'LayerNorm',      hl: false },
@@ -111,16 +117,19 @@ function IllusGraphOpt() {
       ))}
       <text x={200} y={100} textAnchor="middle" fontSize="9" fill={COLORS.green}
         fontFamily={FONTS.sans} fontWeight="600">
-        ✦ MatMul + BiasAdd → FusedMatMul
+        {t.fusion}
       </text>
       <text x={ILLUS_W/2} y={ILLUS_H-8} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily={FONTS.sans}>算子融合：减少 kernel 启动次数</text>
+        fill="#94a3b8" fontFamily={FONTS.sans}>{t.caption}</text>
     </svg>
   );
 }
 
 /** Step 3: Operator Library — tiling diagram */
-function IllusOperatorLib() {
+function IllusOperatorLib({ locale }: { locale: 'zh' | 'en' }) {
+  const t = locale === 'zh'
+    ? { matrixLabel: '大矩阵 A', blockLabel: 'Block', caption: '选择 tiling 策略，每个 tile → thread block' }
+    : { matrixLabel: 'Large matrix A', blockLabel: 'Block', caption: 'Select tiling strategy, each tile → thread block' };
   // 2×2 tile grid on a matrix
   const matX = 60, matY = 15, matW = 80, matH = 80;
   const tileW = matW/2, tileH = matH/2;
@@ -137,7 +146,7 @@ function IllusOperatorLib() {
           fill={tileColors[r*2+c]} stroke="#64748b" strokeWidth={0.5} />
       )))}
       <text x={matX+matW/2} y={matY+matH+14} textAnchor="middle" fontSize="8"
-        fill="#64748b" fontFamily={FONTS.sans}>大矩阵 A</text>
+        fill="#64748b" fontFamily={FONTS.sans}>{t.matrixLabel}</text>
 
       {/* Arrow */}
       <text x={165} y={55} fontSize="16" fill="#94a3b8">→</text>
@@ -152,28 +161,41 @@ function IllusOperatorLib() {
               fill={tileColors[i]} stroke="#64748b" strokeWidth={0.5} />
             <text x={tx+20} y={ty+20} textAnchor="middle" dominantBaseline="middle"
               fontSize="7" fill="#1a1a2e" fontFamily={FONTS.mono}>
-              Block {i}
+              {t.blockLabel} {i}
             </text>
           </g>
         );
       })}
       <text x={ILLUS_W/2} y={ILLUS_H-8} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily={FONTS.sans}>选择 tiling 策略，每个 tile → thread block</text>
+        fill="#94a3b8" fontFamily={FONTS.sans}>{t.caption}</text>
     </svg>
   );
 }
 
 /** Step 4: Kernel pseudo-code */
-function IllusKernel() {
-  const lines = [
-    '__global__ void matmul_tile(',
-    '  float *A, float *B, float *C) {',
-    '  int tile = blockIdx.x;',
-    '  // 每个 block 处理一个 tile',
-    '  for (int k = 0; k < K; k += TILE)',
-    '    C[tile] += A[tile,k] * B[k,tile];',
-    '}',
-  ];
+function IllusKernel({ locale }: { locale: 'zh' | 'en' }) {
+  const lines = locale === 'zh'
+    ? [
+        '__global__ void matmul_tile(',
+        '  float *A, float *B, float *C) {',
+        '  int tile = blockIdx.x;',
+        '  // 每个 block 处理一个 tile',
+        '  for (int k = 0; k < K; k += TILE)',
+        '    C[tile] += A[tile,k] * B[k,tile];',
+        '}',
+      ]
+    : [
+        '__global__ void matmul_tile(',
+        '  float *A, float *B, float *C) {',
+        '  int tile = blockIdx.x;',
+        '  // each block processes one tile',
+        '  for (int k = 0; k < K; k += TILE)',
+        '    C[tile] += A[tile,k] * B[k,tile];',
+        '}',
+      ];
+  const t = locale === 'zh'
+    ? { caption: '每个 thread block 执行一份 tile 的计算' }
+    : { caption: 'Each thread block executes computation for one tile' };
   return (
     <svg viewBox={`0 0 ${ILLUS_W} ${ILLUS_H}`} className="w-full">
       <rect x={10} y={5} width={ILLUS_W-20} height={ILLUS_H-20} rx={6}
@@ -186,18 +208,31 @@ function IllusKernel() {
         </text>
       ))}
       <text x={ILLUS_W/2} y={ILLUS_H-8} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily={FONTS.sans}>每个 thread block 执行一份 tile 的计算</text>
+        fill="#94a3b8" fontFamily={FONTS.sans}>{t.caption}</text>
     </svg>
   );
 }
 
 /** Step 5: Runtime — buffer + queue + dispatch */
-function IllusRuntime() {
+function IllusRuntime({ locale }: { locale: 'zh' | 'en' }) {
   const buffers = [
     { x: 30,  label: 'buf A', color: '#dbeafe' },
     { x: 110, label: 'buf B', color: '#dcfce7' },
     { x: 190, label: 'buf C', color: '#fef3c7' },
   ];
+  const t = locale === 'zh'
+    ? {
+        bufferLabel: 'GPU 显存 Buffer',
+        queueLabel: 'Command Queue',
+        queueItems: ['拷 A→GPU', '拷 B→GPU', 'dispatch kernel', '拷 C→CPU'],
+        caption: 'allocate buffer → 入队命令 → dispatch kernel',
+      }
+    : {
+        bufferLabel: 'GPU Memory Buffer',
+        queueLabel: 'Command Queue',
+        queueItems: ['copy A→GPU', 'copy B→GPU', 'dispatch kernel', 'copy C→CPU'],
+        caption: 'allocate buffer → enqueue commands → dispatch kernel',
+      };
   return (
     <svg viewBox={`0 0 ${ILLUS_W} ${ILLUS_H}`} className="w-full">
       {/* Buffers */}
@@ -210,16 +245,16 @@ function IllusRuntime() {
         </g>
       ))}
       <text x={150} y={8} textAnchor="middle" fontSize="8" fill="#94a3b8"
-        fontFamily={FONTS.sans}>GPU 显存 Buffer</text>
+        fontFamily={FONTS.sans}>{t.bufferLabel}</text>
 
       {/* Command Queue arrow */}
       <line x1={30} y1={75} x2={290} y2={75}
         stroke={COLORS.purple} strokeWidth={2} markerEnd="url(#arrowPurple)" />
       <text x={160} y={70} textAnchor="middle" fontSize="8" fill={COLORS.purple}
-        fontFamily={FONTS.sans} fontWeight="600">Command Queue</text>
+        fontFamily={FONTS.sans} fontWeight="600">{t.queueLabel}</text>
 
       {/* Queue items */}
-      {['拷 A→GPU', '拷 B→GPU', 'dispatch kernel', '拷 C→CPU'].map((item, i) => (
+      {t.queueItems.map((item, i) => (
         <g key={i}>
           <rect x={20+i*70} y={85} width={62} height={22} rx={3}
             fill={i===2 ? '#ede9fe' : '#f1f5f9'} stroke={i===2 ? COLORS.purple : '#cbd5e1'}
@@ -239,18 +274,27 @@ function IllusRuntime() {
       </defs>
 
       <text x={ILLUS_W/2} y={ILLUS_H-8} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily={FONTS.sans}>allocate buffer → 入队命令 → dispatch kernel</text>
+        fill="#94a3b8" fontFamily={FONTS.sans}>{t.caption}</text>
     </svg>
   );
 }
 
 /** Step 6: Driver — IR → compiler → ISA */
-function IllusDriver() {
-  const boxes = [
-    { x: 30,  w: 70, label: 'PTX / SPIR-V',  sub: '(IR 字节码)', color: '#fef3c7' },
-    { x: 140, w: 60, label: '编译器',          sub: '(Driver 内置)', color: '#e2e8f0' },
-    { x: 240, w: 70, label: 'SASS / Gen ISA',   sub: '(硬件指令)', color: '#dcfce7' },
-  ];
+function IllusDriver({ locale }: { locale: 'zh' | 'en' }) {
+  const boxes = locale === 'zh'
+    ? [
+        { x: 30,  w: 70, label: 'PTX / SPIR-V',  sub: '(IR 字节码)', color: '#fef3c7' },
+        { x: 140, w: 60, label: '编译器',          sub: '(Driver 内置)', color: '#e2e8f0' },
+        { x: 240, w: 70, label: 'SASS / Gen ISA',   sub: '(硬件指令)', color: '#dcfce7' },
+      ]
+    : [
+        { x: 30,  w: 70, label: 'PTX / SPIR-V',  sub: '(IR bytecode)', color: '#fef3c7' },
+        { x: 140, w: 60, label: 'Compiler',          sub: '(Driver built-in)', color: '#e2e8f0' },
+        { x: 240, w: 70, label: 'SASS / Gen ISA',   sub: '(HW instruction)', color: '#dcfce7' },
+      ];
+  const t = locale === 'zh'
+    ? { jit: 'JIT 编译 (运行时) 或 AOT (构建时)', caption: 'Driver 将 IR 编译为硬件可执行的 ISA' }
+    : { jit: 'JIT compilation (runtime) or AOT (build time)', caption: 'Driver compiles IR to hardware-executable ISA' };
   return (
     <svg viewBox={`0 0 ${ILLUS_W} ${ILLUS_H}`} className="w-full">
       {boxes.map((b, i) => (
@@ -271,7 +315,7 @@ function IllusDriver() {
 
       <text x={160} y={105} textAnchor="middle" fontSize="9" fill={COLORS.orange}
         fontFamily={FONTS.sans} fontWeight="600">
-        JIT 编译 (运行时) 或 AOT (构建时)
+        {t.jit}
       </text>
 
       <defs>
@@ -280,13 +324,16 @@ function IllusDriver() {
         </marker>
       </defs>
       <text x={ILLUS_W/2} y={ILLUS_H-8} textAnchor="middle" fontSize="8"
-        fill="#94a3b8" fontFamily={FONTS.sans}>Driver 将 IR 编译为硬件可执行的 ISA</text>
+        fill="#94a3b8" fontFamily={FONTS.sans}>{t.caption}</text>
     </svg>
   );
 }
 
 /** Step 7: Hardware — SM/EU parallel execution */
-function IllusHardware() {
+function IllusHardware({ locale }: { locale: 'zh' | 'en' }) {
+  const t = locale === 'zh'
+    ? { dieLabel: 'GPU Die', result: '结果写回显存' }
+    : { dieLabel: 'GPU Die', result: 'Result written back to memory' };
   const smCount = 6;
   const smW = 38, smH = 50, gap = 8;
   const totalW = smCount * (smW + gap) - gap;
@@ -294,7 +341,7 @@ function IllusHardware() {
   return (
     <svg viewBox={`0 0 ${ILLUS_W} ${ILLUS_H}`} className="w-full">
       <text x={ILLUS_W/2} y={14} textAnchor="middle" fontSize="9" fill="#64748b"
-        fontFamily={FONTS.sans}>GPU Die</text>
+        fontFamily={FONTS.sans}>{t.dieLabel}</text>
       <rect x={startX-10} y={20} width={totalW+20} height={smH+20} rx={6}
         fill="#f1f5f9" stroke="#94a3b8" strokeWidth={1} />
       {Array.from({length: smCount}).map((_, i) => (
@@ -321,7 +368,7 @@ function IllusHardware() {
       <line x1={ILLUS_W/2} y1={100} x2={ILLUS_W/2} y2={120}
         stroke={COLORS.green} strokeWidth={1.5} markerEnd="url(#arrowGreen)" />
       <text x={ILLUS_W/2} y={135} textAnchor="middle" fontSize="8" fill={COLORS.green}
-        fontFamily={FONTS.sans} fontWeight="600">结果写回显存</text>
+        fontFamily={FONTS.sans} fontWeight="600">{t.result}</text>
       <defs>
         <marker id="arrowGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
           <path d="M0,0 L8,3 L0,6" fill={COLORS.green} />
@@ -342,19 +389,29 @@ const STEP_ILLUSTRATIONS = [
   IllusHardware,
 ];
 
-const STEP_TITLES = [
-  '1. Framework: model.forward() 遇到 MatMul',
-  '2. Graph Optimizer: MatMul + BiasAdd 融合',
-  '3. Operator Library: 选择 tiling 策略',
-  '4. Kernel: 每个 thread block 处理一个 tile',
-  '5. Runtime: allocate buffer → dispatch kernel',
-  '6. Driver: IR → JIT 编译 → 硬件 ISA',
-  '7. Hardware: SM/EU 并行执行 warp',
-];
-
 const STEP_LAYER_INDICES = [0, 1, 2, 3, 4, 5, 6]; // maps step → STACK_LAYERS index
 
-export default function MatmulJourney() {
+export default function MatmulJourney({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const STEP_TITLES = locale === 'zh'
+    ? [
+        '1. Framework: model.forward() 遇到 MatMul',
+        '2. Graph Optimizer: MatMul + BiasAdd 融合',
+        '3. Operator Library: 选择 tiling 策略',
+        '4. Kernel: 每个 thread block 处理一个 tile',
+        '5. Runtime: allocate buffer → dispatch kernel',
+        '6. Driver: IR → JIT 编译 → 硬件 ISA',
+        '7. Hardware: SM/EU 并行执行 warp',
+      ]
+    : [
+        '1. Framework: model.forward() encounters MatMul',
+        '2. Graph Optimizer: MatMul + BiasAdd fusion',
+        '3. Operator Library: select tiling strategy',
+        '4. Kernel: each thread block processes one tile',
+        '5. Runtime: allocate buffer → dispatch kernel',
+        '6. Driver: IR → JIT compile → hardware ISA',
+        '7. Hardware: SM/EU parallel execution of warps',
+      ];
+
   const steps = STEP_TITLES.map((title, i) => {
     const Illustration = STEP_ILLUSTRATIONS[i];
     return {
@@ -367,7 +424,7 @@ export default function MatmulJourney() {
           </div>
           {/* Right: illustration */}
           <div className="flex-1 border border-gray-200 rounded-lg bg-white p-1 flex items-center">
-            <Illustration />
+            <Illustration locale={locale} />
           </div>
         </div>
       ),

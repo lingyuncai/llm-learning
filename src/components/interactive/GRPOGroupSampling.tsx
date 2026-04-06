@@ -4,7 +4,28 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const H = 420;
 
-export default function GRPOGroupSampling() {
+export default function GRPOGroupSampling({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'GRPO 组采样机制',
+      subtitle: '同一 Prompt → 采样 G 个回答 → 组内相对排序 → 计算 Advantage',
+      promptText: '同一个 Prompt → 采样',
+      responses: '个回答',
+      sortLabel: 'score 排序 | 绿色=比平均好(A>0) | 红色=比平均差(A<0)',
+      formulaTitle: 'A_i = (r_i - mean(r)) / std(r)',
+      formulaDesc: 'G 越大 → Advantage 估计越准（方差越小）→ 但计算成本线性增长 | 实践中 G=8~64',
+    },
+    en: {
+      title: 'GRPO Group Sampling Mechanism',
+      subtitle: 'Same Prompt → Sample G responses → Rank within group → Compute Advantage',
+      promptText: 'Same Prompt → Sample',
+      responses: 'responses',
+      sortLabel: 'score sorted | green=better than avg (A>0) | red=worse than avg (A<0)',
+      formulaTitle: 'A_i = (r_i - mean(r)) / std(r)',
+      formulaDesc: 'Larger G → More accurate Advantage (lower variance) → But linear cost increase | In practice G=8~64',
+    },
+  }[locale];
+
   const [groupSize, setGroupSize] = useState(8);
 
   const samples = useMemo(() => {
@@ -27,10 +48,10 @@ export default function GRPOGroupSampling() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          GRPO 组采样机制
+          {t.title}
         </text>
         <text x={W / 2} y={42} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          同一 Prompt → 采样 G 个回答 → 组内相对排序 → 计算 Advantage
+          {t.subtitle}
         </text>
 
         {/* Group size slider */}
@@ -49,7 +70,7 @@ export default function GRPOGroupSampling() {
         {/* Prompt */}
         <rect x={barX} y={barY - 14} width={barW} height={14} rx={3} fill={COLORS.valid} />
         <text x={barX + barW / 2} y={barY - 3} textAnchor="middle" fontSize={8} fill={COLORS.primary}>
-          同一个 Prompt → 采样 {groupSize} 个回答
+          {t.promptText} {groupSize} {t.responses}
         </text>
 
         {/* Bars */}
@@ -88,16 +109,16 @@ export default function GRPOGroupSampling() {
 
         {/* Labels */}
         <text x={barX + barW / 2} y={barY + barH + 28} textAnchor="middle" fontSize={9} fill={COLORS.mid}>
-          score 排序 | 绿色=比平均好(A{'>'}0) | 红色=比平均差(A{'<'}0)
+          {t.sortLabel}
         </text>
 
         {/* Formula */}
         <rect x={30} y={H - 66} width={520} height={52} rx={6} fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth={1} />
         <text x={40} y={H - 48} fontSize={10} fontWeight={600} fill={COLORS.primary} fontFamily={FONTS.mono}>
-          A_i = (r_i - mean(r)) / std(r)
+          {t.formulaTitle}
         </text>
         <text x={40} y={H - 30} fontSize={10} fill={COLORS.mid}>
-          G 越大 → Advantage 估计越准（方差越小）→ 但计算成本线性增长 | 实践中 G=8~64
+          {t.formulaDesc}
         </text>
       </svg>
     </div>

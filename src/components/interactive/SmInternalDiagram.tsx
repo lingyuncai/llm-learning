@@ -27,7 +27,7 @@ function UnitRow({ x, y, w, label, count, color, bg }: UnitRowProps) {
   );
 }
 
-function ProcessingBlock({ x, y, index }: { x: number; y: number; index: number }) {
+function ProcessingBlock({ x, y, index, t }: { x: number; y: number; index: number; t: any }) {
   const uw = PART_W - 16; // unit width inside partition
   const ux = x + 8;
   return (
@@ -37,37 +37,82 @@ function ProcessingBlock({ x, y, index }: { x: number; y: number; index: number 
         fill="#fafbfc" stroke="#94a3b8" strokeWidth={1.5} />
       <text x={x + PART_W / 2} y={y + 14} textAnchor="middle"
         fontSize="9" fontWeight="700" fill="#37474f" fontFamily={FONTS.sans}>
-        Processing Block {index}
+        {t.processingBlock} {index}
       </text>
 
       {/* Control — orange */}
       <UnitRow x={ux} y={y + 24} w={uw}
-        label="Warp Scheduler" count="×1" color={COLORS.orange} bg="#fff7ed" />
+        label={t.warpScheduler} count="×1" color={COLORS.orange} bg="#fff7ed" />
       <UnitRow x={ux} y={y + 50} w={uw}
-        label="Dispatch Unit" count="×1" color={COLORS.orange} bg="#fff7ed" />
+        label={t.dispatchUnit} count="×1" color={COLORS.orange} bg="#fff7ed" />
 
       {/* Compute — blue */}
       <UnitRow x={ux} y={y + 80} w={uw}
-        label="FP32 CUDA Core" count="×32" color={COLORS.primary} bg="#dbeafe" />
+        label={t.fp32Core} count="×32" color={COLORS.primary} bg="#dbeafe" />
       <UnitRow x={ux} y={y + 106} w={uw}
-        label="INT32 Core" count="×16" color={COLORS.primary} bg="#eff6ff" />
+        label={t.int32Core} count="×16" color={COLORS.primary} bg="#eff6ff" />
       <UnitRow x={ux} y={y + 132} w={uw}
-        label="FP64 Core" count="×16" color={COLORS.primary} bg="#eff6ff" />
+        label={t.fp64Core} count="×16" color={COLORS.primary} bg="#eff6ff" />
 
       {/* Special — purple */}
       <UnitRow x={ux} y={y + 162} w={uw}
-        label="Tensor Core" count="×1" color={COLORS.purple} bg="#f3e8ff" />
+        label={t.tensorCore} count="×1" color={COLORS.purple} bg="#f3e8ff" />
       <UnitRow x={ux} y={y + 188} w={uw}
-        label="SFU (sin/cos/exp)" count="×4" color={COLORS.purple} bg="#faf5ff" />
+        label={t.sfu} count="×4" color={COLORS.purple} bg="#faf5ff" />
 
       {/* Memory — green */}
       <UnitRow x={ux} y={y + 218} w={uw}
-        label="Load/Store Unit" count="×8" color={COLORS.green} bg="#dcfce7" />
+        label={t.loadStore} count="×8" color={COLORS.green} bg="#dcfce7" />
     </g>
   );
 }
 
-export default function SmInternalDiagram() {
+export default function SmInternalDiagram({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Streaming Multiprocessor (SM) — Hopper 架构',
+      subtitle: '每个 SM 包含 4 个 Processing Block（Sub-partition），各有独立的 Warp Scheduler',
+      warpScheduler: 'Warp Scheduler',
+      dispatchUnit: 'Dispatch Unit',
+      fp32Core: 'FP32 CUDA Core',
+      int32Core: 'INT32 Core',
+      fp64Core: 'FP64 Core',
+      tensorCore: 'Tensor Core',
+      sfu: 'SFU (sin/cos/exp)',
+      loadStore: 'Load/Store Unit',
+      processingBlock: 'Processing Block',
+      registerFile: 'Register File — 256 KB',
+      registerDesc: '每线程最多 255 个 32-bit register',
+      sharedMemory: 'Shared Memory / L1 Cache — 228 KB',
+      sharedDesc: '可配置分配比例（更多 shared 或更多 L1）',
+      controlUnit: '控制单元',
+      computeUnit: '计算单元',
+      specialUnit: '特殊单元',
+      memoryUnit: '存储单元',
+    },
+    en: {
+      title: 'Streaming Multiprocessor (SM) — Hopper Architecture',
+      subtitle: 'Each SM contains 4 Processing Blocks (Sub-partitions), each with independent Warp Scheduler',
+      warpScheduler: 'Warp Scheduler',
+      dispatchUnit: 'Dispatch Unit',
+      fp32Core: 'FP32 CUDA Core',
+      int32Core: 'INT32 Core',
+      fp64Core: 'FP64 Core',
+      tensorCore: 'Tensor Core',
+      sfu: 'SFU (sin/cos/exp)',
+      loadStore: 'Load/Store Unit',
+      processingBlock: 'Processing Block',
+      registerFile: 'Register File — 256 KB',
+      registerDesc: 'Max 255 32-bit registers per thread',
+      sharedMemory: 'Shared Memory / L1 Cache — 228 KB',
+      sharedDesc: 'Configurable allocation ratio (more shared or more L1)',
+      controlUnit: 'Control Units',
+      computeUnit: 'Compute Units',
+      specialUnit: 'Special Units',
+      memoryUnit: 'Memory Units',
+    },
+  }[locale];
+
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img"
       aria-label="SM internal structure with 4 processing blocks">
@@ -75,18 +120,18 @@ export default function SmInternalDiagram() {
       {/* SM label */}
       <text x={W / 2} y={20} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Streaming Multiprocessor (SM) — Hopper 架构
+        {t.title}
       </text>
       <text x={W / 2} y={36} textAnchor="middle" fontSize="9"
         fill="#64748b" fontFamily={FONTS.sans}>
-        每个 SM 包含 4 个 Processing Block（Sub-partition），各有独立的 Warp Scheduler
+        {t.subtitle}
       </text>
 
       {/* 4 processing blocks */}
       {Array.from({ length: 4 }).map((_, i) => (
         <ProcessingBlock key={i}
           x={PART_START_X + i * (PART_W + PART_GAP)}
-          y={PART_START_Y} index={i} />
+          y={PART_START_Y} index={i} t={t} />
       ))}
 
       {/* Shared resources at bottom */}
@@ -101,11 +146,11 @@ export default function SmInternalDiagram() {
             <text x={PART_START_X + fullW / 4 - 3} y={sharedY + 13}
               textAnchor="middle" fontSize="10" fontWeight="600"
               fill={COLORS.green} fontFamily={FONTS.sans}>
-              Register File — 256 KB
+              {t.registerFile}
             </text>
             <text x={PART_START_X + fullW / 4 - 3} y={sharedY + 26}
               textAnchor="middle" fontSize="8" fill="#64748b" fontFamily={FONTS.sans}>
-              每线程最多 255 个 32-bit register
+              {t.registerDesc}
             </text>
 
             {/* Shared Memory / L1 */}
@@ -114,19 +159,19 @@ export default function SmInternalDiagram() {
             <text x={PART_START_X + fullW * 3 / 4 + 3} y={sharedY + 13}
               textAnchor="middle" fontSize="10" fontWeight="600"
               fill={COLORS.orange} fontFamily={FONTS.sans}>
-              Shared Memory / L1 Cache — 228 KB
+              {t.sharedMemory}
             </text>
             <text x={PART_START_X + fullW * 3 / 4 + 3} y={sharedY + 26}
               textAnchor="middle" fontSize="8" fill="#64748b" fontFamily={FONTS.sans}>
-              可配置分配比例（更多 shared 或更多 L1）
+              {t.sharedDesc}
             </text>
 
             {/* Legend — colored squares, no emoji */}
             {[
-              { color: COLORS.orange, label: '控制单元' },
-              { color: COLORS.primary, label: '计算单元' },
-              { color: COLORS.purple, label: '特殊单元' },
-              { color: COLORS.green, label: '存储单元' },
+              { color: COLORS.orange, label: t.controlUnit },
+              { color: COLORS.primary, label: t.computeUnit },
+              { color: COLORS.purple, label: t.specialUnit },
+              { color: COLORS.green, label: t.memoryUnit },
             ].map((item, idx) => (
               <g key={idx}>
                 <rect x={PART_START_X + idx * 80} y={sharedY + 44} width={10} height={10} rx={2}

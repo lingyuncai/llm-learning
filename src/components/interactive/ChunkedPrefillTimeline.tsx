@@ -7,7 +7,33 @@ const TICK_W = 36;
 const BAR_H = 24;
 const GAP = 4;
 
-export default function ChunkedPrefillTimeline() {
+export default function ChunkedPrefillTimeline({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Chunked Prefill：长 Prompt 分块调度',
+      unchunked: '不分块：Prefill 独占 GPU',
+      chunked: '分块：Prefill 与 Decode 交替执行',
+      newRequest: '新请求',
+      decodeA: 'Decode A',
+      decodeB: 'Decode B',
+      blocked: '被阻塞 — TTFT 飙升!',
+      blockedUser: '被阻塞 — 用户感知卡顿!',
+      longPrefill: 'Long Prefill (8 iteration 独占)',
+      summary: 'Chunked Prefill 将长 prompt 切成小块，与 decode 交替执行 — Decode 请求不再被阻塞',
+    },
+    en: {
+      title: 'Chunked Prefill: Long Prompt Chunked Scheduling',
+      unchunked: 'Non-chunked: Prefill Monopolizes GPU',
+      chunked: 'Chunked: Prefill and Decode Interleaved',
+      newRequest: 'New Request',
+      decodeA: 'Decode A',
+      decodeB: 'Decode B',
+      blocked: 'Blocked — TTFT Spike!',
+      blockedUser: 'Blocked — User Perceives Lag!',
+      longPrefill: 'Long Prefill (8 iteration monopoly)',
+      summary: 'Chunked Prefill splits long prompt into small chunks, interleaves with decode — Decode requests no longer blocked',
+    },
+  }[locale];
   const chartX = 70;
   const unchunkedY = 70;
   const chunkedY = 200;
@@ -17,52 +43,52 @@ export default function ChunkedPrefillTimeline() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Chunked Prefill：长 Prompt 分块调度
+        {t.title}
       </text>
 
       {/* Scenario 1: Non-chunked */}
       <text x={chartX + 5 * TICK_W} y={unchunkedY - 10} textAnchor="middle"
         fontSize="11" fontWeight="700" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        不分块：Prefill 独占 GPU
+        {t.unchunked}
       </text>
       <text x={labelX} y={unchunkedY + BAR_H / 2 + 4} fontSize="8" fontWeight="600"
-        fill={COLORS.mid} fontFamily={FONTS.sans}>新请求</text>
+        fill={COLORS.mid} fontFamily={FONTS.sans}>{t.newRequest}</text>
       <rect x={chartX} y={unchunkedY} width={8 * TICK_W} height={BAR_H} rx={4}
         fill={COLORS.primary} opacity={0.8} />
       <text x={chartX + 4 * TICK_W} y={unchunkedY + BAR_H / 2 + 4} textAnchor="middle"
         fontSize="9" fontWeight="600" fill="#fff" fontFamily={FONTS.sans}>
-        Long Prefill (8 iteration 独占)
+        {t.longPrefill}
       </text>
 
       <text x={labelX} y={unchunkedY + BAR_H + GAP + BAR_H / 2 + 4} fontSize="8"
-        fontWeight="600" fill={COLORS.mid} fontFamily={FONTS.sans}>Decode A</text>
+        fontWeight="600" fill={COLORS.mid} fontFamily={FONTS.sans}>{t.decodeA}</text>
       <rect x={chartX} y={unchunkedY + BAR_H + GAP}
         width={8 * TICK_W} height={BAR_H} rx={4}
         fill={COLORS.waste} opacity={0.6} stroke={COLORS.red} strokeWidth="1"
         strokeDasharray="3,2" />
       <text x={chartX + 4 * TICK_W} y={unchunkedY + BAR_H + GAP + BAR_H / 2 + 4}
         textAnchor="middle" fontSize="9" fill={COLORS.red} fontFamily={FONTS.sans}>
-        被阻塞 — TTFT 飙升!
+        {t.blocked}
       </text>
 
       <text x={labelX} y={unchunkedY + 2 * (BAR_H + GAP) + BAR_H / 2 + 4} fontSize="8"
-        fontWeight="600" fill={COLORS.mid} fontFamily={FONTS.sans}>Decode B</text>
+        fontWeight="600" fill={COLORS.mid} fontFamily={FONTS.sans}>{t.decodeB}</text>
       <rect x={chartX} y={unchunkedY + 2 * (BAR_H + GAP)}
         width={8 * TICK_W} height={BAR_H} rx={4}
         fill={COLORS.waste} opacity={0.6} stroke={COLORS.red} strokeWidth="1"
         strokeDasharray="3,2" />
       <text x={chartX + 4 * TICK_W} y={unchunkedY + 2 * (BAR_H + GAP) + BAR_H / 2 + 4}
         textAnchor="middle" fontSize="9" fill={COLORS.red} fontFamily={FONTS.sans}>
-        被阻塞 — 用户感知卡顿!
+        {t.blockedUser}
       </text>
 
       {/* Scenario 2: Chunked */}
       <text x={chartX + 5 * TICK_W} y={chunkedY - 10} textAnchor="middle"
         fontSize="11" fontWeight="700" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        分块：Prefill 与 Decode 交替执行
+        {t.chunked}
       </text>
       <text x={labelX} y={chunkedY + BAR_H / 2 + 4} fontSize="8" fontWeight="600"
-        fill={COLORS.mid} fontFamily={FONTS.sans}>新请求</text>
+        fill={COLORS.mid} fontFamily={FONTS.sans}>{t.newRequest}</text>
       {[0, 2, 4, 6].map((t, i) => (
         <g key={`chunk-${i}`}>
           <rect x={chartX + t * TICK_W} y={chunkedY} width={TICK_W} height={BAR_H} rx={4}
@@ -75,7 +101,7 @@ export default function ChunkedPrefillTimeline() {
       ))}
 
       <text x={labelX} y={chunkedY + BAR_H + GAP + BAR_H / 2 + 4} fontSize="8"
-        fontWeight="600" fill={COLORS.mid} fontFamily={FONTS.sans}>Decode A</text>
+        fontWeight="600" fill={COLORS.mid} fontFamily={FONTS.sans}>{t.decodeA}</text>
       {[1, 3, 5, 7].map((t) => (
         <g key={`da-${t}`}>
           <rect x={chartX + t * TICK_W} y={chunkedY + BAR_H + GAP}
@@ -88,7 +114,7 @@ export default function ChunkedPrefillTimeline() {
       ))}
 
       <text x={labelX} y={chunkedY + 2 * (BAR_H + GAP) + BAR_H / 2 + 4} fontSize="8"
-        fontWeight="600" fill={COLORS.mid} fontFamily={FONTS.sans}>Decode B</text>
+        fontWeight="600" fill={COLORS.mid} fontFamily={FONTS.sans}>{t.decodeB}</text>
       {[1, 3, 5, 7].map((t) => (
         <g key={`db-${t}`}>
           <rect x={chartX + t * TICK_W} y={chunkedY + 2 * (BAR_H + GAP)}
@@ -104,7 +130,7 @@ export default function ChunkedPrefillTimeline() {
         fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
       <text x={W / 2} y={H - 17} textAnchor="middle" fontSize="9"
         fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Chunked Prefill 将长 prompt 切成小块，与 decode 交替执行 — Decode 请求不再被阻塞
+        {t.summary}
       </text>
     </svg>
   );

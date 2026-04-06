@@ -2,12 +2,31 @@
 import React from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
-const VTuneGpuProfile: React.FC = () => {
+const VTuneGpuProfile: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
   const W = 580;
   const H = 360;
   const margin = { top: 40, right: 30, bottom: 20, left: 180 };
   const barW = W - margin.left - margin.right;
   const rowH = 50;
+
+  const t = {
+    zh: {
+      title: 'VTune GPU Profiling View (模拟)',
+      footer: 'VTune GPU Compute/Media Hotspots 分析视图示例',
+      euActiveAnnotation: '越高越好，目标 >80%',
+      euStallAnnotation: '高 stall = 等待数据或同步',
+      euIdleAnnotation: '高 idle = occupancy 不足',
+      l3Annotation: '接近峰值 = memory-bound',
+    },
+    en: {
+      title: 'VTune GPU Profiling View (Simulated)',
+      footer: 'VTune GPU Compute/Media Hotspots Analysis View Example',
+      euActiveAnnotation: 'Higher is better, target >80%',
+      euStallAnnotation: 'High stall = waiting for data/sync',
+      euIdleAnnotation: 'High idle = low occupancy',
+      l3Annotation: 'Near peak = memory-bound',
+    },
+  }[locale];
 
   const metrics = [
     {
@@ -15,7 +34,7 @@ const VTuneGpuProfile: React.FC = () => {
       value: 72,
       peak: 100,
       color: COLORS.green,
-      annotation: '越高越好，目标 >80%',
+      annotation: t.euActiveAnnotation,
       annotationX: 380,
     },
     {
@@ -23,7 +42,7 @@ const VTuneGpuProfile: React.FC = () => {
       value: 18,
       peak: 100,
       color: COLORS.orange,
-      annotation: '高 stall = 等待数据或同步',
+      annotation: t.euStallAnnotation,
       annotationX: 380,
     },
     {
@@ -31,7 +50,7 @@ const VTuneGpuProfile: React.FC = () => {
       value: 10,
       peak: 100,
       color: COLORS.mid,
-      annotation: '高 idle = occupancy 不足',
+      annotation: t.euIdleAnnotation,
       annotationX: 380,
     },
     {
@@ -40,7 +59,7 @@ const VTuneGpuProfile: React.FC = () => {
       peak: 90,
       color: COLORS.primary,
       unit: ' GB/s',
-      annotation: '接近峰值 = memory-bound',
+      annotation: t.l3Annotation,
       annotationX: 380,
     },
     {
@@ -89,7 +108,7 @@ const VTuneGpuProfile: React.FC = () => {
           fill={COLORS.dark}
           fontFamily={FONTS.sans}
         >
-          VTune GPU Profiling View (模拟)
+          {t.title}
         </text>
 
         <g transform={`translate(${margin.left},${margin.top})`}>
@@ -188,7 +207,7 @@ const VTuneGpuProfile: React.FC = () => {
           fontFamily={FONTS.sans}
           fontStyle="italic"
         >
-          VTune GPU Compute/Media Hotspots 分析视图示例
+          {t.footer}
         </text>
       </svg>
     </div>

@@ -67,7 +67,38 @@ function SystolicGrid({ x, y, rows, cols, label }: {
   );
 }
 
-export default function XmxArchitectureDiagram() {
+export default function XmxArchitectureDiagram({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Intel Xe-Core 内部结构 — XMX 矩阵引擎',
+      subtitle: 'Xe2 架构 (Lunar Lake / Panther Lake) — 每 Xe-Core 含 8 个 XMX 单元',
+      xeCore: 'Xe-Core',
+      vectorEngine0: 'Vector Engine 0',
+      vectorEngine1: 'Vector Engine 1',
+      vectorDesc: 'FP32/FP16/INT 8-wide SIMD',
+      xmxEngines: 'XMX 矩阵引擎 (×8)',
+      threadControl: 'Thread Control',
+      simdSchedule: 'SIMD 调度',
+      slm: 'SLM (Shared Local Memory) — 64 KB',
+      l1Cache: 'L1 Cache / Instruction Cache',
+      xmxSpecs: '每 XMX 单元: 8×8 systolic array, 支持 FP16/BF16/TF32/INT8/INT4 | D(M×N) = A(M×K) × B(K×N) + C(M×N), M/N/K 取决于精度 | 编程: SYCL joint_matrix / ESIMD',
+    },
+    en: {
+      title: 'Intel Xe-Core Internal Structure — XMX Matrix Engine',
+      subtitle: 'Xe2 Architecture (Lunar Lake / Panther Lake) — 8 XMX Units per Xe-Core',
+      xeCore: 'Xe-Core',
+      vectorEngine0: 'Vector Engine 0',
+      vectorEngine1: 'Vector Engine 1',
+      vectorDesc: 'FP32/FP16/INT 8-wide SIMD',
+      xmxEngines: 'XMX Matrix Engines (×8)',
+      threadControl: 'Thread Control',
+      simdSchedule: 'SIMD Scheduler',
+      slm: 'SLM (Shared Local Memory) — 64 KB',
+      l1Cache: 'L1 Cache / Instruction Cache',
+      xmxSpecs: 'Each XMX Unit: 8×8 systolic array, supports FP16/BF16/TF32/INT8/INT4 | D(M×N) = A(M×K) × B(K×N) + C(M×N), M/N/K depend on precision | Programming: SYCL joint_matrix / ESIMD',
+    },
+  }[locale];
+
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img"
       aria-label="Intel XMX architecture within Xe-Core">
@@ -75,11 +106,11 @@ export default function XmxArchitectureDiagram() {
       {/* Title */}
       <text x={W / 2} y={22} textAnchor="middle" fontSize="13" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Intel Xe-Core 内部结构 — XMX 矩阵引擎
+        {t.title}
       </text>
       <text x={W / 2} y={38} textAnchor="middle" fontSize="9"
         fill="#64748b" fontFamily={FONTS.sans}>
-        Xe2 架构 (Lunar Lake / Panther Lake) — 每 Xe-Core 含 8 个 XMX 单元
+        {t.subtitle}
       </text>
 
       {/* Xe-Core outline */}
@@ -87,15 +118,15 @@ export default function XmxArchitectureDiagram() {
         fill="#fafbfc" stroke="#37474f" strokeWidth={2} />
       <text x={25} y={66} fontSize="11" fontWeight="700" fill="#37474f"
         fontFamily={FONTS.sans}>
-        Xe-Core
+        {t.xeCore}
       </text>
 
       {/* Left side: Vector Engines (2) */}
       <Block x={30} y={80} w={120} h={50}
-        label="Vector Engine 0" sub="FP32/FP16/INT 8-wide SIMD"
+        label={t.vectorEngine0} sub={t.vectorDesc}
         color={COLORS.primary} bg="#dbeafe" fontSize={9} />
       <Block x={30} y={140} w={120} h={50}
-        label="Vector Engine 1" sub="FP32/FP16/INT 8-wide SIMD"
+        label={t.vectorEngine1} sub={t.vectorDesc}
         color={COLORS.primary} bg="#dbeafe" fontSize={9} />
 
       {/* Right side: XMX engines (8, shown as 2×4 grid of systolic arrays) */}
@@ -103,7 +134,7 @@ export default function XmxArchitectureDiagram() {
         fill="none" stroke={COLORS.purple} strokeWidth={1.5} strokeDasharray="4 2" />
       <text x={360} y={90} textAnchor="middle" fontSize="10" fontWeight="700"
         fill={COLORS.purple} fontFamily={FONTS.sans}>
-        XMX 矩阵引擎 (×8)
+        {t.xmxEngines}
       </text>
 
       {/* 2×4 grid of mini systolic arrays */}
@@ -118,7 +149,7 @@ export default function XmxArchitectureDiagram() {
 
       {/* Shared resources */}
       <Block x={30} y={205} w={120} h={40}
-        label="Thread Control" sub="SIMD 调度"
+        label={t.threadControl} sub={t.simdSchedule}
         color={COLORS.orange} bg="#fff7ed" fontSize={9} />
 
       {/* SLM / L1 at bottom */}
@@ -126,14 +157,14 @@ export default function XmxArchitectureDiagram() {
         fill="#dcfce7" stroke={COLORS.green} strokeWidth={1.5} />
       <text x={155} y={286} textAnchor="middle" fontSize="9" fontWeight="600"
         fill={COLORS.green} fontFamily={FONTS.sans}>
-        SLM (Shared Local Memory) — 64 KB
+        {t.slm}
       </text>
 
       <rect x={295} y={268} width={250} height={30} rx={5}
         fill="#fff7ed" stroke={COLORS.orange} strokeWidth={1.5} />
       <text x={420} y={286} textAnchor="middle" fontSize="9" fontWeight="600"
         fill={COLORS.orange} fontFamily={FONTS.sans}>
-        L1 Cache / Instruction Cache
+        {t.l1Cache}
       </text>
 
       {/* XMX specs summary */}
@@ -141,9 +172,7 @@ export default function XmxArchitectureDiagram() {
         fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
       <text x={W / 2} y={H - 16} textAnchor="middle" fontSize="8" fill="#64748b"
         fontFamily={FONTS.sans}>
-        每 XMX 单元: 8×8 systolic array, 支持 FP16/BF16/TF32/INT8/INT4 |
-        D(M×N) = A(M×K) × B(K×N) + C(M×N), M/N/K 取决于精度 |
-        编程: SYCL joint_matrix / ESIMD
+        {t.xmxSpecs}
       </text>
     </svg>
   );

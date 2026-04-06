@@ -39,20 +39,42 @@ const generations: GenSpec[] = [
   },
 ];
 
-const rows: { label: string; key: keyof GenSpec; highlight?: boolean }[] = [
-  { label: 'GPU 中 SM 数量', key: 'smsPerGpu' },
-  { label: 'FP32 Core / SM', key: 'fp32Cores', highlight: true },
-  { label: 'INT32 Core / SM', key: 'int32Cores' },
-  { label: 'Tensor Core / SM', key: 'tensorCores', highlight: true },
-  { label: 'Tensor Core 精度', key: 'tensorGen', highlight: true },
-  { label: 'Register File / SM', key: 'regFile' },
-  { label: 'Shared Memory / SM', key: 'sharedMem', highlight: true },
-  { label: 'L1 Cache / SM', key: 'l1Cache' },
-  { label: 'Max Warps / SM', key: 'maxWarps' },
-  { label: 'Max Threads / SM', key: 'maxThreads' },
-];
+export default function SmResourceTable({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      resource: '资源',
+      note: '绿色箭头 ↑ 表示相比前一代有变化。Hover 高亮行。',
+      rows: [
+        { label: 'GPU 中 SM 数量', key: 'smsPerGpu' },
+        { label: 'FP32 Core / SM', key: 'fp32Cores', highlight: true },
+        { label: 'INT32 Core / SM', key: 'int32Cores' },
+        { label: 'Tensor Core / SM', key: 'tensorCores', highlight: true },
+        { label: 'Tensor Core 精度', key: 'tensorGen', highlight: true },
+        { label: 'Register File / SM', key: 'regFile' },
+        { label: 'Shared Memory / SM', key: 'sharedMem', highlight: true },
+        { label: 'L1 Cache / SM', key: 'l1Cache' },
+        { label: 'Max Warps / SM', key: 'maxWarps' },
+        { label: 'Max Threads / SM', key: 'maxThreads' },
+      ] as { label: string; key: keyof GenSpec; highlight?: boolean }[],
+    },
+    en: {
+      resource: 'Resource',
+      note: 'Green arrows ↑ indicate changes from previous generation. Hover to highlight row.',
+      rows: [
+        { label: 'SM Count per GPU', key: 'smsPerGpu' },
+        { label: 'FP32 Core / SM', key: 'fp32Cores', highlight: true },
+        { label: 'INT32 Core / SM', key: 'int32Cores' },
+        { label: 'Tensor Core / SM', key: 'tensorCores', highlight: true },
+        { label: 'Tensor Core Precision', key: 'tensorGen', highlight: true },
+        { label: 'Register File / SM', key: 'regFile' },
+        { label: 'Shared Memory / SM', key: 'sharedMem', highlight: true },
+        { label: 'L1 Cache / SM', key: 'l1Cache' },
+        { label: 'Max Warps / SM', key: 'maxWarps' },
+        { label: 'Max Threads / SM', key: 'maxThreads' },
+      ] as { label: string; key: keyof GenSpec; highlight?: boolean }[],
+    },
+  }[locale];
 
-export default function SmResourceTable() {
   const [hoveredRow, setHoveredRow] = useState<number | null>(null);
 
   return (
@@ -60,7 +82,7 @@ export default function SmResourceTable() {
       <table className="w-full text-sm border-collapse">
         <thead>
           <tr className="border-b-2 border-gray-300">
-            <th className="text-left py-2 px-3 text-gray-600 font-medium w-1/4">资源</th>
+            <th className="text-left py-2 px-3 text-gray-600 font-medium w-1/4">{t.resource}</th>
             {generations.map((g, i) => (
               <th key={i} className="text-center py-2 px-3 font-semibold" style={{ color: COLORS.primary }}>
                 {g.name}
@@ -70,7 +92,7 @@ export default function SmResourceTable() {
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, ri) => {
+          {t.rows.map((row, ri) => {
             const isHovered = hoveredRow === ri;
             const vals = generations.map(g => String(g[row.key]));
             return (
@@ -93,7 +115,7 @@ export default function SmResourceTable() {
           })}
         </tbody>
       </table>
-      <p className="text-xs text-gray-400 mt-2">绿色箭头 ↑ 表示相比前一代有变化。Hover 高亮行。</p>
+      <p className="text-xs text-gray-400 mt-2">{t.note}</p>
     </div>
   );
 }

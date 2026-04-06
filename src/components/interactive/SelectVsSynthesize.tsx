@@ -3,17 +3,60 @@ import { COLORS, FONTS } from './shared/colors';
 
 type Philosophy = 'select' | 'synthesize';
 
-export default function SelectVsSynthesize() {
+export default function SelectVsSynthesize({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [mode, setMode] = useState<Philosophy>('select');
 
   const W = 580, H = 340;
+
+  const t = {
+    zh: {
+      title: '两种哲学：选一个 vs 综合多个',
+      selectRouting: '选一个 (Routing)',
+      synthesizeMoA: '综合多个 (MoA)',
+      query: 'Query',
+      router: 'Router',
+      synthesizer: 'Synthesizer',
+      synthesizerSub: '综合层',
+      oneAnswer: '1 个回答',
+      synthAnswer: '综合回答',
+      synthQuality: '质量 > 任何单一模型',
+      routingAssumption: 'Routing 假设：存在一个"最佳模型"',
+      routingProCost: '成本最低（只调用一个模型）',
+      routingProLatency: '延迟最低（单次推理）',
+      routingCon: '质量受限于 router 的准确性和单个模型的能力上限',
+      moaAssumption: 'MoA 假设：没有单一最佳，组合才最好',
+      moaPro: '质量超越任何单一模型（35.9% 幻觉降低 — Council Mode）',
+      moaConCost: '成本线性增长（N 个模型 = N 倍成本）',
+      moaConLatency: '延迟 = max(所有模型) + 综合时间',
+    },
+    en: {
+      title: 'Two Philosophies: Select One vs Synthesize Many',
+      selectRouting: 'Select One (Routing)',
+      synthesizeMoA: 'Synthesize Many (MoA)',
+      query: 'Query',
+      router: 'Router',
+      synthesizer: 'Synthesizer',
+      synthesizerSub: 'Synthesis Layer',
+      oneAnswer: '1 Answer',
+      synthAnswer: 'Synthesized Answer',
+      synthQuality: 'Quality > Any Single Model',
+      routingAssumption: 'Routing Assumption: There exists a "best model"',
+      routingProCost: 'Lowest cost (calls only one model)',
+      routingProLatency: 'Lowest latency (single inference)',
+      routingCon: 'Quality limited by router accuracy and single model capability ceiling',
+      moaAssumption: 'MoA Assumption: No single best, combination is optimal',
+      moaPro: 'Quality surpasses any single model (35.9% hallucination reduction — Council Mode)',
+      moaConCost: 'Cost scales linearly (N models = N× cost)',
+      moaConLatency: 'Latency = max(all models) + synthesis time',
+    },
+  }[locale];
 
   return (
     <div className="my-6 p-4 border rounded-lg">
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="22" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          两种哲学：选一个 vs 综合多个
+          {t.title}
         </text>
 
         {/* Toggle */}
@@ -29,7 +72,7 @@ export default function SelectVsSynthesize() {
                     fontWeight={mode === p ? "700" : "400"}
                     fill={mode === p ? '#fff' : COLORS.dark}
                     style={{ cursor: 'pointer', pointerEvents: 'none' }}>
-                {p === 'select' ? '选一个 (Routing)' : '综合多个 (MoA)'}
+                {p === 'select' ? t.selectRouting : t.synthesizeMoA}
               </text>
             </g>
           ))}

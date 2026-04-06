@@ -89,9 +89,30 @@ function Heatmap({ data, size = 160, label, color }: {
   );
 }
 
-const HEAD_LABELS = ['Head 1: 局部模式', 'Head 2: 动词-主语', 'Head 3: 代词指代', 'Head 4: 介词短语'];
+export default function SingleVsMultiHeadAttention({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      singleHeadLabel: '单头 Attention — 所有模式混在一起',
+      multiHeadLabel: '多头 Attention (h=4) — 每个 head 关注不同模式',
+      head1: 'Head 1: 局部模式',
+      head2: 'Head 2: 动词-主语',
+      head3: 'Head 3: 代词指代',
+      head4: 'Head 4: 介词短语',
+      disclaimer: '示意图，非真实模型权重 — 展示多头如何让不同 head 专注于不同关系模式',
+    },
+    en: {
+      singleHeadLabel: 'Single-Head Attention — All patterns mixed',
+      multiHeadLabel: 'Multi-Head Attention (h=4) — Each head focuses on different patterns',
+      head1: 'Head 1: Local pattern',
+      head2: 'Head 2: Verb-subject',
+      head3: 'Head 3: Pronoun reference',
+      head4: 'Head 4: Prepositional phrase',
+      disclaimer: 'Illustrative diagram, not real model weights — shows how multi-head allows different heads to focus on different relational patterns',
+    },
+  }[locale];
 
-export default function SingleVsMultiHeadAttention() {
+  const HEAD_LABELS = [t.head1, t.head2, t.head3, t.head4];
+
   const [hoveredHead, setHoveredHead] = useState<number | null>(null);
   const singleHead = generateSingleHead();
   const headPatterns = generateHeadPatterns();
@@ -100,11 +121,11 @@ export default function SingleVsMultiHeadAttention() {
     <div className="my-6">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
-          <Heatmap data={singleHead} size={240} label="单头 Attention — 所有模式混在一起" />
+          <Heatmap data={singleHead} size={240} label={t.singleHeadLabel} />
         </div>
         <div>
           <div className="text-xs font-semibold text-gray-700 mb-2 text-center">
-            多头 Attention (h=4) — 每个 head 关注不同模式
+            {t.multiHeadLabel}
           </div>
           <div className="grid grid-cols-2 gap-2">
             {headPatterns.map((pattern, i) => (
@@ -120,7 +141,7 @@ export default function SingleVsMultiHeadAttention() {
         </div>
       </div>
       <p className="text-xs text-gray-400 text-center mt-2">
-        示意图，非真实模型权重 — 展示多头如何让不同 head 专注于不同关系模式
+        {t.disclaimer}
       </p>
     </div>
   );

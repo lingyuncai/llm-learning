@@ -9,19 +9,52 @@ const MODELS = [
   { name: 'Gemini', answer: 'B', weight: 0.25, quality: 85, color: '#2e7d32' },
 ];
 
-export default function EnsembleVotingViz() {
+export default function EnsembleVotingViz({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [mode, setMode] = useState<VoteMode>('majority');
 
+  const t = {
+    zh: {
+      title: 'Ensemble 投票方式',
+      majority: '多数投票',
+      weighted: '加权投票',
+      bestOfN: 'Best-of-N',
+      result: '结果',
+      weight: '权重',
+      quality: '质量',
+      majorityDetail: '2票 A vs 1票 B → A 获胜',
+      majorityScore: '2/3',
+      weightedDetail: (aWeight: number) => `A权重 ${aWeight.toFixed(2)} vs B权重 0.25 → A 获胜`,
+      weightedScore: (aWeight: number) => `${aWeight.toFixed(2)}`,
+      bestOfNDetail: 'GPT-4o 质量最高 (95%) → 选择其回答',
+      bestOfNScore: '95%',
+    },
+    en: {
+      title: 'Ensemble Voting Methods',
+      majority: 'Majority',
+      weighted: 'Weighted',
+      bestOfN: 'Best-of-N',
+      result: 'Result',
+      weight: 'Weight',
+      quality: 'Quality',
+      majorityDetail: '2 votes A vs 1 vote B → A wins',
+      majorityScore: '2/3',
+      weightedDetail: (aWeight: number) => `A weight ${aWeight.toFixed(2)} vs B weight 0.25 → A wins`,
+      weightedScore: (aWeight: number) => `${aWeight.toFixed(2)}`,
+      bestOfNDetail: 'GPT-4o highest quality (95%) → select its answer',
+      bestOfNScore: '95%',
+    },
+  }[locale];
+
   const W = 580, H = 320;
-  const labels = { majority: '多数投票', weighted: '加权投票', 'best-of-n': 'Best-of-N' };
+  const labels = { majority: t.majority, weighted: t.weighted, 'best-of-n': t.bestOfN };
 
   const getResult = () => {
-    if (mode === 'majority') return { answer: 'A', detail: '2票 A vs 1票 B → A 获胜', score: '2/3' };
+    if (mode === 'majority') return { answer: 'A', detail: t.majorityDetail, score: t.majorityScore };
     if (mode === 'weighted') {
       const aWeight = 0.4 + 0.35;
-      return { answer: 'A', detail: `A权重 ${aWeight.toFixed(2)} vs B权重 0.25 → A 获胜`, score: `${aWeight.toFixed(2)}` };
+      return { answer: 'A', detail: t.weightedDetail(aWeight), score: t.weightedScore(aWeight) };
     }
-    return { answer: 'A', detail: 'GPT-4o 质量最高 (95%) → 选择其回答', score: '95%' };
+    return { answer: 'A', detail: t.bestOfNDetail, score: t.bestOfNScore };
   };
 
   const result = getResult();
@@ -31,7 +64,7 @@ export default function EnsembleVotingViz() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="22" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          Ensemble 投票方式
+          {t.title}
         </text>
 
         {/* Mode tabs */}
@@ -62,7 +95,7 @@ export default function EnsembleVotingViz() {
                   fontSize="11" fontWeight="600" fill={m.color}>{m.name}</text>
             <text x="60" y="32" textAnchor="middle" fontFamily={FONTS.mono}
                   fontSize="9" fill={COLORS.mid}>
-              {mode === 'weighted' ? `权重: ${m.weight}` : mode === 'best-of-n' ? `质量: ${m.quality}%` : ''}
+              {mode === 'weighted' ? `${t.weight}: ${m.weight}` : mode === 'best-of-n' ? `${t.quality}: ${m.quality}%` : ''}
             </text>
 
             <text x="130" y="22" fontFamily={FONTS.sans} fontSize="14" fill={COLORS.primary}>→</text>
@@ -93,7 +126,7 @@ export default function EnsembleVotingViz() {
           <rect x="0" y="0" width="520" height="60" rx="6"
                 fill={COLORS.valid} stroke={COLORS.green} strokeWidth="2" />
           <text x="20" y="22" fontFamily={FONTS.sans} fontSize="13" fontWeight="700" fill={COLORS.green}>
-            结果: {result.answer}
+            {t.result}: {result.answer}
           </text>
           <text x="20" y="42" fontFamily={FONTS.sans} fontSize="11" fill={COLORS.dark}>
             {labels[mode]}: {result.detail}

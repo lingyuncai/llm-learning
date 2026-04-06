@@ -3,7 +3,32 @@ import { COLORS, FONTS } from './shared/colors';
 
 type AccessPattern = 'coalesced' | 'scattered';
 
-const MemoryAccessPattern: React.FC = () => {
+const MemoryAccessPattern: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      title: '内存访问模式优化',
+      coalesced: '合并访问',
+      scattered: '分散访问',
+      euThreads: 'EU 线程 (T0-T7)',
+      memoryAddress: '内存地址 (Cache Line)',
+      coalescedResult: '✓ 合并访问: 1 次内存事务 — 100% 利用率',
+      coalescedDetail: '连续地址访问 → 单次 cache line 读取 → 最优带宽利用',
+      scatteredResult: '✗ 分散访问: 8 次内存事务 — 12.5% 利用率',
+      scatteredDetail: '随机地址访问 → 多次 cache line 读取 → 严重带宽浪费，性能下降 8×',
+    },
+    en: {
+      title: 'Memory Access Pattern Optimization',
+      coalesced: 'Coalesced',
+      scattered: 'Scattered',
+      euThreads: 'EU Threads (T0-T7)',
+      memoryAddress: 'Memory Address (Cache Line)',
+      coalescedResult: '✓ Coalesced: 1 memory transaction — 100% utilization',
+      coalescedDetail: 'Sequential address access → single cache line read → optimal bandwidth',
+      scatteredResult: '✗ Scattered: 8 memory transactions — 12.5% utilization',
+      scatteredDetail: 'Random address access → multiple cache line reads → severe bandwidth waste, 8× slower',
+    },
+  }[locale];
+
   const [pattern, setPattern] = useState<AccessPattern>('coalesced');
 
   const numThreads = 8;
@@ -14,7 +39,7 @@ const MemoryAccessPattern: React.FC = () => {
       <svg viewBox="0 0 580 320" className="w-full">
         {/* Title */}
         <text x="290" y="25" textAnchor="middle" fontFamily={FONTS.sans} fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          内存访问模式优化
+          {t.title}
         </text>
 
         {/* Toggle buttons */}
@@ -41,7 +66,7 @@ const MemoryAccessPattern: React.FC = () => {
             fill={pattern === 'coalesced' ? COLORS.bg : COLORS.dark}
             style={{ cursor: 'pointer', pointerEvents: 'none' }}
           >
-            合并访问
+            {t.coalesced}
           </text>
 
           <rect
@@ -66,14 +91,14 @@ const MemoryAccessPattern: React.FC = () => {
             fill={pattern === 'scattered' ? COLORS.bg : COLORS.dark}
             style={{ cursor: 'pointer', pointerEvents: 'none' }}
           >
-            分散访问
+            {t.scattered}
           </text>
         </g>
 
         {/* EU Threads */}
         <g transform="translate(0, 95)">
           <text x="40" y="5" fontFamily={FONTS.sans} fontSize="12" fontWeight="600" fill={COLORS.dark}>
-            EU 线程 (T0-T7)
+            {t.euThreads}
           </text>
           {Array.from({ length: numThreads }).map((_, i) => (
             <g key={i} transform={`translate(${60 + i * 60}, 15)`}>
@@ -145,7 +170,7 @@ const MemoryAccessPattern: React.FC = () => {
         {/* Memory addresses (cache lines) */}
         <g transform="translate(0, 205)">
           <text x="40" y="5" fontFamily={FONTS.sans} fontSize="12" fontWeight="600" fill={COLORS.dark}>
-            内存地址 (Cache Line)
+            {t.memoryAddress}
           </text>
           {Array.from({ length: memoryAddresses }).map((_, i) => {
             const isAccessed = pattern === 'coalesced'
@@ -194,19 +219,19 @@ const MemoryAccessPattern: React.FC = () => {
           {pattern === 'coalesced' ? (
             <>
               <text x="250" y="20" textAnchor="middle" fontFamily={FONTS.sans} fontSize="13" fontWeight="600" fill={COLORS.dark}>
-                ✓ 合并访问: 1 次内存事务 — 100% 利用率
+                {t.coalescedResult}
               </text>
               <text x="250" y="36" textAnchor="middle" fontFamily={FONTS.mono} fontSize="10" fill={COLORS.mid}>
-                连续地址访问 → 单次 cache line 读取 → 最优带宽利用
+                {t.coalescedDetail}
               </text>
             </>
           ) : (
             <>
               <text x="250" y="20" textAnchor="middle" fontFamily={FONTS.sans} fontSize="13" fontWeight="600" fill={COLORS.dark}>
-                ✗ 分散访问: 8 次内存事务 — 12.5% 利用率
+                {t.scatteredResult}
               </text>
               <text x="250" y="36" textAnchor="middle" fontFamily={FONTS.mono} fontSize="10" fill={COLORS.mid}>
-                随机地址访问 → 多次 cache line 读取 → 严重带宽浪费，性能下降 8×
+                {t.scatteredDetail}
               </text>
             </>
           )}

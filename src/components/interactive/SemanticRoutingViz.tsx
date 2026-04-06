@@ -10,21 +10,68 @@ interface Route {
   model: string;
 }
 
-const ROUTES: Route[] = [
-  { name: '简单问答', templates: ['"什么是..."', '"...是什么意思"', '"定义..."'], center: [0.2, 0.8], radius: 0.15, color: COLORS.green, model: 'Llama-8B' },
-  { name: '翻译任务', templates: ['"翻译..."', '"translate..."', '"...怎么说"'], center: [0.15, 0.35], radius: 0.12, color: '#00838f', model: 'Llama-8B' },
-  { name: '代码生成', templates: ['"写一个..."', '"实现..."', '"...代码"'], center: [0.6, 0.6], radius: 0.14, color: COLORS.orange, model: 'Llama-70B' },
-  { name: '深度分析', templates: ['"分析..."', '"比较..."', '"评估..."'], center: [0.8, 0.3], radius: 0.16, color: COLORS.red, model: 'GPT-4' },
-];
+export default function SemanticRoutingViz({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Semantic Routing: Embedding 空间匹配',
+      subtitle: '无需训练：预定义 route 模板 + cosine 相似度匹配',
+      selectQuery: '选择 Query:',
+      matchResult: '匹配结果:',
+      cosineDistance: 'cosine distance:',
+      noTraining: '✓ 无需训练数据',
+      lowLatency: '✓ ~5ms 延迟',
+      coarseGrain: '✗ 粒度粗，依赖模板',
+      routes: {
+        simpleQA: '简单问答',
+        translation: '翻译任务',
+        codeGen: '代码生成',
+        analysis: '深度分析',
+      },
+      queries: {
+        q1: '"HTTP 是什么"',
+        q2: '"写一个排序算法"',
+        q3: '"分析中美贸易关系"',
+        q4: '"翻译这段话"',
+      },
+    },
+    en: {
+      title: 'Semantic Routing: Embedding Space Matching',
+      subtitle: 'No training: predefined route templates + cosine similarity matching',
+      selectQuery: 'Select Query:',
+      matchResult: 'Match Result:',
+      cosineDistance: 'cosine distance:',
+      noTraining: '✓ No training data needed',
+      lowLatency: '✓ ~5ms latency',
+      coarseGrain: '✗ Coarse-grained, template-dependent',
+      routes: {
+        simpleQA: 'Simple Q&A',
+        translation: 'Translation',
+        codeGen: 'Code Generation',
+        analysis: 'Deep Analysis',
+      },
+      queries: {
+        q1: '"What is HTTP"',
+        q2: '"Write a sorting algorithm"',
+        q3: '"Analyze US-China trade"',
+        q4: '"Translate this text"',
+      },
+    },
+  }[locale];
 
-const TEST_QUERIES = [
-  { text: '"HTTP 是什么"', pos: [0.22, 0.78] as [number, number] },
-  { text: '"写一个排序算法"', pos: [0.58, 0.55] as [number, number] },
-  { text: '"分析中美贸易关系"', pos: [0.75, 0.28] as [number, number] },
-  { text: '"翻译这段话"', pos: [0.17, 0.38] as [number, number] },
-];
+  const ROUTES: Route[] = [
+    { name: t.routes.simpleQA, templates: ['"什么是..."', '"...是什么意思"', '"定义..."'], center: [0.2, 0.8], radius: 0.15, color: COLORS.green, model: 'Llama-8B' },
+    { name: t.routes.translation, templates: ['"翻译..."', '"translate..."', '"...怎么说"'], center: [0.15, 0.35], radius: 0.12, color: '#00838f', model: 'Llama-8B' },
+    { name: t.routes.codeGen, templates: ['"写一个..."', '"实现..."', '"...代码"'], center: [0.6, 0.6], radius: 0.14, color: COLORS.orange, model: 'Llama-70B' },
+    { name: t.routes.analysis, templates: ['"分析..."', '"比较..."', '"评估..."'], center: [0.8, 0.3], radius: 0.16, color: COLORS.red, model: 'GPT-4' },
+  ];
 
-export default function SemanticRoutingViz() {
+  const TEST_QUERIES = [
+    { text: t.queries.q1, pos: [0.22, 0.78] as [number, number] },
+    { text: t.queries.q2, pos: [0.58, 0.55] as [number, number] },
+    { text: t.queries.q3, pos: [0.75, 0.28] as [number, number] },
+    { text: t.queries.q4, pos: [0.17, 0.38] as [number, number] },
+  ];
+
   const [activeQuery, setActiveQuery] = useState(0);
 
   const W = 580, H = 400;
@@ -44,11 +91,11 @@ export default function SemanticRoutingViz() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="25" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          Semantic Routing: Embedding 空间匹配
+          {t.title}
         </text>
         <text x={W / 2} y="42" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="10" fill={COLORS.mid}>
-          无需训练：预定义 route 模板 + cosine 相似度匹配
+          {t.subtitle}
         </text>
 
         <rect x={plotL} y={plotT} width={plotSize} height={plotSize}
@@ -87,7 +134,7 @@ export default function SemanticRoutingViz() {
 
         <g transform={`translate(350, 65)`}>
           <text x="0" y="0" fontFamily={FONTS.sans} fontSize="12" fontWeight="600" fill={COLORS.dark}>
-            选择 Query:
+            {t.selectQuery}
           </text>
           {TEST_QUERIES.map((tq, i) => (
             <g key={i} transform={`translate(0, ${10 + i * 30})`}
@@ -106,7 +153,7 @@ export default function SemanticRoutingViz() {
 
           <g transform="translate(0, 145)">
             <text x="0" y="0" fontFamily={FONTS.sans} fontSize="12" fontWeight="600" fill={COLORS.dark}>
-              匹配结果:
+              {t.matchResult}
             </text>
             <rect x="0" y="8" width="200" height="48" rx="4"
                   fill={COLORS.valid} stroke={closestRoute.color} strokeWidth="1.5" />
@@ -114,14 +161,14 @@ export default function SemanticRoutingViz() {
               {closestRoute.name} → {closestRoute.model}
             </text>
             <text x="10" y="46" fontFamily={FONTS.mono} fontSize="9" fill={COLORS.mid}>
-              cosine distance: {distances[closestIdx].toFixed(3)}
+              {t.cosineDistance} {distances[closestIdx].toFixed(3)}
             </text>
           </g>
 
           <g transform="translate(0, 220)">
-            <text x="0" y="0" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.green}>✓ 无需训练数据</text>
-            <text x="0" y="16" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.green}>✓ ~5ms 延迟</text>
-            <text x="0" y="32" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.red}>✗ 粒度粗，依赖模板</text>
+            <text x="0" y="0" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.green}>{t.noTraining}</text>
+            <text x="0" y="16" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.green}>{t.lowLatency}</text>
+            <text x="0" y="32" fontFamily={FONTS.sans} fontSize="10" fill={COLORS.red}>{t.coarseGrain}</text>
           </g>
         </g>
       </svg>

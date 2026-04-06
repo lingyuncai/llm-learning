@@ -19,7 +19,54 @@ const STAGES: Stage[] = [
   { id: 'verifier', label: 'Verifier', x: 380, capability: '验证推理过程的正确性', output: 'correct/incorrect per step', limitation: '仅适用于可验证问题' },
 ];
 
-export default function RewardToVerifier() {
+export default function RewardToVerifier({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '从 Reward Model 到 Verifier 的演进',
+      subtitle: '点击每个阶段查看能力对比',
+      evolution: '能力演进',
+      testTimeScaling: '→ Test-Time Scaling',
+      capability: '能力：',
+      output: '输出：',
+      limitation: '局限：',
+      clickToView: '← 点击阶段查看详情 →',
+      granularity: '粒度',
+      annotationCost: '标注成本',
+      signalQuality: '信号质量',
+      usage: '用途',
+      overall: '整体',
+      stepwise: '逐步',
+      low: '低',
+      high: '高',
+      medium: '中(规则)',
+      coarse: '粗',
+      fine: '细',
+      precise: '精确',
+    },
+    en: {
+      title: 'Evolution from Reward Model to Verifier',
+      subtitle: 'Click each stage to view capability comparison',
+      evolution: 'Capability Evolution',
+      testTimeScaling: '→ Test-Time Scaling',
+      capability: 'Capability:',
+      output: 'Output:',
+      limitation: 'Limitation:',
+      clickToView: '← Click stage to view details →',
+      granularity: 'Granularity',
+      annotationCost: 'Annotation Cost',
+      signalQuality: 'Signal Quality',
+      usage: 'Usage',
+      overall: 'Overall',
+      stepwise: 'Stepwise',
+      low: 'Low',
+      high: 'High',
+      medium: 'Medium (Rule)',
+      coarse: 'Coarse',
+      fine: 'Fine',
+      precise: 'Precise',
+    },
+  }[locale];
+
   const [active, setActive] = useState<string | null>(null);
   const activeStage = STAGES.find(s => s.id === active);
 
@@ -30,15 +77,15 @@ export default function RewardToVerifier() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          从 Reward Model 到 Verifier 的演进
+          {t.title}
         </text>
         <text x={W / 2} y={42} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          点击每个阶段查看能力对比
+          {t.subtitle}
         </text>
 
         <line x1={80} y1={stageY - 24} x2={480} y2={stageY - 24}
           stroke={COLORS.light} strokeWidth={2} markerEnd="url(#arrowRV)" />
-        <text x={280} y={stageY - 30} textAnchor="middle" fontSize={9} fill={COLORS.mid}>能力演进 →</text>
+        <text x={280} y={stageY - 30} textAnchor="middle" fontSize={9} fill={COLORS.mid}>{t.evolution} →</text>
         <defs>
           <marker id="arrowRV" viewBox="0 0 10 10" refX={8} refY={5} markerWidth={6} markerHeight={6} orient="auto">
             <path d="M 0 0 L 10 5 L 0 10 z" fill={COLORS.light} />
@@ -64,19 +111,19 @@ export default function RewardToVerifier() {
         <rect x={450} y={stageY + 10} width={110} height={30} rx={6}
           fill={COLORS.highlight} stroke={COLORS.purple} strokeWidth={1} />
         <text x={505} y={stageY + 29} textAnchor="middle" fontSize={9} fontWeight={600} fill={COLORS.purple}>
-          → Test-Time Scaling
+          {t.testTimeScaling}
         </text>
 
         {activeStage ? (
           <g>
             <rect x={30} y={190} width={520} height={55} rx={8} fill={COLORS.bgAlt} stroke={COLORS.primary} strokeWidth={1} />
-            <text x={45} y={210} fontSize={11} fontWeight={700} fill={COLORS.dark}>能力：</text>
+            <text x={45} y={210} fontSize={11} fontWeight={700} fill={COLORS.dark}>{t.capability}</text>
             <text x={100} y={210} fontSize={11} fill={COLORS.dark}>{activeStage.capability}</text>
-            <text x={45} y={230} fontSize={10} fontWeight={600} fill={COLORS.mid}>输出：</text>
+            <text x={45} y={230} fontSize={10} fontWeight={600} fill={COLORS.mid}>{t.output}</text>
             <text x={100} y={230} fontSize={10} fill={COLORS.mid} fontFamily={FONTS.mono}>{activeStage.output}</text>
 
             <rect x={30} y={255} width={520} height={35} rx={6} fill={COLORS.waste} stroke={COLORS.red} strokeWidth={1} />
-            <text x={45} y={276} fontSize={10} fontWeight={600} fill={COLORS.red}>局限：</text>
+            <text x={45} y={276} fontSize={10} fontWeight={600} fill={COLORS.red}>{t.limitation}</text>
             <text x={100} y={276} fontSize={10} fill={COLORS.dark}>{activeStage.limitation}</text>
           </g>
         ) : (
@@ -84,20 +131,20 @@ export default function RewardToVerifier() {
         )}
         {!activeStage && (
           <text x={W / 2} y={240} textAnchor="middle" fontSize={12} fill={COLORS.mid}>
-            ← 点击阶段查看详情 →
+            {t.clickToView}
           </text>
         )}
 
         <rect x={30} y={300} width={520} height={60} rx={6} fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth={1} />
-        <text x={100} y={318} textAnchor="middle" fontSize={9} fontWeight={600} fill={COLORS.dark}>粒度</text>
-        <text x={240} y={318} textAnchor="middle" fontSize={9} fontWeight={600} fill={COLORS.dark}>标注成本</text>
-        <text x={380} y={318} textAnchor="middle" fontSize={9} fontWeight={600} fill={COLORS.dark}>信号质量</text>
-        <text x={510} y={318} textAnchor="middle" fontSize={9} fontWeight={600} fill={COLORS.dark}>用途</text>
+        <text x={100} y={318} textAnchor="middle" fontSize={9} fontWeight={600} fill={COLORS.dark}>{t.granularity}</text>
+        <text x={240} y={318} textAnchor="middle" fontSize={9} fontWeight={600} fill={COLORS.dark}>{t.annotationCost}</text>
+        <text x={380} y={318} textAnchor="middle" fontSize={9} fontWeight={600} fill={COLORS.dark}>{t.signalQuality}</text>
+        <text x={510} y={318} textAnchor="middle" fontSize={9} fontWeight={600} fill={COLORS.dark}>{t.usage}</text>
 
         {[
-          { label: 'RM', g: '整体', c: '低', q: '粗', u: 'RLHF' },
-          { label: 'PRM', g: '逐步', c: '高', q: '细', u: 'MCTS' },
-          { label: 'Verifier', g: '逐步', c: '中(规则)', q: '精确', u: 'Best-of-N' },
+          { label: 'RM', g: t.overall, c: t.low, q: t.coarse, u: 'RLHF' },
+          { label: 'PRM', g: t.stepwise, c: t.high, q: t.fine, u: 'MCTS' },
+          { label: 'Verifier', g: t.stepwise, c: t.medium, q: t.precise, u: 'Best-of-N' },
         ].map((row, i) => (
           <g key={i}>
             <text x={40} y={338 + i * 14} fontSize={9} fontWeight={600} fill={COLORS.dark}>{row.label}</text>

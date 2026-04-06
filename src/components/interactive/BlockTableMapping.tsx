@@ -13,7 +13,32 @@ const PHYSICAL_MAP = [3, 7, 1]; // logical block 0→phys 3, 1→phys 7, 2→phy
 
 const PHYS_TOTAL = 10;
 
-export default function BlockTableMapping() {
+export default function BlockTableMapping({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Block Table：逻辑块 → 物理块映射',
+      subtitle: '点击 token 查看它在哪个逻辑块，映射到哪个物理块',
+      logicalBlock: '逻辑块 ',
+      blockTableTitle: 'Block Table',
+      logicalBlockHeader: '逻辑块',
+      physicalBlockHeader: '物理块',
+      physicalMemoryTitle: '物理内存 (GPU)',
+      selectedSummary: '"..." 在逻辑块 ..，映射到物理块 ..（非连续分配，消除外部碎片）',
+      defaultSummary: '物理块在 GPU 显存中无需连续 — 就像操作系统的虚拟内存分页',
+    },
+    en: {
+      title: 'Block Table: Logical Block → Physical Block Mapping',
+      subtitle: 'Click a token to see which logical block it belongs to and which physical block it maps to',
+      logicalBlock: 'Logical Block ',
+      blockTableTitle: 'Block Table',
+      logicalBlockHeader: 'Logical Block',
+      physicalBlockHeader: 'Physical Block',
+      physicalMemoryTitle: 'Physical Memory (GPU)',
+      selectedSummary: '"..." in logical block .., maps to physical block .. (non-contiguous allocation, eliminates external fragmentation)',
+      defaultSummary: 'Physical blocks in GPU memory need not be contiguous — like OS virtual memory paging',
+    },
+  }[locale];
+
   const [selectedToken, setSelectedToken] = useState<number | null>(null);
 
   const selectedBlock = selectedToken !== null ? Math.floor(selectedToken / BLOCK_SIZE) : null;
@@ -38,11 +63,11 @@ export default function BlockTableMapping() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Block Table：逻辑块 → 物理块映射
+        {t.title}
       </text>
       <text x={W / 2} y={40} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        点击 token 查看它在哪个逻辑块，映射到哪个物理块
+        {t.subtitle}
       </text>
 
       {/* Token sequence */}
@@ -84,23 +109,23 @@ export default function BlockTableMapping() {
           <text key={`bl-${b}`} x={x + (Math.min(BLOCK_SIZE, TOKENS.length - b * BLOCK_SIZE) * tokenW) / 2}
             y={tokenY + tokenH + 18} textAnchor="middle" fontSize="8"
             fill={selectedBlock === b ? COLORS.primary : COLORS.mid} fontFamily={FONTS.mono}>
-            逻辑块 {b}
+            {t.logicalBlock}{b}
           </text>
         );
       })}
 
       {/* Block Table */}
       <text x={tableX + tableW / 2} y={tableY - 8} textAnchor="middle" fontSize="11"
-        fontWeight="700" fill={COLORS.dark} fontFamily={FONTS.sans}>Block Table</text>
+        fontWeight="700" fill={COLORS.dark} fontFamily={FONTS.sans}>{t.blockTableTitle}</text>
       {/* Header */}
       <rect x={tableX} y={tableY} width={tableW / 2} height={tableRowH}
         fill={COLORS.dark} rx={4} />
       <text x={tableX + tableW / 4} y={tableY + 18} textAnchor="middle"
-        fontSize="9" fontWeight="600" fill="#fff" fontFamily={FONTS.sans}>逻辑块</text>
+        fontSize="9" fontWeight="600" fill="#fff" fontFamily={FONTS.sans}>{t.logicalBlockHeader}</text>
       <rect x={tableX + tableW / 2} y={tableY} width={tableW / 2} height={tableRowH}
         fill={COLORS.dark} rx={4} />
       <text x={tableX + 3 * tableW / 4} y={tableY + 18} textAnchor="middle"
-        fontSize="9" fontWeight="600" fill="#fff" fontFamily={FONTS.sans}>物理块</text>
+        fontSize="9" fontWeight="600" fill="#fff" fontFamily={FONTS.sans}>{t.physicalBlockHeader}</text>
       {/* Rows */}
       {PHYSICAL_MAP.map((phys, b) => {
         const y = tableY + (b + 1) * tableRowH;
@@ -123,7 +148,7 @@ export default function BlockTableMapping() {
       {/* Physical memory blocks */}
       <text x={physX + (PHYS_TOTAL / 2 * physBlockW) / 2} y={physY - 8} textAnchor="middle"
         fontSize="11" fontWeight="700" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        物理内存 (GPU)
+        {t.physicalMemoryTitle}
       </text>
       {Array.from({ length: PHYS_TOTAL }, (_, p) => {
         const col = p % 5;
@@ -174,8 +199,8 @@ export default function BlockTableMapping() {
       <text x={W / 2} y={H - 28} textAnchor="middle" fontSize="10"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
         {selectedToken !== null
-          ? `"${TOKENS[selectedToken]}" 在逻辑块 ${selectedBlock}，映射到物理块 ${selectedPhys}（非连续分配，消除外部碎片）`
-          : '物理块在 GPU 显存中无需连续 — 就像操作系统的虚拟内存分页'}
+          ? t.selectedSummary.replace('...', TOKENS[selectedToken]).replace('..', selectedBlock?.toString() || '').replace('..', selectedPhys?.toString() || '')
+          : t.defaultSummary}
       </text>
     </svg>
   );

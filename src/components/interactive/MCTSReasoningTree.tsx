@@ -14,28 +14,47 @@ interface TreeNode {
   selected?: boolean;
 }
 
-const NODES: TreeNode[] = [
-  { id: 'root', text: '问题: 12×15=?', x: W / 2, y: 50, score: 0.5, children: ['a1', 'a2', 'a3'] },
-  { id: 'a1', text: '10×15=150', x: 120, y: 130, score: 0.7, children: ['b1', 'b2'], selected: true },
-  { id: 'a2', text: '12×10=120', x: 290, y: 130, score: 0.6, children: ['b3'] },
-  { id: 'a3', text: '12×20=240', x: 460, y: 130, score: 0.2 },
-  { id: 'b1', text: '2×15=30', x: 80, y: 210, score: 0.85, children: ['c1'], selected: true },
-  { id: 'b2', text: '3×15=45', x: 200, y: 210, score: 0.3 },
-  { id: 'b3', text: '12×5=60', x: 340, y: 210, score: 0.65, children: ['c2'] },
-  { id: 'c1', text: '150+30=180 ✓', x: 80, y: 290, score: 0.95, selected: true },
-  { id: 'c2', text: '120+60=180 ✓', x: 340, y: 290, score: 0.9 },
-];
-
 type Phase = 'select' | 'expand' | 'evaluate' | 'backprop';
 
-const PHASES: { id: Phase; label: string; desc: string }[] = [
-  { id: 'select', label: 'Select', desc: '从根节点开始，选择 UCB 值最高的子节点向下走' },
-  { id: 'expand', label: 'Expand', desc: '到达叶节点后，展开新的推理步骤（子节点）' },
-  { id: 'evaluate', label: 'Evaluate', desc: '用 PRM/Verifier 对新节点打分' },
-  { id: 'backprop', label: 'Backpropagate', desc: '将评估分数回传到父节点，更新路径上所有节点的统计' },
-];
+export default function MCTSReasoningTree({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'MCTS + LLM 推理树搜索',
+      question: '问题: 12×15=?',
+      selectDesc: '从根节点开始，选择 UCB 值最高的子节点向下走',
+      expandDesc: '到达叶节点后，展开新的推理步骤（子节点）',
+      evaluateDesc: '用 PRM/Verifier 对新节点打分',
+      backpropDesc: '将评估分数回传到父节点，更新路径上所有节点的统计',
+    },
+    en: {
+      title: 'MCTS + LLM Reasoning Tree Search',
+      question: 'Problem: 12×15=?',
+      selectDesc: 'Start from root, select child with highest UCB value',
+      expandDesc: 'Expand new reasoning steps (child nodes) at leaf',
+      evaluateDesc: 'Score new nodes with PRM/Verifier',
+      backpropDesc: 'Backpropagate scores to parent, update statistics',
+    },
+  }[locale];
 
-export default function MCTSReasoningTree() {
+  const PHASES: { id: Phase; label: string; desc: string }[] = [
+    { id: 'select', label: 'Select', desc: t.selectDesc },
+    { id: 'expand', label: 'Expand', desc: t.expandDesc },
+    { id: 'evaluate', label: 'Evaluate', desc: t.evaluateDesc },
+    { id: 'backprop', label: 'Backpropagate', desc: t.backpropDesc },
+  ];
+
+  const NODES: TreeNode[] = [
+    { id: 'root', text: t.question, x: W / 2, y: 50, score: 0.5, children: ['a1', 'a2', 'a3'] },
+    { id: 'a1', text: '10×15=150', x: 120, y: 130, score: 0.7, children: ['b1', 'b2'], selected: true },
+    { id: 'a2', text: '12×10=120', x: 290, y: 130, score: 0.6, children: ['b3'] },
+    { id: 'a3', text: '12×20=240', x: 460, y: 130, score: 0.2 },
+    { id: 'b1', text: '2×15=30', x: 80, y: 210, score: 0.85, children: ['c1'], selected: true },
+    { id: 'b2', text: '3×15=45', x: 200, y: 210, score: 0.3 },
+    { id: 'b3', text: '12×5=60', x: 340, y: 210, score: 0.65, children: ['c2'] },
+    { id: 'c1', text: '150+30=180 ✓', x: 80, y: 290, score: 0.95, selected: true },
+    { id: 'c2', text: '120+60=180 ✓', x: 340, y: 290, score: 0.9 },
+  ];
+
   const [phase, setPhase] = useState<Phase>('select');
 
   const nodeMap = Object.fromEntries(NODES.map(n => [n.id, n]));
@@ -50,7 +69,7 @@ export default function MCTSReasoningTree() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={22} textAnchor="middle" fontSize={14} fontWeight={700} fill={COLORS.dark}>
-          MCTS + LLM 推理树搜索
+          {t.title}
         </text>
 
         {NODES.filter(n => n.children).flatMap(n =>

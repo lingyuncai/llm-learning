@@ -19,11 +19,38 @@ const METHODS: Method[] = [
   { label: 'GRPO', color: COLORS.red, models: 2, gpuRelative: 0.6, dataReq: 'Prompts + 规则 reward', trainTime: '中等（在线生成）' },
 ];
 
-export default function TrainingCostCompare() {
+export default function TrainingCostCompare({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '训练资源需求对比',
+      subtitle: 'RLHF vs DPO vs GRPO — GPU、模型数、训练时间',
+      models: '同时运行模型数',
+      gpuMem: 'GPU 内存需求',
+      trainTime: '训练时间',
+      hoverHint: 'Hover 柱状图查看各方法详情',
+      summary: 'DPO 最轻量（无 RM/Critic）| GRPO 中等（无 Critic 但需在线生成）| RLHF 最重',
+      modelsLabel: '模型数:',
+      dataReqLabel: '数据需求:',
+      trainTimeLabel: '训练时长:',
+    },
+    en: {
+      title: 'Training Resource Comparison',
+      subtitle: 'RLHF vs DPO vs GRPO — GPU, Models, Training Time',
+      models: 'Concurrent Models',
+      gpuMem: 'GPU Memory',
+      trainTime: 'Training Time',
+      hoverHint: 'Hover bars for details',
+      summary: 'DPO lightest (no RM/Critic) | GRPO medium (no Critic but online gen) | RLHF heaviest',
+      modelsLabel: 'Models:',
+      dataReqLabel: 'Data:',
+      trainTimeLabel: 'Time:',
+    },
+  }[locale];
+
   const [hovered, setHovered] = useState<number | null>(null);
 
   const chartX = 100, chartY = 70, chartW = 400, chartH = 180;
-  const metrics = ['同时运行模型数', 'GPU 内存需求', '训练时间'];
+  const metrics = [t.models, t.gpuMem, t.trainTime];
   const barGroupW = chartW / 3;
 
   const getVal = (m: Method, mi: number): number => {
@@ -37,10 +64,10 @@ export default function TrainingCostCompare() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          训练资源需求对比
+          {t.title}
         </text>
         <text x={W / 2} y={42} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          RLHF vs DPO vs GRPO — GPU、模型数、训练时间
+          {t.subtitle}
         </text>
 
         <line x1={chartX} y1={chartY + chartH} x2={chartX + chartW} y2={chartY + chartH}
@@ -91,10 +118,10 @@ export default function TrainingCostCompare() {
               {METHODS[hovered].label}
             </text>
             <text x={45} y={chartY + chartH + 66} fontSize={10} fill={COLORS.dark}>
-              模型数: {METHODS[hovered].models} | 数据需求: {METHODS[hovered].dataReq}
+              {t.modelsLabel} {METHODS[hovered].models} | {t.dataReqLabel} {METHODS[hovered].dataReq}
             </text>
             <text x={45} y={chartY + chartH + 84} fontSize={10} fill={COLORS.mid}>
-              训练时长: {METHODS[hovered].trainTime}
+              {t.trainTimeLabel} {METHODS[hovered].trainTime}
             </text>
           </g>
         )}
@@ -107,10 +134,10 @@ export default function TrainingCostCompare() {
         {!hovered && (
           <>
             <text x={W / 2} y={chartY + chartH + 60} textAnchor="middle" fontSize={11} fontWeight={600} fill={COLORS.orange}>
-              Hover 柱状图查看各方法详情
+              {t.hoverHint}
             </text>
             <text x={W / 2} y={chartY + chartH + 80} textAnchor="middle" fontSize={10} fill={COLORS.mid}>
-              DPO 最轻量（无 RM/Critic）| GRPO 中等（无 Critic 但需在线生成）| RLHF 最重
+              {t.summary}
             </text>
           </>
         )}

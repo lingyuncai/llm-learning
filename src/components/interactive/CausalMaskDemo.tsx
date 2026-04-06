@@ -50,7 +50,41 @@ function Grid({ data, format, colorFn, label }: {
   );
 }
 
-export default function CausalMaskDemo() {
+export default function CausalMaskDemo({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: '原始 QKᵀ 分数矩阵',
+      step1Desc: '原始点积分数 — 每个格子表示 token i 对 token j 的原始相关性。',
+      step1Label: 'Scores = QKᵀ/√d_k',
+      step2Title: '应用因果遮罩 (上三角 → -∞)',
+      step2Desc: '上三角位置（未来 token）设为',
+      step2Note: '用浅红标记被遮罩的位置。',
+      step2Note2: '每个 token 只能看到自己和之前的 token',
+      step2Label: 'Masked Scores',
+      step3Title: 'Softmax → 注意力权重',
+      step3Desc: 'Softmax 后：上三角变为',
+      step3Note: '（灰色），下三角归一化为概率（每行和为 1.0）。',
+      step3Label: 'Attention Weights',
+      rowSum: '行',
+      sumLabel: '总和',
+    },
+    en: {
+      step1Title: 'Raw QKᵀ Score Matrix',
+      step1Desc: 'Raw dot product scores — each cell shows token i\'s raw relevance to token j.',
+      step1Label: 'Scores = QKᵀ/√d_k',
+      step2Title: 'Apply Causal Mask (upper triangle → -∞)',
+      step2Desc: 'Upper triangle positions (future tokens) set to',
+      step2Note: 'masked positions marked in light red.',
+      step2Note2: 'Each token can only see itself and previous tokens',
+      step2Label: 'Masked Scores',
+      step3Title: 'Softmax → Attention Weights',
+      step3Desc: 'After softmax: upper triangle becomes',
+      step3Note: '(gray), lower triangle normalized to probabilities (each row sums to 1.0).',
+      step3Label: 'Attention Weights',
+      rowSum: 'Row',
+      sumLabel: 'sum',
+    },
+  }[locale];
   const rawScores = useMemo(() => {
     const flat = seededValuesSigned(N, N, 77);
     return flat.map(row => row.map(v => parseFloat((v * 3).toFixed(2))));
@@ -73,13 +107,13 @@ export default function CausalMaskDemo() {
 
   const steps = [
     {
-      title: '原始 QKᵀ 分数矩阵',
+      title: t.step1Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            原始点积分数 — 每个格子表示 token i 对 token j 的原始相关性。
+            {t.step1Desc}
           </p>
-          <Grid data={rawScores} label="Scores = QKᵀ/√d_k"
+          <Grid data={rawScores} label={t.step1Label}
             colorFn={(r, c, v) => {
               const val = typeof v === 'number' ? v : 0;
               const t = (val + 3) / 6;
@@ -90,14 +124,14 @@ export default function CausalMaskDemo() {
       ),
     },
     {
-      title: '应用因果遮罩 (上三角 → -∞)',
+      title: t.step2Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            上三角位置（未来 token）设为 <code className="bg-gray-100 px-1 rounded">-∞</code>，
-            用浅红标记被遮罩的位置。
+            {t.step2Desc} <code className="bg-gray-100 px-1 rounded">-∞</code>，
+            {t.step2Note}
           </p>
-          <Grid data={maskedScores} label="Masked Scores"
+          <Grid data={maskedScores} label={t.step2Label}
             format={v => typeof v === 'number' ? v.toFixed(2) : String(v)}
             colorFn={(r, c, v) => {
               if (c > r) return COLORS.waste;
@@ -107,20 +141,19 @@ export default function CausalMaskDemo() {
             }}
           />
           <p className="text-xs text-gray-500 mt-2 text-center">
-            每个 token 只能看到自己和之前的 token
+            {t.step2Note2}
           </p>
         </div>
       ),
     },
     {
-      title: 'Softmax → 注意力权重',
+      title: t.step3Title,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            Softmax 后：上三角变为 <strong>0.00</strong>（灰色），
-            下三角归一化为概率（每行和为 1.0）。
+            {t.step3Desc} <strong>0.00</strong>{t.step3Note}
           </p>
-          <Grid data={softmaxResult} label="Attention Weights"
+          <Grid data={softmaxResult} label={t.step3Label}
             colorFn={(r, c, v) => {
               const val = typeof v === 'number' ? v : 0;
               if (c > r) return COLORS.masked;
@@ -129,7 +162,7 @@ export default function CausalMaskDemo() {
           />
           <div className="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
             {softmaxResult.map((row, i) => (
-              <span key={i}>行{i + 1}总和: {row.reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0).toFixed(2)}</span>
+              <span key={i}>{t.rowSum}{i + 1}{t.sumLabel}: {row.reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0).toFixed(2)}</span>
             ))}
           </div>
         </div>

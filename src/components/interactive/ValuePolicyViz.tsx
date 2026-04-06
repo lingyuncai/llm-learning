@@ -6,13 +6,30 @@ const H = 360;
 const GRID = 4;
 const CELL = 56;
 
-export default function ValuePolicyViz() {
+export default function ValuePolicyViz({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [values, setValues] = useState<number[][]>([
     [3.0, 2.5, 2.0, 0],
     [2.5, 0, 1.5, 0],
     [2.0, 1.5, 1.0, -0.5],
     [1.5, 1.0, 0.5, 0.0],
   ]);
+
+  const t = {
+    zh: {
+      title: 'Value Function ↔ Policy 对照',
+      subtitle: '点击格子 +/- 调整 V 值，观察策略箭头如何跟随变化',
+      valueFunctionLabel: 'Value Function V(s)',
+      policyLabel: 'Policy π(s)',
+      legend: '深色 = 高价值 | 浅色 = 低价值 | 策略箭头指向最高价值邻居 | 修改 V 值观察策略变化',
+    },
+    en: {
+      title: 'Value Function ↔ Policy Correspondence',
+      subtitle: 'Click +/- on cells to adjust V values, observe how policy arrows follow',
+      valueFunctionLabel: 'Value Function V(s)',
+      policyLabel: 'Policy π(s)',
+      legend: 'Dark = high value | Light = low value | Policy arrows point to highest-value neighbor | Modify V to observe policy changes',
+    },
+  }[locale];
 
   // Derive policy from values: pick direction of neighbor with highest value
   const DIRS = [
@@ -64,15 +81,15 @@ export default function ValuePolicyViz() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          Value Function ↔ Policy 对照
+          {t.title}
         </text>
         <text x={W / 2} y={42} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          点击格子 +/- 调整 V 值，观察策略箭头如何跟随变化
+          {t.subtitle}
         </text>
 
         {/* Value heatmap */}
         <text x={OX1 + (GRID * CELL) / 2} y={OY - 6} textAnchor="middle" fontSize={12} fontWeight={600} fill={COLORS.dark}>
-          Value Function V(s)
+          {t.valueFunctionLabel}
         </text>
         {Array.from({ length: GRID }, (_, r) =>
           Array.from({ length: GRID }, (_, c) => {
@@ -108,7 +125,7 @@ export default function ValuePolicyViz() {
 
         {/* Policy arrows */}
         <text x={OX2 + (GRID * CELL) / 2} y={OY - 6} textAnchor="middle" fontSize={12} fontWeight={600} fill={COLORS.dark}>
-          Policy π(s)
+          {t.policyLabel}
         </text>
         {Array.from({ length: GRID }, (_, r) =>
           Array.from({ length: GRID }, (_, c) => {
@@ -133,7 +150,7 @@ export default function ValuePolicyViz() {
 
         {/* Legend */}
         <text x={30} y={H - 12} fontSize={9} fill={COLORS.mid}>
-          深色 = 高价值 | 浅色 = 低价值 | 策略箭头指向最高价值邻居 | 修改 V 值观察策略变化
+          {t.legend}
         </text>
       </svg>
     </div>

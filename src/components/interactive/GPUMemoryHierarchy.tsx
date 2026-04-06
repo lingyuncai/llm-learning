@@ -44,8 +44,8 @@ function MemoryBlock({ label, size, bandwidth, y, color }: {
   );
 }
 
-function DataFlowPanel({ title, steps, color }: {
-  title: string; steps: ArrowStep[]; color: string;
+function DataFlowPanel({ title, steps, color, hbmTransfersText }: {
+  title: string; steps: ArrowStep[]; color: string; hbmTransfersText: string;
 }) {
   const [activeStep, setActiveStep] = useState(-1);
   const ioCount = steps.filter(s => s.from !== s.to).length;
@@ -55,7 +55,7 @@ function DataFlowPanel({ title, steps, color }: {
       <h4 className="text-sm font-semibold mb-2 text-center" style={{ color }}>
         {title}
         <span className="ml-2 text-xs font-normal" style={{ color: COLORS.mid }}>
-          ({ioCount} HBM transfers)
+          ({ioCount} {hbmTransfersText})
         </span>
       </h4>
       <div className="space-y-1">
@@ -93,11 +93,28 @@ function DataFlowPanel({ title, steps, color }: {
   );
 }
 
-export default function GPUMemoryHierarchy() {
+export default function GPUMemoryHierarchy({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'GPU 内存层次与数据搬运对比',
+      standardAttention: 'Standard Attention',
+      flashAttention: 'Flash Attention',
+      hbmTransfers: 'HBM transfers',
+      summary: '标准 Attention 需要 6 次 HBM 传输（3 读 + 3 写），Flash Attention 只需 2 次（1 读 + 1 写）',
+    },
+    en: {
+      title: 'GPU Memory Hierarchy & Data Transfer Comparison',
+      standardAttention: 'Standard Attention',
+      flashAttention: 'Flash Attention',
+      hbmTransfers: 'HBM transfers',
+      summary: 'Standard Attention requires 6 HBM transfers (3 reads + 3 writes), Flash Attention only needs 2 (1 read + 1 write)',
+    },
+  }[locale];
+
   return (
     <div className="my-6 p-4 bg-white rounded-lg border" style={{ borderColor: COLORS.light }}>
       <h3 className="text-base font-bold mb-4" style={{ color: COLORS.dark }}>
-        GPU 内存层次与数据搬运对比
+        {t.title}
       </h3>
 
       {/* Memory hierarchy diagram */}
@@ -112,20 +129,22 @@ export default function GPUMemoryHierarchy() {
       {/* Side-by-side comparison */}
       <div className="flex flex-col sm:flex-row gap-4">
         <DataFlowPanel
-          title="Standard Attention"
+          title={t.standardAttention}
           steps={standardSteps}
           color={COLORS.red}
+          hbmTransfersText={t.hbmTransfers}
         />
         <div className="hidden sm:block w-px bg-gray-200" />
         <DataFlowPanel
-          title="Flash Attention"
+          title={t.flashAttention}
           steps={flashSteps}
           color={COLORS.green}
+          hbmTransfersText={t.hbmTransfers}
         />
       </div>
 
       <p className="text-xs mt-3 text-center" style={{ color: COLORS.mid }}>
-        标准 Attention 需要 6 次 HBM 传输（3 读 + 3 写），Flash Attention 只需 2 次（1 读 + 1 写）
+        {t.summary}
       </p>
     </div>
   );

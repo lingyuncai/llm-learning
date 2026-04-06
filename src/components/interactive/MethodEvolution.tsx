@@ -14,19 +14,53 @@ interface MethodNode {
   introduced: string;
 }
 
-const METHODS: MethodNode[] = [
-  { id: 'rlhf', label: 'RLHF', x: 100, y: 80, color: COLORS.primary, solved: '首次实现 LLM 对齐（InstructGPT）', introduced: '需要 RM + PPO + Critic，4 个模型，训练复杂' },
-  { id: 'dpo', label: 'DPO', x: 250, y: 80, color: COLORS.purple, solved: '去掉 RM 和 PPO，训练简单如 SFT', introduced: 'Offline 数据分布偏移，容易过拟合' },
-  { id: 'ipo', label: 'IPO', x: 100, y: 170, color: COLORS.green, solved: '加正则解决 DPO 过拟合', introduced: '仍是 offline，性能提升有限' },
-  { id: 'kto', label: 'KTO', x: 250, y: 170, color: COLORS.green, solved: '不需要配对偏好，只需要好/坏标签', introduced: '信号更弱，对齐效果天花板较低' },
-  { id: 'grpo', label: 'GRPO', x: 400, y: 170, color: COLORS.red, solved: '在线采样 + 去掉 Critic，降低训练资源', introduced: '需要生成多个回答（推理成本高）' },
-];
-
 const EDGES: [string, string][] = [
   ['rlhf', 'dpo'], ['dpo', 'ipo'], ['dpo', 'kto'], ['dpo', 'grpo'], ['rlhf', 'grpo'],
 ];
 
-export default function MethodEvolution() {
+export default function MethodEvolution({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '方法演进图谱',
+      subtitle: '点击节点查看"解决了什么 / 引入了什么问题"',
+      solvedLabel: '✓ 解决了什么：',
+      introducedLabel: '✗ 引入了什么问题：',
+      clickPrompt: '← 点击节点查看详情 →',
+      explanation: '每种方法都在解决前一种的问题，同时引入新的挑战',
+      footer: '没有完美方案 — 选择取决于训练资源、数据质量和性能需求',
+      methods: {
+        rlhf: { solved: '首次实现 LLM 对齐（InstructGPT）', introduced: '需要 RM + PPO + Critic，4 个模型，训练复杂' },
+        dpo: { solved: '去掉 RM 和 PPO，训练简单如 SFT', introduced: 'Offline 数据分布偏移，容易过拟合' },
+        ipo: { solved: '加正则解决 DPO 过拟合', introduced: '仍是 offline，性能提升有限' },
+        kto: { solved: '不需要配对偏好，只需要好/坏标签', introduced: '信号更弱，对齐效果天花板较低' },
+        grpo: { solved: '在线采样 + 去掉 Critic，降低训练资源', introduced: '需要生成多个回答（推理成本高）' },
+      },
+    },
+    en: {
+      title: 'Method Evolution Map',
+      subtitle: 'Click nodes to see "What it solved / What problems it introduced"',
+      solvedLabel: '✓ What it solved:',
+      introducedLabel: '✗ Problems introduced:',
+      clickPrompt: '← Click a node to see details →',
+      explanation: 'Each method solves previous issues while introducing new challenges',
+      footer: 'No perfect solution — choice depends on resources, data quality and performance needs',
+      methods: {
+        rlhf: { solved: 'First LLM alignment (InstructGPT)', introduced: 'Requires RM + PPO + Critic, 4 models, complex training' },
+        dpo: { solved: 'Removes RM and PPO, training as simple as SFT', introduced: 'Offline data distribution shift, overfitting prone' },
+        ipo: { solved: 'Adds regularization to solve DPO overfitting', introduced: 'Still offline, limited performance gains' },
+        kto: { solved: 'No paired preferences, only good/bad labels', introduced: 'Weaker signal, lower alignment ceiling' },
+        grpo: { solved: 'Online sampling + removes Critic, reduces resources', introduced: 'Requires multiple responses (high inference cost)' },
+      },
+    },
+  }[locale];
+
+  const METHODS: MethodNode[] = [
+    { id: 'rlhf', label: 'RLHF', x: 100, y: 80, color: COLORS.primary, solved: t.methods.rlhf.solved, introduced: t.methods.rlhf.introduced },
+    { id: 'dpo', label: 'DPO', x: 250, y: 80, color: COLORS.purple, solved: t.methods.dpo.solved, introduced: t.methods.dpo.introduced },
+    { id: 'ipo', label: 'IPO', x: 100, y: 170, color: COLORS.green, solved: t.methods.ipo.solved, introduced: t.methods.ipo.introduced },
+    { id: 'kto', label: 'KTO', x: 250, y: 170, color: COLORS.green, solved: t.methods.kto.solved, introduced: t.methods.kto.introduced },
+    { id: 'grpo', label: 'GRPO', x: 400, y: 170, color: COLORS.red, solved: t.methods.grpo.solved, introduced: t.methods.grpo.introduced },
+  ];
   const [active, setActive] = useState<string | null>(null);
   const nodeMap = Object.fromEntries(METHODS.map(m => [m.id, m]));
   const activeNode = active ? nodeMap[active] : null;
@@ -35,10 +69,10 @@ export default function MethodEvolution() {
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ fontFamily: FONTS.sans }}>
         <text x={W / 2} y={24} textAnchor="middle" fontSize={15} fontWeight={700} fill={COLORS.dark}>
-          方法演进图谱
+          {t.title}
         </text>
         <text x={W / 2} y={42} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-          点击节点查看"解决了什么 / 引入了什么问题"
+          {t.subtitle}
         </text>
 
         {EDGES.map(([from, to], i) => (
@@ -65,13 +99,13 @@ export default function MethodEvolution() {
           <g>
             <rect x={30} y={220} width={520} height={70} rx={8} fill="#d4edda" stroke={COLORS.green} strokeWidth={1} />
             <text x={40} y={240} fontSize={10} fontWeight={700} fill={COLORS.green}>
-              ✓ 解决了什么：
+              {t.solvedLabel}
             </text>
             <text x={40} y={258} fontSize={11} fill={COLORS.dark}>{activeNode.solved}</text>
 
             <rect x={30} y={300} width={520} height={70} rx={8} fill={COLORS.waste} stroke={COLORS.red} strokeWidth={1} />
             <text x={40} y={320} fontSize={10} fontWeight={700} fill={COLORS.red}>
-              ✗ 引入了什么问题：
+              {t.introducedLabel}
             </text>
             <text x={40} y={338} fontSize={11} fill={COLORS.dark}>{activeNode.introduced}</text>
           </g>
@@ -79,16 +113,16 @@ export default function MethodEvolution() {
           <g>
             <rect x={30} y={230} width={520} height={130} rx={8} fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth={1} />
             <text x={W / 2} y={290} textAnchor="middle" fontSize={12} fill={COLORS.mid}>
-              ← 点击节点查看详情 →
+              {t.clickPrompt}
             </text>
             <text x={W / 2} y={310} textAnchor="middle" fontSize={10} fill={COLORS.mid}>
-              每种方法都在解决前一种的问题，同时引入新的挑战
+              {t.explanation}
             </text>
           </g>
         )}
 
         <text x={W / 2} y={H - 10} textAnchor="middle" fontSize={9} fill={COLORS.mid}>
-          没有完美方案 — 选择取决于训练资源、数据质量和性能需求
+          {t.footer}
         </text>
       </svg>
     </div>

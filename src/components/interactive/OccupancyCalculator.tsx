@@ -46,7 +46,38 @@ function calcOccupancy(blockSize: number, regsPerThread: number, smemPerBlock: n
   return { warpsPerBlock, activeBlocks, activeWarps, occupancy, bottleneck: bottleneck.name, limits };
 }
 
-export default function OccupancyCalculator() {
+export default function OccupancyCalculator({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      blockSize: 'Block Size (threads)',
+      regsPerThread: 'Registers / Thread',
+      sharedMem: 'Shared Mem / Block',
+      title: 'Occupancy Calculator —',
+      occupancy: 'Occupancy',
+      activeBlocks: 'Active Blocks:',
+      activeWarps: 'Active Warps:',
+      warpsPerBlock: 'Warps/Block:',
+      maxBlocksLabel: '每种资源允许的最大 Blocks/SM:',
+      bottleneck: '← 瓶颈',
+      formula: 'Occupancy = active warps / max warps =',
+      bottleneckLabel: '— 瓶颈:',
+    },
+    en: {
+      blockSize: 'Block Size (threads)',
+      regsPerThread: 'Registers / Thread',
+      sharedMem: 'Shared Mem / Block',
+      title: 'Occupancy Calculator —',
+      occupancy: 'Occupancy',
+      activeBlocks: 'Active Blocks:',
+      activeWarps: 'Active Warps:',
+      warpsPerBlock: 'Warps/Block:',
+      maxBlocksLabel: 'Max Blocks/SM per resource:',
+      bottleneck: '← Bottleneck',
+      formula: 'Occupancy = active warps / max warps =',
+      bottleneckLabel: '— Bottleneck:',
+    },
+  }[locale];
+
   const [blockSize, setBlockSize] = useState(256);
   const [regsPerThread, setRegsPerThread] = useState(32);
   const [smemPerBlock, setSmemPerBlock] = useState(16384); // 16 KB
@@ -59,7 +90,7 @@ export default function OccupancyCalculator() {
       {/* Controls */}
       <div className="grid grid-cols-3 gap-4 px-4 py-3 bg-gray-50 border-b border-gray-200">
         <label className="text-sm">
-          <span className="text-gray-600 font-medium block mb-1">Block Size (threads)</span>
+          <span className="text-gray-600 font-medium block mb-1">{t.blockSize}</span>
           <select value={blockSize} onChange={e => setBlockSize(+e.target.value)}
             className="w-full border rounded px-2 py-1 text-sm font-mono">
             {[64, 128, 256, 512, 1024].map(v => (
@@ -68,13 +99,13 @@ export default function OccupancyCalculator() {
           </select>
         </label>
         <label className="text-sm">
-          <span className="text-gray-600 font-medium block mb-1">Registers / Thread</span>
+          <span className="text-gray-600 font-medium block mb-1">{t.regsPerThread}</span>
           <input type="range" min={16} max={128} step={8} value={regsPerThread}
             onChange={e => setRegsPerThread(+e.target.value)} className="w-full" />
           <span className="font-mono text-primary-600">{regsPerThread}</span>
         </label>
         <label className="text-sm">
-          <span className="text-gray-600 font-medium block mb-1">Shared Mem / Block</span>
+          <span className="text-gray-600 font-medium block mb-1">{t.sharedMem}</span>
           <input type="range" min={0} max={131072} step={4096} value={smemPerBlock}
             onChange={e => setSmemPerBlock(+e.target.value)} className="w-full" />
           <span className="font-mono text-primary-600">{(smemPerBlock / 1024).toFixed(0)} KB</span>
@@ -86,7 +117,7 @@ export default function OccupancyCalculator() {
         <svg viewBox={`0 0 ${W} ${SVG_H}`} className="w-full" role="img">
           <text x={W / 2} y={20} textAnchor="middle" fontSize="11" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            Occupancy Calculator — {SM.label}
+            {t.title} {SM.label}
           </text>
 
           {/* Occupancy bar */}
@@ -100,18 +131,18 @@ export default function OccupancyCalculator() {
           <text x={W / 2} y={54} textAnchor="middle" fontSize="14" fontWeight="700"
             fill={pct >= 75 ? COLORS.green : pct >= 50 ? COLORS.orange : COLORS.red}
             fontFamily={FONTS.mono}>
-            {pct}% Occupancy
+            {pct}% {t.occupancy}
           </text>
 
           {/* Key metrics */}
           <text x={W / 2} y={85} textAnchor="middle" fontSize="10" fill={COLORS.dark}
             fontFamily={FONTS.sans}>
-            Active Blocks: {result.activeBlocks} | Active Warps: {result.activeWarps} / {SM.maxWarps} | Warps/Block: {result.warpsPerBlock}
+            {t.activeBlocks} {result.activeBlocks} | {t.activeWarps} {result.activeWarps} / {SM.maxWarps} | {t.warpsPerBlock} {result.warpsPerBlock}
           </text>
 
           {/* Per-resource limits */}
           <text x={40} y={112} fontSize="9" fontWeight="600" fill={COLORS.dark}
-            fontFamily={FONTS.sans}>每种资源允许的最大 Blocks/SM:</text>
+            fontFamily={FONTS.sans}>{t.maxBlocksLabel}</text>
 
           {result.limits.map((l, i) => {
             const y = 128 + i * 30;
@@ -130,7 +161,7 @@ export default function OccupancyCalculator() {
                   stroke={isBottleneck ? COLORS.red : COLORS.primary} strokeWidth={0.5} />
                 <text x={135} y={y + 12} fontSize="7.5"
                   fill={isBottleneck ? COLORS.red : COLORS.primary} fontFamily={FONTS.mono}>
-                  {l.val} blocks {isBottleneck ? '← 瓶颈' : ''}
+                  {l.val} blocks {isBottleneck ? t.bottleneck : ''}
                 </text>
               </g>
             );
@@ -141,7 +172,7 @@ export default function OccupancyCalculator() {
             fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
           <text x={W / 2} y={SVG_H - 26} textAnchor="middle" fontSize="8" fill={COLORS.dark}
             fontFamily={FONTS.sans}>
-            Occupancy = active warps / max warps = {result.activeWarps} / {SM.maxWarps} = {pct}% — 瓶颈: {result.bottleneck}
+            {t.formula} {result.activeWarps} / {SM.maxWarps} = {pct}% {t.bottleneckLabel} {result.bottleneck}
           </text>
         </svg>
       </div>

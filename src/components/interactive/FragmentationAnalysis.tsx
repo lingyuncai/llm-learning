@@ -19,9 +19,43 @@ const SCENARIOS: Scenario[] = [
   { label: '64 请求', requests: 64, contiguousInternal: 45, contiguousExternal: 38, pagedInternal: 4, pagedExternal: 0 },
 ];
 
-export default function FragmentationAnalysis() {
+export default function FragmentationAnalysis({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '内存碎片率对比',
+      subtitle: '切换不同并发请求数，观察碎片率变化',
+      scenario_4: '4 请求',
+      scenario_16: '16 请求',
+      scenario_64: '64 请求',
+      internal_frag: '内部碎片',
+      internal_frag_desc: '预分配 max_len 导致的未使用空间',
+      external_frag: '外部碎片',
+      external_frag_desc: '请求间内存间隙无法利用',
+      contiguous: '连续分配',
+      paged: 'PagedAttention',
+      total_waste: '总浪费率',
+      summary: 'PagedAttention 将外部碎片降为 0%，内部碎片仅来自最后一个块（< block_size tokens）',
+    },
+    en: {
+      title: 'Memory Fragmentation Comparison',
+      subtitle: 'Switch between different concurrent requests to observe fragmentation changes',
+      scenario_4: '4 requests',
+      scenario_16: '16 requests',
+      scenario_64: '64 requests',
+      internal_frag: 'Internal Fragmentation',
+      internal_frag_desc: 'Unused space from max_len pre-allocation',
+      external_frag: 'External Fragmentation',
+      external_frag_desc: 'Memory gaps between requests that cannot be utilized',
+      contiguous: 'Contiguous',
+      paged: 'PagedAttention',
+      total_waste: 'Total Waste',
+      summary: 'PagedAttention reduces external fragmentation to 0%, internal fragmentation only from last block (< block_size tokens)',
+    },
+  }[locale];
   const [scenarioIdx, setScenarioIdx] = useState(1);
   const s = SCENARIOS[scenarioIdx];
+
+  const scenarioLabels = [t.scenario_4, t.scenario_16, t.scenario_64];
 
   const chartX = 80;
   const chartW = 420;
@@ -30,19 +64,19 @@ export default function FragmentationAnalysis() {
   const groupGap = 60;
 
   const bars = [
-    { label: '内部碎片', contiguous: s.contiguousInternal, paged: s.pagedInternal, desc: '预分配 max_len 导致的未使用空间' },
-    { label: '外部碎片', contiguous: s.contiguousExternal, paged: s.pagedExternal, desc: '请求间内存间隙无法利用' },
+    { label: t.internal_frag, contiguous: s.contiguousInternal, paged: s.pagedInternal, desc: t.internal_frag_desc },
+    { label: t.external_frag, contiguous: s.contiguousExternal, paged: s.pagedExternal, desc: t.external_frag_desc },
   ];
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        内存碎片率对比
+        {t.title}
       </text>
       <text x={W / 2} y={40} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        切换不同并发请求数，观察碎片率变化
+        {t.subtitle}
       </text>
 
       {/* Scenario selector */}
@@ -53,7 +87,7 @@ export default function FragmentationAnalysis() {
             stroke={scenarioIdx === i ? COLORS.primary : COLORS.light} strokeWidth="1" />
           <text x={202 + i * 100} y={68} textAnchor="middle" fontSize="10"
             fontWeight="600" fill={scenarioIdx === i ? '#fff' : COLORS.mid} fontFamily={FONTS.sans}>
-            {sc.label}
+            {scenarioLabels[i]}
           </text>
         </g>
       ))}
@@ -79,7 +113,7 @@ export default function FragmentationAnalysis() {
               {bar.contiguous}%
             </text>
             <text x={chartX + bar.contiguous * scale + 35} y={baseY + 12}
-              fontSize="8" fill={COLORS.mid} fontFamily={FONTS.sans}>连续分配</text>
+              fontSize="8" fill={COLORS.mid} fontFamily={FONTS.sans}>{t.contiguous}</text>
 
             {/* Paged bar */}
             <rect x={chartX} y={baseY + barH / 2 + 1}
@@ -90,7 +124,7 @@ export default function FragmentationAnalysis() {
               {bar.paged}%
             </text>
             <text x={chartX + Math.max(bar.paged * scale, 2) + 30} y={baseY + barH - 2}
-              fontSize="8" fill={COLORS.mid} fontFamily={FONTS.sans}>PagedAttention</text>
+              fontSize="8" fill={COLORS.mid} fontFamily={FONTS.sans}>{t.paged}</text>
           </g>
         );
       })}
@@ -105,7 +139,7 @@ export default function FragmentationAnalysis() {
           <g>
             <text x={W / 2} y={y} textAnchor="middle" fontSize="11"
               fontWeight="700" fill={COLORS.dark} fontFamily={FONTS.sans}>
-              总浪费率
+              {t.total_waste}
             </text>
             {/* Contiguous */}
             <rect x={W / 2 - barMaxW / 2} y={y + 10}
@@ -132,7 +166,7 @@ export default function FragmentationAnalysis() {
         fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
       <text x={W / 2} y={H - 25} textAnchor="middle" fontSize="10"
         fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        PagedAttention 将外部碎片降为 0%，内部碎片仅来自最后一个块（&lt; block_size tokens）
+        {t.summary}
       </text>
     </svg>
   );

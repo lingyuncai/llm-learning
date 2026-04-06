@@ -140,54 +140,83 @@ function TreeSVG({ step }: { step: number }) {
   );
 }
 
-export default function BeamSearchTree() {
+export default function BeamSearchTree({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step0Title: '初始: [START]',
+      step0Desc: `从起始 token 开始，准备展开 top-${B} 个候选`,
+      step1Title: 'Step 1: 展开 + 剪枝',
+      step1Desc: `展开 4 个候选，保留分数最高的 B=${B} 条 beam（"The" 和 "I"）`,
+      step1Note: '灰色虚线 = 被剪枝的路径',
+      step2Title: 'Step 2: 继续展开',
+      step2Desc: `每条 beam 各展开 2 个候选（共 4 个），保留全局最优的 B=${B} 条`,
+      step2Result: '"The cat" (−1.0) 和 "I like" (−1.3) 胜出',
+      step3Title: 'Step 3: 最终结果',
+      step3Desc: '最终选择总分数最高的序列: "The cat sat" (score = −1.3)',
+      step3Note: 'Beam Search 能找到比 Greedy 更优的全局序列，但计算量是 B 倍',
+    },
+    en: {
+      step0Title: 'Initial: [START]',
+      step0Desc: `Start from initial token, prepare to expand top-${B} candidates`,
+      step1Title: 'Step 1: Expand + Prune',
+      step1Desc: `Expand 4 candidates, keep top-${B} beams by score ("The" and "I")`,
+      step1Note: 'Gray dashed lines = pruned paths',
+      step2Title: 'Step 2: Continue Expansion',
+      step2Desc: `Each beam expands 2 candidates (4 total), keep globally best B=${B}`,
+      step2Result: '"The cat" (−1.0) and "I like" (−1.3) win',
+      step3Title: 'Step 3: Final Result',
+      step3Desc: 'Select sequence with highest total score: "The cat sat" (score = −1.3)',
+      step3Note: 'Beam Search finds better global sequences than Greedy, but B× compute',
+    },
+  }[locale];
+
   const steps = [
     {
-      title: '初始: [START]',
+      title: t.step0Title,
       content: (
         <div className="space-y-2">
           <TreeSVG step={0} />
           <p className="text-sm text-gray-600 text-center">
-            从起始 token 开始，准备展开 top-{B} 个候选
+            {t.step0Desc}
           </p>
         </div>
       ),
     },
     {
-      title: 'Step 1: 展开 + 剪枝',
+      title: t.step1Title,
       content: (
         <div className="space-y-2">
           <TreeSVG step={1} />
           <p className="text-sm text-gray-600 text-center">
-            展开 4 个候选，保留分数最高的 <strong>B={B}</strong> 条 beam（"The" 和 "I"）
+            {t.step1Desc}
             <br />
-            <span className="text-xs text-gray-400">灰色虚线 = 被剪枝的路径</span>
+            <span className="text-xs text-gray-400">{t.step1Note}</span>
           </p>
         </div>
       ),
     },
     {
-      title: 'Step 2: 继续展开',
+      title: t.step2Title,
       content: (
         <div className="space-y-2">
           <TreeSVG step={2} />
           <p className="text-sm text-gray-600 text-center">
-            每条 beam 各展开 2 个候选（共 4 个），保留全局最优的 B={B} 条
+            {t.step2Desc}
             <br />
-            <span className="text-xs">"The cat" (−1.0) 和 "I like" (−1.3) 胜出</span>
+            <span className="text-xs">{t.step2Result}</span>
           </p>
         </div>
       ),
     },
     {
-      title: 'Step 3: 最终结果',
+      title: t.step3Title,
       content: (
         <div className="space-y-2">
           <TreeSVG step={3} />
           <p className="text-sm text-gray-600 text-center">
-            最终选择总分数最高的序列: <strong>"The cat sat"</strong> (score = −1.3)
+            <strong>{t.step3Desc}</strong>
             <br />
-            <span className="text-xs">Beam Search 能找到比 Greedy 更优的全局序列，但计算量是 B 倍</span>
+            <span className="text-xs">{t.step3Note}</span>
           </p>
         </div>
       ),

@@ -3,14 +3,55 @@ import StepNavigator from '../primitives/StepNavigator';
 
 const W = 580;
 
-export default function BellmanBackup() {
+export default function BellmanBackup({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step0Title: '单步 Backup 直觉',
+      step0MainTitle: 'Bellman Backup：从下一个状态"回传"价值',
+      step0Intuition: '核心直觉：价值来自未来',
+      step0IntuitionDesc: '好的状态 = 能到达高奖励状态的状态',
+      step0CurrentValue: '当前价值 = 即时奖励 + 折扣未来价值',
+      step1Title: '递推展开',
+      step1MainTitle: '递推展开：Bellman 方程层层回传',
+      step1BackupDesc: '← 价值从终点向起点回传（Backup）',
+      step1Formula: 'V(s₂) = r₃ + γ·V(s₃) → V(s₁) = r₂ + γ·V(s₂) → V(s₀) = r₁ + γ·V(s₁)',
+      step2Title: '收敛到最优值',
+      step2MainTitle: 'Value Iteration：反复 Backup 直到收敛',
+      step2Iteration1: '迭代 1',
+      step2Iteration2: '迭代 2',
+      step2Iteration3: '迭代 3',
+      step2Convergence: '收敛',
+      step2Desc: '反复应用 Bellman 方程（Backup），每次迭代更新所有状态的 V 值',
+      step2ConvergenceDesc: '当所有状态的 V 值不再变化时 → 收敛到最优值函数 V*(s)',
+    },
+    en: {
+      step0Title: 'Single-Step Backup Intuition',
+      step0MainTitle: 'Bellman Backup: "Propagating" Value from Next States',
+      step0Intuition: 'Core Intuition: Value Comes from the Future',
+      step0IntuitionDesc: 'Good state = state that can reach high-reward states',
+      step0CurrentValue: 'Current value = immediate reward + discounted future value',
+      step1Title: 'Recursive Expansion',
+      step1MainTitle: 'Recursive Expansion: Bellman Equation Propagates Layer by Layer',
+      step1BackupDesc: '← Value propagates backward from terminal to initial states (Backup)',
+      step1Formula: 'V(s₂) = r₃ + γ·V(s₃) → V(s₁) = r₂ + γ·V(s₂) → V(s₀) = r₁ + γ·V(s₁)',
+      step2Title: 'Converge to Optimal Value',
+      step2MainTitle: 'Value Iteration: Repeated Backup Until Convergence',
+      step2Iteration1: 'Iteration 1',
+      step2Iteration2: 'Iteration 2',
+      step2Iteration3: 'Iteration 3',
+      step2Convergence: 'Converged',
+      step2Desc: 'Repeatedly apply Bellman equation (Backup), updating V values for all states in each iteration',
+      step2ConvergenceDesc: 'When V values for all states stop changing → converged to optimal value function V*(s)',
+    },
+  }[locale];
+
   const steps = [
     {
-      title: '单步 Backup 直觉',
+      title: t.step0Title,
       content: (
         <svg viewBox={`0 0 ${W} 220`} className="w-full" style={{ fontFamily: FONTS.sans }}>
           <text x={W / 2} y={24} textAnchor="middle" fontSize={13} fontWeight={700} fill={COLORS.dark}>
-            Bellman Backup：从下一个状态"回传"价值
+            {t.step0MainTitle}
           </text>
           {/* Current state */}
           <circle cx={120} cy={100} r={30} fill={COLORS.highlight} stroke={COLORS.primary} strokeWidth={2} />
@@ -45,24 +86,24 @@ export default function BellmanBackup() {
                  × [R + γ·V(s')]
           </text>
           <text x={380} y={130} fontSize={11} fill={COLORS.mid}>
-            当前价值 = 即时奖励 + 折扣未来价值
+            {t.step0CurrentValue}
           </text>
           <rect x={370} y={145} width={190} height={40} rx={6} fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth={1} />
           <text x={465} y={163} textAnchor="middle" fontSize={11} fontWeight={600} fill={COLORS.orange}>
-            核心直觉：价值来自未来
+            {t.step0Intuition}
           </text>
           <text x={465} y={178} textAnchor="middle" fontSize={10} fill={COLORS.mid}>
-            好的状态 = 能到达高奖励状态的状态
+            {t.step0IntuitionDesc}
           </text>
         </svg>
       ),
     },
     {
-      title: '递推展开',
+      title: t.step1Title,
       content: (
         <svg viewBox={`0 0 ${W} 220`} className="w-full" style={{ fontFamily: FONTS.sans }}>
           <text x={W / 2} y={24} textAnchor="middle" fontSize={13} fontWeight={700} fill={COLORS.dark}>
-            递推展开：Bellman 方程层层回传
+            {t.step1MainTitle}
           </text>
 
           {/* Chain of states */}
@@ -107,24 +148,24 @@ export default function BellmanBackup() {
           </defs>
 
           <text x={W / 2} y={190} textAnchor="middle" fontSize={12} fontWeight={600} fill={COLORS.green}>
-            ← 价值从终点向起点回传（Backup）
+            {t.step1BackupDesc}
           </text>
           <text x={W / 2} y={210} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-            V(s₂) = r₃ + γ·V(s₃) → V(s₁) = r₂ + γ·V(s₂) → V(s₀) = r₁ + γ·V(s₁)
+            {t.step1Formula}
           </text>
         </svg>
       ),
     },
     {
-      title: '收敛到最优值',
+      title: t.step2Title,
       content: (
         <svg viewBox={`0 0 ${W} 220`} className="w-full" style={{ fontFamily: FONTS.sans }}>
           <text x={W / 2} y={24} textAnchor="middle" fontSize={13} fontWeight={700} fill={COLORS.dark}>
-            Value Iteration：反复 Backup 直到收敛
+            {t.step2MainTitle}
           </text>
 
           {/* Iteration visualization */}
-          {['迭代 1', '迭代 2', '迭代 3', '...', '收敛'].map((label, i) => {
+          {[t.step2Iteration1, t.step2Iteration2, t.step2Iteration3, '...', t.step2Convergence].map((label, i) => {
             const x = 40 + i * 110;
             const colors = [
               [COLORS.masked, COLORS.masked, COLORS.masked, '#d4edda'],
@@ -152,15 +193,15 @@ export default function BellmanBackup() {
 
           <rect x={40} y={170} width={500} height={40} rx={6} fill={COLORS.bgAlt} stroke={COLORS.primary} strokeWidth={1} />
           <text x={W / 2} y={187} textAnchor="middle" fontSize={11} fontWeight={600} fill={COLORS.primary}>
-            反复应用 Bellman 方程（Backup），每次迭代更新所有状态的 V 值
+            {t.step2Desc}
           </text>
           <text x={W / 2} y={203} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-            当所有状态的 V 值不再变化时 → 收敛到最优值函数 V*(s)
+            {t.step2ConvergenceDesc}
           </text>
         </svg>
       ),
     },
   ];
 
-  return <StepNavigator steps={steps} />;
+  return <StepNavigator steps={steps} locale={locale} />;
 }

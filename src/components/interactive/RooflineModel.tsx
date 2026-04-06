@@ -3,7 +3,36 @@ import { useState, useMemo } from 'react';
 import { COLORS } from './shared/colors';
 import { HARDWARE_PRESETS } from './shared/presets';
 
-export default function RooflineModel() {
+export default function RooflineModel({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      hardware: '硬件',
+      memoryBound: 'Memory-bound',
+      computeBound: 'Compute-bound',
+      decodeLabel: 'Decode (bs=',
+      decodeStatus: '只依赖相对距离',
+      decodeComputeGood: '✅ Compute-bound (batch 足够大)',
+      decodeMemoryWarn: '⚠️ Memory-bound (带宽瓶颈)',
+      prefillLabel: 'Prefill',
+      prefillStatus: '✅ Compute-bound',
+      arithmeticIntensity: 'Arithmetic Intensity (FLOP/Byte, log)',
+      throughput: 'Throughput (TFLOPS, log)',
+    },
+    en: {
+      hardware: 'Hardware',
+      memoryBound: 'Memory-bound',
+      computeBound: 'Compute-bound',
+      decodeLabel: 'Decode (bs=',
+      decodeStatus: 'Only relative distance',
+      decodeComputeGood: '✅ Compute-bound (batch large enough)',
+      decodeMemoryWarn: '⚠️ Memory-bound (bandwidth bottleneck)',
+      prefillLabel: 'Prefill',
+      prefillStatus: '✅ Compute-bound',
+      arithmeticIntensity: 'Arithmetic Intensity (FLOP/Byte, log)',
+      throughput: 'Throughput (TFLOPS, log)',
+    },
+  }[locale];
+
   const [batchSize, setBatchSize] = useState(1);
   const [seqLen, setSeqLen] = useState(2048);
   const [hwPreset, setHwPreset] = useState('A100 80GB');
@@ -63,7 +92,7 @@ export default function RooflineModel() {
             onChange={e => setBatchSize(Number(e.target.value))} className="w-40" />
         </div>
         <div>
-          <label className="text-xs text-gray-500 block">硬件</label>
+          <label className="text-xs text-gray-500 block">{t.hardware}</label>
           <select value={hwPreset} onChange={e => setHwPreset(e.target.value)}
             className="text-sm border rounded px-2 py-1">
             {Object.keys(HARDWARE_PRESETS).map(k => <option key={k}>{k}</option>)}
@@ -85,39 +114,39 @@ export default function RooflineModel() {
 
         {/* Labels */}
         <text x={logX(2)} y={logY(roofline(2)) - 10} fontSize="9" fill={COLORS.mid}
-          fontFamily="system-ui">Memory-bound</text>
+          fontFamily="system-ui">{t.memoryBound}</text>
         <text x={logX(ridgePoint * 3)} y={logY(peakTFLOPS) - 10} fontSize="9" fill={COLORS.mid}
-          fontFamily="system-ui">Compute-bound</text>
+          fontFamily="system-ui">{t.computeBound}</text>
 
         {/* Prefill point */}
         <circle cx={logX(prefillAI)} cy={logY(prefillTP)} r={6} fill={COLORS.green} />
         <text x={logX(prefillAI) + 10} y={logY(prefillTP) + 4} fontSize="10"
-          fill={COLORS.green} fontFamily="system-ui" fontWeight="600">Prefill</text>
+          fill={COLORS.green} fontFamily="system-ui" fontWeight="600">{t.prefillLabel}</text>
 
         {/* Decode point */}
         <circle cx={logX(decodeAI)} cy={logY(decodeTP)} r={6}
           fill={isDecodeCompute ? COLORS.green : COLORS.red} />
         <text x={logX(decodeAI) + 10} y={logY(decodeTP) - 8} fontSize="10"
           fill={isDecodeCompute ? COLORS.green : COLORS.red} fontFamily="system-ui" fontWeight="600">
-          Decode (bs={batchSize})
+          {t.decodeLabel}{batchSize})
         </text>
 
         {/* Axes labels */}
         <text x={padL + plotW / 2} y={svgH - 4} textAnchor="middle"
           fontSize="10" fill={COLORS.dark} fontFamily="system-ui">
-          Arithmetic Intensity (FLOP/Byte, log)
+          {t.arithmeticIntensity}
         </text>
         <text x={14} y={padT + plotH / 2} textAnchor="middle"
           fontSize="10" fill={COLORS.dark} fontFamily="system-ui"
           transform={`rotate(-90, 14, ${padT + plotH / 2})`}>
-          Throughput (TFLOPS, log)
+          {t.throughput}
         </text>
       </svg>
 
       <div className="mt-2 p-2 bg-blue-50 rounded text-xs text-blue-800">
         <strong>Decode:</strong> AI = {decodeAI.toFixed(1)} FLOP/B →{' '}
-        {isDecodeCompute ? '✅ Compute-bound (batch 足够大)' : '⚠️ Memory-bound (带宽瓶颈)'}
-        &nbsp;| <strong>Prefill:</strong> AI ≈ {prefillAI} FLOP/B → ✅ Compute-bound
+        {isDecodeCompute ? t.decodeComputeGood : t.decodeMemoryWarn}
+        &nbsp;| <strong>{t.prefillLabel}:</strong> AI ≈ {prefillAI} FLOP/B → {t.prefillStatus}
       </div>
     </div>
   );

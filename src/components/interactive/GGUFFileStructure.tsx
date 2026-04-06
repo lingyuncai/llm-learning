@@ -61,20 +61,33 @@ const REGIONS: Region[] = [
   },
 ];
 
-export default function GGUFFileStructure() {
+export default function GGUFFileStructure({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [selected, setSelected] = useState<string | null>(null);
   const selRegion = REGIONS.find(r => r.id === selected);
+
+  const t = {
+    zh: {
+      title: 'GGUF 文件结构 (以 Qwen3-4B Q4_K_M 为例)',
+      subtitle: '点击各区域查看详情 | 单文件自包含: 权重 + tokenizer + 模型配置 + prompt template',
+      summary: 'Qwen3-4B Q4_K_M: 291 tensors, 26 metadata KV, ~2.6 GB 总大小',
+    },
+    en: {
+      title: 'GGUF File Structure (Qwen3-4B Q4_K_M example)',
+      subtitle: 'Click regions for details | Single-file: weights + tokenizer + config + prompt template',
+      summary: 'Qwen3-4B Q4_K_M: 291 tensors, 26 metadata KV, ~2.6 GB total size',
+    },
+  }[locale];
 
   return (
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          GGUF 文件结构 (以 Qwen3-4B Q4_K_M 为例)
+          {t.title}
         </text>
         <text x={W / 2} y={33} textAnchor="middle" fontSize="7" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          点击各区域查看详情 | 单文件自包含: 权重 + tokenizer + 模型配置 + prompt template
+          {t.subtitle}
         </text>
 
         {REGIONS.map(r => (
@@ -100,7 +113,7 @@ export default function GGUFFileStructure() {
         {/* File size annotation */}
         <text x={250} y={H - 30} textAnchor="middle" fontSize="8" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Qwen3-4B Q4_K_M: 291 tensors, 26 metadata KV, ~2.6 GB 总大小
+          {t.summary}
         </text>
       </svg>
 

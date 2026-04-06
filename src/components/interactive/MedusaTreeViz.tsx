@@ -40,10 +40,31 @@ const SVG_H = 220;
 const NODE_W = 56;
 const NODE_H = 28;
 
-const HEAD_LABELS = ['Current', 'Head 1', 'Head 2'];
 const HEAD_LABEL_COLORS = [COLORS.dark, HEAD_COLORS[0], HEAD_COLORS[1]];
 
-export default function MedusaTreeViz() {
+export default function MedusaTreeViz({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      current: 'Current',
+      head1: 'Head 1',
+      head2: 'Head 2',
+      verify: 'Tree Attention 验证',
+      reset: '重置',
+      longestPath: '最长接受路径: cat → sat → on（3 tokens）',
+      description: 'Medusa 的多个 head 组合成候选树，Tree Attention 一次验证所有路径，选择最长被接受分支',
+    },
+    en: {
+      current: 'Current',
+      head1: 'Head 1',
+      head2: 'Head 2',
+      verify: 'Tree Attention Verify',
+      reset: 'Reset',
+      longestPath: 'Longest accepted path: cat → sat → on (3 tokens)',
+      description: 'Medusa combines multiple heads into candidate tree, Tree Attention verifies all paths at once, selecting the longest accepted branch',
+    },
+  }[locale];
+
+  const HEAD_LABELS = [t.current, t.head1, t.head2];
   const [verified, setVerified] = useState(false);
 
   const handleVerify = useCallback(() => {
@@ -156,7 +177,7 @@ export default function MedusaTreeViz() {
               animate={{ opacity: 1 }}
               transition={{ delay: 0.5 }}
             >
-              最长接受路径: cat → sat → on（3 tokens）
+              {t.longestPath}
             </motion.text>
           )}
         </svg>
@@ -167,17 +188,17 @@ export default function MedusaTreeViz() {
         {!verified ? (
           <button onClick={handleVerify}
             className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
-            Tree Attention 验证
+            {t.verify}
           </button>
         ) : (
           <button onClick={handleReset}
             className="px-4 py-1.5 text-sm bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors">
-            重置
+            {t.reset}
           </button>
         )}
       </div>
       <p className="text-xs text-gray-500 text-center">
-        Medusa 的多个 head 组合成候选树，Tree Attention 一次验证所有路径，选择最长被接受分支
+        {t.description}
       </p>
     </div>
   );

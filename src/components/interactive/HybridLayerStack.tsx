@@ -37,7 +37,21 @@ const LAYER_COLORS: Record<string, { fill: string; stroke: string }> = {
   mamba: { fill: '#dcfce7', stroke: COLORS.green },
 };
 
-export default function HybridLayerStack() {
+export default function HybridLayerStack({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Hybrid Attention 层配置对比',
+      fullAttention: 'Full Attention',
+      slidingWindow: 'Sliding Window',
+      mamba: 'Mamba (SSM)',
+    },
+    en: {
+      title: 'Hybrid Attention Layer Configuration Comparison',
+      fullAttention: 'Full Attention',
+      slidingWindow: 'Sliding Window',
+      mamba: 'Mamba (SSM)',
+    },
+  }[locale];
   const colW = 200;
   const layerH = 28;
   const gap = 4;
@@ -47,7 +61,7 @@ export default function HybridLayerStack() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full my-6">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="12" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Hybrid Attention 层配置对比
+        {t.title}
       </text>
 
       {configs.map((cfg, ci) => {
@@ -80,9 +94,9 @@ export default function HybridLayerStack() {
       })}
 
       {[
-        { type: 'full', label: 'Full Attention' },
-        { type: 'swa', label: 'Sliding Window' },
-        { type: 'mamba', label: 'Mamba (SSM)' },
+        { type: 'full', label: t.fullAttention },
+        { type: 'swa', label: t.slidingWindow },
+        { type: 'mamba', label: t.mamba },
       ].map((item, i) => {
         const lx = 140 + i * 140;
         const ly = H - 20;

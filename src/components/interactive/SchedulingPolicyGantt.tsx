@@ -41,7 +41,38 @@ function schedule(reqs: Req[], policy: Policy) {
   return result;
 }
 
-export default function SchedulingPolicyGantt() {
+export default function SchedulingPolicyGantt({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: '调度策略对比：同一批请求的执行顺序',
+      subtitle: '切换策略查看甘特图变化',
+      fcfs: 'FCFS',
+      priority: '优先级',
+      fair: '短作业优先',
+      slot: 'Slot',
+      avgWait: '平均等待时间',
+      avgCompletion: '平均完成时间',
+      steps: '步',
+      fcfsDesc: 'FCFS：先到先服务，简单但 VIP 请求可能等待过久',
+      priorityDesc: '优先级：VIP 请求（R2）优先执行，但可能饿死低优先级请求',
+      fairDesc: '短作业优先：最小化平均完成时间，但长请求可能被持续推迟',
+    },
+    en: {
+      title: 'Scheduling Policy Comparison: Same Request Batch',
+      subtitle: 'Switch policy to see Gantt chart changes',
+      fcfs: 'FCFS',
+      priority: 'Priority',
+      fair: 'Shortest Job First',
+      slot: 'Slot',
+      avgWait: 'Avg Wait Time',
+      avgCompletion: 'Avg Completion Time',
+      steps: 'steps',
+      fcfsDesc: 'FCFS: First-come-first-serve, simple but VIP requests may wait',
+      priorityDesc: 'Priority: VIP requests (R2) run first, but may starve low-priority',
+      fairDesc: 'Shortest Job First: Minimizes avg completion time, but long jobs may be delayed',
+    },
+  }[locale];
+
   const [policy, setPolicy] = useState<Policy>('fcfs');
 
   const events = schedule(REQS, policy);
@@ -55,20 +86,20 @@ export default function SchedulingPolicyGantt() {
   const avgCompletion = events.reduce((sum, e) => sum + (e.end - e.req.arrive), 0) / events.length;
 
   const policies: { id: Policy; label: string }[] = [
-    { id: 'fcfs', label: 'FCFS' },
-    { id: 'priority', label: '优先级' },
-    { id: 'fair', label: '短作业优先' },
+    { id: 'fcfs', label: t.fcfs },
+    { id: 'priority', label: t.priority },
+    { id: 'fair', label: t.fair },
   ];
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        调度策略对比：同一批请求的执行顺序
+        {t.title}
       </text>
       <text x={W / 2} y={40} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        切换策略查看甘特图变化
+        {t.subtitle}
       </text>
 
       {policies.map((p, i) => (
@@ -86,7 +117,7 @@ export default function SchedulingPolicyGantt() {
       {Array.from({ length: SLOTS }, (_, s) => (
         <text key={s} x={chartX - 8} y={chartY + s * (BAR_H + GAP) + BAR_H / 2 + 4}
           textAnchor="end" fontSize="9" fontWeight="600"
-          fill={COLORS.mid} fontFamily={FONTS.sans}>Slot {s}</text>
+          fill={COLORS.mid} fontFamily={FONTS.sans}>{t.slot} {s}</text>
       ))}
 
       {ticks.map(t => {
@@ -133,13 +164,13 @@ export default function SchedulingPolicyGantt() {
         fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
       <text x={W / 2} y={H - 50} textAnchor="middle" fontSize="10"
         fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        平均等待时间: {avgWait.toFixed(1)} 步 | 平均完成时间: {avgCompletion.toFixed(1)} 步
+        {t.avgWait}: {avgWait.toFixed(1)} {t.steps} | {t.avgCompletion}: {avgCompletion.toFixed(1)} {t.steps}
       </text>
       <text x={W / 2} y={H - 32} textAnchor="middle" fontSize="9"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        {policy === 'fcfs' && 'FCFS：先到先服务，简单但 VIP 请求可能等待过久'}
-        {policy === 'priority' && '优先级：VIP 请求（R2）优先执行，但可能饿死低优先级请求'}
-        {policy === 'fair' && '短作业优先：最小化平均完成时间，但长请求可能被持续推迟'}
+        {policy === 'fcfs' && t.fcfsDesc}
+        {policy === 'priority' && t.priorityDesc}
+        {policy === 'fair' && t.fairDesc}
       </text>
     </svg>
   );

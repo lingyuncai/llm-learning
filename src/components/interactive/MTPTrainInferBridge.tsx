@@ -20,7 +20,34 @@ const HEAD_W = 50;
 const HEAD_H = 24;
 const HEAD_GAP = 36;
 
-export default function MTPTrainInferBridge() {
+export default function MTPTrainInferBridge({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      trainLabel: '训练时',
+      inferLabel: '推理时',
+      backbone: 'Backbone',
+      shared: '(共享)',
+      same: '(同一个)',
+      inputTokens: 'Input Tokens',
+      bridgeText: '训练的头 = 推理的 drafter',
+      footerCore: 'MTP 核心:',
+      footerDesc1: '训练时联合优化的多个预测头 → 推理时直接复用做 speculative draft',
+      footerDesc2: '与 Medusa 不同: heads 和 backbone 一起训练，预测质量更高',
+    },
+    en: {
+      trainLabel: 'Training',
+      inferLabel: 'Inference',
+      backbone: 'Backbone',
+      shared: '(shared)',
+      same: '(same)',
+      inputTokens: 'Input Tokens',
+      bridgeText: 'trained head = inference drafter',
+      footerCore: 'MTP Core:',
+      footerDesc1: 'Multiple prediction heads jointly optimized during training → directly reused as speculative draft during inference',
+      footerDesc2: 'Unlike Medusa: heads and backbone trained together, better prediction quality',
+    },
+  }[locale];
+
   const [hoveredHead, setHoveredHead] = useState<number | null>(null);
 
   // Positions for left (train) and right (infer) sides
@@ -39,25 +66,25 @@ export default function MTPTrainInferBridge() {
 
           {/* Side labels */}
           <text x={HALF_W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="700"
-            fill={COLORS.primary} fontFamily="system-ui">训练时</text>
+            fill={COLORS.primary} fontFamily="system-ui">{t.trainLabel}</text>
           <text x={HALF_W + HALF_W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="700"
-            fill={COLORS.green} fontFamily="system-ui">推理时</text>
+            fill={COLORS.green} fontFamily="system-ui">{t.inferLabel}</text>
 
           {/* Left backbone */}
           <rect x={leftBackbone.x} y={leftBackbone.y} width={BACKBONE_W} height={BACKBONE_H}
             rx={8} fill="#dbeafe" stroke={COLORS.primary} strokeWidth={1.5} />
           <text x={leftBackbone.x + BACKBONE_W / 2} y={leftBackbone.y + BACKBONE_H / 2 - 6}
             textAnchor="middle" fontSize="9" fontWeight="600" fill={COLORS.primary} fontFamily="system-ui">
-            Backbone
+            {t.backbone}
           </text>
           <text x={leftBackbone.x + BACKBONE_W / 2} y={leftBackbone.y + BACKBONE_H / 2 + 8}
             textAnchor="middle" fontSize="8" fill={COLORS.mid} fontFamily="system-ui">
-            (共享)
+            {t.shared}
           </text>
           {/* Input arrow */}
           <text x={leftBackbone.x + BACKBONE_W / 2} y={SVG_H - 10}
             textAnchor="middle" fontSize="8" fill={COLORS.mid} fontFamily="system-ui">
-            Input Tokens
+            {t.inputTokens}
           </text>
           <line x1={leftBackbone.x + BACKBONE_W / 2} y1={SVG_H - 14}
             x2={leftBackbone.x + BACKBONE_W / 2} y2={leftBackbone.y + BACKBONE_H}
@@ -68,15 +95,15 @@ export default function MTPTrainInferBridge() {
             rx={8} fill="#dcfce7" stroke={COLORS.green} strokeWidth={1.5} />
           <text x={rightBackbone.x + BACKBONE_W / 2} y={rightBackbone.y + BACKBONE_H / 2 - 6}
             textAnchor="middle" fontSize="9" fontWeight="600" fill={COLORS.green} fontFamily="system-ui">
-            Backbone
+            {t.backbone}
           </text>
           <text x={rightBackbone.x + BACKBONE_W / 2} y={rightBackbone.y + BACKBONE_H / 2 + 8}
             textAnchor="middle" fontSize="8" fill={COLORS.mid} fontFamily="system-ui">
-            (同一个)
+            {t.same}
           </text>
           <text x={rightBackbone.x + BACKBONE_W / 2} y={SVG_H - 10}
             textAnchor="middle" fontSize="8" fill={COLORS.mid} fontFamily="system-ui">
-            Input Tokens
+            {t.inputTokens}
           </text>
           <line x1={rightBackbone.x + BACKBONE_W / 2} y1={SVG_H - 14}
             x2={rightBackbone.x + BACKBONE_W / 2} y2={rightBackbone.y + BACKBONE_H}
@@ -160,7 +187,7 @@ export default function MTPTrainInferBridge() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                   >
-                    训练的头 = 推理的 drafter
+                    {t.bridgeText}
                   </motion.text>
                 )}
               </g>
@@ -170,9 +197,9 @@ export default function MTPTrainInferBridge() {
       </div>
 
       <p className="text-xs text-gray-500 text-center">
-        <strong>MTP 核心:</strong> 训练时联合优化的多个预测头 → 推理时直接复用做 speculative draft
+        <strong>{t.footerCore}</strong> {t.footerDesc1}
         <br />
-        与 Medusa 不同: heads 和 backbone 一起训练，预测质量更高
+        {t.footerDesc2}
       </p>
     </div>
   );

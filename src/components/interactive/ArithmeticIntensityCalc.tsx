@@ -6,7 +6,35 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const SVG_H = 280;
 
-export default function ArithmeticIntensityCalc() {
+export default function ArithmeticIntensityCalc({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      mLabel: 'M (rows of A, C)',
+      nLabel: 'N (cols of B, C)',
+      kLabel: 'K (inner dimension)',
+      rooflinePosition: 'Roofline 位置 (H100 FP32 CUDA Core)',
+      memoryBound: 'Memory-bound',
+      computeBound: 'Compute-bound',
+      computeBoundInsight: 'Compute-bound: 计算量充足，可以充分利用 Tensor Core',
+      memoryBoundInsight: 'Memory-bound: 带宽是瓶颈，需要更大的矩阵或 batch 来提高 AI',
+      typicalLLM: '典型 LLM: M=batch*seq, K=N=hidden_dim (4096+) → AI 通常 > 100 → Compute-bound',
+      gemmOptGoal: 'GEMM 优化的目标: 让实际 FLOPS 接近 peak (FP32: {peak}T, FP16 TC: 990T)',
+      ridge: 'ridge: {value}',
+    },
+    en: {
+      mLabel: 'M (rows of A, C)',
+      nLabel: 'N (cols of B, C)',
+      kLabel: 'K (inner dimension)',
+      rooflinePosition: 'Roofline Position (H100 FP32 CUDA Core)',
+      memoryBound: 'Memory-bound',
+      computeBound: 'Compute-bound',
+      computeBoundInsight: 'Compute-bound: sufficient compute, can fully utilize Tensor Core',
+      memoryBoundInsight: 'Memory-bound: bandwidth is bottleneck, need larger matrix or batch to increase AI',
+      typicalLLM: 'Typical LLM: M=batch*seq, K=N=hidden_dim (4096+) → AI usually > 100 → Compute-bound',
+      gemmOptGoal: 'GEMM optimization goal: bring actual FLOPS close to peak (FP32: {peak}T, FP16 TC: 990T)',
+      ridge: 'ridge: {value}',
+    },
+  }[locale];
   const [M, setM] = useState(4096);
   const [N, setN] = useState(4096);
   const [K, setK] = useState(4096);
@@ -47,7 +75,7 @@ export default function ArithmeticIntensityCalc() {
     <div className="border border-gray-200 rounded-lg overflow-hidden">
       <div className="grid grid-cols-3 gap-4 px-4 py-3 bg-gray-50 border-b border-gray-200">
         <label className="text-sm">
-          <span className="text-gray-600 font-medium block mb-1">M (rows of A, C)</span>
+          <span className="text-gray-600 font-medium block mb-1">{t.mLabel}</span>
           <select value={M} onChange={e => setM(+e.target.value)}
             className="w-full border rounded px-2 py-1 text-sm font-mono">
             {[512, 1024, 2048, 4096, 8192, 16384].map(v => (
@@ -56,7 +84,7 @@ export default function ArithmeticIntensityCalc() {
           </select>
         </label>
         <label className="text-sm">
-          <span className="text-gray-600 font-medium block mb-1">N (cols of B, C)</span>
+          <span className="text-gray-600 font-medium block mb-1">{t.nLabel}</span>
           <select value={N} onChange={e => setN(+e.target.value)}
             className="w-full border rounded px-2 py-1 text-sm font-mono">
             {[512, 1024, 2048, 4096, 8192, 16384].map(v => (
@@ -65,7 +93,7 @@ export default function ArithmeticIntensityCalc() {
           </select>
         </label>
         <label className="text-sm">
-          <span className="text-gray-600 font-medium block mb-1">K (inner dimension)</span>
+          <span className="text-gray-600 font-medium block mb-1">{t.kLabel}</span>
           <select value={K} onChange={e => setK(+e.target.value)}
             className="w-full border rounded px-2 py-1 text-sm font-mono">
             {[512, 1024, 2048, 4096, 8192, 16384].map(v => (
@@ -98,7 +126,7 @@ export default function ArithmeticIntensityCalc() {
           {/* Roofline bar */}
           <text x={W / 2} y={115} textAnchor="middle" fontSize="10" fontWeight="600"
             fill={COLORS.dark} fontFamily={FONTS.sans}>
-            Roofline 位置 (H100 FP32 CUDA Core)
+            {t.rooflinePosition}
           </text>
 
           {/* Background bar */}
@@ -117,7 +145,7 @@ export default function ArithmeticIntensityCalc() {
             stroke={COLORS.dark} strokeWidth={1.5} strokeDasharray="3 2" />
           <text x={ridgePos} y={122} textAnchor="middle" fontSize="7"
             fill={COLORS.dark} fontFamily={FONTS.mono}>
-            ridge: {ridgePoint.toFixed(0)}
+            {t.ridge.replace('{value}', ridgePoint.toFixed(0))}
           </text>
 
           {/* AI position marker */}
@@ -132,26 +160,24 @@ export default function ArithmeticIntensityCalc() {
 
           {/* Labels */}
           <text x={barX + (ridgePos - barX) / 2} y={180} textAnchor="middle"
-            fontSize="7" fill={COLORS.red} fontFamily={FONTS.sans}>Memory-bound</text>
+            fontSize="7" fill={COLORS.red} fontFamily={FONTS.sans}>{t.memoryBound}</text>
           <text x={ridgePos + (barX + barW - ridgePos) / 2} y={180} textAnchor="middle"
-            fontSize="7" fill={COLORS.green} fontFamily={FONTS.sans}>Compute-bound</text>
+            fontSize="7" fill={COLORS.green} fontFamily={FONTS.sans}>{t.computeBound}</text>
 
           {/* Insight box */}
           <rect x={40} y={195} width={500} height={70} rx={5}
             fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
           <text x={W / 2} y={215} textAnchor="middle" fontSize="9" fontWeight="600"
             fill={isComputeBound ? COLORS.green : COLORS.red} fontFamily={FONTS.sans}>
-            {isComputeBound
-              ? 'Compute-bound: 计算量充足，可以充分利用 Tensor Core'
-              : 'Memory-bound: 带宽是瓶颈，需要更大的矩阵或 batch 来提高 AI'}
+            {isComputeBound ? t.computeBoundInsight : t.memoryBoundInsight}
           </text>
           <text x={W / 2} y={235} textAnchor="middle" fontSize="8" fill={COLORS.dark}
             fontFamily={FONTS.sans}>
-            典型 LLM: M=batch*seq, K=N=hidden_dim (4096+) → AI 通常 {'>'} 100 → Compute-bound
+            {t.typicalLLM}
           </text>
           <text x={W / 2} y={252} textAnchor="middle" fontSize="8" fill="#64748b"
             fontFamily={FONTS.sans}>
-            GEMM 优化的目标: 让实际 FLOPS 接近 peak (FP32: {(peakFlops / 1e12).toFixed(0)}T, FP16 TC: 990T)
+            {t.gemmOptGoal.replace('{peak}', (peakFlops / 1e12).toFixed(0))}
           </text>
         </svg>
       </div>

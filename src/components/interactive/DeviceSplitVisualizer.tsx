@@ -10,7 +10,35 @@ const LAYER_SIZE_GB = 0.14;
 const EMBEDDING_SIZE_GB = 0.3; // embedding + output head
 const KV_CACHE_PER_LAYER_GB = 0.05; // rough estimate for 2048 context
 
-export default function DeviceSplitVisualizer() {
+export default function DeviceSplitVisualizer({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      gpuVram: 'GPU VRAM:',
+      deviceSplitTitle: '设备分割: Qwen3-8B Q4_K_M',
+      layers: 'layers',
+      estimatedTps: '预估',
+      gpuLayers: 'GPU',
+      cpuLayers: 'CPU',
+      pcieBoundary: 'PCIe 边界',
+      allGpuBest: '全 GPU: 最佳性能, 无 PCIe 瓶颈',
+      mostCpuSlow: '大部分 CPU: 性能严重受限于内存带宽',
+      hybridMode: '混合模式: 每次 decode 需跨 PCIe 传输',
+      layersIntermediateResults: '层的中间结果',
+    },
+    en: {
+      gpuVram: 'GPU VRAM:',
+      deviceSplitTitle: 'Device Split: Qwen3-8B Q4_K_M',
+      layers: 'layers',
+      estimatedTps: 'Est.',
+      gpuLayers: 'GPU',
+      cpuLayers: 'CPU',
+      pcieBoundary: 'PCIe Boundary',
+      allGpuBest: 'All GPU: Best performance, no PCIe bottleneck',
+      mostCpuSlow: 'Mostly CPU: Performance severely limited by memory bandwidth',
+      hybridMode: 'Hybrid mode: Each decode requires PCIe transfer for',
+      layersIntermediateResults: 'layers of intermediate results',
+    },
+  }[locale];
   const [vramGB, setVramGB] = useState(6);
 
   const availableForLayers = Math.max(0, vramGB - EMBEDDING_SIZE_GB);
@@ -31,7 +59,7 @@ export default function DeviceSplitVisualizer() {
     <div>
       {/* Slider */}
       <div className="flex items-center justify-center gap-3 mb-3">
-        <span className="text-xs text-gray-600">GPU VRAM:</span>
+        <span className="text-xs text-gray-600">{t.gpuVram}</span>
         <input type="range" min={0} max={24} step={0.5} value={vramGB}
           onChange={e => setVramGB(parseFloat(e.target.value))}
           className="w-48" />
@@ -41,23 +69,23 @@ export default function DeviceSplitVisualizer() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y={18} textAnchor="middle" fontSize="11" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          设备分割: Qwen3-8B Q4_K_M ({TOTAL_LAYERS} layers)
+          {t.deviceSplitTitle} ({TOTAL_LAYERS} {t.layers})
         </text>
         <text x={W / 2} y={33} textAnchor="middle" fontSize="7" fill={COLORS.mid}
           fontFamily={FONTS.sans}>
-          GPU: {gpuLayers} layers | CPU: {cpuLayers} layers | 预估: ~{estimatedTps} tok/s
+          GPU: {gpuLayers} {t.layers} | CPU: {cpuLayers} {t.layers} | {t.estimatedTps}: ~{estimatedTps} tok/s
         </text>
 
         {/* Layer labels */}
         <text x={50 + gpuLayers * layerW / 2} y={layerY - 8} textAnchor="middle"
           fontSize="7" fontWeight="600" fill={COLORS.green} fontFamily={FONTS.sans}>
-          GPU ({gpuLayers} layers, {(gpuLayers * LAYER_SIZE_GB).toFixed(1)} GB)
+          {t.gpuLayers} ({gpuLayers} {t.layers}, {(gpuLayers * LAYER_SIZE_GB).toFixed(1)} GB)
         </text>
         {cpuLayers > 0 && (
           <text x={50 + gpuLayers * layerW + cpuLayers * layerW / 2} y={layerY - 8}
             textAnchor="middle" fontSize="7" fontWeight="600" fill={COLORS.mid}
             fontFamily={FONTS.sans}>
-            CPU ({cpuLayers} layers)
+            {t.cpuLayers} ({cpuLayers} {t.layers})
           </text>
         )}
 
@@ -90,7 +118,7 @@ export default function DeviceSplitVisualizer() {
               stroke={COLORS.red} strokeWidth={1.5} strokeDasharray="4,2" />
             <text x={50 + gpuLayers * layerW} y={layerY + layerH + 25}
               textAnchor="middle" fontSize="6" fill={COLORS.red} fontFamily={FONTS.sans}>
-              PCIe 边界
+              {t.pcieBoundary}
             </text>
           </g>
         )}
@@ -103,9 +131,9 @@ export default function DeviceSplitVisualizer() {
         <text x={290} y={H - 25} textAnchor="middle" fontSize="7" fontWeight="600"
           fill={cpuLayers === 0 ? COLORS.green : cpuLayers > 16 ? COLORS.red : COLORS.orange}
           fontFamily={FONTS.sans}>
-          {cpuLayers === 0 ? '全 GPU: 最佳性能, 无 PCIe 瓶颈' :
-           cpuLayers > 16 ? '大部分 CPU: 性能严重受限于内存带宽' :
-           `混合模式: 每次 decode 需跨 PCIe 传输 ${cpuLayers} 层的中间结果`}
+          {cpuLayers === 0 ? t.allGpuBest :
+           cpuLayers > 16 ? t.mostCpuSlow :
+           `${t.hybridMode} ${cpuLayers} ${t.layersIntermediateResults}`}
         </text>
       </svg>
     </div>

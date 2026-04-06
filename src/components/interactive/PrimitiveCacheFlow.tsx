@@ -3,12 +3,59 @@ import { COLORS, FONTS } from './shared/colors';
 
 type CacheState = 'hit' | 'miss';
 
-const PrimitiveCacheFlow: React.FC = () => {
+const PrimitiveCacheFlow: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      title: 'Primitive Cache 工作流程',
+      cacheHit: 'Cache Hit ✓',
+      cacheMiss: 'Cache Miss ✗',
+      newRequest: 'New Request',
+      cacheLookup: 'Cache',
+      cacheLookupSub: 'Lookup',
+      hit: 'Hit ✓',
+      found: 'Found',
+      inCache: 'in cache',
+      execute: 'Execute',
+      immediately: 'immediately',
+      miss: 'Miss ✗',
+      compile: 'Compile',
+      gpuKernel: '⚙️ GPU Kernel',
+      store: 'Store',
+      lruCache: 'LRU Cache',
+      newPrimitive: 'new primitive',
+      cacheStats: 'Cache: 128 entries | Hit rate: 95% | Policy: LRU',
+      hitSummary: '✅ Cache Hit：直接使用已编译的 primitive，延迟极低 (~0.1ms)',
+      missSummary: '❌ Cache Miss：需要编译 GPU kernel，延迟显著增加 (~100ms)，但编译后会缓存复用',
+    },
+    en: {
+      title: 'Primitive Cache Workflow',
+      cacheHit: 'Cache Hit ✓',
+      cacheMiss: 'Cache Miss ✗',
+      newRequest: 'New Request',
+      cacheLookup: 'Cache',
+      cacheLookupSub: 'Lookup',
+      hit: 'Hit ✓',
+      found: 'Found',
+      inCache: 'in cache',
+      execute: 'Execute',
+      immediately: 'immediately',
+      miss: 'Miss ✗',
+      compile: 'Compile',
+      gpuKernel: '⚙️ GPU Kernel',
+      store: 'Store',
+      lruCache: 'LRU Cache',
+      newPrimitive: 'new primitive',
+      cacheStats: 'Cache: 128 entries | Hit rate: 95% | Policy: LRU',
+      hitSummary: '✅ Cache Hit: Use pre-compiled primitive directly, ultra-low latency (~0.1ms)',
+      missSummary: '❌ Cache Miss: Requires GPU kernel compilation, significant latency increase (~100ms), but will be cached for reuse',
+    },
+  }[locale];
+
   const [state, setState] = useState<CacheState>('hit');
 
   return (
     <div className="my-6 p-4 border rounded-lg bg-white">
-      <h3 className="text-lg font-semibold mb-3 text-gray-800">Primitive Cache 工作流程</h3>
+      <h3 className="text-lg font-semibold mb-3 text-gray-800">{t.title}</h3>
 
       {/* State selector */}
       <div className="flex gap-2 mb-4">
@@ -20,7 +67,7 @@ const PrimitiveCacheFlow: React.FC = () => {
               : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
           }`}
         >
-          Cache Hit ✓
+          {t.cacheHit}
         </button>
         <button
           onClick={() => setState('miss')}
@@ -30,7 +77,7 @@ const PrimitiveCacheFlow: React.FC = () => {
               : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
           }`}
         >
-          Cache Miss ✗
+          {t.cacheMiss}
         </button>
       </div>
 
@@ -49,7 +96,7 @@ const PrimitiveCacheFlow: React.FC = () => {
 
         {/* Start */}
         <rect x="40" y="30" width="180" height="50" rx="6" fill={COLORS.bgAlt} stroke={COLORS.mid} strokeWidth="1.5" />
-        <text x="130" y="52" fontSize="11" textAnchor="middle" fontWeight="600" fill={COLORS.dark}>New Request</text>
+        <text x="130" y="52" fontSize="11" textAnchor="middle" fontWeight="600" fill={COLORS.dark}>{t.newRequest}</text>
         <text x="130" y="68" fontSize="9" textAnchor="middle" fill={COLORS.mid} fontFamily={FONTS.mono}>
           MatMul([512,768], FP16)
         </text>
@@ -59,8 +106,8 @@ const PrimitiveCacheFlow: React.FC = () => {
 
         {/* Cache lookup diamond */}
         <polygon points="130,120 230,160 130,200 30,160" fill={COLORS.primary} fillOpacity="0.1" stroke={COLORS.primary} strokeWidth="2" />
-        <text x="130" y="160" fontSize="12" textAnchor="middle" fontWeight="600" fill={COLORS.primary}>Cache</text>
-        <text x="130" y="175" fontSize="12" textAnchor="middle" fontWeight="600" fill={COLORS.primary}>Lookup</text>
+        <text x="130" y="160" fontSize="12" textAnchor="middle" fontWeight="600" fill={COLORS.primary}>{t.cacheLookup}</text>
+        <text x="130" y="175" fontSize="12" textAnchor="middle" fontWeight="600" fill={COLORS.primary}>{t.cacheLookupSub}</text>
 
         {/* Hit path (green) */}
         <path d="M 230 160 L 300 160"
@@ -69,7 +116,7 @@ const PrimitiveCacheFlow: React.FC = () => {
               markerEnd={state === 'hit' ? 'url(#arrow-hit)' : undefined}
         />
         <text x="265" y="152" fontSize="10" fontWeight={state === 'hit' ? '700' : '400'}
-              fill={state === 'hit' ? COLORS.green : COLORS.light}>Hit ✓</text>
+              fill={state === 'hit' ? COLORS.green : COLORS.light}>{t.hit}</text>
 
         {/* Hit - Found */}
         <rect x="300" y="135" width="100" height="50" rx="6"
@@ -78,9 +125,9 @@ const PrimitiveCacheFlow: React.FC = () => {
               stroke={state === 'hit' ? COLORS.green : COLORS.light}
               strokeWidth={state === 'hit' ? 2 : 1} />
         <text x="350" y="157" fontSize="11" textAnchor="middle" fontWeight="600"
-              fill={state === 'hit' ? COLORS.green : COLORS.light}>Found</text>
+              fill={state === 'hit' ? COLORS.green : COLORS.light}>{t.found}</text>
         <text x="350" y="173" fontSize="9" textAnchor="middle"
-              fill={state === 'hit' ? COLORS.mid : COLORS.light}>in cache</text>
+              fill={state === 'hit' ? COLORS.mid : COLORS.light}>{t.inCache}</text>
 
         {/* Hit - Execute */}
         <path d="M 400 160 L 450 160"
@@ -95,9 +142,9 @@ const PrimitiveCacheFlow: React.FC = () => {
               stroke={state === 'hit' ? COLORS.green : COLORS.light}
               strokeWidth={state === 'hit' ? 2 : 1} />
         <text x="500" y="157" fontSize="11" textAnchor="middle" fontWeight="600"
-              fill={state === 'hit' ? COLORS.green : COLORS.light}>Execute</text>
+              fill={state === 'hit' ? COLORS.green : COLORS.light}>{t.execute}</text>
         <text x="500" y="173" fontSize="9" textAnchor="middle"
-              fill={state === 'hit' ? COLORS.mid : COLORS.light}>immediately</text>
+              fill={state === 'hit' ? COLORS.mid : COLORS.light}>{t.immediately}</text>
 
         {/* Hit latency */}
         {state === 'hit' && (
@@ -113,7 +160,7 @@ const PrimitiveCacheFlow: React.FC = () => {
               markerEnd={state === 'miss' ? 'url(#arrow-miss)' : undefined}
         />
         <text x="145" y="220" fontSize="10" fontWeight={state === 'miss' ? '700' : '400'}
-              fill={state === 'miss' ? COLORS.red : COLORS.light}>Miss ✗</text>
+              fill={state === 'miss' ? COLORS.red : COLORS.light}>{t.miss}</text>
 
         {/* Miss - Compile */}
         <rect x="80" y="240" width="100" height="50" rx="6"
@@ -122,9 +169,9 @@ const PrimitiveCacheFlow: React.FC = () => {
               stroke={state === 'miss' ? COLORS.red : COLORS.light}
               strokeWidth={state === 'miss' ? 2 : 1} />
         <text x="130" y="260" fontSize="11" textAnchor="middle" fontWeight="600"
-              fill={state === 'miss' ? COLORS.red : COLORS.light}>Compile</text>
+              fill={state === 'miss' ? COLORS.red : COLORS.light}>{t.compile}</text>
         <text x="130" y="276" fontSize="9" textAnchor="middle"
-              fill={state === 'miss' ? COLORS.mid : COLORS.light}>⚙️ GPU Kernel</text>
+              fill={state === 'miss' ? COLORS.mid : COLORS.light}>{t.gpuKernel}</text>
 
         {/* Miss compile time */}
         {state === 'miss' && (
@@ -146,9 +193,9 @@ const PrimitiveCacheFlow: React.FC = () => {
               stroke={state === 'miss' ? COLORS.red : COLORS.light}
               strokeWidth={state === 'miss' ? 2 : 1} />
         <text x="290" y="260" fontSize="11" textAnchor="middle" fontWeight="600"
-              fill={state === 'miss' ? COLORS.red : COLORS.light}>Store</text>
+              fill={state === 'miss' ? COLORS.red : COLORS.light}>{t.store}</text>
         <text x="290" y="276" fontSize="9" textAnchor="middle"
-              fill={state === 'miss' ? COLORS.mid : COLORS.light}>LRU Cache</text>
+              fill={state === 'miss' ? COLORS.mid : COLORS.light}>{t.lruCache}</text>
 
         {/* Miss - Execute */}
         <path d="M 340 265 L 400 265"
@@ -163,9 +210,9 @@ const PrimitiveCacheFlow: React.FC = () => {
               stroke={state === 'miss' ? COLORS.red : COLORS.light}
               strokeWidth={state === 'miss' ? 2 : 1} />
         <text x="450" y="260" fontSize="11" textAnchor="middle" fontWeight="600"
-              fill={state === 'miss' ? COLORS.red : COLORS.light}>Execute</text>
+              fill={state === 'miss' ? COLORS.red : COLORS.light}>{t.execute}</text>
         <text x="450" y="276" fontSize="9" textAnchor="middle"
-              fill={state === 'miss' ? COLORS.mid : COLORS.light}>new primitive</text>
+              fill={state === 'miss' ? COLORS.mid : COLORS.light}>{t.newPrimitive}</text>
 
         {/* Miss total time */}
         {state === 'miss' && (
@@ -177,7 +224,7 @@ const PrimitiveCacheFlow: React.FC = () => {
         {/* Cache stats footer */}
         <rect x="20" y="310" width="540" height="20" rx="4" fill={COLORS.bgAlt} stroke={COLORS.light} />
         <text x="290" y="324" fontSize="10" textAnchor="middle" fill={COLORS.dark}>
-          Cache: <tspan fontWeight="600">128 entries</tspan> | Hit rate: <tspan fontWeight="600" fill={COLORS.green}>95%</tspan> | Policy: <tspan fontWeight="600">LRU</tspan>
+          {t.cacheStats}
         </text>
       </svg>
 
@@ -188,10 +235,7 @@ const PrimitiveCacheFlow: React.FC = () => {
           : 'bg-red-50 border-red-200'
       }`}>
         <p className={`text-sm font-semibold ${state === 'hit' ? 'text-green-700' : 'text-red-700'}`}>
-          {state === 'hit'
-            ? '✅ Cache Hit：直接使用已编译的 primitive，延迟极低 (~0.1ms)'
-            : '❌ Cache Miss：需要编译 GPU kernel，延迟显著增加 (~100ms)，但编译后会缓存复用'
-          }
+          {state === 'hit' ? t.hitSummary : t.missSummary}
         </p>
       </div>
     </div>

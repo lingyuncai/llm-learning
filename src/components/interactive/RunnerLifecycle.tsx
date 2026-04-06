@@ -47,7 +47,7 @@ function ResourceBar({ x, y, label, value, max, color }: {
 
 const STATES = ['Idle', 'Loading', 'Ready', 'Busy', 'Unloading'];
 
-function makeStep(activeIdx: number, desc: string, resources: { vram: number; ram: number; cpu: number }) {
+function makeStep(activeIdx: number, desc: string, resources: { vram: number; ram: number; cpu: number }, labels: { vram: string; ram: string; cpu: string }) {
   return {
     title: `${STATES[activeIdx]}`,
     content: (
@@ -68,32 +68,57 @@ function makeStep(activeIdx: number, desc: string, resources: { vram: number; ra
           fontFamily={FONTS.sans}>{desc}</text>
 
         {/* Resource bars */}
-        <ResourceBar x={80} y={85} label="VRAM" value={resources.vram} max={8} color={COLORS.green} />
-        <ResourceBar x={80} y={105} label="RAM" value={resources.ram} max={16} color={COLORS.primary} />
-        <ResourceBar x={80} y={125} label="CPU" value={resources.cpu} max={100} color={COLORS.orange} />
+        <ResourceBar x={80} y={85} label={labels.vram} value={resources.vram} max={8} color={COLORS.green} />
+        <ResourceBar x={80} y={105} label={labels.ram} value={resources.ram} max={16} color={COLORS.primary} />
+        <ResourceBar x={80} y={125} label={labels.cpu} value={resources.cpu} max={100} color={COLORS.orange} />
 
         <text x={350} y={95} fontSize="7" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          VRAM: {resources.vram} GB
+          {labels.vram}: {resources.vram} GB
         </text>
         <text x={350} y={112} fontSize="7" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          RAM: {resources.ram} GB
+          {labels.ram}: {resources.ram} GB
         </text>
         <text x={350} y={129} fontSize="7" fill={COLORS.mid} fontFamily={FONTS.sans}>
-          CPU: {resources.cpu}%
+          {labels.cpu}: {resources.cpu}%
         </text>
       </StepSvg>
     ),
   };
 }
 
-const steps = [
-  makeStep(0, '无 runner 进程, 等待首次请求到来', { vram: 0, ram: 0, cpu: 0 }),
-  makeStep(1, 'Scheduler 触发加载: 启动 runner 子进程, mmap GGUF, 分配显存', { vram: 3, ram: 2, cpu: 40 }),
-  makeStep(2, '健康检查通过, KV Cache 已分配, 等待推理请求', { vram: 5, ram: 2, cpu: 5 }),
-  makeStep(3, '处理推理请求中: GPU 满载计算, KV Cache 活跃写入', { vram: 5, ram: 2, cpu: 80 }),
-  makeStep(4, '空闲超时 (OLLAMA_KEEP_ALIVE=5m): 释放显存, 终止子进程', { vram: 0, ram: 0, cpu: 5 }),
-];
+export default function RunnerLifecycle({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      vram: 'VRAM',
+      ram: 'RAM',
+      cpu: 'CPU',
+      desc0: '无 runner 进程, 等待首次请求到来',
+      desc1: 'Scheduler 触发加载: 启动 runner 子进程, mmap GGUF, 分配显存',
+      desc2: '健康检查通过, KV Cache 已分配, 等待推理请求',
+      desc3: '处理推理请求中: GPU 满载计算, KV Cache 活跃写入',
+      desc4: '空闲超时 (OLLAMA_KEEP_ALIVE=5m): 释放显存, 终止子进程',
+    },
+    en: {
+      vram: 'VRAM',
+      ram: 'RAM',
+      cpu: 'CPU',
+      desc0: 'No runner process, waiting for first request',
+      desc1: 'Scheduler triggers load: start runner subprocess, mmap GGUF, allocate VRAM',
+      desc2: 'Health check passed, KV Cache allocated, waiting for inference requests',
+      desc3: 'Processing inference: GPU fully loaded, KV Cache actively writing',
+      desc4: 'Idle timeout (OLLAMA_KEEP_ALIVE=5m): release VRAM, terminate subprocess',
+    },
+  }[locale];
 
-export default function RunnerLifecycle() {
+  const labels = { vram: t.vram, ram: t.ram, cpu: t.cpu };
+
+  const steps = [
+    makeStep(0, t.desc0, { vram: 0, ram: 0, cpu: 0 }, labels),
+    makeStep(1, t.desc1, { vram: 3, ram: 2, cpu: 40 }, labels),
+    makeStep(2, t.desc2, { vram: 5, ram: 2, cpu: 5 }, labels),
+    makeStep(3, t.desc3, { vram: 5, ram: 2, cpu: 80 }, labels),
+    makeStep(4, t.desc4, { vram: 0, ram: 0, cpu: 5 }, labels),
+  ];
+
   return <StepNavigator steps={steps} />;
 }

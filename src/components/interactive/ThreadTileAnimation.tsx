@@ -14,18 +14,114 @@ function StepSvg({ children }: { children: React.ReactNode }) {
   );
 }
 
-const steps = [
+export default function ThreadTileAnimation({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: '1x1 Thread Tile: 一个线程算一个元素',
+      step1Heading: 'Naive Tiling: 每个线程计算 C 的 1 个元素',
+      step1Desc: '每次内循环迭代: 从 shared memory 读 2 个值 (A 和 B)，做 1 次 FMA',
+      step1CTile: 'C tile (BLOCK_SIZE x BLOCK_SIZE)',
+      step1Thread: 'Thread',
+      step1LowEff: '低效: 计算/访存比 = 1:2',
+      step1Loop1: '内循环每次: 读 As[ty][k] + 读 Bs[k][tx] = 2 次 shared memory 读',
+      step1Loop2: '计算: 1 次 FMA (fused multiply-add)',
+      step1Ratio: 'Compute:Load = 1 FMA / 2 reads = 0.5 — shared memory 带宽成为瓶颈',
+      step2Title: '4x4 Thread Tile: 一个线程算 16 个元素',
+      step2Heading: 'Thread Tiling: 每个线程计算 TM x TN 的输出块',
+      step2Desc: 'TM=4, TN=4: 每个线程负责 C 的 4x4 = 16 个输出元素',
+      step2CTile: 'C tile (16x16) — 每个颜色块 = 1 个线程的工作',
+      step2Block: '的 4x4 块',
+      step2Reuse: '寄存器复用',
+      step2A: 'A',
+      step2B: 'B',
+      step2C: 'C',
+      step2Calc: 'A 的 4 个值 x B 的 4 个值 = 16 个 FMA',
+      step2Load: '从 shared mem 加载: 4 + 4 = 8 次读',
+      step2Improved: 'Compute:Load = 16 / 8 = 2.0 (4x 提升!)',
+      step2Formula: 'Compute:Load = TM x TN / (TM + TN) = 4x4 / (4+4) = 2.0',
+      step2Note: '增大 TM, TN → 更高的计算/访存比 (但需要更多寄存器)',
+      step3Title: '完整 Thread Tile 数据流',
+      step3Heading: '三级存储层次: HBM → Shared Memory → 寄存器',
+      step3Desc: '每级缓存都通过 tiling 提高复用率',
+      step3HBM: 'HBM (Global Memory)',
+      step3HBMDetail: '完整矩阵 A(MxK), B(KxN), C(MxN)',
+      step3HBMBW: '~3 TB/s (H100)',
+      step3Shared: 'Shared Memory',
+      step3SharedDetail: 'A tile (BSxBS) + B tile (BSxBS)',
+      step3SharedBW: '~20 TB/s per SM',
+      step3Reg: '寄存器 (Register File)',
+      step3RegDetail: 'A fragment (TM) + B fragment (TN) + C accumulator (TMxTN)',
+      step3RegBW: '~60 TB/s per SM',
+      step3BlockTile: 'Block Tiling (BS x BS)',
+      step3ThreadTile: 'Thread Tiling (TM x TN)',
+      step3FMA: 'FMA (寄存器 → 寄存器)',
+      step3OptLevel: '优化层',
+      step3HBMReduce: 'HBM 访问减少',
+      step3SharedReduce: 'Shared Mem 访问减少',
+      step3Result1: 'Block Tile + Thread Tile',
+      step3Result2: 'BLOCK_SIZE 倍',
+      step3Result3: 'TM x TN / (TM + TN) 倍',
+    },
+    en: {
+      step1Title: '1x1 Thread Tile: One thread computes one element',
+      step1Heading: 'Naive Tiling: Each thread computes 1 element of C',
+      step1Desc: 'Each inner loop iteration: read 2 values from shared memory (A and B), do 1 FMA',
+      step1CTile: 'C tile (BLOCK_SIZE x BLOCK_SIZE)',
+      step1Thread: 'Thread',
+      step1LowEff: 'Inefficient: Compute/Load ratio = 1:2',
+      step1Loop1: 'Each inner loop: read As[ty][k] + read Bs[k][tx] = 2 shared memory reads',
+      step1Loop2: 'Compute: 1 FMA (fused multiply-add)',
+      step1Ratio: 'Compute:Load = 1 FMA / 2 reads = 0.5 — shared memory bandwidth becomes bottleneck',
+      step2Title: '4x4 Thread Tile: One thread computes 16 elements',
+      step2Heading: 'Thread Tiling: Each thread computes a TM x TN output block',
+      step2Desc: 'TM=4, TN=4: Each thread handles 4x4 = 16 output elements of C',
+      step2CTile: 'C tile (16x16) — Each color block = 1 thread\'s work',
+      step2Block: '\'s 4x4 block',
+      step2Reuse: 'Register Reuse',
+      step2A: 'A',
+      step2B: 'B',
+      step2C: 'C',
+      step2Calc: '4 values of A x 4 values of B = 16 FMAs',
+      step2Load: 'Load from shared mem: 4 + 4 = 8 reads',
+      step2Improved: 'Compute:Load = 16 / 8 = 2.0 (4x improvement!)',
+      step2Formula: 'Compute:Load = TM x TN / (TM + TN) = 4x4 / (4+4) = 2.0',
+      step2Note: 'Increase TM, TN → higher compute/load ratio (but need more registers)',
+      step3Title: 'Complete Thread Tile Data Flow',
+      step3Heading: 'Three-level storage hierarchy: HBM → Shared Memory → Registers',
+      step3Desc: 'Each cache level improves reuse via tiling',
+      step3HBM: 'HBM (Global Memory)',
+      step3HBMDetail: 'Full matrices A(MxK), B(KxN), C(MxN)',
+      step3HBMBW: '~3 TB/s (H100)',
+      step3Shared: 'Shared Memory',
+      step3SharedDetail: 'A tile (BSxBS) + B tile (BSxBS)',
+      step3SharedBW: '~20 TB/s per SM',
+      step3Reg: 'Register File',
+      step3RegDetail: 'A fragment (TM) + B fragment (TN) + C accumulator (TMxTN)',
+      step3RegBW: '~60 TB/s per SM',
+      step3BlockTile: 'Block Tiling (BS x BS)',
+      step3ThreadTile: 'Thread Tiling (TM x TN)',
+      step3FMA: 'FMA (register → register)',
+      step3OptLevel: 'Optimization Level',
+      step3HBMReduce: 'HBM Access Reduction',
+      step3SharedReduce: 'Shared Mem Access Reduction',
+      step3Result1: 'Block Tile + Thread Tile',
+      step3Result2: 'BLOCK_SIZE x',
+      step3Result3: 'TM x TN / (TM + TN) x',
+    },
+  }[locale];
+
+  const steps = [
   {
-    title: '1x1 Thread Tile: 一个线程算一个元素',
+    title: t.step1Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Naive Tiling: 每个线程计算 C 的 1 个元素
+          {t.step1Heading}
         </text>
         <text x={W / 2} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
           fontFamily={FONTS.sans}>
-          每次内循环迭代: 从 shared memory 读 2 个值 (A 和 B)，做 1 次 FMA
+          {t.step1Desc}
         </text>
 
         {/* C tile with one element highlighted */}
@@ -38,7 +134,7 @@ const steps = [
             <g>
               <text x={startX + BS * cell / 2} y={startY - 8} textAnchor="middle"
                 fontSize="9" fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-                C tile (BLOCK_SIZE x BLOCK_SIZE)
+                {t.step1CTile}
               </text>
               {Array.from({ length: BS }).map((_, r) =>
                 Array.from({ length: BS }).map((_, c) => {
@@ -59,7 +155,7 @@ const steps = [
                 stroke={COLORS.orange} strokeWidth={1} />
               <text x={startX + 3 * cell + cell / 2} y={startY + BS * cell + 22}
                 textAnchor="middle" fontSize="7" fontWeight="600"
-                fill={COLORS.orange} fontFamily={FONTS.sans}>Thread(2,3)</text>
+                fill={COLORS.orange} fontFamily={FONTS.sans}>{t.step1Thread}(2,3)</text>
             </g>
           );
         })()}
@@ -68,30 +164,30 @@ const steps = [
         <rect x={40} y={240} width={500} height={80} rx={5}
           fill="#fee2e2" stroke={COLORS.red} strokeWidth={1} />
         <text x={W / 2} y={260} textAnchor="middle" fontSize="9" fontWeight="600"
-          fill={COLORS.red} fontFamily={FONTS.sans}>低效: 计算/访存比 = 1:2</text>
+          fill={COLORS.red} fontFamily={FONTS.sans}>{t.step1LowEff}</text>
         <text x={60} y={280} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          内循环每次: 读 As[ty][k] + 读 Bs[k][tx] = 2 次 shared memory 读
+          {t.step1Loop1}
         </text>
         <text x={60} y={296} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          计算: 1 次 FMA (fused multiply-add)
+          {t.step1Loop2}
         </text>
         <text x={60} y={312} fontSize="8" fill={COLORS.red} fontFamily={FONTS.sans}>
-          Compute:Load = 1 FMA / 2 reads = 0.5 — shared memory 带宽成为瓶颈
+          {t.step1Ratio}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: '4x4 Thread Tile: 一个线程算 16 个元素',
+    title: t.step2Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Thread Tiling: 每个线程计算 TM x TN 的输出块
+          {t.step2Heading}
         </text>
         <text x={W / 2} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
           fontFamily={FONTS.sans}>
-          TM=4, TN=4: 每个线程负责 C 的 4x4 = 16 个输出元素
+          {t.step2Desc}
         </text>
 
         {/* C tile with 4x4 block highlighted */}
@@ -107,7 +203,7 @@ const steps = [
             <g>
               <text x={startX + BS * cell / 2} y={startY - 8} textAnchor="middle"
                 fontSize="8" fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-                C tile (16x16) — 每个颜色块 = 1 个线程的工作
+                {t.step2CTile}
               </text>
               {Array.from({ length: BS }).map((_, r) =>
                 Array.from({ length: BS }).map((_, c) => {
@@ -137,7 +233,7 @@ const steps = [
                 y={startY + BS * cell + 14}
                 textAnchor="middle" fontSize="7" fontWeight="600"
                 fill={COLORS.orange} fontFamily={FONTS.sans}>
-                Thread(1,2) 的 4x4 块
+                {t.step1Thread}(1,2) {t.step2Block}
               </text>
             </g>
           );
@@ -147,37 +243,37 @@ const steps = [
         <rect x={310} y={50} width={250} height={180} rx={5}
           fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
         <text x={435} y={70} textAnchor="middle" fontSize="9" fontWeight="600"
-          fill={COLORS.dark} fontFamily={FONTS.sans}>寄存器复用</text>
+          fill={COLORS.dark} fontFamily={FONTS.sans}>{t.step2Reuse}</text>
 
         {/* A fragment in registers */}
         <rect x={320} y={80} width={20} height={56} rx={2}
           fill="#dbeafe" stroke={COLORS.primary} strokeWidth={1} />
         <text x={330} y={78} textAnchor="middle" fontSize="6" fill={COLORS.primary}
-          fontFamily={FONTS.mono}>A[4]</text>
+          fontFamily={FONTS.mono}>{t.step2A}[4]</text>
 
         {/* B fragment in registers */}
         <rect x={360} y={80} width={56} height={20} rx={2}
           fill="#dcfce7" stroke={COLORS.green} strokeWidth={1} />
         <text x={388} y={78} textAnchor="middle" fontSize="6" fill={COLORS.green}
-          fontFamily={FONTS.mono}>B[4]</text>
+          fontFamily={FONTS.mono}>{t.step2B}[4]</text>
 
         {/* Result 4x4 in registers */}
         <rect x={360} y={105} width={56} height={56} rx={2}
           fill="#fef3c7" stroke={COLORS.orange} strokeWidth={1} />
         <text x={388} y={136} textAnchor="middle" fontSize="7" fontWeight="600"
-          fill={COLORS.orange} fontFamily={FONTS.mono}>C[4x4]</text>
+          fill={COLORS.orange} fontFamily={FONTS.mono}>{t.step2C}[4x4]</text>
 
         <text x={435} y={178} textAnchor="middle" fontSize="7.5" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          A 的 4 个值 x B 的 4 个值 = 16 个 FMA
+          {t.step2Calc}
         </text>
         <text x={435} y={194} textAnchor="middle" fontSize="7.5" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          从 shared mem 加载: 4 + 4 = 8 次读
+          {t.step2Load}
         </text>
         <text x={435} y={210} textAnchor="middle" fontSize="7.5" fontWeight="600"
           fill={COLORS.green} fontFamily={FONTS.sans}>
-          Compute:Load = 16 / 8 = 2.0 (4x 提升!)
+          {t.step2Improved}
         </text>
 
         {/* Formula */}
@@ -185,36 +281,36 @@ const steps = [
           fill="#dcfce7" stroke={COLORS.green} strokeWidth={1} />
         <text x={W / 2} y={298} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.green} fontFamily={FONTS.sans}>
-          Compute:Load = TM x TN / (TM + TN) = 4x4 / (4+4) = 2.0
+          {t.step2Formula}
         </text>
         <text x={W / 2} y={312} textAnchor="middle" fontSize="8" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          增大 TM, TN → 更高的计算/访存比 (但需要更多寄存器)
+          {t.step2Note}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: '完整 Thread Tile 数据流',
+    title: t.step3Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          三级存储层次: HBM → Shared Memory → 寄存器
+          {t.step3Heading}
         </text>
         <text x={W / 2} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
           fontFamily={FONTS.sans}>
-          每级缓存都通过 tiling 提高复用率
+          {t.step3Desc}
         </text>
 
         {/* Three levels */}
         {[
-          { label: 'HBM (Global Memory)', y: 55, w: 500, h: 45, color: COLORS.red,
-            bg: '#fee2e2', detail: '完整矩阵 A(MxK), B(KxN), C(MxN)', bw: '~3 TB/s (H100)' },
-          { label: 'Shared Memory', y: 120, w: 400, h: 45, color: COLORS.orange,
-            bg: '#fff7ed', detail: 'A tile (BSxBS) + B tile (BSxBS)', bw: '~20 TB/s per SM' },
-          { label: '寄存器 (Register File)', y: 185, w: 300, h: 45, color: COLORS.green,
-            bg: '#dcfce7', detail: 'A fragment (TM) + B fragment (TN) + C accumulator (TMxTN)', bw: '~60 TB/s per SM' },
+          { label: t.step3HBM, y: 55, w: 500, h: 45, color: COLORS.red,
+            bg: '#fee2e2', detail: t.step3HBMDetail, bw: t.step3HBMBW },
+          { label: t.step3Shared, y: 120, w: 400, h: 45, color: COLORS.orange,
+            bg: '#fff7ed', detail: t.step3SharedDetail, bw: t.step3SharedBW },
+          { label: t.step3Reg, y: 185, w: 300, h: 45, color: COLORS.green,
+            bg: '#dcfce7', detail: t.step3RegDetail, bw: t.step3RegBW },
         ].map((level, i) => (
           <g key={i}>
             <rect x={(W - level.w) / 2} y={level.y} width={level.w} height={level.h}
@@ -237,7 +333,7 @@ const steps = [
                 </defs>
                 <text x={W / 2 + 60} y={level.y + level.h + 14} fontSize="7"
                   fill={level.color} fontFamily={FONTS.sans}>
-                  {i === 0 ? 'Block Tiling (BS x BS)' : 'Thread Tiling (TM x TN)'}
+                  {i === 0 ? t.step3BlockTile : t.step3ThreadTile}
                 </text>
               </g>
             )}
@@ -249,29 +345,28 @@ const steps = [
           fill="#dbeafe" stroke={COLORS.primary} strokeWidth={1.5} />
         <text x={W / 2} y={264} textAnchor="middle" fontSize="9" fontWeight="700"
           fill={COLORS.primary} fontFamily={FONTS.sans}>
-          FMA (寄存器 → 寄存器)
+          {t.step3FMA}
         </text>
 
         {/* Summary table */}
         <rect x={40} y={285} width={500} height={40} rx={5}
           fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
         <text x={120} y={302} textAnchor="middle" fontSize="8" fontWeight="600"
-          fill={COLORS.dark} fontFamily={FONTS.sans}>优化层</text>
+          fill={COLORS.dark} fontFamily={FONTS.sans}>{t.step3OptLevel}</text>
         <text x={280} y={302} textAnchor="middle" fontSize="8" fontWeight="600"
-          fill={COLORS.dark} fontFamily={FONTS.sans}>HBM 访问减少</text>
+          fill={COLORS.dark} fontFamily={FONTS.sans}>{t.step3HBMReduce}</text>
         <text x={440} y={302} textAnchor="middle" fontSize="8" fontWeight="600"
-          fill={COLORS.dark} fontFamily={FONTS.sans}>Shared Mem 访问减少</text>
+          fill={COLORS.dark} fontFamily={FONTS.sans}>{t.step3SharedReduce}</text>
         <text x={120} y={318} textAnchor="middle" fontSize="7.5"
-          fill={COLORS.dark} fontFamily={FONTS.mono}>Block Tile + Thread Tile</text>
+          fill={COLORS.dark} fontFamily={FONTS.mono}>{t.step3Result1}</text>
         <text x={280} y={318} textAnchor="middle" fontSize="7.5"
-          fill={COLORS.green} fontFamily={FONTS.mono}>BLOCK_SIZE 倍</text>
+          fill={COLORS.green} fontFamily={FONTS.mono}>{t.step3Result2}</text>
         <text x={440} y={318} textAnchor="middle" fontSize="7.5"
-          fill={COLORS.green} fontFamily={FONTS.mono}>TM x TN / (TM + TN) 倍</text>
+          fill={COLORS.green} fontFamily={FONTS.mono}>{t.step3Result3}</text>
       </StepSvg>
     ),
   },
 ];
 
-export default function ThreadTileAnimation() {
   return <StepNavigator steps={steps} />;
 }

@@ -46,18 +46,130 @@ function TiledMatrix({ x, y, w, h, label, tilesR, tilesC, activeTileR, activeTil
 
 const TILES = 4; // 4x4 tile grid for visualization
 
+export default function TilingAnimation({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: 'Step 1: 矩阵切分为 Tile 网格',
+      step1Heading: 'Tiling: 把大矩阵切成 BLOCK_SIZE x BLOCK_SIZE 的小块',
+      step1Desc: '每个 Block 负责计算 C 的一个 tile，沿 K 维遍历 A/B 的 tile 对',
+      tilingStrategy: 'Tiling 策略',
+      strategy1: '1. 每个 CUDA Block 对应 C 的一个 tile (BLOCK_SIZE x BLOCK_SIZE 线程)',
+      strategy2: '2. 计算 C[tile_r][tile_c] 需要 A 的第 tile_r 行所有 tile x B 的第 tile_c 列所有 tile',
+      strategy3: '3. 外循环: for t = 0 to K/BLOCK_SIZE — 每次加载一对 tile 到 Shared Memory',
+      strategy4: '4. 关键: 每个 tile 从 HBM 只加载一次，被 BLOCK_SIZE 个线程共享复用',
+      step2Title: 'Step 2: 加载 Tile 到 Shared Memory',
+      step2Heading: '一个 Block 的工作: 计算 C 的 tile[1][2] (第 t=0 步)',
+      sharedMemory: 'Shared Memory',
+      aTile: 'A tile',
+      bTile: 'B tile',
+      partialSum: '部分和 += A_tile * B_tile',
+      comment1: '// 外循环: 沿 K 维遍历每对 tile',
+      comment2: '协作加载 A tile',
+      comment3: '协作加载 B tile',
+      comment4: '从 shared memory 读 (快!)',
+      step3Title: 'Step 3: Tile 在 Shared Memory 中的计算',
+      step3Heading: 'Shared Memory 中的 Tile 乘法',
+      step3Desc: 'Block 内 BLOCK_SIZE x BLOCK_SIZE 线程从 shared memory 读取 — 延迟极低',
+      asLabel: 'As (shared mem)',
+      bsLabel: 'Bs (shared mem)',
+      rowLabel: 'row',
+      colLabel: 'col',
+      sumLabel: 'sum',
+      inRegs: '在寄存器中累加',
+      whyEffective: '为什么 Tiling 有效?',
+      naive: 'Naive: 每个线程读 A 的一行 (K 个元素) — 同一行被 BLOCK_SIZE 个线程重复从 HBM 读取',
+      tiling: 'Tiling: 每个 tile 从 HBM 只读一次到 shared memory → BLOCK_SIZE 个线程共享',
+      reduction: '全局内存访问减少 BLOCK_SIZE 倍! (如 BS=32: 减少 32x)',
+      comparison: '内存访问量对比 (M=N=K=4096, BS=32)',
+      naiveAccess: 'Naive: 2MNK = 137G',
+      tilingAccess: 'Tiling: 2MNK/BS = 4.3G (32x 减少)',
+      step4Title: 'Step 4: 完整 Tiling 外循环',
+      step4Heading: '沿 K 维遍历所有 Tile 对，累加部分和',
+      accumulate: '累加',
+      writeBack: '写回 HBM',
+      completeFlow: '完整流程',
+      flow1: '1. 确定 C 的 tile 位置',
+      flow2: '2. for t = 0..K/BS-1:',
+      flow3: '   a. 从 HBM 加载 A/B tile',
+      flow4: '      到 shared memory',
+      flow5: '   b. __syncthreads()',
+      flow6: '   c. 在 shared memory 中',
+      flow7: '      做部分矩阵乘',
+      flow8: '   d. sum += partial',
+      flow9: '   e. __syncthreads()',
+      flow10: '3. 写 C[row][col] = sum',
+      flow11: '   回 HBM',
+      syncNote: '两次 __syncthreads() 确保',
+      syncNote2: '加载完再计算、计算完再换 tile',
+    },
+    en: {
+      step1Title: 'Step 1: Matrix split into Tile grid',
+      step1Heading: 'Tiling: Split large matrix into BLOCK_SIZE x BLOCK_SIZE tiles',
+      step1Desc: 'Each Block computes one tile of C, iterating over A/B tile pairs along K dimension',
+      tilingStrategy: 'Tiling Strategy',
+      strategy1: '1. Each CUDA Block handles one tile of C (BLOCK_SIZE x BLOCK_SIZE threads)',
+      strategy2: '2. Computing C[tile_r][tile_c] requires all tiles in row tile_r of A x all tiles in col tile_c of B',
+      strategy3: '3. Outer loop: for t = 0 to K/BLOCK_SIZE — load one tile pair to Shared Memory each time',
+      strategy4: '4. Key: Each tile loaded from HBM only once, shared and reused by BLOCK_SIZE threads',
+      step2Title: 'Step 2: Load Tile to Shared Memory',
+      step2Heading: 'One Block\'s work: compute C tile[1][2] (step t=0)',
+      sharedMemory: 'Shared Memory',
+      aTile: 'A tile',
+      bTile: 'B tile',
+      partialSum: 'partial sum += A_tile * B_tile',
+      comment1: '// Outer loop: iterate tile pairs along K',
+      comment2: 'Cooperatively load A tile',
+      comment3: 'Cooperatively load B tile',
+      comment4: 'Read from shared memory (fast!)',
+      step3Title: 'Step 3: Tile computation in Shared Memory',
+      step3Heading: 'Tile multiplication in Shared Memory',
+      step3Desc: 'BLOCK_SIZE x BLOCK_SIZE threads in Block read from shared memory — very low latency',
+      asLabel: 'As (shared mem)',
+      bsLabel: 'Bs (shared mem)',
+      rowLabel: 'row',
+      colLabel: 'col',
+      sumLabel: 'sum',
+      inRegs: 'Accumulate in registers',
+      whyEffective: 'Why is Tiling effective?',
+      naive: 'Naive: Each thread reads one row of A (K elements) — same row read from HBM by BLOCK_SIZE threads',
+      tiling: 'Tiling: Each tile read from HBM only once to shared memory → shared by BLOCK_SIZE threads',
+      reduction: 'Global memory access reduced by BLOCK_SIZE x! (e.g., BS=32: 32x reduction)',
+      comparison: 'Memory Access Comparison (M=N=K=4096, BS=32)',
+      naiveAccess: 'Naive: 2MNK = 137G',
+      tilingAccess: 'Tiling: 2MNK/BS = 4.3G (32x reduction)',
+      step4Title: 'Step 4: Complete Tiling outer loop',
+      step4Heading: 'Iterate all Tile pairs along K dimension, accumulate partial sums',
+      accumulate: 'accumulate',
+      writeBack: 'write back to HBM',
+      completeFlow: 'Complete Flow',
+      flow1: '1. Determine C tile position',
+      flow2: '2. for t = 0..K/BS-1:',
+      flow3: '   a. Load A/B tile from HBM',
+      flow4: '      to shared memory',
+      flow5: '   b. __syncthreads()',
+      flow6: '   c. Compute partial matmul',
+      flow7: '      in shared memory',
+      flow8: '   d. sum += partial',
+      flow9: '   e. __syncthreads()',
+      flow10: '3. Write C[row][col] = sum',
+      flow11: '   back to HBM',
+      syncNote: 'Two __syncthreads() ensure',
+      syncNote2: 'load before compute, compute before next tile',
+    },
+  }[locale];
+
 const steps = [
   {
-    title: 'Step 1: 矩阵切分为 Tile 网格',
+    title: t.step1Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Tiling: 把大矩阵切成 BLOCK_SIZE x BLOCK_SIZE 的小块
+          {t.step1Heading}
         </text>
         <text x={W / 2} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
           fontFamily={FONTS.sans}>
-          每个 Block 负责计算 C 的一个 tile，沿 K 维遍历 A/B 的 tile 对
+          {t.step1Desc}
         </text>
 
         <TiledMatrix x={30} y={60} w={140} h={140} label={`A (M x K)`}
@@ -73,29 +185,29 @@ const steps = [
         <rect x={40} y={220} width={500} height={120} rx={5}
           fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
         <text x={W / 2} y={240} textAnchor="middle" fontSize="9" fontWeight="600"
-          fill={COLORS.dark} fontFamily={FONTS.sans}>Tiling 策略</text>
+          fill={COLORS.dark} fontFamily={FONTS.sans}>{t.tilingStrategy}</text>
         <text x={60} y={260} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          1. 每个 CUDA Block 对应 C 的一个 tile (BLOCK_SIZE x BLOCK_SIZE 线程)
+          {t.strategy1}
         </text>
         <text x={60} y={278} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          2. 计算 C[tile_r][tile_c] 需要 A 的第 tile_r 行所有 tile x B 的第 tile_c 列所有 tile
+          {t.strategy2}
         </text>
         <text x={60} y={296} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          3. 外循环: for t = 0 to K/BLOCK_SIZE — 每次加载一对 tile 到 Shared Memory
+          {t.strategy3}
         </text>
         <text x={60} y={314} fontSize="8" fill={COLORS.primary} fontFamily={FONTS.sans}>
-          4. 关键: 每个 tile 从 HBM 只加载一次，被 BLOCK_SIZE 个线程共享复用
+          {t.strategy4}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'Step 2: 加载 Tile 到 Shared Memory',
+    title: t.step2Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          一个 Block 的工作: 计算 C 的 tile[1][2] (第 t=0 步)
+          {t.step2Heading}
         </text>
 
         {/* A tile highlighted */}
@@ -107,15 +219,15 @@ const steps = [
 
         {/* Arrow: HBM → Shared Memory */}
         <text x={400} y={55} textAnchor="middle" fontSize="8" fontWeight="600"
-          fill={COLORS.dark} fontFamily={FONTS.sans}>Shared Memory</text>
+          fill={COLORS.dark} fontFamily={FONTS.sans}>{t.sharedMemory}</text>
         <rect x={340} y={62} width={55} height={45} rx={3}
           fill="#dbeafe" stroke={COLORS.primary} strokeWidth={1.5} />
         <text x={368} y={88} textAnchor="middle" fontSize="7" fill={COLORS.primary}
-          fontFamily={FONTS.mono}>A tile</text>
+          fontFamily={FONTS.mono}>{t.aTile}</text>
         <rect x={405} y={62} width={55} height={45} rx={3}
           fill="#dcfce7" stroke={COLORS.green} strokeWidth={1.5} />
         <text x={433} y={88} textAnchor="middle" fontSize="7" fill={COLORS.green}
-          fontFamily={FONTS.mono}>B tile</text>
+          fontFamily={FONTS.mono}>{t.bTile}</text>
 
         {/* Arrows */}
         <line x1={150} y1={90} x2={335} y2={82} stroke={COLORS.primary} strokeWidth={1.5}
@@ -139,23 +251,23 @@ const steps = [
           fill="#fef3c7" stroke={COLORS.orange} strokeWidth={1} />
         <text x={400} y={155} textAnchor="middle" fontSize="7" fontWeight="600"
           fill={COLORS.orange} fontFamily={FONTS.sans}>
-          部分和 += A_tile * B_tile
+          {t.partialSum}
         </text>
 
         {/* Code */}
         <rect x={30} y={190} width={520} height={145} rx={5}
           fill="#1e293b" />
         <text x={45} y={210} fontSize="7.5" fill="#94a3b8" fontFamily={FONTS.mono}>
-          // 外循环: 沿 K 维遍历每对 tile
+          {t.comment1}
         </text>
         <text x={45} y={226} fontSize="7.5" fill="#e2e8f0" fontFamily={FONTS.mono}>
           for (int t = 0; t {'<'} K / BLOCK_SIZE; t++) {'{'}
         </text>
         <text x={55} y={242} fontSize="7.5" fill={COLORS.primary} fontFamily={FONTS.mono}>
-          As[ty][tx] = A[row][t*BS + tx];  // 协作加载 A tile
+          As[ty][tx] = A[row][t*BS + tx];  // {t.comment2}
         </text>
         <text x={55} y={258} fontSize="7.5" fill={COLORS.green} fontFamily={FONTS.mono}>
-          Bs[ty][tx] = B[t*BS + ty][col];  // 协作加载 B tile
+          Bs[ty][tx] = B[t*BS + ty][col];  // {t.comment3}
         </text>
         <text x={55} y={274} fontSize="7.5" fill={COLORS.orange} fontFamily={FONTS.mono}>
           __syncthreads();
@@ -164,7 +276,7 @@ const steps = [
           for (int k = 0; k {'<'} BS; k++)
         </text>
         <text x={65} y={306} fontSize="7.5" fill="#fef3c7" fontFamily={FONTS.mono}>
-          sum += As[ty][k] * Bs[k][tx];  // 从 shared memory 读 (快!)
+          sum += As[ty][k] * Bs[k][tx];  // {t.comment4}
         </text>
         <text x={55} y={322} fontSize="7.5" fill={COLORS.orange} fontFamily={FONTS.mono}>
           __syncthreads();
@@ -176,16 +288,16 @@ const steps = [
     ),
   },
   {
-    title: 'Step 3: Tile 在 Shared Memory 中的计算',
+    title: t.step3Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Shared Memory 中的 Tile 乘法
+          {t.step3Heading}
         </text>
         <text x={W / 2} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
           fontFamily={FONTS.sans}>
-          Block 内 BLOCK_SIZE x BLOCK_SIZE 线程从 shared memory 读取 — 延迟极低
+          {t.step3Desc}
         </text>
 
         {/* As tile */}
@@ -357,26 +469,15 @@ const steps = [
         <text x={315} y={308} textAnchor="middle" fontSize="7" fontWeight="600"
           fill={COLORS.orange} fontFamily={FONTS.mono}>C[row][col]</text>
         <text x={315} y={330} textAnchor="middle" fontSize="7"
-          fill="#64748b" fontFamily={FONTS.sans}>写回 HBM</text>
+          fill="#64748b" fontFamily={FONTS.sans}>{t.writeBack}</text>
 
         {/* Right side: summary */}
         <rect x={370} y={45} width={190} height={260} rx={5}
           fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
         <text x={465} y={68} textAnchor="middle" fontSize="9" fontWeight="600"
-          fill={COLORS.dark} fontFamily={FONTS.sans}>完整流程</text>
+          fill={COLORS.dark} fontFamily={FONTS.sans}>{t.completeFlow}</text>
 
-        {['1. 确定 C 的 tile 位置',
-          '2. for t = 0..K/BS-1:',
-          '   a. 从 HBM 加载 A/B tile',
-          '      到 shared memory',
-          '   b. __syncthreads()',
-          '   c. 在 shared memory 中',
-          '      做部分矩阵乘',
-          '   d. sum += partial',
-          '   e. __syncthreads()',
-          '3. 写 C[row][col] = sum',
-          '   回 HBM',
-        ].map((line, i) => (
+        {[t.flow1, t.flow2, t.flow3, t.flow4, t.flow5, t.flow6, t.flow7, t.flow8, t.flow9, t.flow10, t.flow11].map((line, i) => (
           <text key={i} x={380} y={88 + i * 16} fontSize="7.5"
             fill={line.startsWith('   ') ? '#64748b' : COLORS.dark} fontFamily={FONTS.mono}>
             {line}
@@ -385,17 +486,16 @@ const steps = [
 
         <text x={465} y={272} textAnchor="middle" fontSize="7.5" fontWeight="600"
           fill={COLORS.green} fontFamily={FONTS.sans}>
-          两次 __syncthreads() 确保
+          {t.syncNote}
         </text>
         <text x={465} y={286} textAnchor="middle" fontSize="7.5"
           fill={COLORS.green} fontFamily={FONTS.sans}>
-          加载完再计算、计算完再换 tile
+          {t.syncNote2}
         </text>
       </StepSvg>
     ),
   },
 ];
 
-export default function TilingAnimation() {
   return <StepNavigator steps={steps} />;
 }

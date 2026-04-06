@@ -23,7 +23,36 @@ const TICK_W = 38;
 const BAR_H = 28;
 const GAP = 6;
 
-export default function StaticVsDynamicBatching() {
+export default function StaticVsDynamicBatching({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'Static Batching vs Continuous Batching',
+      subtitle: '切换查看两种批处理策略的时间线差异',
+      static: 'Static Batching',
+      continuous: 'Continuous Batching',
+      iteration: 'Iteration (时间步)',
+      prefill: 'Prefill',
+      decode: 'Decode',
+      idle: '空闲等待',
+      newRequest: '新请求',
+      staticSummary: 'Static Batching：所有请求必须等最长的完成 → GPU 利用率低、红色区域全是浪费',
+      continuousSummary: 'Continuous Batching：完成即释放，新请求立即填入 → GPU 利用率高、无空闲等待',
+    },
+    en: {
+      title: 'Static Batching vs Continuous Batching',
+      subtitle: 'Toggle to see timeline differences between two batching strategies',
+      static: 'Static Batching',
+      continuous: 'Continuous Batching',
+      iteration: 'Iteration (time step)',
+      prefill: 'Prefill',
+      decode: 'Decode',
+      idle: 'Idle wait',
+      newRequest: 'New request',
+      staticSummary: 'Static Batching: all requests wait for the longest to finish → low GPU utilization, red zones are wasted',
+      continuousSummary: 'Continuous Batching: finish and release immediately, new requests fill in → high GPU utilization, no idle time',
+    },
+  }[locale];
+
   const [mode, setMode] = useState<'static' | 'continuous'>('static');
 
   const maxLen = Math.max(...REQUESTS.map(r => r.prefill + r.decode));
@@ -47,11 +76,11 @@ export default function StaticVsDynamicBatching() {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
       <text x={W / 2} y={22} textAnchor="middle" fontSize="14" fontWeight="700"
         fill={COLORS.dark} fontFamily={FONTS.sans}>
-        Static Batching vs Continuous Batching
+        {t.title}
       </text>
       <text x={W / 2} y={40} textAnchor="middle" fontSize="10"
         fill={COLORS.mid} fontFamily={FONTS.sans}>
-        切换查看两种批处理策略的时间线差异
+        {t.subtitle}
       </text>
 
       {/* Toggle */}
@@ -62,7 +91,7 @@ export default function StaticVsDynamicBatching() {
             stroke={mode === m ? COLORS.primary : COLORS.light} strokeWidth="1" />
           <text x={232 + i * 140} y={67} textAnchor="middle" fontSize="10"
             fontWeight="600" fill={mode === m ? '#fff' : COLORS.mid} fontFamily={FONTS.sans}>
-            {m === 'static' ? 'Static Batching' : 'Continuous Batching'}
+            {m === 'static' ? t.static : t.continuous}
           </text>
         </g>
       ))}
@@ -86,7 +115,7 @@ export default function StaticVsDynamicBatching() {
       <text x={chartX + ticks.length * TICK_W / 2}
         y={chartY + REQUESTS.length * (BAR_H + GAP) + 36}
         textAnchor="middle" fontSize="9" fill={COLORS.mid} fontFamily={FONTS.sans}>
-        Iteration (时间步)
+        {t.iteration}
       </text>
 
       {/* Request bars */}
@@ -107,7 +136,7 @@ export default function StaticVsDynamicBatching() {
               fill={req.color} opacity={0.8} />
             <text x={chartX + req.prefill * TICK_W / 2} y={y + BAR_H / 2 + 4}
               textAnchor="middle" fontSize="8" fontWeight="600" fill="#fff" fontFamily={FONTS.sans}>
-              Prefill
+              {t.prefill}
             </text>
             {/* Decode */}
             <rect x={chartX + req.prefill * TICK_W} y={y}
@@ -116,7 +145,7 @@ export default function StaticVsDynamicBatching() {
             <text x={chartX + (req.prefill + req.decode / 2) * TICK_W} y={y + BAR_H / 2 + 4}
               textAnchor="middle" fontSize="8" fontWeight="600"
               fill={COLORS.dark} fontFamily={FONTS.sans}>
-              Decode
+              {t.decode}
             </text>
             {/* Idle time (static only) */}
             {idleLen > 0 && (
@@ -127,7 +156,7 @@ export default function StaticVsDynamicBatching() {
                   strokeDasharray="3,2" />
                 <text x={chartX + (totalLen + idleLen / 2) * TICK_W} y={y + BAR_H / 2 + 4}
                   textAnchor="middle" fontSize="8" fill={COLORS.red} fontFamily={FONTS.sans}>
-                  空闲等待
+                  {t.idle}
                 </text>
               </>
             )}
@@ -151,7 +180,7 @@ export default function StaticVsDynamicBatching() {
             <text x={chartX + (slotStart + (req.prefill + req.decode) / 2) * TICK_W}
               y={y + BAR_H / 2 + 4} textAnchor="middle" fontSize="8"
               fontWeight="600" fill={req.color} fontFamily={FONTS.sans}>
-              {req.id} (新请求)
+              {req.id} ({t.newRequest})
             </text>
           </g>
         );
@@ -162,9 +191,7 @@ export default function StaticVsDynamicBatching() {
         fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
       <text x={W / 2} y={H - 27} textAnchor="middle" fontSize="10"
         fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-        {mode === 'static'
-          ? 'Static Batching：所有请求必须等最长的完成 → GPU 利用率低、红色区域全是浪费'
-          : 'Continuous Batching：完成即释放，新请求立即填入 → GPU 利用率高、无空闲等待'}
+        {mode === 'static' ? t.staticSummary : t.continuousSummary}
       </text>
     </svg>
   );

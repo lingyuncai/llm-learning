@@ -4,6 +4,8 @@ import { COLORS, FONTS } from './shared/colors';
 const W = 580;
 const SVG_H = 280;
 
+type Locale = 'zh' | 'en';
+
 function StepSvg({ children }: { children: React.ReactNode }) {
   return (
     <svg viewBox={`0 0 ${W} ${SVG_H}`} className="w-full" role="img">
@@ -31,25 +33,87 @@ function PipelineBox({ x, y, w, h, label, fill, stroke }: {
 const BOX_W = 80;
 const BOX_H = 28;
 
+function getSteps(locale: Locale) {
+  const t = {
+    zh: {
+      step1Title: 'EAGLE 1/2: Feature Prediction Pipeline',
+      step1TitleText: 'EAGLE 1/2: Hidden State → Feature → Token',
+      step1SubText: 'Draft 依赖 target model 的 hidden state — 三步流程',
+      targetForward: 'Target\nForward',
+      extractHidden: 'Extract\nHidden State',
+      draftHead: 'Draft Head\n(Feature→Token)',
+      verify: 'Verify\n(Target)',
+      serialDependency: '串行依赖链: Draft 必须等 Target 的 Hidden State → 无法流水线化',
+      iterationProcess: '迭代过程:',
+      target: 'Target',
+      draft: 'Draft',
+      eachRound: '每轮: Target forward (慢) → Draft (快) → 串行等待',
+      eagle1Speedup: 'EAGLE-1 ~3.5x | EAGLE-2 ~4.5x (dynamic tree 改善了 budget 分配)',
+      step2Title: 'EAGLE-3: Direct Token Prediction + Multi-Layer Fusion',
+      step2TitleText: 'EAGLE-3: Direct Token Prediction',
+      step2SubText: '跳过 feature prediction，直接预测 token + 融合多层特征',
+      targetModel: 'Target Model',
+      multiLayerFusion: 'Multi-Layer\nFusion',
+      directToken: 'Direct Token\nPrediction',
+      verifyShort: 'Verify',
+      twoKeyImprovements: 'EAGLE-3 的两个关键改进',
+      improvement1: '1. Direct token prediction: 跳过 feature→token 映射，直接输出 token 概率',
+      improvement2: '2. Multi-layer fusion (Training-Time Test): 融合多层特征而非只用最后一层',
+      performanceComparison: '性能对比',
+      eagle2: 'EAGLE-2',
+      eagle3: 'EAGLE-3',
+      eagle3Summary: 'EAGLE-3: ~1.4x faster than EAGLE-2 | SGLang batch=64 吞吐提升 1.38x',
+    },
+    en: {
+      step1Title: 'EAGLE 1/2: Feature Prediction Pipeline',
+      step1TitleText: 'EAGLE 1/2: Hidden State → Feature → Token',
+      step1SubText: 'Draft depends on target model hidden state — three-step process',
+      targetForward: 'Target\nForward',
+      extractHidden: 'Extract\nHidden State',
+      draftHead: 'Draft Head\n(Feature→Token)',
+      verify: 'Verify\n(Target)',
+      serialDependency: 'Serial dependency: Draft must wait for Target Hidden State → Cannot pipeline',
+      iterationProcess: 'Iteration process:',
+      target: 'Target',
+      draft: 'Draft',
+      eachRound: 'Each round: Target forward (slow) → Draft (fast) → Serial wait',
+      eagle1Speedup: 'EAGLE-1 ~3.5x | EAGLE-2 ~4.5x (dynamic tree improves budget allocation)',
+      step2Title: 'EAGLE-3: Direct Token Prediction + Multi-Layer Fusion',
+      step2TitleText: 'EAGLE-3: Direct Token Prediction',
+      step2SubText: 'Skip feature prediction, directly predict token + fuse multi-layer features',
+      targetModel: 'Target Model',
+      multiLayerFusion: 'Multi-Layer\nFusion',
+      directToken: 'Direct Token\nPrediction',
+      verifyShort: 'Verify',
+      twoKeyImprovements: 'Two Key Improvements in EAGLE-3',
+      improvement1: '1. Direct token prediction: Skip feature→token mapping, directly output token probabilities',
+      improvement2: '2. Multi-layer fusion (Training-Time Test): Fuse multi-layer features instead of just last layer',
+      performanceComparison: 'Performance Comparison',
+      eagle2: 'EAGLE-2',
+      eagle3: 'EAGLE-3',
+      eagle3Summary: 'EAGLE-3: ~1.4x faster than EAGLE-2 | SGLang batch=64 throughput up 1.38x',
+    },
+  }[locale];
+
 const steps = [
   {
-    title: 'EAGLE 1/2: Feature Prediction Pipeline',
+    title: t.step1Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          EAGLE 1/2: Hidden State → Feature → Token
+          {t.step1TitleText}
         </text>
         <text x={W / 2} y={38} textAnchor="middle" fontSize="8" fill="#64748b"
           fontFamily={FONTS.sans}>
-          Draft 依赖 target model 的 hidden state — 三步流程
+          {t.step1SubText}
         </text>
 
         {[
-          { label: 'Target\nForward', fill: '#dbeafe', stroke: COLORS.primary },
-          { label: 'Extract\nHidden State', fill: '#fef3c7', stroke: COLORS.orange },
-          { label: 'Draft Head\n(Feature→Token)', fill: '#dcfce7', stroke: COLORS.green },
-          { label: 'Verify\n(Target)', fill: '#dbeafe', stroke: COLORS.primary },
+          { label: t.targetForward, fill: '#dbeafe', stroke: COLORS.primary },
+          { label: t.extractHidden, fill: '#fef3c7', stroke: COLORS.orange },
+          { label: t.draftHead, fill: '#dcfce7', stroke: COLORS.green },
+          { label: t.verify, fill: '#dbeafe', stroke: COLORS.primary },
         ].map((box, i) => {
           const x = 40 + i * 135;
           return (
@@ -75,11 +139,11 @@ const steps = [
           fill="#fee2e2" stroke={COLORS.red} strokeWidth={1} strokeDasharray="4 2" />
         <text x={W / 2} y={140} textAnchor="middle" fontSize="8" fontWeight="600"
           fill={COLORS.red} fontFamily={FONTS.sans}>
-          串行依赖链: Draft 必须等 Target 的 Hidden State → 无法流水线化
+          {t.serialDependency}
         </text>
 
         <text x={30} y={175} fontSize="8" fontWeight="600" fill={COLORS.dark}
-          fontFamily={FONTS.sans}>迭代过程:</text>
+          fontFamily={FONTS.sans}>{t.iterationProcess}</text>
 
         {Array.from({ length: 3 }).map((_, iter) => {
           const baseX = 40 + iter * 180;
@@ -87,9 +151,9 @@ const steps = [
           return (
             <g key={iter}>
               <PipelineBox x={baseX} y={y} w={75} h={22}
-                label={`Target #${iter + 1}`} fill="#dbeafe" stroke={COLORS.primary} />
+                label={`${t.target} #${iter + 1}`} fill="#dbeafe" stroke={COLORS.primary} />
               <PipelineBox x={baseX + 80} y={y} w={75} h={22}
-                label={`Draft #${iter + 1}`} fill="#dcfce7" stroke={COLORS.green} />
+                label={`${t.draft} #${iter + 1}`} fill="#dcfce7" stroke={COLORS.green} />
               {iter < 2 && (
                 <line x1={baseX + 155} y1={y + 11} x2={baseX + 180} y2={y + 11}
                   stroke="#cbd5e1" strokeWidth={1} />
@@ -100,33 +164,33 @@ const steps = [
 
         <text x={W / 2} y={240} textAnchor="middle" fontSize="8" fill={COLORS.red}
           fontFamily={FONTS.sans}>
-          每轮: Target forward (慢) → Draft (快) → 串行等待
+          {t.eachRound}
         </text>
 
         <rect x={40} y={252} width={500} height={20} rx={3}
           fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
         <text x={W / 2} y={265} textAnchor="middle" fontSize="7.5" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          EAGLE-1 ~3.5x | EAGLE-2 ~4.5x (dynamic tree 改善了 budget 分配)
+          {t.eagle1Speedup}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: 'EAGLE-3: Direct Token Prediction + Multi-Layer Fusion',
+    title: t.step2Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={20} textAnchor="middle" fontSize="12" fontWeight="700"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          EAGLE-3: Direct Token Prediction
+          {t.step2TitleText}
         </text>
         <text x={W / 2} y={38} textAnchor="middle" fontSize="8" fill="#64748b"
           fontFamily={FONTS.sans}>
-          跳过 feature prediction，直接预测 token + 融合多层特征
+          {t.step2SubText}
         </text>
 
         <PipelineBox x={40} y={60} w={110} h={50}
-          label="Target Model" fill="#dbeafe" stroke={COLORS.primary} />
+          label={t.targetModel} fill="#dbeafe" stroke={COLORS.primary} />
 
         {[0, 1, 2].map(i => (
           <line key={i} x1={150} y1={72 + i * 12} x2={190} y2={78 + i * 6}
@@ -134,19 +198,19 @@ const steps = [
         ))}
 
         <PipelineBox x={190} y={60} w={110} h={50}
-          label="Multi-Layer\nFusion" fill="#fef3c7" stroke={COLORS.orange} />
+          label={t.multiLayerFusion} fill="#fef3c7" stroke={COLORS.orange} />
 
         <line x1={300} y1={85} x2={335} y2={85}
           stroke="#cbd5e1" strokeWidth={1.5} markerEnd="url(#dvp-arr2)" />
 
         <PipelineBox x={335} y={60} w={110} h={50}
-          label="Direct Token\nPrediction" fill="#dcfce7" stroke={COLORS.green} />
+          label={t.directToken} fill="#dcfce7" stroke={COLORS.green} />
 
         <line x1={445} y1={85} x2={475} y2={85}
           stroke="#cbd5e1" strokeWidth={1.5} markerEnd="url(#dvp-arr2)" />
 
         <PipelineBox x={475} y={70} w={75} h={30}
-          label="Verify" fill="#dbeafe" stroke={COLORS.primary} />
+          label={t.verifyShort} fill="#dbeafe" stroke={COLORS.primary} />
 
         <defs>
           <marker id="dvp-arr2" viewBox="0 0 10 10" refX="10" refY="5"
@@ -159,23 +223,23 @@ const steps = [
           fill="#dcfce7" stroke={COLORS.green} strokeWidth={1} />
         <text x={W / 2} y={148} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.green} fontFamily={FONTS.sans}>
-          EAGLE-3 的两个关键改进
+          {t.twoKeyImprovements}
         </text>
         <text x={60} y={166} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          1. Direct token prediction: 跳过 feature→token 映射，直接输出 token 概率
+          {t.improvement1}
         </text>
         <text x={60} y={180} fontSize="8" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          2. Multi-layer fusion (Training-Time Test): 融合多层特征而非只用最后一层
+          {t.improvement2}
         </text>
 
         <text x={W / 2} y={215} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          性能对比
+          {t.performanceComparison}
         </text>
 
         {[
-          { label: 'EAGLE-2', val: 4.5, max: 7, color: COLORS.primary },
-          { label: 'EAGLE-3', val: 6.5, max: 7, color: COLORS.green },
+          { label: t.eagle2, val: 4.5, max: 7, color: COLORS.primary },
+          { label: t.eagle3, val: 6.5, max: 7, color: COLORS.green },
         ].map((item, i) => {
           const barY = 225 + i * 20;
           const maxW = 300;
@@ -195,13 +259,17 @@ const steps = [
 
         <text x={W / 2} y={275} textAnchor="middle" fontSize="8" fill={COLORS.green}
           fontFamily={FONTS.sans}>
-          EAGLE-3: ~1.4x faster than EAGLE-2 | SGLang batch=64 吞吐提升 1.38x
+          {t.eagle3Summary}
         </text>
       </StepSvg>
     ),
   },
 ];
 
-export default function DraftVerifyPipeline() {
+return steps;
+}
+
+export default function DraftVerifyPipeline({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const steps = getSteps(locale);
   return <StepNavigator steps={steps} />;
 }

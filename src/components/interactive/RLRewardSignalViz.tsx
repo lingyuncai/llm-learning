@@ -7,7 +7,40 @@ const EXAMPLES = [
   { query: '知识问答', state: '中等复杂度', action: '选 Llama-70B', quality: 0.88, cost: 0.005, reward: '0.88 - 0.05 = 0.83' },
 ];
 
-export default function RLRewardSignalViz() {
+export default function RLRewardSignalViz({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      title: 'RL Routing: State → Action → Reward 循环',
+      state: 'State',
+      action: 'Action',
+      reward: 'Reward',
+      update: 'Update',
+      updateDetail: '更新策略: 调整 query→model 映射权重',
+      rlFormula: 'RL 关键公式:',
+      costSensitivity: 'λ 控制成本敏感度:',
+      largeLambda: 'λ大 → 偏好便宜模型',
+      smallLambda: 'λ小 → 偏好高质量模型',
+      prev: '← 上一步',
+      next: '下一步 →',
+      step: 'Step',
+    },
+    en: {
+      title: 'RL Routing: State → Action → Reward Loop',
+      state: 'State',
+      action: 'Action',
+      reward: 'Reward',
+      update: 'Update',
+      updateDetail: 'Update policy: adjust query→model mapping weights',
+      rlFormula: 'RL Key Formula:',
+      costSensitivity: 'λ controls cost sensitivity:',
+      largeLambda: 'Large λ → prefer cheap models',
+      smallLambda: 'Small λ → prefer high-quality models',
+      prev: '← Previous',
+      next: 'Next →',
+      step: 'Step',
+    },
+  }[locale];
+
   const [exIdx, setExIdx] = useState(0);
   const [activeStep, setActiveStep] = useState(0);
 
@@ -15,10 +48,10 @@ export default function RLRewardSignalViz() {
   const ex = EXAMPLES[exIdx];
 
   const steps = [
-    { label: 'State', detail: `Query: "${ex.query}" → ${ex.state}`, color: COLORS.primary },
-    { label: 'Action', detail: ex.action, color: COLORS.green },
-    { label: 'Reward', detail: `Quality(${ex.quality}) - Cost(${ex.cost}) = ${ex.reward}`, color: COLORS.orange },
-    { label: 'Update', detail: '更新策略: 调整 query→model 映射权重', color: '#6a1b9a' },
+    { label: t.state, detail: `Query: "${ex.query}" → ${ex.state}`, color: COLORS.primary },
+    { label: t.action, detail: ex.action, color: COLORS.green },
+    { label: t.reward, detail: `Quality(${ex.quality}) - Cost(${ex.cost}) = ${ex.reward}`, color: COLORS.orange },
+    { label: t.update, detail: t.updateDetail, color: '#6a1b9a' },
   ];
 
   // Circular positions
@@ -33,7 +66,7 @@ export default function RLRewardSignalViz() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <text x={W / 2} y="22" textAnchor="middle" fontFamily={FONTS.sans}
               fontSize="16" fontWeight="600" fill={COLORS.dark}>
-          RL Routing: State → Action → Reward 循环
+          {t.title}
         </text>
 
         {/* Example selector */}
@@ -117,19 +150,19 @@ export default function RLRewardSignalViz() {
           )}
 
           <text x="10" y="100" fontFamily={FONTS.sans} fontSize="10" fontWeight="600" fill={COLORS.mid}>
-            RL 关键公式:
+            {t.rlFormula}
           </text>
           <text x="10" y="118" fontFamily={FONTS.mono} fontSize="9" fill={COLORS.dark}>
             R = Quality(a, q) - λ·Cost(a)
           </text>
           <text x="10" y="136" fontFamily={FONTS.sans} fontSize="9" fill={COLORS.mid}>
-            λ 控制成本敏感度:
+            {t.costSensitivity}
           </text>
           <text x="10" y="152" fontFamily={FONTS.sans} fontSize="9" fill={COLORS.mid}>
-            λ大 → 偏好便宜模型
+            {t.largeLambda}
           </text>
           <text x="10" y="168" fontFamily={FONTS.sans} fontSize="9" fill={COLORS.mid}>
-            λ小 → 偏好高质量模型
+            {t.smallLambda}
           </text>
         </g>
       </svg>
@@ -139,15 +172,15 @@ export default function RLRewardSignalViz() {
         <button onClick={() => setActiveStep(Math.max(0, activeStep - 1))}
                 className="px-3 py-1 bg-gray-200 text-sm rounded hover:bg-gray-300"
                 disabled={activeStep === 0}>
-          ← 上一步
+          {t.prev}
         </button>
         <span className="text-sm text-gray-500">
-          Step {activeStep + 1} / {steps.length}
+          {t.step} {activeStep + 1} / {steps.length}
         </span>
         <button onClick={() => setActiveStep(Math.min(steps.length - 1, activeStep + 1))}
                 className="px-3 py-1 bg-gray-200 text-sm rounded hover:bg-gray-300"
                 disabled={activeStep === steps.length - 1}>
-          下一步 →
+          {t.next}
         </button>
       </div>
     </div>

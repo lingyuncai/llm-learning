@@ -7,7 +7,46 @@ interface CodeLine {
   hardwareMapping: string;
 }
 
-const SyclToHardware: React.FC = () => {
+const SyclToHardware: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
+  const t = {
+    zh: {
+      title: 'SYCL 代码 → 硬件资源映射',
+      codeSection: 'SYCL Kernel 代码',
+      hardwareSection: 'Xe2 硬件资源',
+      hover: 'Hover 代码行查看对应的硬件资源映射',
+      xecore: 'Xe-core',
+      dispatch: 'GPU Dispatch Engine',
+      eu: 'EU (Execution Unit)',
+      euDesc: 'SIMD8/16 lanes',
+      grf: 'GRF',
+      grfDesc: 'Registers',
+      shuffle: 'Shuffle',
+      shuffleDesc: 'Unit',
+      slm: 'SLM',
+      slmDesc: '64KB/Xe-core',
+      barrier: 'Barrier',
+      barrierDesc: 'SLM Sync',
+    },
+    en: {
+      title: 'SYCL Code → Hardware Resource Mapping',
+      codeSection: 'SYCL Kernel Code',
+      hardwareSection: 'Xe2 Hardware Resources',
+      hover: 'Hover code lines to view corresponding hardware mapping',
+      xecore: 'Xe-core',
+      dispatch: 'GPU Dispatch Engine',
+      eu: 'EU (Execution Unit)',
+      euDesc: 'SIMD8/16 lanes',
+      grf: 'GRF',
+      grfDesc: 'Registers',
+      shuffle: 'Shuffle',
+      shuffleDesc: 'Unit',
+      slm: 'SLM',
+      slmDesc: '64KB/Xe-core',
+      barrier: 'Barrier',
+      barrierDesc: 'SLM Sync',
+    },
+  }[locale];
+
   const [hoveredLine, setHoveredLine] = useState<number | null>(null);
 
   const codeLines: CodeLine[] = [
@@ -30,12 +69,12 @@ const SyclToHardware: React.FC = () => {
     <div className="my-6 p-4 border rounded-lg">
       <svg viewBox="0 0 580 340" className="w-full">
         <text x="290" y="25" textAnchor="middle" fontSize="14" fontWeight="bold" fill={COLORS.dark}>
-          SYCL 代码 → 硬件资源映射
+          {t.title}
         </text>
 
         {/* Code section */}
         <text x="40" y="50" fontSize="12" fontWeight="bold" fill={COLORS.primary}>
-          SYCL Kernel 代码
+          {t.codeSection}
         </text>
 
         {codeLines.map((line, index) => {
@@ -70,7 +109,7 @@ const SyclToHardware: React.FC = () => {
 
         {/* Hardware diagram */}
         <text x="420" y="50" fontSize="12" fontWeight="bold" fill={COLORS.green}>
-          Xe2 硬件资源
+          {t.hardwareSection}
         </text>
 
         {/* GPU Dispatch */}
@@ -85,7 +124,7 @@ const SyclToHardware: React.FC = () => {
           strokeWidth={getHardwareHighlight('dispatch') ? '2.5' : '1.5'}
         />
         <text x="435" y="83" textAnchor="middle" fontSize="11" fontWeight="bold" fill={COLORS.dark}>
-          GPU Dispatch Engine
+          {t.dispatch}
         </text>
 
         {/* Xe-core box containing EU, SLM, Shuffle */}
@@ -100,7 +139,7 @@ const SyclToHardware: React.FC = () => {
           strokeDasharray="4,4"
         />
         <text x="330" y="120" fontSize="10" fontWeight="bold" fill={COLORS.mid}>
-          Xe-core
+          {t.xecore}
         </text>
 
         {/* EU */}
@@ -115,10 +154,10 @@ const SyclToHardware: React.FC = () => {
           strokeWidth={getHardwareHighlight('eu') ? '2.5' : '1.5'}
         />
         <text x="435" y="150" textAnchor="middle" fontSize="11" fontWeight="bold" fill={COLORS.dark}>
-          EU (Execution Unit)
+          {t.eu}
         </text>
         <text x="435" y="160" textAnchor="middle" fontSize="8" fill={COLORS.mid}>
-          SIMD8/16 lanes
+          {t.euDesc}
         </text>
 
         {/* GRF */}
@@ -133,10 +172,10 @@ const SyclToHardware: React.FC = () => {
           strokeWidth={getHardwareHighlight('grf') ? '2.5' : '1.5'}
         />
         <text x="382.5" y="193" textAnchor="middle" fontSize="10" fontWeight="bold" fill={COLORS.dark}>
-          GRF
+          {t.grf}
         </text>
         <text x="382.5" y="203" textAnchor="middle" fontSize="8" fill={COLORS.mid}>
-          Registers
+          {t.grfDesc}
         </text>
 
         {/* Shuffle Unit */}
@@ -151,10 +190,10 @@ const SyclToHardware: React.FC = () => {
           strokeWidth={getHardwareHighlight('shuffle') ? '2.5' : '1.5'}
         />
         <text x="487.5" y="193" textAnchor="middle" fontSize="10" fontWeight="bold" fill={COLORS.dark}>
-          Shuffle
+          {t.shuffle}
         </text>
         <text x="487.5" y="203" textAnchor="middle" fontSize="8" fill={COLORS.mid}>
-          Unit
+          {t.shuffleDesc}
         </text>
 
         {/* SLM */}
@@ -169,10 +208,10 @@ const SyclToHardware: React.FC = () => {
           strokeWidth={getHardwareHighlight('slm') ? '2.5' : '1.5'}
         />
         <text x="382.5" y="238" textAnchor="middle" fontSize="10" fontWeight="bold" fill={COLORS.dark}>
-          SLM
+          {t.slm}
         </text>
         <text x="382.5" y="248" textAnchor="middle" fontSize="8" fill={COLORS.mid}>
-          64KB/Xe-core
+          {t.slmDesc}
         </text>
 
         {/* Barrier */}
@@ -187,16 +226,16 @@ const SyclToHardware: React.FC = () => {
           strokeWidth={getHardwareHighlight('barrier') ? '2.5' : '1.5'}
         />
         <text x="487.5" y="238" textAnchor="middle" fontSize="10" fontWeight="bold" fill={COLORS.dark}>
-          Barrier
+          {t.barrier}
         </text>
         <text x="487.5" y="248" textAnchor="middle" fontSize="8" fill={COLORS.mid}>
-          SLM Sync
+          {t.barrierDesc}
         </text>
 
         {/* Legend */}
         <rect x="30" y="310" width="520" height="20" fill={COLORS.bgAlt} stroke={COLORS.light} strokeWidth="1" />
         <text x="290" y="324" textAnchor="middle" fontSize="10" fill={COLORS.mid}>
-          Hover 代码行查看对应的硬件资源映射
+          {t.hover}
         </text>
       </svg>
     </div>

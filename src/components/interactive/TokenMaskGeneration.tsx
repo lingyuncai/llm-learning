@@ -86,7 +86,30 @@ const STEPS: MaskStep[] = [
   },
 ];
 
-export default function TokenMaskGeneration() {
+export default function TokenMaskGeneration({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      jsonSchema: 'JSON Schema:',
+      generated: '已生成:',
+      empty: '(空)',
+      fsmState: 'FSM 状态',
+      validChars: '合法字符集',
+      tokenMask: 'Token Mask:',
+      prev: '← 上一步',
+      next: '下一步 →',
+    },
+    en: {
+      jsonSchema: 'JSON Schema:',
+      generated: 'Generated:',
+      empty: '(empty)',
+      fsmState: 'FSM State',
+      validChars: 'Valid Chars',
+      tokenMask: 'Token Mask:',
+      prev: '← Previous',
+      next: 'Next →',
+    },
+  }[locale];
+
   const [stepIdx, setStepIdx] = useState(0);
   const step = STEPS[stepIdx];
 
@@ -97,7 +120,7 @@ export default function TokenMaskGeneration() {
         padding: '8px 12px', background: COLORS.dark, borderRadius: '8px 8px 0 0',
         fontFamily: FONTS.mono, fontSize: 10, color: COLORS.light, overflowX: 'auto',
       }}>
-        <span style={{ color: COLORS.mid }}>JSON Schema: </span>{SCHEMA_TEXT}
+        <span style={{ color: COLORS.mid }}>{t.jsonSchema} </span>{SCHEMA_TEXT}
       </div>
 
       {/* Progress bar */}
@@ -117,9 +140,9 @@ export default function TokenMaskGeneration() {
       <div style={{ padding: '12px 16px', background: COLORS.bg, border: '1px solid #e5e7eb', borderTop: 'none' }}>
         {/* Generated so far */}
         <div style={{ marginBottom: 12 }}>
-          <span style={{ fontSize: 11, color: COLORS.mid }}>已生成: </span>
+          <span style={{ fontSize: 11, color: COLORS.mid }}>{t.generated} </span>
           <span style={{ fontFamily: FONTS.mono, fontSize: 13, color: COLORS.dark, fontWeight: 600 }}>
-            {step.generated || '(空)'}
+            {step.generated || t.empty}
             <span style={{ color: COLORS.orange }}>▌</span>
           </span>
         </div>
@@ -127,7 +150,7 @@ export default function TokenMaskGeneration() {
         {/* FSM state & valid chars */}
         <div style={{ display: 'flex', gap: 24, marginBottom: 12 }}>
           <div>
-            <div style={{ fontSize: 10, color: COLORS.mid, marginBottom: 2 }}>FSM 状态</div>
+            <div style={{ fontSize: 10, color: COLORS.mid, marginBottom: 2 }}>{t.fsmState}</div>
             <div style={{
               padding: '4px 10px', background: COLORS.highlight, borderRadius: 4,
               fontFamily: FONTS.mono, fontSize: 12, fontWeight: 600, color: COLORS.dark,
@@ -136,7 +159,7 @@ export default function TokenMaskGeneration() {
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 10, color: COLORS.mid, marginBottom: 2 }}>合法字符集</div>
+            <div style={{ fontSize: 10, color: COLORS.mid, marginBottom: 2 }}>{t.validChars}</div>
             <div style={{
               padding: '4px 10px', background: '#ecfdf5', borderRadius: 4,
               fontFamily: FONTS.mono, fontSize: 12, fontWeight: 600, color: COLORS.green,
@@ -147,7 +170,7 @@ export default function TokenMaskGeneration() {
         </div>
 
         {/* Token mask */}
-        <div style={{ fontSize: 11, color: COLORS.mid, marginBottom: 6 }}>Token Mask:</div>
+        <div style={{ fontSize: 11, color: COLORS.mid, marginBottom: 6 }}>{t.tokenMask}</div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
           {step.tokenMask.map((t, i) => (
             <div key={i} style={{
@@ -187,7 +210,7 @@ export default function TokenMaskGeneration() {
             color: stepIdx > 0 ? '#fff' : COLORS.mid, fontSize: 12, fontFamily: FONTS.sans,
           }}
         >
-          ← 上一步
+          {t.prev}
         </button>
         <span style={{ fontSize: 11, color: COLORS.mid }}>
           {stepIdx + 1} / {STEPS.length}
@@ -203,7 +226,7 @@ export default function TokenMaskGeneration() {
             fontSize: 12, fontFamily: FONTS.sans,
           }}
         >
-          下一步 →
+          {t.next}
         </button>
       </div>
     </div>

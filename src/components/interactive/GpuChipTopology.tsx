@@ -48,7 +48,20 @@ function TpcBox({ x, y }: { x: number; y: number }) {
   );
 }
 
-export default function GpuChipTopology() {
+export default function GpuChipTopology({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      showing: '展示',
+      tpcSimplified: 'TPC（简化视图）· 点击收起',
+      clickToExpand: '点击任意 GPC 展开查看内部 TPC → SM 结构',
+    },
+    en: {
+      showing: 'Showing',
+      tpcSimplified: 'TPC (simplified view) · Click to collapse',
+      clickToExpand: 'Click any GPC to expand and view internal TPC → SM structure',
+    },
+  }[locale];
+
   const [expandedGpc, setExpandedGpc] = useState<number | null>(null);
 
   const gpcStartY = 70;
@@ -100,7 +113,7 @@ export default function GpuChipTopology() {
                 <TpcBox x={x + 4} y={y + GPC_H} />
                 <text x={x + GPC_W / 2} y={y + GPC_H + EXPAND_EXTRA - 16} textAnchor="middle"
                   fontSize="6.5" fill="#94a3b8" fontFamily={FONTS.sans}>
-                  展示 1/{GPU_SPEC.tpcsPerGpc} TPC（简化视图）· 点击收起
+                  {t.showing} 1/{GPU_SPEC.tpcsPerGpc} {t.tpcSimplified}
                 </text>
               </g>
             )}
@@ -133,7 +146,7 @@ export default function GpuChipTopology() {
       {!hasExpanded && (
         <text x={W / 2} y={H - 58} textAnchor="middle" fontSize="8"
           fill="#94a3b8" fontFamily={FONTS.sans}>
-          点击任意 GPC 展开查看内部 TPC → SM 结构
+          {t.clickToExpand}
         </text>
       )}
     </svg>

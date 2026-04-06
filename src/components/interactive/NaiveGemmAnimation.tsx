@@ -68,18 +68,82 @@ const B = [[1, 0, 2, 1], [3, 1, 0, 2], [0, 2, 1, 0], [1, 1, 3, 1]];
 const targetR = 1;
 const targetC = 2;
 
+export default function NaiveGemmAnimation({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      step1Title: 'Naive GEMM: 一个线程算一个输出元素',
+      step1Subtitle: 'C = A x B (4x4) — 每个线程计算 C 的一个元素',
+      step1HighlightDesc: '高亮线程负责计算 C[{r}][{c}]',
+      step1KernelTitle: 'Naive kernel: 每个线程的工作',
+      step1ProblemDesc: '每个输出元素需要 2K 次全局内存读取 → 总共 2MNK 次 → 严重 memory-bound',
+      step2Title: '逐步计算 C[{r}][{c}]',
+      step2Subtitle: 'C[{r}][{c}] = A 的第 {r} 行 * B 的第 {c} 列',
+      step2DotProduct: 'Dot Product',
+      step2MemoryTitle: '全局内存访问 (这一个线程)',
+      step2MemoryDesc: '读 A 的 {n} 个元素 + 读 B 的 {n} 个元素 = {total} 次 global memory load',
+      step2MemoryDetail: '{nn} 个线程 x {total} 次读取 = {totalAccess} 次总访问 → 同一行/列被不同线程重复读取!',
+      step2KeyPoint: '问题: A[{r}][:] 被 C 的第 {r} 行的所有 {n} 个线程重复读取',
+      step2Solution: '解决方案: 加载到 Shared Memory 后共享 → Tiling 优化',
+      step3Title: '性能分析: 和理论峰值的差距',
+      step3Subtitle: 'Naive GEMM 性能分析 (4096x4096, H100)',
+      step3PerformanceLabel: 'FP32 性能对比:',
+      step3Approaches: [
+        'Naive GEMM',
+        '+ Tiling',
+        '+ Thread Tile',
+        '+ Vec Load + Double Buf',
+        'Tensor Core (FP16)',
+        'cuBLAS (参考)',
+      ],
+      step3CoreThought: '优化核心思路',
+      step3Point1: '1. 减少全局内存访问 (Tiling → Shared Memory)',
+      step3Point2: '2. 提高数据复用 (Thread Tiling → 寄存器)',
+      step3Point3: '3. 利用专用硬件 (Tensor Core → 一条指令完成矩阵块乘)',
+    },
+    en: {
+      step1Title: 'Naive GEMM: One Thread per Output Element',
+      step1Subtitle: 'C = A x B (4x4) — Each thread computes one element of C',
+      step1HighlightDesc: 'Highlighted thread computes C[{r}][{c}]',
+      step1KernelTitle: 'Naive kernel: Work per thread',
+      step1ProblemDesc: 'Each output element requires 2K global memory reads → Total 2MNK reads → Severely memory-bound',
+      step2Title: 'Step-by-Step Computation of C[{r}][{c}]',
+      step2Subtitle: 'C[{r}][{c}] = Row {r} of A * Column {c} of B',
+      step2DotProduct: 'Dot Product',
+      step2MemoryTitle: 'Global Memory Accesses (This Thread)',
+      step2MemoryDesc: 'Read {n} elements from A + {n} elements from B = {total} global memory loads',
+      step2MemoryDetail: '{nn} threads x {total} reads = {totalAccess} total accesses → Same row/col read repeatedly by different threads!',
+      step2KeyPoint: 'Problem: A[{r}][:] is read repeatedly by all {n} threads in row {r} of C',
+      step2Solution: 'Solution: Load to Shared Memory for sharing → Tiling optimization',
+      step3Title: 'Performance Analysis: Gap to Theoretical Peak',
+      step3Subtitle: 'Naive GEMM Performance Analysis (4096x4096, H100)',
+      step3PerformanceLabel: 'FP32 Performance Comparison:',
+      step3Approaches: [
+        'Naive GEMM',
+        '+ Tiling',
+        '+ Thread Tile',
+        '+ Vec Load + Double Buf',
+        'Tensor Core (FP16)',
+        'cuBLAS (Reference)',
+      ],
+      step3CoreThought: 'Core Optimization Strategy',
+      step3Point1: '1. Reduce global memory access (Tiling → Shared Memory)',
+      step3Point2: '2. Improve data reuse (Thread Tiling → Registers)',
+      step3Point3: '3. Leverage specialized hardware (Tensor Core → Matrix block multiply in one instruction)',
+    },
+  }[locale];
+
 const steps = [
   {
-    title: 'Naive GEMM: 一个线程算一个输出元素',
+    title: t.step1Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          C = A x B (4x4) — 每个线程计算 C 的一个元素
+          {t.step1Subtitle}
         </text>
         <text x={W / 2} y={36} textAnchor="middle" fontSize="9" fill="#64748b"
           fontFamily={FONTS.sans}>
-          高亮线程负责计算 C[{targetR}][{targetC}]
+          {t.step1HighlightDesc.replace('{r}', targetR.toString()).replace('{c}', targetC.toString())}
         </text>
 
         <MatrixGrid x={30} y={60} label="A (4x4)" rows={N} cols={N}
@@ -95,7 +159,7 @@ const steps = [
           fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
         <text x={W / 2} y={240} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Naive kernel: 每个线程的工作
+          {t.step1KernelTitle}
         </text>
         <text x={60} y={260} fontSize="8" fill={COLORS.primary} fontFamily={FONTS.mono}>
           C[row][col] = 0;
@@ -107,18 +171,18 @@ const steps = [
           {'  '}C[row][col] += A[row][k] * B[k][col];  // 2 global reads per iteration
         </text>
         <text x={60} y={308} fontSize="8" fill={COLORS.red} fontFamily={FONTS.sans}>
-          每个输出元素需要 2K 次全局内存读取 → 总共 2MNK 次 → 严重 memory-bound
+          {t.step1ProblemDesc}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: '逐步计算 C[1][2]',
+    title: t.step2Title.replace('{r}', targetR.toString()).replace('{c}', targetC.toString()),
     content: (
       <StepSvg>
         <text x={W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          C[{targetR}][{targetC}] = A 的第 {targetR} 行 * B 的第 {targetC} 列
+          {t.step2Subtitle.replace('{r}', targetR.toString()).replace('{c}', targetC.toString())}
         </text>
 
         <MatrixGrid x={30} y={50} label="A" rows={N} cols={N}
@@ -130,7 +194,7 @@ const steps = [
         <rect x={370} y={50} width={190} height={130} rx={5}
           fill="#fff7ed" stroke={COLORS.orange} strokeWidth={1} />
         <text x={465} y={70} textAnchor="middle" fontSize="9" fontWeight="600"
-          fill={COLORS.orange} fontFamily={FONTS.sans}>Dot Product</text>
+          fill={COLORS.orange} fontFamily={FONTS.sans}>{t.step2DotProduct}</text>
 
         {Array.from({ length: N }).map((_, k) => {
           const y = 86 + k * 22;
@@ -170,15 +234,15 @@ const steps = [
           fill="#fee2e2" stroke={COLORS.red} strokeWidth={1} />
         <text x={W / 2} y={228} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.red} fontFamily={FONTS.sans}>
-          全局内存访问 (这一个线程)
+          {t.step2MemoryTitle}
         </text>
         <text x={W / 2} y={248} textAnchor="middle" fontSize="8" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          读 A 的 {N} 个元素 + 读 B 的 {N} 个元素 = {2 * N} 次 global memory load
+          {t.step2MemoryDesc.replace('{n}', N.toString()).replace('{n}', N.toString()).replace('{total}', (2 * N).toString())}
         </text>
         <text x={W / 2} y={260} textAnchor="middle" fontSize="7" fill="#64748b"
           fontFamily={FONTS.sans}>
-          {N * N} 个线程 x {2 * N} 次读取 = {N * N * 2 * N} 次总访问 → 同一行/列被不同线程重复读取!
+          {t.step2MemoryDetail.replace('{nn}', (N * N).toString()).replace('{total}', (2 * N).toString()).replace('{totalAccess}', (N * N * 2 * N).toString())}
         </text>
 
         {/* Key point */}
@@ -186,36 +250,36 @@ const steps = [
           fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
         <text x={W / 2} y={298} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          问题: A[{targetR}][:] 被 C 的第 {targetR} 行的所有 {N} 个线程重复读取
+          {t.step2KeyPoint.replace('{r}', targetR.toString()).replace('{r}', targetR.toString()).replace('{n}', N.toString())}
         </text>
         <text x={W / 2} y={312} textAnchor="middle" fontSize="8" fill={COLORS.primary}
           fontFamily={FONTS.sans}>
-          解决方案: 加载到 Shared Memory 后共享 → Tiling 优化
+          {t.step2Solution}
         </text>
       </StepSvg>
     ),
   },
   {
-    title: '性能分析: 和理论峰值的差距',
+    title: t.step3Title,
     content: (
       <StepSvg>
         <text x={W / 2} y={18} textAnchor="middle" fontSize="12" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          Naive GEMM 性能分析 (4096x4096, H100)
+          {t.step3Subtitle}
         </text>
 
         {/* Performance bar */}
         <text x={40} y={50} fontSize="9" fontWeight="600" fill={COLORS.dark} fontFamily={FONTS.sans}>
-          FP32 性能对比:
+          {t.step3PerformanceLabel}
         </text>
 
         {[
-          { label: 'Naive GEMM', gflops: 400, color: COLORS.red, pct: '0.6%' },
-          { label: '+ Tiling', gflops: 8000, color: COLORS.orange, pct: '12%' },
-          { label: '+ Thread Tile', gflops: 25000, color: '#ca8a04', pct: '37%' },
-          { label: '+ Vec Load + Double Buf', gflops: 45000, color: COLORS.green, pct: '67%' },
-          { label: 'Tensor Core (FP16)', gflops: 60000, color: COLORS.primary, pct: '~90%' },
-          { label: 'cuBLAS (参考)', gflops: 65000, color: COLORS.purple, pct: '97%' },
+          { label: t.step3Approaches[0], gflops: 400, color: COLORS.red, pct: '0.6%' },
+          { label: t.step3Approaches[1], gflops: 8000, color: COLORS.orange, pct: '12%' },
+          { label: t.step3Approaches[2], gflops: 25000, color: '#ca8a04', pct: '37%' },
+          { label: t.step3Approaches[3], gflops: 45000, color: COLORS.green, pct: '67%' },
+          { label: t.step3Approaches[4], gflops: 60000, color: COLORS.primary, pct: '~90%' },
+          { label: t.step3Approaches[5], gflops: 65000, color: COLORS.purple, pct: '97%' },
         ].map((item, i) => {
           const y = 68 + i * 34;
           const maxW = 360;
@@ -241,25 +305,24 @@ const steps = [
           fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
         <text x={W / 2} y={SVG_H - 58} textAnchor="middle" fontSize="9" fontWeight="600"
           fill={COLORS.dark} fontFamily={FONTS.sans}>
-          优化核心思路
+          {t.step3CoreThought}
         </text>
         <text x={W / 2} y={SVG_H - 42} textAnchor="middle" fontSize="8" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          1. 减少全局内存访问 (Tiling → Shared Memory)
+          {t.step3Point1}
         </text>
         <text x={W / 2} y={SVG_H - 28} textAnchor="middle" fontSize="8" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          2. 提高数据复用 (Thread Tiling → 寄存器)
+          {t.step3Point2}
         </text>
         <text x={W / 2} y={SVG_H - 14} textAnchor="middle" fontSize="8" fill={COLORS.dark}
           fontFamily={FONTS.sans}>
-          3. 利用专用硬件 (Tensor Core → 一条指令完成矩阵块乘)
+          {t.step3Point3}
         </text>
       </StepSvg>
     ),
   },
 ];
 
-export default function NaiveGemmAnimation() {
   return <StepNavigator steps={steps} />;
 }

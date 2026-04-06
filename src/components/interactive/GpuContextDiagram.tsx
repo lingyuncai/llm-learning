@@ -20,7 +20,26 @@ function Pill({ x, y, w, label, color, bg }: {
   );
 }
 
-export default function GpuContextDiagram() {
+export default function GpuContextDiagram({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      context: 'Context（会话/沙箱）',
+      buffersLabel: 'Buffers（显存）',
+      contextResources: 'Context 内的资源互相关联：Queue 可以 dispatch Kernel，Kernel 读写 Buffer',
+      isolation: '不同进程 / 不同 Context 之间资源隔离，互不干扰（类比数据库 Connection）',
+      analogy: '类比：Context ≈ 数据库 Connection · Buffer ≈ malloc · Queue ≈ Transaction',
+      anotherContext: '另一个 Context（隔离）',
+    },
+    en: {
+      context: 'Context (session/sandbox)',
+      buffersLabel: 'Buffers (device memory)',
+      contextResources: 'Resources within Context are interconnected: Queue dispatches Kernel, Kernel reads/writes Buffer',
+      isolation: 'Different processes / Contexts are isolated from each other (analogous to database Connection)',
+      analogy: 'Analogy: Context ≈ DB Connection · Buffer ≈ malloc · Queue ≈ Transaction',
+      anotherContext: 'Another Context (isolated)',
+    },
+  }[locale];
+
   const buffers = [
     { x: 25, label: 'bufA' },
     { x: 85, label: 'bufB' },
@@ -36,7 +55,7 @@ export default function GpuContextDiagram() {
         fill="#fafbfc" stroke={COLORS.primary} strokeWidth={2} />
       <text x={20} y={48} fontSize="12" fontWeight="700" fill={COLORS.primary}
         fontFamily={FONTS.sans}>
-        Context（会话/沙箱）
+        {t.context}
       </text>
 
       {/* Device */}
@@ -49,7 +68,7 @@ export default function GpuContextDiagram() {
       {/* Section label: Buffers */}
       <text x={25} y={105} fontSize="9" fontWeight="600" fill={COLORS.green}
         fontFamily={FONTS.sans}>
-        Buffers（显存）
+        {t.buffersLabel}
       </text>
       {buffers.map((b, i) => (
         <Pill key={i} x={b.x} y={112} w={52} label={b.label}
@@ -66,16 +85,16 @@ export default function GpuContextDiagram() {
 
       {/* Isolation note */}
       <text x={25} y={160} fontSize="8.5" fill="#64748b" fontFamily={FONTS.sans}>
-        Context 内的资源互相关联：Queue 可以 dispatch Kernel，Kernel 读写 Buffer
+        {t.contextResources}
       </text>
       <text x={25} y={173} fontSize="8.5" fill="#64748b" fontFamily={FONTS.sans}>
-        不同进程 / 不同 Context 之间资源隔离，互不干扰（类比数据库 Connection）
+        {t.isolation}
       </text>
 
       {/* Analogy header */}
       <text x={W / 2} y={15} textAnchor="middle" fontSize="9" fill="#94a3b8"
         fontFamily={FONTS.sans}>
-        类比：Context ≈ 数据库 Connection · Buffer ≈ malloc · Queue ≈ Transaction
+        {t.analogy}
       </text>
 
       {/* Second context (ghost) to show isolation */}
@@ -83,7 +102,7 @@ export default function GpuContextDiagram() {
         fill="none" stroke="#cbd5e1" strokeWidth={1} strokeDasharray="4 2" />
       <text x={W - 75} y={167} textAnchor="middle" fontSize="8" fill="#94a3b8"
         fontFamily={FONTS.sans}>
-        另一个 Context（隔离）
+        {t.anotherContext}
       </text>
     </svg>
   );

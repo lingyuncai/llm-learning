@@ -13,7 +13,46 @@ import { seededValuesSigned as seededValues, dot, softmax1d } from '../primitive
  * Uses a small example: d_k=3, starting with 2 prefilled tokens, then decoding 5 more.
  */
 
-export default function KVCacheDemo() {
+export default function KVCacheDemo({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      decodeStep: 'Decode 第',
+      step: '步 — 生成',
+      currentToken: '当前 token',
+      query: '的 Query 向量与 KV Cache 中的所有 Key 做点积，然后将新的 K、V 追加到缓存。缓存从',
+      rowIncrease: '行增长到',
+      row: '行。',
+      newTokenQuery: '新 token 的 Query 向量',
+      kCacheAfter: 'K Cache（追加后）',
+      vCacheAfter: 'V Cache（追加后）',
+      attnScores: '注意力分数（q · K^T / √d_k → softmax）',
+      scaledScores: '缩放后分数',
+      attnWeights: '注意力权重',
+      output: '输出 = 权重 × V Cache',
+      highlight: '绿色高亮行',
+      infoText: '是本步新追加的 K/V 缓存行。无需重新计算之前 token 的 K、V — 它们已经在缓存中。',
+      cacheSize: 'KV Cache 大小',
+    },
+    en: {
+      decodeStep: 'Decode Step',
+      step: '— Generate',
+      currentToken: 'Current token',
+      query: "'s Query vector dot-products with all Keys in KV Cache, then appends new K, V to cache. Cache grows from",
+      rowIncrease: 'rows to',
+      row: 'rows.',
+      newTokenQuery: 'New Token Query Vector',
+      kCacheAfter: 'K Cache (After Append)',
+      vCacheAfter: 'V Cache (After Append)',
+      attnScores: 'Attention Scores (q · K^T / √d_k → softmax)',
+      scaledScores: 'Scaled Scores',
+      attnWeights: 'Attention Weights',
+      output: 'Output = Weights × V Cache',
+      highlight: 'Green highlighted rows',
+      infoText: 'are newly appended K/V cache rows in this step. No need to recompute previous token K, V — they are already cached.',
+      cacheSize: 'KV Cache Size',
+    },
+  }[locale];
+
   const dk = 3;
   const prefillLen = 2;
   const decodeSteps = 5;
@@ -64,19 +103,18 @@ export default function KVCacheDemo() {
     const scoreColLabels = tokenNames.slice(0, cacheSizeAfter);
 
     return {
-      title: `Decode 第 ${stepIdx + 1} 步 — 生成 ${tokenNames[newTokenIdx]}`,
+      title: `${t.decodeStep} ${stepIdx + 1} ${t.step} ${tokenNames[newTokenIdx]}`,
       content: (
         <div>
           <p className="text-sm text-gray-600 mb-3">
-            当前 token <strong>{tokenNames[newTokenIdx]}</strong> 的 Query 向量与 KV Cache 中的所有 Key 做点积，
-            然后将新的 K、V 追加到缓存。缓存从 <strong>{cacheSizeBefore}</strong> 行增长到{' '}
-            <strong>{cacheSizeAfter}</strong> 行。
+            {t.currentToken} <strong>{tokenNames[newTokenIdx]}</strong> {t.query} <strong>{cacheSizeBefore}</strong> {t.rowIncrease}{' '}
+            <strong>{cacheSizeAfter}</strong> {t.row}
           </p>
 
           {/* Query vector */}
           <div className="mb-4">
             <div className="text-xs font-semibold text-gray-500 mb-1">
-              新 token 的 Query 向量
+              {t.newTokenQuery}
             </div>
             <MatrixGrid
               data={[q]}
@@ -93,7 +131,7 @@ export default function KVCacheDemo() {
           <div className="flex flex-wrap justify-center items-start gap-6 mb-4">
             <MatrixGrid
               data={kCacheAfter}
-              label="K Cache（追加后）"
+              label={t.kCacheAfter}
               shape={`(${cacheSizeAfter}, ${dk})`}
               rowLabels={cacheRowLabels}
               colLabels={dkLabels}
@@ -103,7 +141,7 @@ export default function KVCacheDemo() {
             />
             <MatrixGrid
               data={vCacheAfter}
-              label="V Cache（追加后）"
+              label={t.vCacheAfter}
               shape={`(${cacheSizeAfter}, ${dk})`}
               rowLabels={cacheRowLabels}
               colLabels={dkLabels}
@@ -116,12 +154,12 @@ export default function KVCacheDemo() {
           {/* Attention scores */}
           <div className="mb-4">
             <div className="text-xs font-semibold text-gray-500 mb-1">
-              注意力分数（q · K^T / √d_k → softmax）
+              {t.attnScores}
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <MatrixGrid
                 data={[scaledScores]}
-                label="缩放后分数"
+                label={t.scaledScores}
                 colLabels={scoreColLabels}
                 highlightCells={[[0, cacheSizeAfter - 1]]}
                 highlightColor="#fef3c7"
@@ -130,7 +168,7 @@ export default function KVCacheDemo() {
               <span className="text-lg text-gray-400">→</span>
               <MatrixGrid
                 data={[attnWeights]}
-                label="注意力权重"
+                label={t.attnWeights}
                 colLabels={scoreColLabels}
                 highlightCells={[[0, cacheSizeAfter - 1]]}
                 highlightColor="#ede9fe"
@@ -142,7 +180,7 @@ export default function KVCacheDemo() {
           {/* Output */}
           <div className="mb-2">
             <div className="text-xs font-semibold text-gray-500 mb-1">
-              输出 = 权重 × V Cache
+              {t.output}
             </div>
             <MatrixGrid
               data={[output]}
@@ -157,8 +195,8 @@ export default function KVCacheDemo() {
 
           {/* Info box */}
           <div className="mt-3 p-2 bg-green-50 rounded text-xs text-green-800">
-            <strong>绿色高亮行</strong>是本步新追加的 K/V 缓存行。无需重新计算之前 token 的 K、V — 它们已经在缓存中。
-            KV Cache 大小: {cacheSizeBefore} → {cacheSizeAfter} 行。
+            <strong>{t.highlight}</strong>{t.infoText}
+            {t.cacheSize}: {cacheSizeBefore} → {cacheSizeAfter} {t.row}
           </div>
         </div>
       ),

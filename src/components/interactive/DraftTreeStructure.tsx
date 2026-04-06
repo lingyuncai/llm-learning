@@ -90,8 +90,43 @@ function flattenTree(node: TreeNode, x: number, y: number, xSpan: number, depth:
   return { nodes, edges };
 }
 
-export default function DraftTreeStructure() {
+export default function DraftTreeStructure({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [mode, setMode] = useState<'tree' | 'chain'>('tree');
+
+  const t = {
+    zh: {
+      treeMode: 'Tree Structure',
+      chainMode: 'Chain (Sequential)',
+      treeTitle: 'Tree-based Draft (Token Budget = {budget})',
+      chainTitle: 'Chain-based Draft (Token Budget = {budget})',
+      accepted: 'Accepted',
+      rejected: 'Rejected',
+      pruned: 'Pruned (not verified)',
+      tokensVerified: '{count} tokens verified',
+      acceptedCount: '{count} accepted ({percent}%)',
+      chainProblem: 'Chain 的问题: 一旦 reject，后续全部作废',
+      chainWaste: '{budget} tokens 中只有 {accepted} 个被接受 — 第 {next} 个 reject 后剩余 {wasted} 个浪费',
+      comparisonTitle: 'Tree vs Chain: 同样的 Token Budget',
+      treeBenefit: 'Tree: 多条候选路径并行验证 → reject 只影响单条分支，其他路径不受影响',
+      chainLimit: 'Chain: 单一序列 → 一处 reject 后所有后续 token 作废，budget 利用率低',
+    },
+    en: {
+      treeMode: 'Tree Structure',
+      chainMode: 'Chain (Sequential)',
+      treeTitle: 'Tree-based Draft (Token Budget = {budget})',
+      chainTitle: 'Chain-based Draft (Token Budget = {budget})',
+      accepted: 'Accepted',
+      rejected: 'Rejected',
+      pruned: 'Pruned (not verified)',
+      tokensVerified: '{count} tokens verified',
+      acceptedCount: '{count} accepted ({percent}%)',
+      chainProblem: 'Chain problem: once rejected, all following tokens are wasted',
+      chainWaste: 'Only {accepted} of {budget} tokens accepted — after #{next} rejection, remaining {wasted} tokens wasted',
+      comparisonTitle: 'Tree vs Chain: Same Token Budget',
+      treeBenefit: 'Tree: parallel verification of multiple paths → rejection only affects single branch, others unaffected',
+      chainLimit: 'Chain: single sequence → one rejection discards all subsequent tokens, low budget utilization',
+    },
+  }[locale];
 
   const { nodes, edges } = flattenTree(DRAFT_TREE, 200, 60, 340, 0);
 
@@ -113,7 +148,7 @@ export default function DraftTreeStructure() {
                 ? 'bg-blue-100 text-blue-800 font-semibold'
                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
             }`}>
-            {m === 'tree' ? 'Tree Structure' : 'Chain (Sequential)'}
+            {m === 'tree' ? t.treeMode : t.chainMode}
           </button>
         ))}
       </div>
@@ -125,7 +160,7 @@ export default function DraftTreeStructure() {
           <g>
             <text x={200} y={25} textAnchor="middle" fontSize="11" fontWeight="700"
               fill={COLORS.dark} fontFamily={FONTS.sans}>
-              Tree-based Draft (Token Budget = {treeBudget})
+              {t.treeTitle.replace('{budget}', String(treeBudget))}
             </text>
 
             {/* Edges */}
