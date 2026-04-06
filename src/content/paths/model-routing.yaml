@@ -1,0 +1,17 @@
+id: model-routing
+title:
+  zh: "LLM Model Routing：智能模型选择与混合推理"
+  en: "LLM Model Routing: Intelligent Model Selection and Hybrid Inference"
+description:
+  zh: >-
+    根据任务复杂度自动选择对应的 LLM 模型。覆盖从简单分类器到 RL 在线学习，
+    从 query-level 到 token-level，从"选一个"到"全都用"的完整方法谱系。
+  en: "Automatically select the right LLM based on task complexity. Covers the full spectrum from simple classifiers to RL-based online learning, query-level to token-level routing, and single-model selection to multi-model collaboration."
+level: advanced
+articles:
+  - model-routing-landscape
+  - routing-classifiers
+  - cascade-self-verification
+  - hybrid-local-cloud
+  - online-learning-cost-optimization
+  - mixture-of-agents
