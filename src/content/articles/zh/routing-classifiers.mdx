@@ -65,7 +65,7 @@ $$s(q, m) = \mathbf{q}^\top \mathbf{m} + b_m$$
 
 2026 年的一个重要进展是用**小型语言模型本身**来做路由判断。Small Models, Big Decisions（2026）提出：既然 1-4B 参数的小语言模型已经具备相当的语义理解能力，为什么不直接让它判断 query 的难度？
 
-**关键洞察**：将路由判断转化为文本分类任务。给小模型一个 prompt："Given the following query, predict whether a large language model is needed to answer it well. Query: {q}. Answer: [YES/NO]"。模型输出 YES 或 NO 的 logit 差值作为路由得分。
+**关键洞察**：将路由判断转化为文本分类任务。给小模型一个 prompt："Given the following query, predict whether a large language model is needed to answer it well. Query: \{q\}. Answer: [YES/NO]"。模型输出 YES 或 NO 的 logit 差值作为路由得分。
 
 这种方法有一个独特的架构优势 — **zero-marginal-cost routing**。如果小语言模型本身就是候选的弱模型之一，那么路由判断可以"顺便"完成：模型在处理 query 的前几个 token 时就能输出路由决策，如果判断自己能处理，则继续生成回答；如果判断需要强模型，则将 query 转发（Small Models as Routers, 2026）。
 
