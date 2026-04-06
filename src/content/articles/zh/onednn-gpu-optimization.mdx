@@ -1,0 +1,131 @@
+---
+title: "oneDNN GPU Kernel 优化"
+slug: onednn-gpu-optimization
+locale: zh
+tags: [intel, onednn, kernel-optimization, gemm, xmx, mixed-precision]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [onednn-primitives]
+references:
+  - type: website
+    title: "oneDNN Performance Profiling and Inspection — Intel"
+    url: "https://oneapi-src.github.io/oneDNN/dev_guide_profiling.html"
+  - type: website
+    title: "oneAPI GPU Optimization Guide — GEMM — Intel"
+    url: "https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/2025-0/general-matrix-multiply.html"
+  - type: website
+    title: "XMX and XVE Architecture — Intel"
+    url: "https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/2025-0/xe-matrix-extensions-xmx.html"
+---
+
+import GemmTilingHierarchy from '../../../components/interactive/GemmTilingHierarchy.tsx';
+import XmxUtilization from '../../../components/interactive/XmxUtilization.tsx';
+import SlmBankConflict from '../../../components/interactive/SlmBankConflict.tsx';
+import MixedPrecisionCompare from '../../../components/interactive/MixedPrecisionCompare.tsx';
+import MemoryAccessPattern from '../../../components/interactive/MemoryAccessPattern.tsx';
+
+## GEMM 在 AI 推理中的核心地位
+
+通用矩阵乘法 (General Matrix Multiply, GEMM) 是深度学习计算的核心操作,占据了现代神经网络推理计算量的 70-90%。无论是 Transformer 模型中的自注意力机制 (Q×K<sup>T</sup>, Attention×V)、全连接层权重计算,还是卷积层的 im2col 变换后的矩阵运算,本质上都归结为 GEMM。因此,GEMM 的性能直接决定了整个推理系统的吞吐量和延迟。
+
+oneDNN 在 Intel GPU 上的 GEMM 实现针对 Xe 架构的硬件特性进行了深度优化。与通用的矩阵运算库不同,oneDNN 充分利用了 Xe2 架构的 XMX (Xe Matrix Extensions) 硬件加速单元、分层存储系统 (Global Memory、SLM、GRF) 以及 EU 并行执行模型。理解这些优化策略对于在 Intel iGPU 上获得最佳推理性能至关重要,尤其是在资源受限的边缘设备场景下,每一次内存访问和计算单元的利用率都直接影响功耗和响应时间。
+
+本文将深入解析 oneDNN GPU kernel 的核心优化技术,包括多层 Tiling 策略、XMX 利用率最大化、SLM 使用模式、混合精度推理以及内存访问优化。这些技术不仅适用于 GEMM,也是理解现代 GPU 计算优化的基础知识。
+
+## Xe2 GEMM Tiling 策略
+
+GEMM 操作需要计算 $C = A \times B$,其中 $A \in \mathbb{R}^{M \times K}$,$B \in \mathbb{R}^{K \times N}$,$C \in \mathbb{R}^{M \times N}$。对于大规模矩阵 (如 4096×4096),直接加载到 GPU 内存并计算会面临带宽瓶颈和内存容量限制。oneDNN 采用多层 Tiling 策略,将矩阵分解为逐级更小的 tile,使得每一层都能高效利用对应的存储层次。
+
+Xe2 架构的三级 Tiling 策略将计算分解为:
+1. **Global Tile** (256×256): 将完整矩阵 C 划分为 256×256 的 tile,每个 tile 分配给一个 work-group。这一层对应 Global Memory 到 SLM 的数据传输,通过批量加载减少内存事务次数。
+2. **Sub-group Tile** (32×64): 每个 work-group 内部将 256×256 tile 进一步划分为 32×64 的 sub-tile,分配给不同的 sub-group。数据存储在 SLM (Shared Local Memory) 中,被同一 work-group 的多个 sub-group 共享,避免重复从 Global Memory 加载。
+3. **Register Tile** (8×16): sub-group 将 32×64 tile 继续分解为 8×16 的最小计算单元,存储在 GRF (General Register File) 中。这是 XMX 引擎的原生操作粒度,单次 XMX 指令可以完成一个 8×16 tile 的矩阵乘加运算。
+
+这种分层 Tiling 的核心目标是最大化数据复用:A 和 B 的数据块在 SLM 中缓存后,可以被多个 sub-group 重复使用,而不需要每次都从带宽有限的 Global Memory 读取。Register Tile 层则确保了 XMX 引擎始终工作在其最高效的粒度上,避免了碎片化计算。
+
+<GemmTilingHierarchy client:visible />
+
+## XMX 利用率优化
+
+XMX (Xe Matrix Extensions) 是 Xe 架构的专用矩阵计算单元,类似于 NVIDIA 的 Tensor Core。Xe2 架构的 XMX 引擎支持 INT8、BF16、FP16 等多种数据类型,理论峰值吞吐量为:
+- **INT8**: 128 ops/cycle (每个 EU)
+- **BF16/FP16**: 64 ops/cycle (每个 EU)
+
+然而,达到这一理论峰值需要满足严格的对齐要求。XMX 引擎的最小计算粒度是固定的矩阵块 (INT8 为 32×32,FP16/BF16 为 16×16),如果输入矩阵的维度不是对齐粒度的整数倍,硬件会自动进行 padding,导致实际计算中包含大量无效运算。
+
+例如,一个 FP16 的 GEMM 操作,维度为 M=250, K=500, N=1000,实际会被 padding 为 M=256, K=512, N=1024。这会导致约 8% 的计算资源浪费在 padding 区域。更严重的是,如果维度严重不对齐 (如 M=33),padding 后 (M=48) 会导致接近 50% 的计算浪费。
+
+oneDNN 的优化策略包括:
+1. **动态 Tile 尺寸调整**: 根据输入维度自动选择最优的 Tile 尺寸,使得大部分 Tile 都完全对齐,仅边界 Tile 需要 padding。
+2. **Batch 维度聚合**: 对于 batch inference,将多个小矩阵聚合为大矩阵,减少边界比例。
+3. **维度建议**: 在模型设计阶段,oneDNN 可以分析并建议将隐藏层维度调整为对齐粒度的倍数 (如 768 → 768, 1024 → 1024),这对 Transformer 模型尤其重要。
+
+<XmxUtilization client:visible />
+
+## SLM 使用模式
+
+Shared Local Memory (SLM) 是 Xe 架构中的片上共享内存,类似于 CUDA 的 Shared Memory。SLM 的访问延迟远低于 Global Memory (约 20-30 cycles vs 200-400 cycles),但容量有限 (每个 Xe-core 有 128KB SLM)。在 GEMM 计算中,SLM 用于缓存 A 和 B 矩阵的 tile,使得同一 work-group 内的多个 sub-group 可以共享数据。
+
+SLM 的内部组织为 16 个 bank,每个 bank 可以独立服务一个内存请求。当多个线程同时访问不同 bank 时,访问可以并行完成 (1 cycle)。但如果多个线程访问同一 bank 的不同地址,就会发生 **bank conflict**,导致访问被串行化,延迟倍增 (N-way conflict → N cycles)。
+
+oneDNN 的 GEMM kernel 通过以下策略避免 bank conflict:
+1. **Swizzle 布局**: 将矩阵数据按特定模式交错存储,使得连续线程访问的数据自然分布在不同 bank。例如,对于列优先存储的矩阵,不是直接存储为 `[col0][col1][col2]...`,而是按 `[col0_row0-7][col1_row0-7][col0_row8-15]...` 交错。
+2. **Padding**: 在矩阵维度后添加少量 padding (如 1-2 个元素),破坏规律性的 stride 访问模式,避免周期性 conflict。
+3. **访问模式分析**: 在 kernel 生成阶段,静态分析访问模式,调整线程到数据的映射关系,确保同一时刻的访问分散在不同 bank。
+
+实际测试中,优化后的 SLM 访问可以将 bank conflict rate 从 30-40% 降低到 5% 以下,对 GEMM 性能提升约 15-25%。
+
+<SlmBankConflict client:visible />
+
+## 混合精度推理
+
+混合精度推理 (Mixed Precision Inference) 是在保证模型精度的前提下,使用低精度数据类型 (如 FP16、BF16、INT8) 替代 FP32,以获得更高的计算吞吐量和更低的内存带宽需求。Xe2 架构的 XMX 引擎对低精度运算提供了硬件加速,使得混合精度成为 Intel iGPU 推理优化的关键技术。
+
+**FP16 (Half Precision)**: 16-bit 浮点数,范围为 $\pm 6.55 \times 10^4$,精度约 3-4 位有效数字。FP16 是推理的首选精度,在 Transformer、ResNet 等主流模型上几乎无精度损失,同时获得 2× 吞吐量和 2× 带宽节省。XMX 对 FP16 的原生支持使其成为 Intel iGPU 的默认推理精度。
+
+**BF16 (Brain Float 16)**: Google 提出的 16-bit 浮点格式,与 FP32 共享相同的指数位宽 (8 bits),动态范围达到 $\pm 3.4 \times 10^{38}$,但尾数位仅 7 bits (精度约 2-3 位)。BF16 特别适合训练场景,因为其大动态范围避免了梯度溢出问题。在推理中,BF16 可用于对数值稳定性要求较高的层 (如 LayerNorm、Softmax)。
+
+**INT8 (8-bit Integer)**: 整数量化,范围为 -128 到 127 或 0 到 255。INT8 推理可达到 4× 吞吐量,但需要量化感知训练 (Quantization-Aware Training, QAT) 或后训练量化 (Post-Training Quantization, PTQ) 来校准量化参数 (scale, zero-point)。oneDNN 提供了开箱即用的 INT8 推理支持,配合 Intel Neural Compressor 可以自动完成量化流程,在 BERT、ResNet 等模型上精度损失 < 1%。
+
+oneDNN 的混合精度策略是动态的:计算密集型操作 (GEMM, Conv) 使用 INT8/FP16,精度敏感型操作 (Softmax, LayerNorm) 保持 FP32,中间结果在不同精度间自动转换。这种细粒度的精度控制在保证模型质量的同时,最大化了硬件加速效率。
+
+<MixedPrecisionCompare client:visible />
+
+## 内存访问优化
+
+内存带宽是 GEMM 性能的关键瓶颈,尤其在 iGPU 上,GPU 与 CPU 共享系统内存,带宽通常只有独立 GPU 的 1/5 - 1/10。oneDNN 通过优化内存访问模式,最大化有效带宽利用率。
+
+**Coalesced Access (合并访问)**: 当同一 sub-group 内的线程访问连续的内存地址时,GPU 可以将多个访问合并为一次内存事务 (memory transaction)。例如,16 个线程分别访问地址 0, 4, 8, ..., 60 (stride=4 bytes),可以合并为一次 64-byte cache line 读取。这种访问模式的带宽利用率接近 100%。
+
+**Scattered Access (分散访问)**: 如果线程访问的地址是随机分布的,每个访问都需要单独的内存事务,即使实际需要的数据量很小,也会触发多次完整 cache line 读取,导致严重的带宽浪费。实测中,分散访问的有效带宽利用率可能低至 10-20%,性能下降 5-8×。
+
+oneDNN 的 GEMM kernel 通过以下策略保证合并访问:
+1. **行优先布局**: 默认使用行优先 (row-major) 存储,使得矩阵的行内元素在内存中连续,sub-group 内的线程沿行方向访问时自然合并。
+2. **向量化加载**: 使用向量化指令 (如 SIMD load) 一次加载多个元素,减少指令开销,同时保证地址对齐。
+3. **预取 (Prefetch)**: 在当前 tile 计算时,异步预取下一个 tile 的数据到 cache,隐藏内存延迟。oneDNN 的 JIT kernel generator 会自动插入预取指令,无需手动优化。
+
+实际测试中,优化后的内存访问可以将 GEMM kernel 的有效带宽利用率从 30-40% 提升到 70-85%,在内存密集型的大矩阵运算中性能提升可达 2-3×。
+
+<MemoryAccessPattern client:visible />
+
+## 总结
+
+oneDNN 在 Intel GPU 上的 kernel 优化是一套系统化的工程实践,涵盖了从硬件特性理解到算法实现的各个层面。核心优化策略包括:
+
+1. **多层 Tiling**: Global (256×256) → SLM (32×64) → GRF (8×16) 的三级分解,最大化数据复用,减少带宽压力。
+2. **XMX 对齐**: 通过维度调整和动态 Tile 尺寸,确保矩阵维度对齐到 XMX 硬件的最小粒度,避免 padding 浪费。
+3. **SLM 优化**: 采用 Swizzle 布局和访问模式分析,将 bank conflict rate 降低到 5% 以下。
+4. **混合精度**: 计算密集型操作使用 INT8/FP16,精度敏感型操作保持 FP32,自动平衡性能与质量。
+5. **内存访问**: 通过行优先布局、向量化加载和预取,保证合并访问,有效带宽利用率 > 70%。
+
+这些优化技术不仅适用于 GEMM,也是所有 GPU 计算 kernel 的通用原则。在实际应用中,开发者通常不需要手动实现这些优化 — oneDNN 的 primitive API 会自动选择最优的 kernel 实现。但理解这些底层机制对于性能调优、profiling 分析以及在 oneDNN 不支持的场景下编写自定义 kernel 都是必不可少的。
+
+下一步,我们将探讨如何使用 oneDNN 的 profiling 工具分析 kernel 性能,识别瓶颈,并通过参数调优进一步提升推理吞吐量。
+
+## 延伸阅读
+
+- [Intel oneAPI GPU Optimization Guide](https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/2025-0/overview.html) — Intel 官方的 GPU 优化全面指南
+- [oneDNN Performance Profiling](https://oneapi-src.github.io/oneDNN/dev_guide_profiling.html) — oneDNN 性能分析工具使用指南
+- [Understanding Tensor Cores](https://developer.nvidia.com/blog/programming-tensor-cores-cuda-9/) — NVIDIA Tensor Core 编程,与 XMX 有相似之处
+- [Optimizing GEMM on GPUs](https://siboehm.com/articles/22/CUDA-MMM) — CUDA GEMM 优化深度解析,原理通用
