@@ -1,0 +1,200 @@
+---
+title: "Positional Encoding — Giving Transformers a Sense of Order"
+slug: positional-encoding
+locale: en
+tags: [transformer, attention, positional-encoding]
+prerequisites: [transformer-overview]
+difficulty: intermediate
+created: "2026-04-02"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Attention Is All You Need"
+    url: "https://arxiv.org/abs/1706.03762"
+  - type: paper
+    title: "Self-Attention with Relative Position Representations"
+    url: "https://arxiv.org/abs/1803.02155"
+  - type: paper
+    title: "RoFormer: Enhanced Transformer with Rotary Position Embedding"
+    url: "https://arxiv.org/abs/2104.09864"
+  - type: paper
+    title: "Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation"
+    url: "https://arxiv.org/abs/2108.12409"
+---
+
+import PermutationInvariance from '../../../components/interactive/PermutationInvariance.tsx';
+import SinusoidalHeatmap from '../../../components/interactive/SinusoidalHeatmap.tsx';
+import RoPERotationAnimation from '../../../components/interactive/RoPERotationAnimation.tsx';
+import EncodingComparison from '../../../components/interactive/EncodingComparison.tsx';
+import RoPEFrequencyBands from '../../../components/interactive/RoPEFrequencyBands.tsx';
+import RoPEComplexPlane from '../../../components/interactive/RoPEComplexPlane.tsx';
+import RoPEExtrapolation from '../../../components/interactive/RoPEExtrapolation.tsx';
+
+The Self-Attention mechanism in Transformers has a commonly overlooked yet critically important property: **Permutation Invariance**. Shuffling the order of input tokens does not change the Attention output — in other words, vanilla Attention has no awareness of token positions. This means a Transformer without positional encoding cannot distinguish "dog bites man" from "man bites dog."
+
+Positional Encoding is the solution to this problem. This article starts with Sinusoidal encoding, moves through Learned Embedding and relative position encoding, and ultimately provides a deep dive into **RoPE (Rotary Position Embedding)** — the dominant scheme used by today's mainstream LLMs.
+
+## Why Positional Encoding Is Needed
+
+### Permutation Invariance of Attention
+
+The Self-Attention computation is: $\text{Attn}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V$
+
+where $Q = XW_Q$, $K = XW_K$, $V = XW_V$. If we apply a permutation $\pi$ to the input sequence (i.e., shuffle the token order), with permutation matrix $P$:
+
+$$
+\text{Attn}(PX) = P \cdot \text{Attn}(X)
+$$
+
+The output simply follows the permutation — the Attention scores between every pair of tokens remain **completely unchanged**.
+
+<PermutationInvariance client:visible locale="en" />
+
+This means that without positional encoding, "The cat sat here" and "sat here The cat" are **equivalent** to the model. For language understanding, this is clearly unacceptable — we must explicitly inject position information.
+
+## Absolute Positional Encoding
+
+### Sinusoidal Encoding (Vaswani et al. 2017)
+
+The original Transformer uses fixed sine/cosine functions to generate positional encodings:
+
+$$
+PE_{(pos, 2i)} = \sin\left(\frac{pos}{10000^{2i/d}}\right), \quad PE_{(pos, 2i+1)} = \cos\left(\frac{pos}{10000^{2i/d}}\right)
+$$
+
+Each dimension corresponds to a wave of different frequency. Low dimensions have high frequency (change rapidly), while high dimensions have low frequency (change slowly). Each position thus receives a unique "frequency fingerprint":
+
+<SinusoidalHeatmap client:visible locale="en" />
+
+**Pros:** No trainable parameters; can theoretically extrapolate to lengths unseen during training.
+
+**Cons:** Extrapolation performance is limited in practice; has been gradually superseded by other approaches.
+
+### Learned Embedding
+
+Another simple approach is to directly train a position embedding table $E \in \mathbb{R}^{L_{max} \times d}$, letting the model learn its own representation for each position.
+
+- **Pros:** Simple to implement; typically outperforms Sinusoidal
+- **Cons:** Sequence length is capped by $L_{max}$ from training; cannot handle longer inputs
+
+BERT and GPT-2 both adopted this approach.
+
+## Relative Positional Encoding
+
+### Shaw et al. 2018 — The Shift from Absolute to Relative
+
+Core observation: in natural language, the **relative distance** between tokens often matters more than absolute position. The syntactic relationship between "the cat" is the same whether these words appear at the beginning or end of a sentence.
+
+Shaw et al.'s approach adds learnable relative position biases $a_{ij}^K$ to the Attention scores:
+
+$$
+e_{ij} = \frac{x_i W_Q (x_j W_K + a_{ij}^K)^T}{\sqrt{d_k}}
+$$
+
+where $a_{ij}^K$ depends only on the value of $i - j$ (the distance), clipped to the range $[-K, K]$.
+
+**Pros:** Naturally supports variable-length sequences; small parameter count (only $2K + 1$ bias vectors needed).
+
+### ALiBi (Press et al. 2022) — Extreme Simplification
+
+ALiBi takes a more radical approach: no position embedding at all — instead, it directly subtracts a **linear distance penalty** from the Attention scores:
+
+$$
+\text{score}_{ij} = q_i \cdot k_j - m \cdot |i - j|
+$$
+
+where $m$ is a fixed slope that differs per attention head (set in geometric progression, e.g., $m \in \{2^{-1}, 2^{-2}, \ldots, 2^{-H}\}$).
+
+- **Pros:** Zero trainable parameters, excellent extrapolation ability, extremely simple implementation
+- **Cons:** Only has distance decay as a pattern, limited expressiveness
+
+BLOOM and MPT adopted ALiBi.
+
+## RoPE — Rotary Position Embedding
+
+RoPE (Su et al. 2021) is the most widely used positional encoding scheme today, adopted by LLaMA, Qwen, GPT-NeoX, and many other models.
+
+### Core Intuition
+
+RoPE's core idea is remarkably elegant: **treat each pair of adjacent dimensions $(d_{2i}, d_{2i+1})$ as a vector in a 2D plane, then rotate this vector based on the token's position.**
+
+- Position $m$ corresponds to rotation angle $m\theta_i$
+- Different dimension pairs use different base angles $\theta_i$ (similar to Sinusoidal's multi-frequency concept)
+- After rotation, the dot product of Q and K for two tokens **depends only on the relative distance $m - n$**
+
+<RoPERotationAnimation client:visible locale="en" />
+
+### Dimension-Pair Frequency Decomposition
+
+Each dimension pair $(d_{2i}, d_{2i+1})$ has base angle $\theta_i = 10000^{-2i/d}$. This formula means:
+
+- **Low dimensions** (small $i$) = **high-frequency rotation**: A small change in position causes a large change in angle → captures **local relationships**
+- **High dimensions** (large $i$) = **low-frequency rotation**: Position must change significantly for the angle to change noticeably → captures **long-range relationships**
+
+This shares the same multi-frequency philosophy as Sinusoidal encoding, but implemented through rotation.
+
+<RoPEFrequencyBands client:visible locale="en" />
+
+In the heatmap, the left side (low dimensions) shows rapid color changes — high-frequency signals; the right side (high dimensions) shows slow color changes — low-frequency signals. This multi-frequency encoding lets the model perceive both short-range and long-range positional relationships simultaneously.
+
+### Mathematical Derivation
+
+For each dimension pair $(2i, 2i+1)$, define the rotation matrix:
+
+$$
+R_{\theta_i}(m) = \begin{pmatrix} \cos m\theta_i & -\sin m\theta_i \\ \sin m\theta_i & \cos m\theta_i \end{pmatrix}
+$$
+
+where $\theta_i = 10000^{-2i/d}$. Apply rotation to Q and K respectively:
+
+$$
+\tilde{q}_m = R_{\theta}(m) \, q_m, \quad \tilde{k}_n = R_{\theta}(n) \, k_n
+$$
+
+**Key property** — the dot product after rotation depends only on relative position:
+
+$$
+\tilde{q}_m^T \tilde{k}_n = q_m^T R_{\theta}(m)^T R_{\theta}(n) \, k_n = q_m^T R_{\theta}(n - m) \, k_n
+$$
+
+This follows from the rotation matrix property $R(\alpha)^T R(\beta) = R(\beta - \alpha)$.
+
+### Complex Number Perspective
+
+RoPE has an equivalent complex number representation that is more intuitive and efficient: treat each dimension pair $(q_{2i}, q_{2i+1})$ as a complex number $q_{2i} + q_{2i+1} \cdot j$.
+
+Rotation is simply complex multiplication:
+
+$$\tilde{q} = q \cdot e^{im\theta}$$
+
+Key derivation — the dot product after rotation depends only on relative position:
+
+$$\tilde{q}_m \cdot \overline{\tilde{k}_n} = q \cdot \bar{k} \cdot e^{i(m-n)\theta}$$
+
+At the implementation level, this means no matrix multiplication is needed — just element-wise cos/sin operations — which is very efficient.
+
+<RoPEComplexPlane client:visible locale="en" />
+
+### Length Extrapolation
+
+RoPE's positional angles during training are bounded. When inference sequences exceed the training length, the high-frequency components' angle values go beyond the range seen during training, causing abnormal attention scores and degraded model performance.
+
+The mainstream solutions are:
+
+- **NTK-aware scaling:** Modify the frequency base $b' = b \cdot s^{d/(d-2)}$ (where $s$ is the scaling factor), "compressing" high-frequency components back into the training range
+- **YaRN (Yet another RoPE extensioN):** A hybrid strategy — applies different scaling factors to different frequency components. High frequencies are kept unchanged (local relationships don't need extrapolation), while low frequencies are scaled (long-range relationships need adaptation for longer contexts)
+
+The visualization below shows how different scaling methods map out-of-range angles back into the training interval:
+
+<RoPEExtrapolation client:visible locale="en" />
+
+These methods can extend RoPE's effective length from the training length by several to tens of times, enabling models like LLaMA to handle 100K+ token long documents.
+
+## Comparison Summary
+
+<EncodingComparison client:visible locale="en" />
+
+**Selection advice:**
+- Training a new model from scratch → **RoPE** (current mainstream choice)
+- Need extreme simplicity + strong extrapolation → ALiBi
+- Legacy model compatibility → Follow the original scheme (Learned / Sinusoidal)

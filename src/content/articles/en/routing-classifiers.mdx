@@ -1,0 +1,118 @@
+---
+title: "Routing Classifiers: Letting Small Models Decide Who Answers"
+slug: routing-classifiers
+locale: en
+tags: [model-routing, classifier, matrix-factorization, bert, semantic-routing]
+difficulty: advanced
+prerequisites: [model-routing-landscape]
+created: "2026-04-06"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "RouteLLM: Learning to Route LLMs with Preference Data"
+    url: "https://arxiv.org/abs/2406.18665"
+  - type: paper
+    title: "Small Models, Big Decisions: Language Models as Routers"
+    url: "https://arxiv.org/abs/2604.02367"
+  - type: website
+    title: "semantic-router: Superfast Decision-Making Layer"
+    url: "https://github.com/aurelio-labs/semantic-router"
+---
+
+import MatrixFactorizationViz from '../../../components/interactive/MatrixFactorizationViz.tsx';
+import BertRouterFlow from '../../../components/interactive/BertRouterFlow.tsx';
+import CausalLMRouter from '../../../components/interactive/CausalLMRouter.tsx';
+import SemanticRoutingViz from '../../../components/interactive/SemanticRoutingViz.tsx';
+import DecisionBoundaryCompare from '../../../components/interactive/DecisionBoundaryCompare.tsx';
+
+In the previous article we surveyed the model routing landscape. This article zooms in on the most mature and widely adopted approach: **classifier-based routing**.
+
+The core idea is remarkably simple: train a lightweight classifier to answer a binary question — **"Does this query need a strong model?"** Once routing is cast as a standard classification task, we can leverage the entire ML toolbox — from matrix factorization to BERT fine-tuning, small language models, and embedding matching. Classifier routers have extremely low inference overhead (typically ~5–15 ms), but they require some form of training data or predefined templates.
+
+The four classifiers below span the full spectrum from "requires abundant preference data" to "zero training cost."
+
+## §1 Preference Data and Matrix Factorization
+
+**Data sourcing** is the foundation of classifier routing. A key contribution of RouteLLM (Ong et al., 2024) is the discovery that **human preference data from Chatbot Arena** can directly train routers. Chatbot Arena is a large-scale anonymous battle platform — users submit queries, two random models each generate a response, and users vote for the better one. By mid-2024 the platform had accumulated over 80K human preference comparisons.
+
+The **Matrix Factorization (MF) router** borrows its principle from recommender systems. Each query $q$ and each model $m$ are mapped into the same $d$-dimensional vector space, yielding $\mathbf{q} \in \mathbb{R}^d$ and $\mathbf{m} \in \mathbb{R}^d$. The routing score is computed via an inner product:
+
+$$s(q, m) = \mathbf{q}^\top \mathbf{m} + b_m$$
+
+where $b_m$ is a model bias term. Intuitively, $\mathbf{q}$ encodes "what capabilities the query demands" and $\mathbf{m}$ encodes "what the model excels at"; the inner product measures how well they match. The training objective is to score the winning model higher than the losing model — essentially a low-rank approximation of the Bradley-Terry preference model.
+
+At routing time, the system computes $s(q, \text{strong}) - s(q, \text{weak})$ and selects the strong model if the difference exceeds a threshold $\tau$. RouteLLM experiments show that the MF router can reduce API call costs by over 85% while retaining roughly 95% of GPT-4-level quality (Ong et al., 2024). This is remarkable because the MF router itself is extremely lightweight — inference requires only one embedding lookup plus one inner product.
+
+<MatrixFactorizationViz client:visible locale="en" />
+
+## §2 BERT Router
+
+What if you don't have Chatbot Arena-style preference data? A **BERT classifier router** offers a more direct path.
+
+**Training data construction**: Have a strong model (e.g., GPT-4) and a weak model (e.g., Llama-3-8B) answer the same set of queries, then label each query via human or automated evaluation (e.g., LLM-as-Judge) — "strong model is significantly better" gets label 1, "weak model is sufficient" gets label 0. This produces a standard binary classification dataset.
+
+**Model architecture**: A linear classification head is placed on top of the [CLS] token representation from a pretrained BERT (110M parameters), outputting $P(\text{need strong model} \mid q)$. During fine-tuning, the lower BERT layers are frozen and only the top layers plus the classification head are trained — typically a few thousand samples suffice for good performance.
+
+**Inference performance**: The BERT router is extremely fast — about 15 ms per routing decision on CPU, well below any LLM's time-to-first-token latency. The model is small (~440 MB), deployable on any server, and can even run in the same process as business logic (RouteLLM, Ong et al., 2024).
+
+**Threshold selection**: The classifier outputs a probability $p$, but the routing decision requires a binary outcome. The threshold $\tau$ directly controls the quality-cost tradeoff. Plot an ROC curve on a validation set and choose the $\tau$ that maximizes $F_1$ or yields the highest quality under a target cost constraint. In practice $\tau \in [0.3, 0.7]$ — lower values send more queries to the strong model (quality-first), higher values route more to the weak model (cost-first).
+
+**Limitations**: BERT's fixed context window (512 tokens) cannot handle long queries; the decision boundary is frozen after training, so if model capabilities change (e.g., the weak model is upgraded), retraining is required.
+
+<BertRouterFlow client:visible locale="en" />
+
+## §3 Causal LM Router
+
+A notable 2026 development is using **small language models themselves** for routing. Small Models, Big Decisions (2026) proposes: since 1–4B parameter small LMs already possess considerable semantic understanding, why not have them directly judge query difficulty?
+
+**Key insight**: Cast the routing decision as a text classification task. Give the small model a prompt: "Given the following query, predict whether a large language model is needed to answer it well. Query: \{q\}. Answer: [YES/NO]". The logit difference between YES and NO serves as the routing score.
+
+This approach has a unique architectural advantage — **zero-marginal-cost routing**. If the small LM is itself one of the candidate weak models, the routing decision can be made "for free": the model can output a routing decision while processing the first few tokens of the query; if it judges itself capable, it continues generating the answer; otherwise it forwards the query to the strong model (Small Models as Routers, 2026).
+
+**Experimental results**: In the paper's evaluation, a 4B parameter small model achieved 78.3% routing accuracy. While lower than a carefully trained BERT router (typically >85%), its semantic understanding is far stronger — it can grasp queries like "compare the epistemological differences between Kant and Hegel" that require deep semantic analysis, whereas BERT might only capture keyword-level signals.
+
+**Core tradeoff vs. BERT**: The Causal LM router has stronger semantic understanding but slower inference (~50–100 ms vs. BERT's ~15 ms). In zero-marginal-cost scenarios this gap vanishes — since the small model would process the query anyway. But if the small model is not one of the candidates, the extra inference overhead must be considered.
+
+<CausalLMRouter client:visible locale="en" />
+
+## §4 Semantic Routing
+
+The three methods above all require some form of training. **Semantic routing** takes an entirely different approach — **zero training cost, based on predefined template matching**.
+
+**How it works**: Developers predefine a set of routes (routing templates), each containing several example utterances. The system encodes each utterance and the incoming query as embedding vectors, then matches the closest route via **cosine similarity**. The semantic-router library (Aurelio Labs) optimizes this process to roughly 5 ms latency.
+
+For example, define two routes:
+- `simple_tasks`: containing examples like "What's the weather today?", "Translate this sentence for me", "What is 1+1?"
+- `complex_tasks`: containing examples like "Analyze the methodological flaws in this paper", "Help me refactor the architecture of this code", "Compare the time complexity of three sorting algorithms"
+
+When a new query arrives, compute its embedding's cosine similarity with all route examples and select the route with the highest average similarity. If the highest similarity falls below a threshold, fall back to the default route (usually the strong model).
+
+**Advantages** are clear: minimal deployment (only an embedding model needed), no training data required, extremely low latency (~5 ms), and rules can be updated at any time (add or remove route examples to take effect immediately).
+
+**Limitations** are equally clear: routing quality depends entirely on template coverage. If a user submits a query that doesn't closely match any template, the semantic router can only fall back to the default route. Moreover, it is essentially a nearest-neighbor classifier that cannot learn complex decision boundaries — for instance, the fine-grained distinction "literary translation needs a strong model while everyday translation doesn't" is hard for semantic routing to capture.
+
+**Best-fit scenarios**: Situations where task types are known and well-defined — customer service systems (known intents), domain-specific chatbots (limited question types), API gateway request routing, etc.
+
+<SemanticRoutingViz client:visible locale="en" />
+
+## §5 Decision Boundary Comparison
+
+How do the four classifiers make different decisions on the same set of queries? Their decision boundaries reflect their respective design philosophies:
+
+**MF Router** has the most flexible decision boundary — it learns query-model matching relationships from preference data; the same type of query may be routed to different models due to subtle phrasing differences. This flexibility comes from continuous representations in a low-dimensional vector space.
+
+**BERT Router** has a decision boundary that is fixed after training, appearing as a hyperplane in feature space. It performs well in regions covered by training data, but tends to err near the boundary (queries where $p \approx \tau$). A typical failure mode: overconfidently classifying rarely-seen query types as "doesn't need a strong model."
+
+**Causal LM Router** tends toward more conservative decisions — since the small LM has deeper semantic understanding of query difficulty, it more easily identifies queries that "look simple but are actually complex" (e.g., "explain why 0.1 + 0.2 ≠ 0.3"), and thus routes more queries to the strong model. This means slightly higher cost, but also a higher quality ceiling.
+
+**Semantic Router** makes the most aggressive decisions — since it relies on template matching, it confidently selects the weak model for queries similar to the `simple_tasks` templates. This results in the highest weak-model utilization, but also means error rates rise significantly in regions with insufficient template coverage.
+
+<DecisionBoundaryCompare client:visible locale="en" />
+
+## Summary
+
+The four classifier routing methods form a complete spectrum: the MF Router is data-driven and most flexible but depends on preference data; the BERT Router is simple to train and blazingly fast at inference but has a fixed decision boundary; the Causal LM Router has the deepest semantic understanding but higher inference cost (unless zero-marginal-cost); the Semantic Router has zero training cost and the simplest deployment but relies on template coverage.
+
+Which method to choose depends on your constraints: if you have preference data, choose MF; if you have labeled data, choose BERT; if your candidate pool includes a small LM, choose Causal LM; if task types are well-defined, choose Semantic. In production, combining multiple routers (e.g., Semantic for coarse filtering + BERT for fine-grained decisions) is also common practice.
+
+The next article introduces a different routing strategy — **cascade and self-verification**: instead of pre-judging query difficulty, "let the weak model try first, and upgrade if it fails."

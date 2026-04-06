@@ -1,0 +1,303 @@
+---
+title: "Flash Attention Tiling Principles"
+slug: flash-attention
+locale: en
+tags: [attention, hardware-optimization, flash-attention, memory]
+prerequisites: [attention-computation, kv-cache]
+difficulty: advanced
+created: "2026-03-31"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+    url: "https://arxiv.org/abs/2205.14135"
+  - type: paper
+    title: "FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning"
+    url: "https://arxiv.org/abs/2307.08691"
+---
+
+import FlashAttentionTiling from '../../../components/interactive/FlashAttentionTiling.tsx';
+import GPUMemoryHierarchy from '../../../components/interactive/GPUMemoryHierarchy.tsx';
+import OnlineSoftmaxDemo from '../../../components/interactive/OnlineSoftmaxDemo.tsx';
+import IOComplexityChart from '../../../components/interactive/IOComplexityChart.tsx';
+import BlockSizeCalculator from '../../../components/interactive/BlockSizeCalculator.tsx';
+
+## Introduction: Why Memory Is the Bottleneck in Standard Attention
+
+In previous articles, we learned about the computation process of Scaled Dot-Product Attention:
+
+$$
+\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{QK^T}{\sqrt{d_k}}\right) V
+$$
+
+The standard implementation requires three steps:
+1. Compute $S = QK^T \in \mathbb{R}^{N \times N}$ — store to HBM
+2. Compute $P = \text{softmax}(S) \in \mathbb{R}^{N \times N}$ — store to HBM
+3. Compute $O = PV \in \mathbb{R}^{N \times d}$ — store to HBM
+
+The problem lies in the intermediate matrices $S$ and $P$, both of size $N \times N$. When the sequence length $N$ is large (e.g., $N = 4096$), these two matrices require $4096^2 \times 2 \approx 64\text{MB}$ of memory (in fp16). More critically, these matrices need to be repeatedly read from and written to the GPU's HBM (High Bandwidth Memory), whose bandwidth is far lower than the GPU's compute speed.
+
+**Flash Attention** (Dao et al., 2022) introduced a key insight: through tiled computation and Online Softmax, we can **completely avoid storing the $N \times N$ intermediate matrices**, reducing memory from $O(N^2)$ to $O(N)$ while dramatically reducing the number of HBM accesses.
+
+## GPU Memory Hierarchy: SRAM vs HBM
+
+To understand Flash Attention's design motivation, we must first understand the GPU's memory hierarchy.
+
+### Two-Level Storage
+
+| Storage Level | Type | A100 Capacity | Bandwidth | Characteristics |
+|---------|------|----------|------|------|
+| **SRAM** (on-chip cache) | Registers + Shared Memory | ~20MB (192KB per SM) | ~19 TB/s | Extremely fast, but very small capacity |
+| **HBM** (High Bandwidth Memory) | GPU memory | 40-80 GB | ~1.5-2.0 TB/s | Large capacity, but limited bandwidth |
+
+Key data: **SRAM bandwidth is ~10x that of HBM**, but its capacity is only ~1/2000 of HBM.
+
+<GPUMemoryHierarchy client:visible locale="en" />
+
+### Standard Attention's Memory Access Pattern
+
+The problem with the standard implementation is not the computation (FLOPs), but the **memory access volume** (IO):
+
+```
+Step 1: Read Q, K from HBM → Compute S = QK^T → Write S to HBM     (read 2Nd, write N²)
+Step 2: Read S from HBM     → Compute P = softmax(S) → Write P to HBM (read N², write N²)
+Step 3: Read P, V from HBM  → Compute O = PV → Write O to HBM        (read N²+Nd, write Nd)
+```
+
+Total HBM accesses: $\Theta(Nd + N^2)$. When $N \gg d$, the $N^2$ term dominates.
+
+**Flash Attention's goal**: Through tiled computation, keep all intermediate results in SRAM, reducing HBM accesses to $\Theta(N^2 d^2 M^{-1})$, where $M$ is the SRAM size.
+
+## Tiling Strategy: Tiling Q, K, V
+
+Flash Attention's first technique is **Tiling**: splitting Q, K, V into appropriately-sized blocks so that each block fits entirely in SRAM.
+
+### Block Size Selection
+
+Given SRAM size $M$ and head dimension $d$:
+
+$$
+B_c = \left\lceil \frac{M}{4d} \right\rceil, \quad B_r = \min\!\left(\left\lceil \frac{M}{4d} \right\rceil, d\right)
+$$
+
+This ensures that a $B_r \times d$ Q block, a $B_c \times d$ K block, a $B_c \times d$ V block, and a $B_r \times B_c$ local score matrix all fit in SRAM.
+
+<BlockSizeCalculator client:visible locale="en" />
+
+### Nested Loop Structure
+
+Flash Attention uses nested loops:
+
+```
+Outer loop (j = 1 to T_c):     // iterate over K, V blocks
+  Load K_j, V_j from HBM to SRAM
+  Inner loop (i = 1 to T_r):   // iterate over Q blocks
+    Load Q_i, O_i, l_i, m_i from HBM to SRAM
+    Compute local attention in SRAM
+    Update O_i, l_i, m_i
+    Write back to HBM
+```
+
+Where $T_c = \lceil N / B_c \rceil$ is the number of K/V blocks and $T_r = \lceil N / B_r \rceil$ is the number of Q blocks.
+
+**Key: The $N \times N$ attention matrix is never fully materialized.** Only a $B_r \times B_c$ tile is computed at a time, then discarded.
+
+## Online Softmax: Detailed Derivation of the Core Innovation
+
+The biggest challenge with tiled computation is that **softmax needs to see an entire row of data to normalize**. If you only see part of the columns, how can you compute the correct softmax?
+
+This is exactly what Online Softmax solves.
+
+### Standard Softmax Review
+
+For a row vector $x \in \mathbb{R}^B$, the numerically stable softmax is:
+
+$$
+m(x) = \max_i x_i, \quad f(x) = \begin{bmatrix} e^{x_1 - m(x)} & \cdots & e^{x_B - m(x)} \end{bmatrix}, \quad \ell(x) = \sum_i f(x)_i, \quad \text{softmax}(x) = \frac{f(x)}{\ell(x)}
+$$
+
+Where $m(x)$ is the maximum value (for numerical stability), $f(x)$ is the shifted exponential vector, and $\ell(x)$ is the normalization constant.
+
+### Splitting into Two Blocks
+
+Suppose the vector $x$ is split into two parts $x = [x^{(1)}, x^{(2)}]$, where $x^{(1)}, x^{(2)} \in \mathbb{R}^B$. We want to show that the global softmax can be derived from the local statistics of the two parts.
+
+The global maximum can be obtained from local maxima:
+
+$$
+m(x) = \max\!\big(m(x^{(1)}), m(x^{(2)})\big)
+$$
+
+The global shifted exponential vector:
+
+$$
+f(x) = \begin{bmatrix} e^{m(x^{(1)}) - m(x)} f(x^{(1)}) & e^{m(x^{(2)}) - m(x)} f(x^{(2)}) \end{bmatrix}
+$$
+
+The global normalization constant:
+
+$$
+\ell(x) = e^{m(x^{(1)}) - m(x)} \ell(x^{(1)}) + e^{m(x^{(2)}) - m(x)} \ell(x^{(2)})
+$$
+
+**Key insight:** The exponential correction factor $e^{m(x^{(1)}) - m(x)}$ compensates for the difference between the local max and the global max. If the new block has a larger maximum ($m(x^{(2)}) > m(x^{(1)})$), all previous $e^{x_i - m_{\text{old}}}$ values need to be multiplied by $e^{m_{\text{old}} - m_{\text{new}}}$ to correct them.
+
+### Recurrence Algorithm
+
+This decomposition can be applied recursively to any number of blocks. Let $m_j$, $\ell_j$, $O_j$ be the statistics after processing the $j$-th block. When the $(j+1)$-th block arrives:
+
+**Step 1: Compute local scores**
+
+$$
+\tilde{S} = Q_i K_{j+1}^T / \sqrt{d}
+$$
+
+**Step 2: Compute local statistics**
+
+$$
+\tilde{m} = \text{rowmax}(\tilde{S}), \quad \tilde{P} = \exp(\tilde{S} - \tilde{m}), \quad \tilde{\ell} = \text{rowsum}(\tilde{P})
+$$
+
+**Step 3: Update global statistics**
+
+$$
+m^{\text{new}} = \max(m_j, \tilde{m})
+$$
+
+$$
+\ell^{\text{new}} = e^{m_j - m^{\text{new}}} \cdot \ell_j + e^{\tilde{m} - m^{\text{new}}} \cdot \tilde{\ell}
+$$
+
+**Step 4: Correct and update the output**
+
+$$
+O^{\text{new}} = \text{diag}(\ell^{\text{new}})^{-1} \!\left( \text{diag}(\ell_j) \cdot e^{m_j - m^{\text{new}}} \cdot O_j + e^{\tilde{m} - m^{\text{new}}} \cdot \tilde{P} \cdot V_{j+1} \right)
+$$
+
+What this formula means:
+- $\text{diag}(\ell_j) \cdot O_j$: "Un-normalizes" the previous output back to the state before dividing by $\ell$
+- $e^{m_j - m^{\text{new}}}$: Correction factor compensating for the difference between old max and new max
+- $e^{\tilde{m} - m^{\text{new}}} \cdot \tilde{P} \cdot V_{j+1}$: The new block's contribution (also corrected to the new max)
+- $\text{diag}(\ell^{\text{new}})^{-1}$: Re-normalizes with the new normalization constant
+
+### Why Is It Exact?
+
+Online Softmax is **not an approximation** — it is mathematically exactly equivalent to standard softmax. The entire derivation is based on a simple algebraic identity:
+
+$$
+\frac{e^{x_i - m_{\text{old}}}}{e^{m_{\text{new}} - m_{\text{old}}}} = e^{x_i - m_{\text{new}}}
+$$
+
+Regardless of how many blocks the data is split into or what order they are processed in, the final result is exactly the same.
+
+<OnlineSoftmaxDemo client:visible locale="en" />
+
+## Interactive Demo: Flash Attention Tiled Computation
+
+Below is a small example with $N=4, d=3, B=2$, demonstrating step by step how Flash Attention processes the first Q block ($t_1, t_2$), interacting with two K/V blocks sequentially, and using Online Softmax correction to obtain exact results.
+
+<FlashAttentionTiling client:visible locale="en" />
+
+## Memory Reduction from $O(N^2)$ to $O(N)$: Derivation
+
+### Standard Attention Memory
+
+The standard implementation needs to store intermediate matrices $S$ and $P$:
+
+$$
+\text{Memory} = \underbrace{Nd}_Q + \underbrace{Nd}_K + \underbrace{Nd}_V + \underbrace{N^2}_S + \underbrace{N^2}_P + \underbrace{Nd}_O = \Theta(Nd + N^2)
+$$
+
+When $N \gg d$, the $O(N^2)$ term dominates.
+
+### Flash Attention Memory
+
+Flash Attention only needs to store inputs, outputs, and auxiliary statistics:
+
+$$
+\text{Memory} = \underbrace{Nd}_Q + \underbrace{Nd}_K + \underbrace{Nd}_V + \underbrace{Nd}_O + \underbrace{N}_{\ell} + \underbrace{N}_{m} = \Theta(Nd)
+$$
+
+No $N^2$ terms at all! The local $B_r \times B_c$ score matrix exists only temporarily in SRAM, not in HBM.
+
+> **Theorem 1** (Dao et al., 2022): The Flash Attention algorithm returns $O = \text{softmax}(QK^T)V$, uses $O(N^2 d)$ FLOPs, and requires only $O(N)$ additional memory.
+
+## IO Complexity Analysis: Why It's Faster
+
+Flash Attention not only saves memory but also saves **time**, because the bottleneck of Attention on GPUs is not computation but memory access.
+
+### Standard Attention IO Complexity
+
+$$
+\text{HBM accesses} = \Theta(Nd + N^2)
+$$
+
+### Flash Attention IO Complexity
+
+> **Theorem 2** (Dao et al., 2022): Let $N$ be the sequence length, $d$ the head dimension, and $M$ the SRAM size ($d \leq M \leq Nd$). Standard Attention requires $\Theta(Nd + N^2)$ HBM accesses; Flash Attention requires $\Theta(N^2 d^2 M^{-1})$.
+
+**Intuitive understanding:**
+- The outer loop iterates over $T_c = N/B_c$ K/V blocks, each loading $\Theta(B_c d) = \Theta(M)$ data
+- The inner loop iterates over $T_r = N/B_r$ Q blocks, each loading and writing back $\Theta(B_r d)$ data
+- Total accesses: $T_c \times (M + T_r \times B_r d) = \frac{N}{B_c} \times \frac{N}{B_r} \times B_r d = \frac{N^2 d}{B_c}$
+- Since $B_c = \Theta(M/d)$, we get $\frac{N^2 d}{B_c} = \Theta(N^2 d^2 / M)$
+
+For typical parameters ($d = 64\text{-}128$, $M \approx 100\text{KB}$), $d^2$ is much smaller than $M$, so $N^2 d^2 / M \ll N^2$. In experiments, Flash Attention is **2-4x faster** than the standard implementation.
+
+<IOComplexityChart client:visible locale="en" />
+
+### Lower Bound
+
+> **Proposition 3** (Dao et al., 2022): No exact Attention algorithm can achieve $o(N^2 d^2 M^{-1})$ HBM accesses for all $M \in [d, Nd]$.
+
+This means Flash Attention is **asymptotically optimal** in terms of IO complexity.
+
+## Flash Attention v1 vs v2
+
+In 2023, Tri Dao released Flash Attention v2, which further optimized GPU parallelism on top of v1.
+
+| Comparison | Flash Attention v1 | Flash Attention v2 |
+|-------|-------------------|-------------------|
+| **Outer loop** | Iterates over K/V blocks | Iterates over Q blocks |
+| **Inner loop** | Iterates over Q blocks | Iterates over K/V blocks |
+| **Inter-block parallelism** | Different heads & batch parallel | Additional parallelism on Q block dimension |
+| **Non-matmul FLOPs** | More | Reduced, better Tensor Core utilization |
+| **Inter-warp communication** | Via shared memory | Reduced inter-warp communication |
+| **A100 utilization** | 25-40% of theoretical peak | **50-73%** of theoretical peak |
+| **Relative speedup** | Baseline | **~2x** over v1 |
+
+### Key Improvements in v2
+
+**1. Swapped Loop Order**
+
+v1's outer loop iterates over K/V blocks, inner loop over Q blocks. v2 reverses this: the outer loop iterates over Q blocks, the inner loop over K/V blocks. This way, each thread block is responsible for only one Q block's output, reducing synchronization overhead, and allows parallelism across the Q block dimension by distributing to different thread blocks (streaming multiprocessors).
+
+**2. Reduced Non-matmul FLOPs**
+
+GPU Tensor Cores have extremely high throughput for matrix multiplication, but the rescaling, max, and sum operations in Online Softmax are non-matmul FLOPs. v2 reduces the proportion of these operations through algorithmic adjustments.
+
+**3. Better Intra-warp Work Distribution**
+
+v2 optimizes task partitioning between warps, reducing the number of synchronizations through shared memory, further improving parallel efficiency.
+
+## Summary
+
+Flash Attention solves the memory and speed bottlenecks of standard Attention through three core techniques:
+
+| Technique | Problem Solved | Effect |
+|------|----------|------|
+| **Tiling** | $N \times N$ matrix not stored in HBM | Memory $O(N^2) \to O(N)$ |
+| **Online Softmax** | Correct normalization in tiled computation | Mathematically exact, zero approximation error |
+| **IO-aware design** | Reduces HBM access count | 2-4x speed improvement |
+
+**Core formula quick reference:**
+
+$$
+m^{\text{new}} = \max(m^{\text{old}}, \tilde{m}), \quad \ell^{\text{new}} = e^{m^{\text{old}} - m^{\text{new}}} \ell^{\text{old}} + e^{\tilde{m} - m^{\text{new}}} \tilde{\ell}
+$$
+
+$$
+O^{\text{new}} = \text{diag}(\ell^{\text{new}})^{-1}\!\left(e^{m^{\text{old}} - m^{\text{new}}} \text{diag}(\ell^{\text{old}}) O^{\text{old}} + e^{\tilde{m} - m^{\text{new}}} \tilde{P} V\right)
+$$
+
+Flash Attention has become a standard component in modern large model inference and training. Starting from PyTorch 2.0, `torch.nn.functional.scaled_dot_product_attention` uses the Flash Attention backend by default. Understanding its tiling principles is an important foundation for deeply understanding LLM system optimization.

@@ -1,0 +1,119 @@
+---
+title: "Mixture of Experts: Sparsely Activated Large Model Architecture"
+slug: mixture-of-experts
+locale: en
+difficulty: advanced
+tags: [transformer, moe, routing, deepseek, mixtral]
+prerequisites: [transformer-overview]
+created: "2026-04-04"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity"
+    url: "https://arxiv.org/abs/2101.03961"
+  - type: paper
+    title: "Mixtral of Experts"
+    url: "https://arxiv.org/abs/2401.04088"
+  - type: paper
+    title: "DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model"
+    url: "https://arxiv.org/abs/2405.04434"
+  - type: paper
+    title: "DeepSeek-V3 Technical Report"
+    url: "https://arxiv.org/abs/2412.19437"
+  - type: paper
+    title: "GShard: Scaling Giant Models with Conditional Computation and Automatic Sharding"
+    url: "https://arxiv.org/abs/2006.16668"
+---
+
+import MoEBasicFlow from '../../../components/interactive/MoEBasicFlow.tsx';
+import DenseVsMoECompare from '../../../components/interactive/DenseVsMoECompare.tsx';
+import RoutingStrategyCompare from '../../../components/interactive/RoutingStrategyCompare.tsx';
+import LoadBalanceViz from '../../../components/interactive/LoadBalanceViz.tsx';
+import DeepSeekMoEArchitecture from '../../../components/interactive/DeepSeekMoEArchitecture.tsx';
+import ExpertParallelismDiagram from '../../../components/interactive/ExpertParallelismDiagram.tsx';
+import MoEModelComparison from '../../../components/interactive/MoEModelComparison.tsx';
+
+The core contradiction of dense models: **parameter count and computation are linearly coupled**. A stronger model requires more parameters, but more parameters means the computation per token also grows linearly.
+
+Mixture of Experts (MoE) breaks this coupling: **large total parameters, but only a small fraction is activated per token** — decoupling parameter count from computation.
+
+Key numbers: Mixtral 8x7B has 47B total parameters, but each token only uses the compute equivalent of ~13B active parameters — achieving near-47B model capability at the inference cost of a 7B model.
+
+## Sparse MoE Fundamentals
+
+In a standard Transformer, every token passes through the same FFN layer. MoE replaces this FFN with **N parallel experts** (each expert is a small FFN), plus a **router** that decides which experts each token is sent to.
+
+<DenseVsMoECompare />
+
+Each token is sent to only the Top-K experts (typically $K=1$ or $K=2$), with outputs combined via weighted sum:
+
+$$y = \sum_{i \in \text{TopK}} g_i \cdot E_i(x), \quad g = \text{softmax}(W_g \cdot x)$$
+
+The animation below shows the complete MoE forward pass:
+
+<MoEBasicFlow client:visible locale="en" />
+
+## Router Mechanism
+
+The router design directly determines MoE effectiveness. There are two main approaches:
+
+<RoutingStrategyCompare client:visible locale="en" />
+
+**Token-choice routing** (the mainstream approach): each token picks its top-K experts. Simple and efficient, but load may be uneven — some "popular" experts get selected by many tokens while others sit idle.
+
+**Expert-choice routing**: reversed — each expert picks its top-K tokens. Load is naturally balanced, but some tokens may not be selected by any expert and get dropped.
+
+In practice, token-choice is more common: Mixtral (top-2), Switch Transformer (top-1), DeepSeek-V3 (top-8).
+
+## Load Balancing
+
+Without constraints, the router tends to concentrate most tokens on a few experts — the **rich-get-richer** phenomenon (also called expert collapse). This is clearly undesirable.
+
+The solution is to add an **auxiliary loss** that encourages even expert load:
+
+$$L_{aux} = \alpha \cdot N \sum_i f_i \cdot P_i$$
+
+Here $f_i$ is the fraction of tokens actually received by expert $i$, and $P_i$ is the average probability the router assigns to expert $i$. A larger $\alpha$ produces stronger balancing, but may hurt model quality (forced uniformity is not always natural).
+
+Adjust the slider below to observe the effect of $\alpha$ on expert load distribution:
+
+<LoadBalanceViz client:visible locale="en" />
+
+Another technique is **expert capacity**: limiting each expert to process at most $C$ tokens per batch, with overflow tokens taking the residual path (skipped).
+
+## DeepSeek's Innovations
+
+DeepSeek introduced two key improvements to MoE:
+
+<DeepSeekMoEArchitecture />
+
+### Shared Expert
+
+Some experts are **traversed by all tokens** (bypassing routing). These shared experts serve as a "safety net" — ensuring that foundational capabilities (general knowledge, grammar, common sense) are not lost due to routing fragmentation.
+
+### Fine-Grained Expert
+
+Using more but smaller experts enables finer-grained specialization. DeepSeek-V2 uses 160 routed experts (compared to Mixtral's 8), where each expert is smaller but more specialized.
+
+Specific configurations:
+- **DeepSeek-V2**: 160 routed + 2 shared, top-6
+- **DeepSeek-V3**: 256 routed + 1 shared, top-8
+
+## Expert Parallelism
+
+256 experts cannot fit on a single GPU — **Expert Parallelism (EP)** is needed: different experts are distributed across different GPUs.
+
+<ExpertParallelismDiagram />
+
+This introduces **All-to-All communication**: tokens on each GPU need to be sent to the GPU hosting the corresponding expert (dispatch), and results are sent back after expert computation (combine).
+
+Expert Parallelism is typically combined with Tensor Parallelism (TP) and Pipeline Parallelism (PP):
+- **TP**: Splits a single expert's matrices across multiple GPUs
+- **EP**: Places different experts on different GPUs
+- **PP**: Places different layers on different GPUs
+
+More experts and more GPUs mean heavier all-to-all communication — this is the primary deployment challenge for MoE.
+
+## Model Comparison Summary
+
+<MoEModelComparison />

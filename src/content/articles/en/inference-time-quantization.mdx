@@ -1,0 +1,122 @@
+---
+title: "Inference-Time Quantization: KV Cache and Activation Quantization"
+slug: "inference-time-quantization"
+locale: "en"
+tags: ["quantization", "kv-cache", "activation-quantization", "fp8", "inference-optimization"]
+difficulty: "advanced"
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: ["quantization-fundamentals", "kv-cache"]
+references:
+  - type: "paper"
+    title: "KVQuant: Towards 10 Million Context Length LLM Inference with KV Cache Quantization"
+    url: "https://arxiv.org/abs/2401.18079"
+  - type: "paper"
+    title: "KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache"
+    url: "https://arxiv.org/abs/2402.02750"
+  - type: "paper"
+    title: "FP8 Formats for Deep Learning"
+    url: "https://arxiv.org/abs/2209.05433"
+---
+
+import KVCacheMemoryCalculator from '../../../components/interactive/KVCacheMemoryCalculator.tsx';
+import KVQuantSensitivity from '../../../components/interactive/KVQuantSensitivity.tsx';
+import ActivationOutlierViz from '../../../components/interactive/ActivationOutlierViz.tsx';
+import E2EQuantStackDiagram from '../../../components/interactive/E2EQuantStackDiagram.tsx';
+
+## Introduction
+
+Weight quantization addresses model storage and loading, but during actual inference, memory bottlenecks often come from **dynamically generated intermediate data**: KV cache and activation tensors. For long-context inference, the KV cache can consume tens of GB of GPU memory; for high-throughput scenarios, activation memory bandwidth becomes the critical limiting factor.
+
+**Inference-time quantization** focuses on compressing these runtime data structures, complementing weight quantization to form a complete end-to-end quantization solution.
+
+---
+
+## 1. The KV Cache Memory Bottleneck
+
+In autoregressive generation, each token's key and value vectors are cached. The memory footprint formula:
+
+$$
+\text{KV size} = 2 \times L \times n_h \times d_h \times S \times \text{bytes}
+$$
+
+Taking Llama 3 70B (80 layers, 64 heads, d_head=128) + 128K context as an example: the KV cache in FP16 ≈ 160 GB, far exceeding the model weights (~140 GB).
+
+<KVCacheMemoryCalculator client:visible locale="en" />
+
+---
+
+## 2. KV Cache Quantization Methods
+
+### Per-Token vs Per-Channel
+
+- **Per-token**: Computes an independent scale for each token's K/V vector, adapting to dynamic range
+- **Per-channel**: One scale per head dimension, lower overhead but limited accuracy
+
+### Key vs Value Asymmetry
+
+Keys participate in the $QK^T$ dot product, where quantization errors are amplified; Values participate in the weighted sum $\text{softmax} \cdot V$, where errors are averaged out. Therefore, Keys require higher precision.
+
+<KVQuantSensitivity client:visible locale="en" />
+
+### KIVI and KVQuant
+
+- **KIVI** (ICLR 2024): Key per-channel INT8 + Value per-token INT2, exploiting the distributional differences between Keys and Values
+- **KVQuant**: Non-uniform quantization + dense-and-sparse hybrid scheme, retaining a small number of outliers in FP16
+
+Experimental results: Llama 2 70B + 100K context, KV cache reduced from 32 GB to 8 GB with perplexity increase < 0.1.
+
+---
+
+## 3. Challenges of Activation Quantization
+
+Activation tensors at each layer also need quantization during inference to reduce memory bandwidth. However, activations contain **systematic outliers**: a few channels have values 100-1000x larger than others.
+
+Causes: Non-uniform distribution after LayerNorm; specific tokens trigger outliers in deeper layers; outlier channels are consistent across tokens.
+
+<ActivationOutlierViz client:visible locale="en" />
+
+Solutions:
+- **Mixed-precision**: Keep outlier channels in FP16, quantize the rest to INT8
+- **Per-channel scaling**: Quantize each channel independently
+- **Smoothing**: SmoothQuant adjusts distributions post-training
+
+---
+
+## 4. FP8: Hardware-Friendly Low-Precision Floating Point
+
+| Format | Exponent | Mantissa | Dynamic Range | Use Case |
+|--------|----------|----------|---------------|----------|
+| **E4M3** | 4 bit | 3 bit | ±448 | Forward activation (higher precision) |
+| **E5M2** | 5 bit | 2 bit | ±57,344 | Gradient (wider range) |
+
+H100 FP8 Tensor Core throughput is 2x that of FP16. FP8 vs INT8: FP8 preserves dynamic range better for non-uniform distributions, while INT8 offers higher precision for uniform distributions.
+
+---
+
+## 5. End-to-End Quantized Deployment
+
+<E2EQuantStackDiagram client:visible locale="en" />
+
+**Typical Configurations:**
+- **Memory-first**: W4A16 + KV INT8 (GPTQ/AWQ weight + per-token KV quant)
+- **Speed-first**: W8A8 + KV FP8 (SmoothQuant + H100 FP8 Tensor Core)
+- **Balanced**: W4A16 + KV INT4 (AWQ weight + KIVI KV cache)
+
+**Toolchain:**
+- llama.cpp: `--cache-type-k q4_0` enables KV cache quantization
+- vLLM: FP8 KV cache (`--kv-cache-dtype fp8_e4m3`)
+- TensorRT-LLM: End-to-end INT4 weight + FP8 activation
+
+---
+
+## Summary
+
+The core challenges of inference-time quantization: KV cache is the primary memory bottleneck for long contexts, and activation outliers require mixed-precision or FP8. Quantization is not a single decision — it is a joint optimization across three dimensions: weights, activations, and KV cache.
+
+## Further Reading
+
+- [KV Cache Mechanism](./kv-cache) — Understanding how KV cache works
+- [Quantization Fundamentals](./quantization-fundamentals) — Symmetric and asymmetric quantization
+- [Post-Training Quantization](./ptq-weight-quantization) — GPTQ/AWQ/SmoothQuant
+- [Quantization-Aware Training](./quantization-aware-training) — QAT and BitNet

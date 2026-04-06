@@ -1,0 +1,115 @@
+---
+title: "Prefix Caching and RadixAttention"
+slug: prefix-caching
+locale: en
+tags: [prefix-caching, radix-attention, sglang, vllm, kv-cache]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [paged-attention]
+references:
+  - type: paper
+    title: "SGLang: Efficient Execution of Structured Language Model Programs"
+    url: "https://arxiv.org/abs/2312.07104"
+  - type: website
+    title: "vLLM Automatic Prefix Caching"
+    url: "https://docs.vllm.ai/en/latest/automatic_prefix_caching/apc.html"
+  - type: paper
+    title: "Trie Memory"
+    url: "https://dl.acm.org/doi/10.1145/367390.367400"
+---
+
+import PrefixReuseMotivation from '../../../components/interactive/PrefixReuseMotivation.tsx';
+import HashPrefixCaching from '../../../components/interactive/HashPrefixCaching.tsx';
+import RadixTreeViz from '../../../components/interactive/RadixTreeViz.tsx';
+import RadixTreeEviction from '../../../components/interactive/RadixTreeEviction.tsx';
+import CacheHitHeatmap from '../../../components/interactive/CacheHitHeatmap.tsx';
+import PrefixCachingCompare from '../../../components/interactive/PrefixCachingCompare.tsx';
+
+## The Motivation for Prefix Reuse
+
+In [PagedAttention](./paged-attention), we solved the **memory management** problem of KV Cache. But there is an overlooked performance bottleneck: **redundant computation**.
+
+Consider multi-turn conversations: each turn must process the full system prompt + all historical messages + the new message. As conversation turns increase, redundant prefill computation grows linearly — by the 10th turn, 90% of the tokens may have already been computed in the previous 9 turns.
+
+<PrefixReuseMotivation client:visible locale="en" />
+
+Similar situations are common in few-shot prompting (all requests share the same examples), self-consistency (the same prompt sampled multiple times in parallel), and tree-of-thought (sharing reasoning prefixes).
+
+The core idea is straightforward: **if two requests share the same prefix, don't discard the already-computed KV Cache — cache it for reuse by subsequent requests**.
+
+## vLLM's Automatic Prefix Caching
+
+vLLM's approach is elegant and simple — borrowing from **content-addressable storage** in file systems:
+
+<HashPrefixCaching client:visible locale="en" />
+
+Specifically:
+1. The token sequence is divided into blocks of block_size (typically 16 tokens)
+2. A hash is computed for each block: `hash(block_i) = SHA256(layer_id, tokens[0..i*block_size], prefix_hash)`
+3. A global Hash Table is consulted: on a hit, the corresponding physical KV block is reused directly; on a miss, it is computed and inserted
+
+**Key design**: the hash value incorporates information from all preceding blocks (chained via `prefix_hash`), ensuring that only **exactly identical prefixes** match. This prevents false matches, but also means:
+- If two sequences differ even in just the first token, the hashes of all subsequent blocks will differ
+- Non-prefix sharing cannot be matched (e.g., sequences with the same middle section but different beginnings)
+
+## Core Idea of RadixAttention
+
+SGLang takes a different path — using a **Radix Tree** to manage all cached KV prefixes.
+
+A Radix Tree is a compressed version of a Trie: paths with single-child nodes are merged into a single node, greatly reducing tree depth. In RadixAttention, each node stores KV Cache blocks corresponding to a segment of the token sequence.
+
+<RadixTreeViz client:visible locale="en" />
+
+The tree structure naturally expresses **sharing relationships** between sequences:
+- The **root node** is typically the system prompt's KV Cache — reused by nearly all requests
+- **Internal nodes** are segments of conversation history — multi-turn conversations share earlier turns
+- **Leaf nodes** are the unique new portions of each request
+
+The lookup process is a **Longest Prefix Match** starting from the root: comparing token sequences node by node along the tree until a fork or the end of the match is reached. The matched portion directly reuses the KV Cache, and only the unmatched tail needs to be computed.
+
+## LRU Eviction
+
+GPU memory is limited, so it is impossible to cache all historical KV. When memory runs low, RadixAttention uses an **LRU strategy, evicting from leaf nodes first**:
+
+<RadixTreeEviction client:visible locale="en" />
+
+Why start from leaf nodes? Because leaf nodes are typically the most **specialized** sequence tails with the lowest reuse probability. Root and internal nodes are shared prefixes referenced by multiple sequences — evicting them would affect more subsequent requests.
+
+The LRU implementation is also natural: each node records the timestamp of its last access, and eviction selects the least recently accessed leaf node. When a leaf node is evicted, if its parent becomes a new leaf (no other children), the parent may be evicted in the next round — forming a **bottom-up progressive eviction** pattern.
+
+## Reuse Effectiveness Across Scenarios
+
+Prefix caching effectiveness varies greatly across different usage patterns:
+
+<CacheHitHeatmap client:visible locale="en" />
+
+Observed patterns:
+- **Single-turn independent requests**: nearly zero cache hits (each request has a different prompt)
+- **Multi-turn conversations**: hit rate increases with each turn (the accumulated shared prefix grows longer)
+- **Few-shot**: stable high hit rate starting from the 2nd request (all requests share the same examples)
+- **Tree-of-thought**: fluctuating hit rate (depends on branch point positions and exploration paths)
+
+This demonstrates that prefix caching is not a silver bullet — its benefits depend entirely on the degree of prefix overlap between requests.
+
+## vLLM vs SGLang Caching Comparison
+
+Each approach has its strengths and weaknesses:
+
+<PrefixCachingCompare client:visible locale="en" />
+
+The practical choice depends on the scenario:
+- **High-concurrency API serving** (many independent requests): vLLM's hash-based approach is simpler and more efficient
+- **Multi-turn conversations / complex pipelines** (extensive prefix sharing): SGLang's RadixAttention offers more flexible reuse
+- **Mixed scenarios**: the performance gap between the two is narrowing, and vLLM is also experimenting with tree-based caching
+
+## Summary
+
+The core of prefix caching is a simple intuition: **avoid recomputing KV Cache that has already been computed**. vLLM uses a hash table for clean, efficient exact matching, while SGLang uses a radix tree for flexible longest prefix matching. Both use LRU eviction to manage limited GPU memory.
+
+From a broader perspective, prefix caching is the key step in inference engines moving from "single-request optimization" to "cross-request optimization" — it lets the engine exploit **computational redundancy across requests**, which yields far greater benefits in real deployments (multi-turn conversations, batch processing, pipelines) than optimizing PagedAttention alone.
+
+## Further Reading
+
+- Want to learn how SGLang leverages prefix caching to build programmable inference? Read [SGLang Programming Model](./sglang-programming-model)
+- Want to review the memory management foundations of KV Cache? Read [PagedAttention and Continuous Batching](./paged-attention)

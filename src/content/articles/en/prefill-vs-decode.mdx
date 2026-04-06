@@ -1,0 +1,336 @@
+---
+title: "Prefill vs Decode Phases"
+slug: prefill-vs-decode
+locale: en
+tags: [inference, prefill, decode, performance]
+prerequisites: [transformer-overview]
+difficulty: intermediate
+created: "2026-03-31"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Efficiently Scaling Transformer Inference"
+    url: "https://arxiv.org/abs/2211.05102"
+  - type: paper
+    title: "LLM Inference Unveiled: Survey and Roofline Model Insights"
+    url: "https://arxiv.org/abs/2402.16363"
+  - type: website
+    title: "LLM Visualization — Brendan Bycroft"
+    url: "https://bbycroft.net/llm"
+---
+
+import RooflineModel from '../../../components/interactive/RooflineModel.tsx';
+import GEMMvsGEMV from '../../../components/interactive/GEMMvsGEMV.tsx';
+import PrefillDecodeOverview from '../../../components/interactive/PrefillDecodeOverview.tsx';
+
+## Introduction: LLM Inference Is Not a Single Step
+
+When you ask ChatGPT a question, you notice two distinctly different phases:
+
+1. **A brief wait** — the model is processing your entire input (prompt)
+2. **Streaming output** — the model begins generating tokens one by one
+
+These two phases correspond to two fundamentally different computation processes in LLM inference: **Prefill** and **Decode**. They differ not only in function but also in computational characteristics — one is **compute-bound**, the other is **memory-bound**.
+
+Understanding the distinction between these two phases is the foundation for understanding LLM serving performance optimization.
+
+## Prefill Phase: Processing the Prompt in Parallel
+
+The Prefill phase processes the user's complete prompt, preparing for the generation phase.
+
+### Workflow
+
+Given a prompt with $n$ tokens, the Prefill phase:
+
+1. Feeds all $n$ tokens into the model **simultaneously**
+2. For each Transformer layer, computes Query, Key, and Value for all tokens
+3. Performs full Self-Attention: each token attends to all preceding tokens
+4. **Generates and caches the KV Cache** — the subsequent Decode phase will reuse these caches
+5. Outputs the first generated token
+
+### Computational Characteristics
+
+The core computation in Prefill is **large-scale matrix multiplication**. Taking the QKV projection in one Transformer layer as an example:
+
+$$
+Q = X \cdot W^Q, \quad K = X \cdot W^K, \quad V = X \cdot W^V
+$$
+
+Where $X$ has shape $(n \times d)$ and $W$ has shape $(d \times d)$. This is a classic matrix-matrix multiplication (GEMM), with computational cost:
+
+$$
+\text{FLOPs} = 2 \times n \times d \times d = 2nd^2
+$$
+
+The amount of data to load (the weight matrix) is approximately:
+
+$$
+\text{Bytes} = d^2 \times \text{sizeof(dtype)}
+$$
+
+Therefore, the **Arithmetic Intensity** (floating-point operations per byte of data loaded) is:
+
+$$
+\text{AI}_{\text{prefill}} = \frac{2nd^2}{d^2 \times \text{sizeof(dtype)}} = \frac{2n}{\text{sizeof(dtype)}}
+$$
+
+Using FP16 as an example (2 bytes), with a prompt length of $n = 1024$:
+
+$$
+\text{AI}_{\text{prefill}} = \frac{2 \times 1024}{2} = 1024 \text{ FLOPs/Byte}
+$$
+
+This value is extremely high! Far exceeding the compute-to-bandwidth ratio of modern GPUs (e.g., ~312 FLOPs/Byte for A100), meaning **Prefill is compute-bound** — GPU compute power is the bottleneck, not memory bandwidth.
+
+<GEMMvsGEMV client:visible locale="en" />
+
+### Key Characteristics
+
+- **All tokens processed in parallel**: Fully utilizes GPU parallelism
+- **Large matrix operations**: $(n \times d) \times (d \times d)$ GEMM operations, which GPUs excel at
+- **High arithmetic intensity**: Computation far exceeds data movement
+- **High GPU utilization**: Can typically achieve high MFU (Model FLOPs Utilization)
+
+## Decode Phase: Autoregressive Token-by-Token Generation
+
+After Prefill completes, the model enters the Decode phase, generating new tokens one at a time.
+
+### Workflow
+
+Each Decode step:
+
+1. Takes the **single token** generated in the previous step as input
+2. Computes Query, Key, and Value for that token
+3. Appends the new K and V to the KV Cache
+4. Performs Attention using the new token's Query against the full KV Cache
+5. Passes through the FFN layer, outputting a probability distribution over the next token
+6. Samples the next token, and repeats the process
+
+### Computational Characteristics
+
+The core computation in Decode degrades to a **vector-matrix multiplication** (GEMV). Taking the QKV projection as an example:
+
+$$
+q = x \cdot W^Q
+$$
+
+Where $x$ has shape $(1 \times d)$ and $W$ has shape $(d \times d)$. The computational cost is:
+
+$$
+\text{FLOPs} = 2 \times 1 \times d \times d = 2d^2
+$$
+
+The amount of data to load **remains the same** — the entire weight matrix $W$ must still be loaded:
+
+$$
+\text{Bytes} = d^2 \times \text{sizeof(dtype)}
+$$
+
+Arithmetic Intensity:
+
+$$
+\text{AI}_{\text{decode}} = \frac{2d^2}{d^2 \times \text{sizeof(dtype)}} = \frac{2}{\text{sizeof(dtype)}}
+$$
+
+Using FP16 as an example:
+
+$$
+\text{AI}_{\text{decode}} = \frac{2}{2} = 1 \text{ FLOPs/Byte}
+$$
+
+Only **1 FLOPs/Byte**! Far below the GPU's compute-to-bandwidth ratio, meaning **Decode is memory-bound** — memory bandwidth is the bottleneck, and most of the GPU's compute power sits idle, waiting for data to be loaded.
+
+### Attention Is Also Memory-Bound During Decode
+
+The Attention computation during Decode faces the same issue. The new token's query vector $q$ must compute dot products with all $S$ keys in the KV Cache:
+
+$$
+\text{FLOPs} = 2 \times S \times d_k \quad (\text{dot product + scaling})
+$$
+
+The KV Cache that must be loaded from GPU memory:
+
+$$
+\text{Bytes} = 2 \times S \times d_k \times \text{sizeof(dtype)} \quad (\text{one copy each for K and V})
+$$
+
+Arithmetic Intensity:
+
+$$
+\text{AI}_{\text{attn}} = \frac{2Sd_k}{2Sd_k \times \text{sizeof(dtype)}} = \frac{1}{\text{sizeof(dtype)}} = 0.5 \text{ FLOPs/Byte (FP16)}
+$$
+
+Extremely low arithmetic intensity. As sequence length $S$ grows, the KV Cache grows linearly, and loading overhead increases linearly as well.
+
+### Key Characteristics
+
+- **Only 1 token processed per step**: Cannot leverage GPU's massive parallelism
+- **Vector-matrix operations**: $(1 \times d) \times (d \times d)$ GEMV operations
+- **Low arithmetic intensity**: Data movement is on the same order as computation
+- **Extremely low GPU utilization**: Most time is spent waiting for memory reads
+
+## Comparison: Computation Flow of the Two Phases
+
+<PrefillDecodeOverview client:visible locale="en" />
+
+The diagram above clearly illustrates the core differences between the two phases:
+
+- **Prefill** feeds all prompt tokens into the model in parallel, performing large-scale matrix multiplication — a compute-bound operation
+- **Decode** processes only one token per step, performing vector-matrix multiplication and reading the full KV Cache — a memory-bound operation
+
+## Compute-bound vs Memory-bound: Arithmetic Intensity Analysis
+
+### Roofline Model
+
+To understand why Prefill and Decode have different bottlenecks, we need the **Roofline Model**. The Roofline Model describes the relationship between two key hardware parameters:
+
+- **Peak compute** $\pi$ (FLOPs/s): Maximum floating-point operations per second the GPU can execute
+- **Peak bandwidth** $\beta$ (Bytes/s): Maximum data the GPU memory can transfer per second
+
+Their ratio defines the **compute-bandwidth balance point**:
+
+$$
+I^* = \frac{\pi}{\beta} \quad (\text{FLOPs/Byte})
+$$
+
+For NVIDIA A100 (SXM, FP16 Tensor Core):
+
+$$
+I^*_{A100} = \frac{312 \text{ TFLOPS}}{2039 \text{ GB/s}} \approx 153 \text{ FLOPs/Byte}
+$$
+
+**Decision rule**:
+
+- If an operation's Arithmetic Intensity $\text{AI} > I^*$, the operation is **compute-bound**
+- If $\text{AI} < I^*$, the operation is **memory-bound**
+
+<RooflineModel client:visible locale="en" />
+
+### Arithmetic Intensity Comparison Between the Two Phases
+
+| Metric | Prefill ($n$ tokens) | Decode (1 token) |
+|------|:---:|:---:|
+| Linear layer FLOPs | $2nd^2$ | $2d^2$ |
+| Linear layer Bytes | $d^2 \times \text{sizeof}$ | $d^2 \times \text{sizeof}$ |
+| AI (linear layer, FP16) | $n$ | $1$ |
+| Attention FLOPs | $O(n^2 d_k)$ | $O(S \cdot d_k)$ |
+| Attention Bytes | $O(n^2 + nd_k)$ | $O(S \cdot d_k)$ |
+| AI (Attention, FP16) | High | $\approx 0.5$ |
+| Bottleneck type | **Compute-bound** | **Memory-bound** |
+
+Using the A100 as an example ($I^* \approx 153$), with prompt length $n = 512$:
+
+- **Prefill**: AI $\approx 512 \gg 153$, compute-bound. GPU compute is fully utilized
+- **Decode**: AI $\approx 1 \ll 153$, memory-bound. The GPU utilizes only about $1/153 \approx 0.65\%$ of peak compute
+
+This is why Decode is so inefficient — the vast majority of the GPU's compute power sits idle, waiting for data to be transferred from GPU memory.
+
+### Impact of Batch Size
+
+Increasing batch size $B$ can improve Decode's arithmetic intensity. When performing Decode for $B$ requests simultaneously:
+
+$$
+\text{AI}_{\text{decode, batched}} = \frac{2Bd^2}{d^2 \times \text{sizeof(dtype)}} = \frac{2B}{\text{sizeof(dtype)}} = B \text{ (FP16)}
+$$
+
+The weight matrix only needs to be loaded once, but computation is performed for each of the $B$ requests, multiplying the compute by $B$. When $B \geq I^*$ ($B \geq 153$ on A100), Decode can also become compute-bound.
+
+However, there are two practical limitations:
+
+1. **KV Cache memory**: Each request's KV Cache consumes significant GPU memory, limiting the achievable batch size
+2. **Latency constraints**: A batch that's too large increases latency for individual requests
+
+This is precisely why KV Cache compression techniques like GQA/MQA are important — by reducing KV Cache size, they enable larger batch sizes, improving Decode phase efficiency.
+
+## Real-World Performance Impact: TTFT vs TPS
+
+The two phases correspond to different user-facing metrics:
+
+### TTFT — Time To First Token
+
+**Definition**: Time from when the user sends a request to when the first generated token is received.
+
+TTFT is primarily determined by the Prefill phase. Influencing factors:
+
+- **Prompt length**: Longer prompts mean more Prefill computation and higher TTFT
+- **GPU compute power**: Prefill is compute-bound, so a faster GPU directly reduces TTFT
+- **Prefill computation** scales approximately linearly with prompt length (the Attention portion is quadratic, but typically FFN dominates)
+
+### TPS — Tokens Per Second
+
+**Definition**: Number of tokens generated per second during the Decode phase.
+
+TPS is determined by the Decode phase. Influencing factors:
+
+- **Memory bandwidth**: Decode is memory-bound, so higher bandwidth means faster TPS
+- **Model size**: More parameters mean more weights to load per step
+- **KV Cache size**: Longer sequences mean more data loaded during the Attention step
+
+### Numerical Estimates
+
+Using LLaMA-2 7B (~$14 \times 10^9$ bytes in FP16) on A100 as an example:
+
+**Decode TPS estimate** (memory-bound, ignoring KV Cache):
+
+$$
+\text{TPS} \approx \frac{\text{Bandwidth}}{\text{Model Size}} = \frac{2039 \text{ GB/s}}{14 \text{ GB}} \approx 146 \text{ tokens/s}
+$$
+
+In practice, due to KV Cache loading, kernel launch overhead, and other factors, real-world values are typically around 100-130 tokens/s (batch size = 1).
+
+**Prefill speed estimate** (compute-bound):
+
+$$
+\text{tokens/s} \approx \frac{\text{Peak TFLOPS}}{2 \times \text{Parameters}} = \frac{312 \times 10^{12}}{2 \times 7 \times 10^9} \approx 22{,}286 \text{ tokens/s}
+$$
+
+This means Prefill processes the prompt at a throughput **over 100x higher** than Decode — which is why you experience "a brief wait followed by fast streaming" rather than "uniformly slow output."
+
+## Optimization Directions
+
+Given the different computational characteristics of the two phases, the industry has developed different optimization strategies:
+
+### Prefill Optimization
+
+- **Flash Attention**: Reduces HBM accesses through tiled computation, improving the efficiency of Attention computation during Prefill
+- **Tensor Parallelism**: Distributes matrix operations across multiple GPUs, increasing throughput for compute-bound operations
+- **Quantization**: Uses INT8/FP8 lower precision to achieve higher effective compute on the same hardware
+
+### Decode Optimization
+
+- **KV Cache Compression**: GQA and MQA reduce KV Cache size, lowering memory bandwidth requirements
+- **Speculative Decoding**: Uses a small model to quickly "guess" multiple tokens, then verifies them with the large model in a single pass, merging multiple Decode steps into one Prefill-like parallel verification
+- **Continuous Batching**: Dynamically assembles batches to improve GPU utilization
+
+### Hybrid Optimization
+
+- **Chunked Prefill**: Splits long prompts into chunks and interleaves Decode steps in between, preventing long-prompt Prefill from blocking other requests' Decode operations
+- **Disaggregated Serving**: Deploys Prefill and Decode on different hardware — compute-intensive GPUs for Prefill, high-bandwidth devices for Decode
+
+## Recommended Learning Resources
+
+If you want to dive deeper into LLM inference optimization, here are our curated resources:
+
+### Classic Papers
+- **Kwon et al. "Efficient Memory Management for Large Language Model Serving with PagedAttention"** — The core vLLM paper (SOSP 2023), proposing OS virtual memory-like management for KV Cache with near-zero waste. Essential reading for understanding modern LLM serving memory management.
+- **Lilian Weng "Large Transformer Model Inference Optimization"** — A systematic survey of Transformer inference optimization methods, covering distillation, quantization, pruning, sparsification, and architecture optimization. One of the best overviews in the inference optimization field.
+
+### Blog Posts and Tutorials
+- **kipply "Transformer Inference Arithmetic"** — **A classic blog post on inference performance analysis.** Derives LLM inference latency from first principles, covering KV Cache mechanics, model parallelism, batch size impact, FLOPS calculations, and how to determine memory bandwidth bound vs compute bound.
+- **Patrick von Platen / Hugging Face "Optimizing your LLM in production"** — Covers low-precision inference (8-bit/4-bit), Flash Attention, KV Cache optimization (MQA/GQA), positional encodings, and includes detailed memory calculations and speedup data. Highly practical.
+- **Anyscale "How continuous batching enables 23x throughput in LLM inference"** — Explains the continuous batching mechanism in detail, comparing throughput differences with static batching (up to 23x), benchmarking HF TGI, vLLM, Ray Serve, and other frameworks.
+- **Finbarr Timbers "How is LLaMa.cpp possible?"** — Analyzes why LLM inference on consumer hardware is feasible. Uses mathematical derivation to show that memory bandwidth is the bottleneck and how quantization dramatically reduces memory requirements. Includes performance calculations across different devices (A100/M1/M2).
+
+## Summary
+
+| Concept | Description |
+|------|------|
+| Prefill Phase | Processes the full prompt in parallel, generates KV Cache, compute-bound |
+| Decode Phase | Autoregressive token-by-token generation, reads KV Cache, memory-bound |
+| Arithmetic Intensity | Prefill: $\frac{2n}{\text{sizeof}}$ (high) vs Decode: $\frac{2}{\text{sizeof}}$ (low) |
+| Roofline Model | AI $> \pi / \beta$ is compute-bound, otherwise memory-bound |
+| TTFT | Time To First Token, determined by Prefill |
+| TPS | Tokens Per Second, determined by Decode |
+| Core Tension | Decode's AI is far below the hardware balance point, severely wasting GPU compute |
+
+**Core Intuition**: The two phases of LLM inference are like "preparing food" and "serving dishes." Prefill is like a chef processing all ingredients simultaneously (parallel, compute-intensive) — speed depends on the chef's knife skills (GPU compute). Decode is like a waiter serving dishes one at a time (sequential, bandwidth-intensive) — speed depends on the conveyor belt from kitchen to table (memory bandwidth). Understanding this distinction is the starting point for understanding all LLM inference optimization techniques.

@@ -1,0 +1,123 @@
+---
+title: "LLM Inference Engine Landscape: vLLM, SGLang, Ollama, and TensorRT-LLM"
+slug: inference-engine-landscape
+locale: en
+tags: [inference, vllm, sglang, ollama, tensorrt-llm]
+difficulty: intermediate
+created: "2026-04-05"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    url: "https://arxiv.org/abs/2309.06180"
+  - type: paper
+    title: "SGLang: Efficient Execution of Structured Language Model Programs"
+    url: "https://arxiv.org/abs/2312.07104"
+  - type: website
+    title: "NVIDIA TensorRT-LLM Documentation"
+    url: "https://nvidia.github.io/TensorRT-LLM/"
+  - type: website
+    title: "Ollama GitHub Repository"
+    url: "https://github.com/ollama/ollama"
+---
+
+import InferenceEngineRadar from '../../../components/interactive/InferenceEngineRadar.tsx';
+import DesignPhilosophyMap from '../../../components/interactive/DesignPhilosophyMap.tsx';
+import RequestLifecycleCompare from '../../../components/interactive/RequestLifecycleCompare.tsx';
+import StaticVsDynamicBatching from '../../../components/interactive/StaticVsDynamicBatching.tsx';
+import TechEvolutionTimeline from '../../../components/interactive/TechEvolutionTimeline.tsx';
+import EngineDecisionTree from '../../../components/interactive/EngineDecisionTree.tsx';
+
+## Why Inference Engines Are Needed
+
+Running LLM inference directly with `transformers.generate()` has three critical bottlenecks:
+
+1. **Memory waste**: Pre-allocating max_seq_len of KV Cache for each request, while actual usage is often less than half
+2. **No concurrency**: One request occupies the entire GPU, forcing others to queue
+3. **Low throughput**: Without batching optimizations, the GPU's compute capacity sits idle most of the time
+
+The core mission of an inference engine is to solve these three problems: efficient memory management, intelligent request scheduling, and maximizing GPU utilization.
+
+## The Four Major Engines and Their Design Philosophies
+
+The four mainstream LLM inference engines each have distinct focuses:
+
+**vLLM** (UC Berkeley, 2023): Founded on PagedAttention, its core goal is maximizing serving throughput. It borrows OS virtual memory concepts to manage KV Cache, eliminating memory fragmentation. It has the most mature ecosystem and the largest community, and its OpenAI-compatible API makes it the default choice for cloud deployment.
+
+**SGLang** (LMSYS, 2023): Emphasizes the combination of programmability and high performance. RadixAttention provides more flexible prefix caching than vLLM, its original DSL programming model supports complex multi-step inference pipelines, and Compressed FSM delivers the fastest structured output. Ideal for complex LLM applications that require precise format control.
+
+**Ollama + llama.cpp**: Local-first, ease-of-use-first. Install and run with a single command. The GGUF quantization format supports CPU and consumer-grade GPUs. It trades peak throughput for an out-of-the-box experience, making it the go-to for individual developers and local experimentation.
+
+**TensorRT-LLM** (NVIDIA): Deep integration with the NVIDIA hardware ecosystem. FP8 quantization, inflight batching, and custom kernels squeeze every last drop of performance on H100/B200. The trade-off is low flexibility, a steep learning curve, and support limited to NVIDIA GPUs.
+
+<InferenceEngineRadar client:visible locale="en" />
+
+The design philosophies of these four engines can be understood as a triangle: throughput, programmability, and ease of use — no engine can achieve the ultimate in all three dimensions simultaneously.
+
+<DesignPhilosophyMap />
+
+## Request Processing Flow Comparison
+
+The request processing flows of three engines reflect their respective design priorities:
+
+<RequestLifecycleCompare client:visible locale="en" />
+
+**vLLM**'s flow centers on the Scheduler, with all optimizations focused on "fitting more requests at the same time." **Ollama**'s flow is the shortest and most direct — a single-request model suited for interactive use. **SGLang**'s flow adds two extra stages: IR orchestration and constrained decoding — it optimizes not just inference speed, but also "how programmers use LLMs."
+
+## Key Technologies Overview
+
+The performance differences between these engines stem from underlying key technical innovations. We'll build a high-level understanding here, with subsequent articles diving deep into each:
+
+| Technology | Core Idea | Pioneered By | Deep Dive Article |
+|------------|-----------|--------------|-------------------|
+| **PagedAttention** | Virtual memory paging for KV Cache | vLLM | [Next article](./paged-attention) |
+| **Continuous Batching** | Release on completion, dynamically fill new requests | Orca | [Next article](./paged-attention) |
+| **RadixAttention** | Radix tree for prefix cache management | SGLang | [Prefix Caching](./prefix-caching) |
+| **Constrained Decoding** | FSM constraints + jump-forward acceleration | SGLang | [SGLang Programming Model](./sglang-programming-model) |
+| **Chunked Prefill** | Split long prompts into chunks for mixed scheduling | Sarathi | [Scheduling and Preemption](./inference-scheduling) |
+
+**Static vs Continuous Batching** is fundamental to understanding all engines — static batching must wait for the slowest request to finish, leaving the GPU largely idle; continuous batching releases and fills request by request:
+
+<StaticVsDynamicBatching client:visible locale="en" />
+
+## Technology Evolution Timeline
+
+From Orca pioneering continuous batching in 2022 to today, the inference engine field has experienced explosive innovation. Engines have evolved from independent innovation to mutual absorption — vLLM added prefix caching, SGLang optimized batch scheduling, and TensorRT-LLM also adopted PagedAttention.
+
+<TechEvolutionTimeline client:visible locale="en" />
+
+## Selection Guide
+
+Not sure which one to choose? Answer a few simple questions:
+
+<EngineDecisionTree client:visible locale="en" />
+
+Of course, this is only a rough guide. Actual selection also needs to consider: model size, request patterns (long/short context), SLA requirements, team tech stack, hardware budget, and other factors. The safest strategy is to start with vLLM (most mature ecosystem), and evaluate SGLang (structured output) or TensorRT-LLM (peak performance) when you hit bottlenecks.
+
+## Recommended Learning Resources
+
+If you want a deeper understanding of LLM inference engines, here are our curated resources:
+
+### Classic Papers
+- **Kwon et al. "Efficient Memory Management for Large Language Model Serving with PagedAttention"** — The vLLM core paper (SOSP 2023), proposing the PagedAttention algorithm that borrows OS virtual memory and paging mechanisms to manage KV Cache, achieving 2-4x throughput improvement.
+- **Zheng et al. "SGLang: Efficient Execution of Structured Language Model Programs"** — The SGLang paper, proposing RadixAttention for KV Cache prefix reuse and compressed finite state machines for accelerating structured output decoding, achieving up to 6.4x throughput improvement across various tasks.
+
+### Blogs and Tutorials (with illustrations)
+- **vLLM official blog post "Easy, Fast, and Cheap LLM Serving with PagedAttention"** — Uses diagrams to intuitively demonstrate how PagedAttention works and its performance comparisons — a more digestible introductory version than the paper. (vllm.ai/blog/vllm)
+- **LMSYS "Fast and Expressive LLM Inference with RadixAttention and SGLang"** — The SGLang official blog post, explaining the RadixAttention KV Cache reuse mechanism and frontend DSL design, with architecture diagrams and performance comparisons. (lmsys.org/blog/2024-01-17-sglang/)
+- **Anyscale "How continuous batching enables 23x throughput in LLM inference"** — Detailed explanation of the continuous batching mechanism (used by both vLLM and SGLang), comparing throughput differences against static batching, benchmarking multiple frameworks.
+
+### Official Documentation and Source Code
+- **vLLM GitHub Repository & Documentation** — Covers PagedAttention, continuous batching, CUDA graph, various quantization methods, multi-node distributed inference, and more. (github.com/vllm-project/vllm / docs.vllm.ai)
+- **SGLang GitHub Repository & Documentation** — Includes RadixAttention, prefill-decode disaggregation, speculative decoding, various parallelism strategies. Supports NVIDIA/AMD/Intel/TPU multi-hardware backends. (github.com/sgl-project/sglang / docs.sglang.ai)
+
+## Summary
+
+Inference engines are the critical infrastructure for LLMs to go from "can run" to "can be used." Understanding their design philosophies and core technologies is essential knowledge for LLM engineering. Next, we will dive into each key technology: starting with PagedAttention's memory management, progressively understanding the complete technology stack of modern inference engines.
+
+## Further Reading
+
+- Want to dive into KV Cache memory management? Read [PagedAttention and Continuous Batching](./paged-attention)
+- Want to learn about scheduling strategies? Read [Scheduling and Preemption](./inference-scheduling)
+- Want to learn about prefix caching? Read [Prefix Caching and RadixAttention](./prefix-caching)
+- Want to learn about structured output? Read [SGLang Programming Model](./sglang-programming-model)

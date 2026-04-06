@@ -1,0 +1,128 @@
+---
+title: "Policy Gradient: Directly Optimizing the Policy"
+slug: policy-gradient
+locale: en
+tags: [policy-gradient, reinforce, baseline, variance-reduction, advantage]
+difficulty: intermediate
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [rl-foundations]
+references:
+  - type: paper
+    title: "Simple Statistical Gradient-Following Algorithms for Connectionist Reinforcement Learning (Williams, 1992)"
+    url: "https://link.springer.com/article/10.1007/BF00992696"
+  - type: paper
+    title: "Policy Gradient Methods for Reinforcement Learning with Function Approximation (Sutton et al., 1999)"
+    url: "https://proceedings.neurips.cc/paper/1999/hash/464d828b85b0bed98e80ade0a5c43b0f-Abstract.html"
+  - type: website
+    title: "Policy Gradient Algorithms — Lilian Weng"
+    url: "https://lilianweng.github.io/posts/2018-04-08-policy-gradient/"
+  - type: website
+    title: "UC Berkeley CS285 Lectures 5-6: Policy Gradient"
+    url: "http://rail.eecs.berkeley.edu/deeprlcourse/"
+  - type: website
+    title: "OpenAI Spinning Up: Vanilla Policy Gradient"
+    url: "https://spinningup.openai.com/en/latest/algorithms/vpg.html"
+---
+
+import PolicyGradientIntuition from '../../../components/interactive/PolicyGradientIntuition.tsx';
+import REINFORCETrajectory from '../../../components/interactive/REINFORCETrajectory.tsx';
+import VarianceProblem from '../../../components/interactive/VarianceProblem.tsx';
+import BaselineEffect from '../../../components/interactive/BaselineEffect.tsx';
+import AdvantageExplainer from '../../../components/interactive/AdvantageExplainer.tsx';
+import PGAlgorithmFamily from '../../../components/interactive/PGAlgorithmFamily.tsx';
+
+## Why Directly Optimize the Policy
+
+In the previous article, we saw that Value-Based methods (Q-Learning / DQN) work by learning $Q(s,a)$ and then greedily selecting the action with the highest Q-value. This approach has several fundamental limitations:
+
+1. **Only handles discrete action spaces**: It requires computing a Q-value for every possible action. When the action space is very large (e.g., an LLM's vocabulary of 32K+ tokens) or continuous (e.g., robot control), this is impractical
+2. **Cannot express stochastic policies**: Sometimes the optimal policy requires randomness (e.g., rock-paper-scissors), but Q-Learning can only output deterministic policies
+3. **Small changes, big effects**: Tiny changes in Q-values can flip the argmax, causing abrupt policy changes
+
+**The core idea of Policy Gradient**: Since an LLM is already a parameterized policy $\pi_\theta(a|s)$ (given a context, output a token probability distribution), why not optimize this policy directly?
+
+<PolicyGradientIntuition client:visible locale="en" />
+
+## The Policy Gradient Theorem
+
+The objective of Policy Gradient is to maximize the expected cumulative return $J(\theta) = \mathbb{E}_{\pi_\theta}[\sum_t \gamma^t r_t]$.
+
+The **Policy Gradient Theorem** gives the gradient of $J(\theta)$ with respect to parameters $\theta$:
+
+$$\nabla_\theta J(\theta) = \mathbb{E}_{\pi_\theta}\left[\nabla_\theta \log \pi_\theta(a_t|s_t) \cdot G_t\right]$$
+
+where $G_t = \sum_{k=0}^{\infty} \gamma^k r_{t+k}$ is the discounted return starting from time step $t$.
+
+**Intuition**:
+- $\nabla_\theta \log \pi_\theta(a|s)$ points in the direction that increases the probability of action $a$
+- $G_t$ measures how good this trajectory was
+- Their product: when $G_t > 0$, push up the probability of good actions; when $G_t < 0$, push down the probability of bad actions
+
+The beauty of this formula: **no environment model is needed** — you only need to sample trajectories to estimate the gradient.
+
+## The REINFORCE Algorithm
+
+REINFORCE is the simplest Policy Gradient implementation:
+
+1. **Sample**: Use the current policy $\pi_\theta$ to sample a complete trajectory $\tau = (s_0, a_0, r_0, s_1, a_1, r_1, \ldots)$
+2. **Compute Returns**: For each time step in the trajectory, calculate the discounted return $G_t$
+3. **Update Parameters**: $\theta \leftarrow \theta + \alpha \sum_t \nabla_\theta \log \pi_\theta(a_t|s_t) \cdot G_t$
+
+<REINFORCETrajectory client:visible locale="en" />
+
+## The High Variance Problem
+
+While REINFORCE is simple and elegant, it has a fatal flaw: **extremely high variance in gradient estimates**.
+
+Each time only one trajectory is sampled, and its return is heavily affected by randomness. The same policy can produce vastly different returns across two samples — one might happen to follow a good path yielding a high return, while another follows a bad path yielding a low return.
+
+This makes gradient estimates very unstable, requiring many samples to obtain a reliable gradient direction.
+
+<VarianceProblem client:visible locale="en" />
+
+## Baseline and Advantage
+
+The key insight for solving high variance: **the absolute value of the reward doesn't matter — what matters is "how much better than average"**.
+
+Introduce a **Baseline** $b(s)$ (typically an estimate of $V(s)$), modifying the gradient to:
+
+$$\nabla_\theta J(\theta) = \mathbb{E}_{\pi_\theta}\left[\nabla_\theta \log \pi_\theta(a_t|s_t) \cdot (G_t - b(s_t))\right]$$
+
+It can be mathematically proven that subtracting any baseline that does not depend on the action **does not change the gradient expectation** (unbiased), but **significantly reduces variance**.
+
+This leads to the **Advantage Function**:
+
+$$A^\pi(s,a) = Q^\pi(s,a) - V^\pi(s)$$
+
+$A > 0$ means this action is better than average, $A < 0$ means worse than average. Using Advantage instead of raw return gives gradients that are both unbiased and low-variance.
+
+<BaselineEffect client:visible locale="en" />
+
+<AdvantageExplainer client:visible locale="en" />
+
+## From REINFORCE to Actor-Critic
+
+REINFORCE + Baseline still requires sampling complete trajectories to compute returns. Can we update after every step?
+
+The answer is **Actor-Critic**: use a neural network (the Critic) to approximate $V(s)$ as the baseline. This way:
+- The **Actor** (policy network) decides which action to take
+- The **Critic** (value network) evaluates how good the current state is
+
+The Critic's TD estimate provides an Advantage signal at every step, without waiting for the trajectory to end. This dramatically improves sample efficiency.
+
+Actor-Critic is the key stepping stone to PPO and RLHF, which we will explore in depth in the next article.
+
+<PGAlgorithmFamily client:visible locale="en" />
+
+## Summary
+
+This article covered the core ideas of Policy Gradient:
+
+1. **Directly optimizing the policy** $\pi_\theta$ is better suited for large action spaces (like LLMs) than Value-Based methods
+2. The **Policy Gradient Theorem** provides gradient estimates that do not depend on an environment model
+3. **REINFORCE** is the simplest implementation, but suffers from extremely high variance
+4. **Baseline / Advantage** significantly reduce variance while maintaining unbiasedness
+5. **Actor-Critic** uses a neural network to approximate the baseline, enabling step-by-step updates
+
+In the next article, we will dive into the Actor-Critic architecture and PPO to understand the core optimization algorithm behind RLHF.

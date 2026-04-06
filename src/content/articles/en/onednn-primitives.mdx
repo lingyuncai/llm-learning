@@ -1,0 +1,161 @@
+---
+title: "oneDNN Primitive System"
+slug: onednn-primitives
+locale: en
+tags: [intel, onednn, primitive, memory-format, operator-library]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [spirv-level-zero]
+references:
+  - type: website
+    title: "oneDNN Developer Guide — Intel"
+    url: "https://oneapi-src.github.io/oneDNN/"
+  - type: repo
+    title: "oneAPI Deep Neural Network Library (oneDNN) — GitHub"
+    url: "https://github.com/oneapi-src/oneDNN"
+  - type: website
+    title: "oneDNN Programming Model — Intel"
+    url: "https://oneapi-src.github.io/oneDNN/dev_guide_basic_concepts.html"
+  - type: website
+    title: "Memory Format Propagation — oneDNN"
+    url: "https://oneapi-src.github.io/oneDNN/dev_guide_understanding_memory_formats.html"
+---
+
+import PrimitiveLifecycle from '../../../components/interactive/PrimitiveLifecycle.tsx';
+import MemoryFormatViz from '../../../components/interactive/MemoryFormatViz.tsx';
+import PostOpFusion from '../../../components/interactive/PostOpFusion.tsx';
+import PrimitiveCacheFlow from '../../../components/interactive/PrimitiveCacheFlow.tsx';
+import OpDataTypeMatrix from '../../../components/interactive/OpDataTypeMatrix.tsx';
+
+## Positioning and Design Goals of oneDNN
+
+oneDNN (oneAPI Deep Neural Network Library) is Intel's cross-architecture deep learning operator library, specifically optimized for CPUs and GPUs (especially the Intel Xe architecture). Its core design philosophy is to abstract the complexity of underlying hardware into a unified **Primitive** interface, enabling developers to achieve near-hardware-limit performance without hand-writing SIMD assembly or GPU kernels.
+
+Compared to NVIDIA cuDNN, oneDNN's distinguishing feature is its **cross-device uniformity**: the same set of APIs can run on Intel CPUs, GPUs, and FPGAs, with the execution device selected through the `engine` abstraction. For Intel iGPUs, oneDNN generates SPIR-V code under the hood and submits it to Xe Cores for execution via Level Zero. It also includes enterprise-grade optimizations such as **Primitive Cache** and **Post-op Fusion**, which are critical for inference scenarios.
+
+In deep learning frameworks, oneDNN is typically integrated as a backend operator library: PyTorch calls it through the `MKLDNN` backend, and TensorFlow supports it through the `oneDNN` plugin. Understanding oneDNN's Primitive system is an essential step in mastering Intel GPU deep learning acceleration.
+
+## Primitive Lifecycle
+
+The oneDNN **Primitive** is an executable object that encapsulates operator logic and a compiled GPU kernel. Its lifecycle consists of five stages: creating the Engine, describing the operation, compiling the Primitive, execution, and result reuse. While this flow seems straightforward, the compilation stage can take hundreds of milliseconds and must be optimized through caching mechanisms.
+
+<PrimitiveLifecycle client:visible locale="en" />
+
+**Key Points:**
+1. **Primitive Descriptor Stage**: oneDNN enumerates all available algorithm implementations (e.g., Winograd, Direct, Im2col for Convolution) and selects the optimal implementation based on input shapes and hardware characteristics. This step is the core of "intelligent dispatch."
+2. **Compilation Bottleneck**: Creating the `primitive` object involves the OpenCL C -> SPIR-V -> GPU ISA compilation chain, with latency typically in the 50-200ms range. You will notice a visible delay on first execution -- this is a common issue with GPU inference frameworks.
+3. **Asynchronous Execution**: The `execute()` call returns immediately, with actual computation proceeding asynchronously in the GPU stream. Results must be synchronized via `stream.wait()`.
+
+In practice, inference services typically perform a **warmup**: executing a few dummy inputs at startup to trigger compilation and caching of all primitives, avoiding cold-start latency on the first real request.
+
+## Memory and Format Tags
+
+The oneDNN **Memory** object describes not only the shape and type of data but also includes a **Format Tag** that defines the physical layout of data in memory. The correct Format Tag is key to GPU performance optimization: it determines whether the data access pattern matches the SIMD unit's execution width.
+
+<MemoryFormatViz client:visible locale="en" />
+
+**Why is Blocked Format needed?**
+- **NCHW (plain format)**: Channels are stored sequentially, e.g., `[C0, C1, C2, ..., C31]`. When the GPU performs vectorized operations, it needs to gather data from different memory addresses, resulting in low bandwidth utilization.
+- **nChw16c (blocked format)**: 16 channels are packed into a group, with 16 channels at each H x W position stored contiguously in memory. This way, the GPU's SIMD16 unit can load one vector at a time without needing gather/scatter.
+- **nChw32c**: Optimized for Xe2's SIMD32 and XMX units, further improving bandwidth utilization.
+
+oneDNN's **Format Propagation** mechanism automatically inserts `Reorder` operations between operators to convert data from one format to another. For example, if the input is NCHW and the Convolution expects nChw16c, oneDNN automatically inserts `Reorder(nchw -> nchw16c)`. While Reorder itself has a cost, the performance improvement in subsequent computation far outweighs the conversion overhead.
+
+**Practical Recommendations:**
+- During inference, use `format_tag::any` whenever possible, letting oneDNN automatically choose the optimal format.
+- During training, format management must be done manually because gradient backpropagation requires format consistency.
+- For FP16/BF16 MatMul and Convolution, `nChw16c` or `nChw32c` are optimal choices.
+
+## Propagation Kind and Fusion
+
+oneDNN's **Post-op Fusion** allows merging multiple operators into a single GPU kernel, reducing memory round-trips and kernel launch overhead. This is one of the core optimization techniques for deep learning inference.
+
+<PostOpFusion client:visible locale="en" />
+
+**Where do Fusion benefits come from?**
+1. **Bandwidth savings**: Without fusion, Conv output must be written back to VRAM, then ReLU reads it again. With fusion, Conv output stays directly in registers or L1 cache, and ReLU consumes it immediately.
+2. **Launch overhead reduction**: GPU kernel launch has tens of microseconds of latency (command submission, scheduling, context switching). With fusion, only one launch is needed.
+3. **Instruction pipeline optimization**: The fused kernel can leverage instruction-level parallelism (ILP), with Conv and ReLU instructions interleaved for execution.
+
+Post-op types supported by oneDNN include:
+- **Eltwise**: ReLU, GELU, Sigmoid, Tanh, and other activation functions
+- **Sum**: Residual addition
+- **Binary**: Element-wise addition, multiplication (for attention masks)
+
+**Code Example:**
+```cpp
+// Create a fused Conv + ReLU + Sum primitive
+dnnl::post_ops ops;
+ops.append_eltwise(1.0f, dnnl::algorithm::eltwise_relu, 0.0f, 0.0f);
+ops.append_sum(1.0f);  // residual connection
+
+dnnl::primitive_attr attr;
+attr.set_post_ops(ops);
+
+auto conv_pd = dnnl::convolution_forward::primitive_desc(
+    eng, /* ... */, attr);
+```
+
+In actual inference, Conv + BatchNorm + ReLU is the most common fusion combination. oneDNN folds BatchNorm's scaling and bias into Conv's weights, making the entire process zero-overhead.
+
+## Primitive Cache Mechanism
+
+Since Primitive compilation is expensive, oneDNN includes a built-in **Primitive Cache** that uses (operation_type, shapes, data_types, format_tags) as the key to cache compiled primitive objects.
+
+<PrimitiveCacheFlow client:visible locale="en" />
+
+**Cache Design Details:**
+- **LRU eviction policy**: Caches 128 primitives by default; when the limit is exceeded, the least recently used primitive is evicted.
+- **Thread safety**: In multi-threaded inference, the cache is protected by a read-write lock, with the hit path requiring only a read lock.
+- **Hit rate optimization**: Fixing batch size and input shapes significantly improves hit rates. Dynamic shapes cause a compilation for each new shape.
+
+**Environment Variable Configuration:**
+```bash
+# Set cache capacity (default 128)
+export ONEDNN_PRIMITIVE_CACHE_CAPACITY=256
+
+# Enable verbose logging to observe cache behavior
+export ONEDNN_VERBOSE=1
+```
+
+In production environments, inference services typically:
+1. **Pre-compile**: Iterate through all possible input shapes at startup, triggering compilation and caching.
+2. **Persist**: Save compiled SPIR-V binaries to disk, loading them directly on subsequent startups (must be implemented manually, as oneDNN does not provide this).
+3. **Shape alignment**: Pad dynamic inputs to fixed shapes (e.g., batch size must be a multiple of 8) to reduce cache misses.
+
+## Supported Operations and Data Types
+
+The Intel Xe2 iGPU accelerates INT8, FP16, and BF16 matrix multiplication through XMX (Xe Matrix Extensions) units, but different operators have varying levels of data type support.
+
+<OpDataTypeMatrix locale="en" />
+
+**Data Type Selection Recommendations:**
+1. **MatMul/Convolution**: Prefer **BF16**, which has the same dynamic range as FP32 (8-bit exponent), avoiding FP16's overflow issues while benefiting significantly from XMX acceleration.
+2. **Softmax/LayerNorm**: Use **FP16** or **FP32**. Although BF16 is supported, oneDNN internally converts to FP32 for computation, offering no performance advantage.
+3. **INT8 quantization**: Suitable for inference, but requires quantization-aware training (QAT) or post-training quantization (PTQ). oneDNN supports both symmetric and asymmetric INT8 quantization.
+
+**Xe2 XMX Performance:**
+- **BF16 MatMul**: Theoretical peak ~8 TFLOPS (Arc A770)
+- **INT8 MatMul**: Theoretical peak ~16 TOPS
+- **FP32 MatMul**: Theoretical peak ~2 TFLOPS (no XMX acceleration, uses EU ALU)
+
+In practical testing, BF16 Transformer inference achieves **2-3x** speedup compared to FP32, with accuracy loss typically within 0.5%.
+
+## Summary
+
+The oneDNN Primitive system is the software foundation for Intel GPU deep learning acceleration. It abstracts away hardware details through the **Engine abstraction**, automatically optimizes memory layout through **Format Propagation**, reduces bandwidth waste through **Post-op Fusion**, and eliminates compilation bottlenecks through the **Primitive Cache**.
+
+After understanding oneDNN's core concepts, you can:
+1. **Optimize inference latency**: By combining warmup, fixed shapes, and BF16 data types, first-inference latency can be reduced from seconds to milliseconds.
+2. **Improve throughput**: Using blocked memory format (nChw16c) + Post-op Fusion can increase GPU utilization by over 50%.
+3. **Debug performance issues**: Through `ONEDNN_VERBOSE=1` logging, observe operator selection, memory format conversion, and cache hit behavior to locate bottlenecks.
+
+Next, we will dive into the Intel iGPU hardware architecture, exploring the workings of Xe Cores, XMX, and Shared Local Memory, as well as how to write efficient SPIR-V kernels by hand.
+
+## Further Reading
+
+- [oneDNN Performance Profiling Guide](https://oneapi-src.github.io/oneDNN/dev_guide_profiling.html) -- Using VTune and oneDNN verbose logs for performance analysis
+- [Memory Format Propagation in oneDNN](https://oneapi-src.github.io/oneDNN/dev_guide_understanding_memory_formats.html) -- Automatic format tag inference mechanism
+- [Post-ops and Attributes](https://oneapi-src.github.io/oneDNN/dev_guide_attributes.html) -- Supported fusion types and configuration methods
+- [Intel Xe Matrix Extensions (XMX) Deep Dive](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-deep-learning-boost-new-instruction-bfloat16.html) -- Hardware details of the Xe2 matrix acceleration unit

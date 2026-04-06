@@ -1,0 +1,123 @@
+---
+title: "Actor-Critic and PPO: Stable Policy Optimization"
+slug: ppo-actor-critic
+locale: en
+tags: [actor-critic, ppo, gae, advantage, clipping, trust-region]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [policy-gradient]
+references:
+  - type: paper
+    title: "Proximal Policy Optimization Algorithms (Schulman et al., 2017)"
+    url: "https://arxiv.org/abs/1707.06347"
+  - type: paper
+    title: "High-Dimensional Continuous Control Using Generalized Advantage Estimation (Schulman et al., 2016)"
+    url: "https://arxiv.org/abs/1506.02438"
+  - type: paper
+    title: "Trust Region Policy Optimization (Schulman et al., 2015)"
+    url: "https://arxiv.org/abs/1502.05477"
+  - type: website
+    title: "Policy Gradient Algorithms — Lilian Weng"
+    url: "https://lilianweng.github.io/posts/2018-04-08-policy-gradient/"
+  - type: website
+    title: "UC Berkeley CS285 Lectures 7-9"
+    url: "http://rail.eecs.berkeley.edu/deeprlcourse/"
+  - type: website
+    title: "Hugging Face Deep RL Course: PPO"
+    url: "https://huggingface.co/learn/deep-rl-course/unit8/introduction"
+---
+
+import ActorCriticArchitecture from '../../../components/interactive/ActorCriticArchitecture.tsx';
+import GAELambdaSlider from '../../../components/interactive/GAELambdaSlider.tsx';
+import TrustRegionViz from '../../../components/interactive/TrustRegionViz.tsx';
+import PPOClipExplainer from '../../../components/interactive/PPOClipExplainer.tsx';
+import PPOvsVanillaPG from '../../../components/interactive/PPOvsVanillaPG.tsx';
+import PPOForLLM from '../../../components/interactive/PPOForLLM.tsx';
+
+## Actor-Critic Architecture
+
+In the previous article we saw the idea behind REINFORCE + Baseline: using $V(s)$ as a baseline to reduce variance. However, REINFORCE still requires sampling a complete trajectory before updating.
+
+**Actor-Critic** takes this further: it uses a separate neural network (the Critic) to learn $V(s)$, so that at every step we can compute the TD error as an Advantage signal:
+
+$$\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$$
+
+This $\delta_t$ is a **one-step estimate of the Advantage**: if the actual reward plus the value of the next state exceeds the expected value of the current state, it means the action was "better than expected."
+
+<ActorCriticArchitecture client:visible locale="en" />
+
+The two networks each have a distinct role:
+- **Actor** $\pi(a|s;\theta)$: the policy network, which decides what action to take
+- **Critic** $V(s;w)$: the value network, which evaluates how good a state is
+
+## GAE: Balancing Bias and Variance
+
+The one-step TD error $\delta_t$ has high bias but low variance; the Monte Carlo return has low bias but high variance. **GAE (Generalized Advantage Estimation)** uses a parameter $\lambda$ to smoothly interpolate between the two:
+
+$$\hat{A}_t^{GAE(\gamma,\lambda)} = \sum_{l=0}^{\infty} (\gamma\lambda)^l \delta_{t+l}$$
+
+- $\lambda = 0$: uses only the one-step TD error (high bias, low variance)
+- $\lambda = 1$: equivalent to the Monte Carlo return (low bias, high variance)
+- In practice, $\lambda = 0.95 \sim 0.97$ works best
+
+<GAELambdaSlider client:visible locale="en" />
+
+## The Trust Region Problem
+
+Policy Gradient has a critical practical issue: **if the step size is too large the policy collapses; if it's too small convergence is painfully slow**.
+
+Standard gradient descent cannot guarantee that performance won't plummet after a policy update. A seemingly reasonable gradient direction, if the step is too large, can push the policy into a completely different behavioral mode, causing catastrophic performance collapse.
+
+**TRPO (Trust Region Policy Optimization)** solves this by adding a KL divergence constraint at each update, ensuring the new and old policies stay "close enough":
+
+$$\max_\theta \hat{\mathbb{E}}\left[\frac{\pi_\theta(a|s)}{\pi_{\theta_{old}}(a|s)} \hat{A}\right] \quad \text{s.t. } KL(\pi_{\theta_{old}} \| \pi_\theta) \leq \delta$$
+
+<TrustRegionViz client:visible locale="en" />
+
+## PPO: A Simple and Effective Trust Region Method
+
+While TRPO is theoretically elegant, constrained optimization is computationally expensive. **PPO (Proximal Policy Optimization)** achieves a similar effect with a clever clip operation:
+
+$$L^{CLIP}(\theta) = \hat{\mathbb{E}}\left[\min\left(r_t(\theta)\hat{A}_t, \; \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t\right)\right]$$
+
+where $r_t(\theta) = \frac{\pi_\theta(a_t|s_t)}{\pi_{\theta_{old}}(a_t|s_t)}$ is the probability ratio between new and old policies.
+
+**Intuition behind clipping**:
+- When $\hat{A} > 0$ (good action): once the ratio exceeds $1+\epsilon$, the objective stops growing, preventing excessive probability increases
+- When $\hat{A} < 0$ (bad action): once the ratio drops below $1-\epsilon$, the objective stops decreasing, preventing excessive probability reductions
+
+This "pessimistic" strategy ensures every update stays within a safe range.
+
+<PPOClipExplainer client:visible locale="en" />
+
+<PPOvsVanillaPG client:visible locale="en" />
+
+## PPO's Role in LLMs
+
+When PPO meets LLMs, RL concepts map in interesting ways:
+
+| Game RL | LLM RLHF |
+|---------|----------|
+| Environment state $s$ | Prompt + generated tokens so far |
+| Action $a$ | Next token |
+| Policy $\pi(a|s)$ | LLM's next-token distribution |
+| Trajectory | A complete response |
+| Reward | RM score - beta * KL penalty |
+| Episode ends | Generating the EOS token |
+
+The **KL penalty** $\beta \cdot KL(\pi_\theta \| \pi_{ref})$ is a critical addition in LLM RLHF: it prevents the LLM from drifting too far from the pretrained distribution, avoiding reward hacking (discussed in detail in later articles).
+
+<PPOForLLM client:visible locale="en" />
+
+## Summary
+
+This article covered the evolution from Actor-Critic to PPO:
+
+1. **Actor-Critic** uses a Critic network to provide step-by-step Advantage signals, eliminating the need for complete trajectories
+2. **GAE** uses the lambda parameter to elegantly trade off between bias and variance
+3. **Trust Region** addresses the policy update step size problem, preventing performance collapse
+4. **PPO** simplifies the trust region constraint with a clip operation, making it the most practical policy optimization algorithm
+5. **PPO + LLM** maps token generation to RL action sequences, with a KL penalty to prevent drift
+
+PPO is the core engine of RLHF. In the next article, we will introduce the complete RLHF pipeline: SFT, Reward Model, and PPO, showing how PPO aligns LLMs in practice.

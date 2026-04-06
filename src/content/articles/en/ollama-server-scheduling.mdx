@@ -1,0 +1,316 @@
+---
+title: "Server Layer and Scheduling"
+slug: "ollama-server-scheduling"
+locale: "en"
+tags: ["ollama", "scheduler", "runner", "model-management"]
+prerequisites: ["ollama-architecture", "ollama-kv-cache-scheduling"]
+difficulty: "advanced"
+created: "2026-04-04"
+updated: "2026-04-06"
+references:
+  - type: "repo"
+    title: "Ollama GitHub"
+    url: "https://github.com/ollama/ollama"
+  - type: "repo"
+    title: "Ollama FAQ"
+    url: "https://github.com/ollama/ollama/blob/main/docs/faq.md"
+---
+
+import RunnerLifecycle from '../../../components/interactive/RunnerLifecycle.tsx';
+import MemoryBudgetCalculator from '../../../components/interactive/MemoryBudgetCalculator.tsx';
+import MultiModelScheduler from '../../../components/interactive/MultiModelScheduler.tsx';
+
+As a local LLM inference engine, Ollama's server layer handles critical tasks including request scheduling, model lifecycle management, and memory budget allocation. This article dives deep into the architectural design of Ollama Server, its Scheduler dispatching strategy, the Runner state machine, and resource coordination mechanisms in multi-model concurrent scenarios.
+
+## Ollama Server Architecture
+
+Ollama Server is an HTTP server built on the Gin framework, responsible for exposing RESTful APIs and coordinating the backend inference engine. Its core architecture is divided into three layers:
+
+### HTTP Layer
+
+The Server handles client requests through Gin routing. The main endpoints include:
+
+- **`POST /api/generate`** — Single-turn generation request, accepts a prompt and streams back tokens
+- **`POST /api/chat`** — Multi-turn conversation request, maintains conversation history
+- **`POST /api/embeddings`** — Generates text embeddings
+- **`POST /api/pull`** — Pulls models from the Ollama Registry
+- **`POST /api/create`** — Creates custom models from a Modelfile
+
+Each request passes through a middleware layer for logging, rate limiting, authentication (if enabled), and parameter validation. After validation, requests are forwarded to the Scheduler layer for processing.
+
+### Scheduler Layer
+
+The Scheduler is Ollama's core dispatcher, responsible for:
+
+1. **Request queue management** — Maintains a global request queue (FIFO or priority queue), ensuring multiple concurrent requests are processed in order
+2. **Model instance routing** — Looks up or creates the corresponding Runner instance based on the requested model name
+3. **Resource budget checking** — Calculates the memory required for model loading (weights + KV Cache) and determines the GPU/CPU placement strategy
+4. **Concurrency control** — Limits the number of simultaneously running Runners to prevent OOM
+
+The Scheduler communicates with Runner processes via IPC (gRPC or Unix socket), sending Load / Infer / Unload commands.
+
+### Runner Layer
+
+The Runner is the subprocess that actually performs inference, wrapping llama.cpp's C++ bindings. Each Runner corresponds to a loaded model instance with its own independent memory space (mmap GGUF, GPU VRAM, KV Cache). Runners report their status to the Scheduler through a health check mechanism, supporting hot reload and graceful shutdown.
+
+## The Scheduler
+
+The Scheduler's core responsibility is coordinating model inference requests from multiple users under limited hardware resources. Its scheduling strategies include:
+
+### Request Queue and Priority
+
+The Ollama Scheduler uses a FIFO queue by default, processing requests in arrival order. Future versions may support priority scheduling, allowing urgent requests to jump the queue. Requests enter the queue with metadata:
+
+- **model** — Target model name (e.g., `llama3-8b`)
+- **context_length** — Context length (affects KV Cache size)
+- **max_tokens** — Maximum number of tokens to generate
+- **stream** — Whether to stream the response
+
+The Scheduler looks up loaded Runners based on the model name:
+
+- If the model is loaded and idle → Directly reuse the Runner
+- If the model is loaded but busy → Join that Runner's wait queue
+- If the model is not loaded → Trigger a new Runner startup process
+
+### Concurrent Model Management
+
+Ollama supports running multiple different models simultaneously, but is constrained by the memory budget. The Scheduler maintains a global model table:
+
+```
+ModelTable = Map<ModelName, RunnerInstance>
+```
+
+When a new request arrives, the Scheduler executes the following logic:
+
+1. **Table lookup** — Check if the target model is already in the ModelTable
+2. **Memory check** — If not loaded, calculate the memory required for loading (weights + estimated KV Cache)
+3. **Eviction strategy** — If memory is insufficient, perform LRU (Least Recently Used) eviction: unload the least recently used model
+4. **Load model** — Start a new Runner subprocess, add it to the ModelTable after the health check passes
+
+The LRU eviction strategy ensures frequently used models stay resident in memory while infrequently used models are loaded on demand. Users can limit the number of simultaneously loaded models via the `OLLAMA_MAX_LOADED_MODELS` environment variable (default is 1, i.e., single-model mode).
+
+## Runner Lifecycle
+
+Each Runner process is a state machine that transitions through five states under the Scheduler's control:
+
+<RunnerLifecycle client:visible locale="en" />
+
+### State Transition Details
+
+#### 1. Idle → Loading
+
+When the Scheduler receives the first request, it triggers the Runner startup process:
+
+- Fork a subprocess and execute the `ollama-runner` binary
+- The Runner loads the GGUF file via mmap (zero-copy, saving memory)
+- Determine the layer allocation strategy based on the memory budget: prioritize GPU VRAM, fall back to CPU RAM if insufficient
+- Initialize KV Cache (pre-allocate a fixed-size VRAM block)
+
+Loading time depends on model size and storage speed; typically an 8B model takes 2-5 seconds.
+
+#### 2. Loading → Ready
+
+After loading is complete, the Runner performs a health check:
+
+- Send a test inference request (e.g., "Hello" → generate 1 token)
+- Verify that GPU kernels work correctly and KV Cache reads/writes are error-free
+- Report health status to the Scheduler (via gRPC `HealthCheck` RPC)
+
+Once the Scheduler receives the health signal, it marks the Runner as Ready, allowing it to process user requests.
+
+#### 3. Ready → Busy
+
+When the Scheduler assigns an inference task to the Runner, the state transitions to Busy:
+
+- The Runner receives the prompt and executes Prefill (the initial forward pass, populating the KV Cache)
+- Enters the Decode loop, generating tokens one by one until the stop condition is met
+- GPU utilization approaches 100%, VRAM consumption is stable (weights + dynamic KV Cache)
+
+During the Busy period, the Runner rejects new requests, and the Scheduler queues subsequent requests for the same model.
+
+#### 4. Busy → Ready
+
+After inference completes, the Runner returns to the Ready state:
+
+- KV Cache is retained (supports reuse for the next request, especially in conversation scenarios)
+- GPU is idle, CPU usage decreases
+- The Scheduler checks the wait queue and immediately dispatches any pending requests
+
+#### 5. Ready → Unloading
+
+If the Runner remains in the Ready state for longer than the `OLLAMA_KEEP_ALIVE` duration (default 5 minutes) without receiving new requests, the Scheduler triggers unloading:
+
+- Release KV Cache VRAM
+- Close mmap file handles
+- Gracefully terminate the subprocess (SIGTERM)
+- Remove from the ModelTable
+
+After unloading, the next request for that model must go through the Idle → Loading flow again.
+
+### Environment Variable Configuration
+
+- **`OLLAMA_KEEP_ALIVE`** — Runner idle timeout (default `5m`, can be set to `0` to disable automatic unloading)
+- **`OLLAMA_MAX_LOADED_MODELS`** — Maximum number of simultaneously loaded models (default `1`)
+- **`OLLAMA_NUM_PARALLEL`** — Number of concurrent inference requests per Runner (experimental feature)
+
+## Model Hot Loading and Unloading
+
+Ollama's hot loading mechanism allows users to avoid manually managing model lifecycles — the Scheduler automatically loads and evicts models on demand. The following animation demonstrates a typical multi-model scheduling scenario:
+
+<MultiModelScheduler client:visible locale="en" />
+
+### Scheduling Decision Analysis
+
+#### t=0s: Cold Start Loading
+
+User A requests `llama3-8B`. The Scheduler discovers the model is not loaded and triggers a Load operation:
+
+- Start a new Runner process
+- mmap the GGUF file, allocate GPU VRAM (~5 GB)
+- Initialize KV Cache (pre-allocate 2 GB)
+- Enter Ready state after the health check passes
+
+#### t=1s: First Inference
+
+User A's prompt is assigned to the `llama3-8B` Runner, which enters the Busy state for inference.
+
+#### t=3s: Multi-Model Scenario
+
+User B requests `qwen3-8B`, a different model:
+
+- The Scheduler checks the memory budget (assuming 16 GB total VRAM)
+- `llama3-8B` occupies 7 GB, the remaining 9 GB is sufficient to load `qwen3-8B`
+- Start a second Runner, load `qwen3-8B` (5 GB weights + 2 GB KV Cache)
+
+At this point, two models are running simultaneously in memory, with a total of ~14 GB VRAM usage.
+
+#### t=4s: Concurrent Inference
+
+User B is performing inference on `qwen3-8B`, while User A's `llama3-8B` is idle (Ready state).
+
+#### t=6s: Model Reuse
+
+User C requests `llama3-8B`. The Scheduler finds the model is already in memory:
+
+- No need to reload, directly reuse the existing Runner
+- Saves 2-5 seconds of cold start time
+- Marked as a Reuse operation
+
+This is the core advantage of Ollama's scheduling: frequently accessed models stay resident in memory, enabling sub-second response times.
+
+#### t=7s: Queue Processing
+
+User C's inference request executes on the `llama3-8B` Runner.
+
+#### t=9s: LRU Eviction
+
+`qwen3-8B` has been idle for more than 5 minutes since completing inference at t=4s (the `OLLAMA_KEEP_ALIVE` default), so the Scheduler executes an Unload:
+
+- Release 7 GB VRAM
+- Terminate the `qwen3-8B` Runner subprocess
+- Free up space for subsequent model loading
+
+If a subsequent request for `qwen3-8B` arrives, it will need to be Loaded again.
+
+## Memory Management
+
+Ollama's memory budget calculation determines the model placement strategy (GPU vs CPU) and whether existing models need to be evicted. The core formula is:
+
+$$
+\text{Total Memory} = \text{Model Weights} + \text{KV Cache} + \text{Overhead}
+$$
+
+Where:
+
+- **Model Weights** — GGUF file size (e.g., a Q4_K_M quantized 8B model is ~4.7 GB)
+- **KV Cache** — Cache size determined by context length, with the formula:
+  $$
+  \text{KV Size} = 2 \times L \times H \times T \times \text{precision}
+  $$
+  - $L$ = number of layers (num_layers)
+  - $H$ = hidden dimension (hidden_size)
+  - $T$ = context length (context_length)
+  - precision = 2 bytes (FP16)
+- **Overhead** — Cublas workspace, temporary buffers, etc. (~500 MB)
+
+### GPU / CPU Placement Strategy
+
+The Scheduler performs a memory budget calculation before loading a model:
+
+1. **Attempt full GPU placement** — Check if GPU VRAM is sufficient to hold weights + KV Cache
+2. **Fall back to hybrid mode** — If VRAM is insufficient, offload some layers to CPU RAM (controlled via the `--n-gpu-layers` parameter)
+3. **CPU-only mode** — If VRAM is completely insufficient, all layers run on CPU (significantly slower)
+
+The following interactive calculator demonstrates model placement results under different hardware configurations:
+
+<MemoryBudgetCalculator client:visible locale="en" />
+
+### Practical Examples
+
+Assume a user has a GPU with 8 GB VRAM and 16 GB system RAM, attempting to load the following models (context_length=2048):
+
+- **Qwen3-4B Q4_K_M** — Weights 2.6 GB + KV Cache 0.1 GB = 2.7 GB → Fits in GPU ✅
+- **Llama3-8B Q4_K_M** — Weights 4.7 GB + KV Cache 0.16 GB = 4.86 GB → Fits in GPU ✅
+- **Qwen3-14B Q4_K_M** — Weights 8.2 GB + KV Cache 0.25 GB = 8.45 GB → Exceeds VRAM, falls back to CPU ⚠️
+- **Llama3-70B Q4_K_M** — Weights 40 GB + KV Cache 0.8 GB = 40.8 GB → Exceeds RAM, cannot load ❌
+
+Users can reduce memory requirements by adjusting context_length or using more aggressive quantization (e.g., Q3_K_S).
+
+## How It Differs: Ollama vs Production-Grade Services
+
+Ollama's scheduling design differs significantly from production-grade inference services (such as vLLM and TGI), reflecting different design goal trade-offs:
+
+### vs vLLM
+
+**vLLM** is a high-performance inference engine designed for production environments:
+
+- **PagedAttention** — Dynamically paged KV Cache management, supporting high-concurrency batch inference
+- **Continuous Batching** — Tokens from different requests are mixed in the same batch for inference, maximizing GPU utilization
+- **Request Scheduling** — Supports dynamic priority queues, preemptive scheduling, and request cancellation
+
+Ollama uses static KV Cache pre-allocation, with each request inferred independently (no batching), trading throughput for simplicity and low latency (in single-request scenarios).
+
+### vs TGI (Text Generation Inference)
+
+**TGI** is a high-performance serving framework from HuggingFace:
+
+- **Continuous Batching** — Similar to vLLM, supports dynamic batching and streaming responses
+- **Tensor Parallelism** — Supports multi-GPU parallel inference for large models (e.g., 70B/175B)
+- **Flash Attention Integration** — Uses Flash Attention 2 to optimize the Prefill phase
+
+Ollama currently does not support Tensor Parallelism; 70B models must run on a single GPU or CPU (which is slow). Its scheduler also does not support continuous batching, so concurrent performance falls short of TGI.
+
+### Ollama's Design Trade-offs
+
+Ollama's core goal is **ease of local deployment**, not production-grade high throughput:
+
+- **Pros**:
+  - Minimal deployment (single binary + command line)
+  - Controllable memory usage (load/unload on demand)
+  - Well-suited for individual users and edge devices
+  - Supports fast multi-model switching
+
+- **Cons**:
+  - Low concurrent throughput (no batching)
+  - Slow inference for large models (no Tensor Parallelism)
+  - Simple scheduling strategy (FIFO + LRU)
+
+For enterprise high-concurrency scenarios, vLLM or TGI is recommended; for personal development and rapid prototyping, Ollama is the ideal choice.
+
+## Summary
+
+Ollama Server's scheduling layer achieves on-demand multi-model loading, hot reuse, and automatic unloading under limited hardware resources through its carefully designed Scheduler + Runner architecture. Its core features include:
+
+1. **State machine management** — The Runner's five-state transitions: Idle / Loading / Ready / Busy / Unloading
+2. **LRU eviction strategy** — Automatically unloads infrequently used models, freeing memory for new models
+3. **Memory budget calculation** — Dynamically determines GPU/CPU placement strategy, maximizing hardware utilization
+4. **Simple and reliable** — No complex batching or parallelization logic, focused on single-user low-latency scenarios
+
+Understanding Ollama's scheduling mechanism helps optimize local deployment configurations (e.g., properly setting `OLLAMA_KEEP_ALIVE` and `OLLAMA_MAX_LOADED_MODELS`) and predict performance across different hardware setups.
+
+## Further Reading
+
+- [Ollama Architecture](./ollama-architecture) — Ollama's overall architecture and component interactions
+- [KV Cache Scheduling](./ollama-kv-cache-scheduling) — KV Cache memory management and optimization
+- [vLLM PagedAttention Paper](https://arxiv.org/abs/2309.06180) — High-performance inference scheduling mechanism
+- [Ollama FAQ - Model Management](https://github.com/ollama/ollama/blob/main/docs/faq.md) — Official model management documentation

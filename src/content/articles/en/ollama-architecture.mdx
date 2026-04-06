@@ -1,0 +1,117 @@
+---
+title: "Ollama + llama.cpp Architecture Overview"
+slug: "ollama-architecture"
+locale: "en"
+tags: ["ollama", "llama-cpp", "architecture", "inference"]
+difficulty: "intermediate"
+created: "2026-04-04"
+updated: "2026-04-06"
+references:
+  - type: "repo"
+    title: "Ollama GitHub"
+    url: "https://github.com/ollama/ollama"
+  - type: "repo"
+    title: "llama.cpp GitHub"
+    url: "https://github.com/ggerganov/llama.cpp"
+  - type: "repo"
+    title: "GGML GitHub"
+    url: "https://github.com/ggerganov/ggml"
+---
+
+import OllamaArchitectureOverview from '../../../components/interactive/OllamaArchitectureOverview.tsx';
+import DualEngineSelector from '../../../components/interactive/DualEngineSelector.tsx';
+import FrameworkComparison from '../../../components/interactive/FrameworkComparison.tsx';
+
+## Why Ollama + llama.cpp
+
+In LLM application development, calling cloud APIs from OpenAI, Anthropic, and others is the fastest way to get started. But when you need to handle sensitive data, run in offline environments, or reduce long-term costs, local inference becomes essential. However, using raw inference engines directly has a high barrier: you must manually manage model downloads, configure hardware acceleration, handle concurrent requests, and deal with various architecture differences.
+
+Ollama was created to solve this pain point. It can be thought of as "Docker for LLMs": with a single command `ollama run llama3.2`, it automatically handles model downloading, quantization selection, hardware adaptation, and service startup. Developers don't need to worry about low-level details and get out-of-the-box local inference capabilities. Whether it's an individual developer experimenting on a laptop or an enterprise deploying privacy-sensitive applications on edge devices, Ollama provides a unified, streamlined experience.
+
+Ollama's core inference capabilities come from llama.cpp and GGML, two C/C++ low-level engines. llama.cpp was originally optimized specifically for LLaMA models but later expanded to support 120+ mainstream architectures, becoming the most active local inference engine in the community. GGML serves as llama.cpp's computational foundation, providing cross-platform tensor operations and hardware backend scheduling. Through the two-tier architecture of a Go service layer + C/C++ compute engine, Ollama strikes an ideal balance between usability and performance.
+
+## Two-Tier Architecture
+
+Ollama uses a layered design: the upper layer is the service layer written in Go, responsible for the HTTP API, model lifecycle management, request scheduling, and concurrency control; the lower layer is the inference engine layer written in C/C++, responsible for high-performance tensor computation and hardware acceleration. This design fully leverages the strengths of both languages: Go's concurrency model (goroutines) and networking libraries (Gin) make server-side development clean and efficient, while C/C++'s low-level control and SIMD optimizations push compute performance close to hardware limits.
+
+The two layers are isolated through separate processes: the Ollama main process spawns runner child processes, and they communicate via localhost HTTP to pass inference requests and responses. This design offers two benefits: first, an inference crash won't affect main service stability; second, different inference engine implementations can be swapped flexibly. Currently Ollama supports two runners: the pure Go ollamarunner and the llama.cpp CGo binding llamarunner, with the system automatically selecting the optimal option based on model architecture.
+
+The diagram below shows the complete component call chain: from an HTTP request arriving at the Server, through the Scheduler for queuing and resource allocation, to the LLM Runner Manager launching the corresponding runner child process, and finally calling the GGML Backend to execute computation on CUDA/Metal/Vulkan/CPU. Click any module for detailed information.
+
+<OllamaArchitectureOverview client:visible locale="en" />
+
+## Core Component Map
+
+The **HTTP Server** is the system entry point, implementing a RESTful API based on the Gin framework. Key endpoints include `/api/generate` (single generation), `/api/chat` (multi-turn conversation), `/api/pull` (model download), and `/api/push` (model upload). The Server handles request parameter parsing, authentication, streaming response delivery, and other front-end interaction logic.
+
+The **Scheduler** is the coordination hub, managing model loading and request queuing. It maintains a global model cache (based on LRU policy), deciding when to load new models or unload old ones. When GPU memory is insufficient, the Scheduler performs intelligent scheduling based on request priority and memory budget to ensure stable system operation.
+
+The **LLM Runner Manager** handles the lifecycle of runner child processes. It determines which runner to launch based on model format and architecture, monitors child process health, and automatically restarts on failures. The Manager also implements load balancing for inference requests — when multiple requests arrive concurrently, it can reuse the same model instance.
+
+**ollamarunner / llamarunner** are the dual engines that actually execute inference. ollamarunner is a pure Go implementation supporting approximately 21 mainstream architectures, using pipeline parallel execution (separating prefill and decode), which outperforms synchronous approaches. llamarunner is llama.cpp's CGo binding, supporting 120+ architectures and serving as a compatibility fallback.
+
+The **GGML Backend** is the low-level compute library, providing tensor operation primitives (matmul, add, mul, softmax, etc.) and computation graph construction. GGML's key feature is multi-backend abstraction: the same computation graph code can automatically dispatch to CUDA (NVIDIA GPU), Metal (Apple GPU), Vulkan (cross-platform GPU), or CPU (SIMD-optimized) execution without manual adaptation by developers.
+
+Data flows top-down: requests flow from the Server into the Scheduler, then the LLM Manager assigns them to a runner, the runner calls the GGML hardware backend to complete computation, and results return along the same path. Control flow is more flexible: the Scheduler can proactively unload models, the Manager can restart failed runners, forming an adaptive closed-loop system.
+
+## Dual Engine Design
+
+Ollama maintains two engine implementations at the inference layer — this redundant design stems from a practical trade-off: performance vs compatibility. ollamarunner is a pure Go rewrite of the inference engine by the Ollama team, currently supporting 21 mainstream architectures (such as LLaMA, Mistral, Qwen, Gemma). By avoiding the overhead of CGo cross-language calls, ollamarunner's pipeline execution mode allows the prefill (processing the prompt) and decode (generating tokens) phases to run in parallel, yielding theoretically higher throughput.
+
+But the pace of LLM architecture innovation far outstrips any single team's ability to adapt. As a community-driven project, llama.cpp supports over 120 architecture variants, covering a broad range from GPT-2 to the latest research models. Therefore, Ollama retains llamarunner (llama.cpp's CGo binding) as a compatibility fallback: when encountering an architecture not supported by ollamarunner, it automatically degrades to llamarunner, ensuring a seamless switch for users.
+
+The selection logic is straightforward: when loading a GGUF model, the system calls `model.NewTextProcessor` to attempt initializing ollamarunner. If successful (meaning the architecture is supported), it uses the pure Go path; if it fails (architecture not implemented or parsing error), it falls back to llamarunner. The entire process is transparent to users, visible only in logs as the runner type.
+
+The diagram below shows this decision flow: after a GGUF model is input, it branches to one of two runners through architecture detection, but both ultimately call the same GGML Backend for computation, ensuring execution semantic consistency.
+
+<DualEngineSelector client:visible locale="en" />
+
+From a long-term roadmap perspective, the Ollama team is progressively expanding ollamarunner's architecture support, with the goal of routing most requests through the pure Go path to reduce CGo maintenance costs. But llamarunner's existence ensures stability during the transition and leaves room for niche models and experimental architectures.
+
+## Comparison with Mainstream Inference Frameworks
+
+In the LLM inference space, different frameworks optimize for different scenarios. **vLLM** is a high-performance server engine widely used in both academia and industry. Its core innovation, PagedAttention, dramatically improves KV Cache utilization through memory paging, making it particularly suited for large-batch, high-concurrency scenarios. However, vLLM has a strong dependency on CUDA, must run on NVIDIA GPUs, and requires a Python runtime with many dependencies, raising the deployment barrier.
+
+**TensorRT-LLM** is NVIDIA's official inference engine, built on the TensorRT compiler to perform deep CUDA kernel fusion and quantization optimization, pushing performance close to hardware peak. But the cost is deployment complexity: models must be pre-compiled into engine files, and the compilation process is tied to specific GPU models, limiting flexibility. Furthermore, TensorRT-LLM only supports NVIDIA hardware and cannot be used in AMD, Apple, or CPU environments.
+
+**TGI (Text Generation Inference)** is a production-grade inference service from HuggingFace, integrating modern features like Flash Attention v2, GPTQ/AWQ quantization, and streaming output. TGI rewrites core logic in Rust, outperforming pure Python implementations, but still primarily targets server deployment, has a strong CUDA dependency, and requires Docker containerization.
+
+By comparison, **Ollama + llama.cpp** is positioned as "the local inference solution for desktops and edge devices." Its unique advantages include:
+
+1. **Hardware compatibility**: Supports CUDA (NVIDIA), Metal (Apple), Vulkan (cross-platform GPU), and CPU (SIMD-optimized), covering everything from high-end servers to laptops
+2. **Single-binary distribution**: No Python environment or Docker needed — one executable file, reducing deployment and maintenance costs
+3. **Offline-first**: All dependencies are statically linked, models and weights are stored locally, fully supporting air-gapped environments
+4. **GGUF format**: Model files are self-contained with quantization parameters and tokenizer, requiring no extra configuration files, making sharing and migration extremely convenient
+
+The table below compares core features across the four frameworks:
+
+<FrameworkComparison client:visible locale="en" />
+
+In summary, if you need to deploy on cloud GPU servers and pursue maximum throughput, vLLM or TensorRT-LLM are better choices; if you need to run on laptops, edge devices, or CPU environments, or want to simplify the deployment process, Ollama is the go-to option. Framework selection is fundamentally about matching scenarios and constraints — there are no absolute winners, only the right fit.
+
+## The Deeper Logic of Technical Choices
+
+Several of Ollama's core design decisions stem from the goal of "lowering the barrier to local inference." First is the **Go + C/C++ hybrid architecture**: why not use all Python like vLLM, or all C++ like llama.cpp? The answer is that Go's concurrency model and networking libraries are more efficient than Python and easier to maintain than C++, while C/C++'s compute performance and hardware control capabilities are irreplaceable. This hybrid approach is a sensible engineering middle ground.
+
+Second is **mmap memory-mapped model loading**: the traditional approach reads model weights entirely into memory, which causes slow startup and high memory usage. mmap lets the process map the file directly to virtual address space, loading pages on demand. This speeds up startup and allows multiple processes to share the same model copy, saving physical memory. This is especially important for multi-model switching on personal computers.
+
+Finally, **single-binary distribution**: no dependency on Python virtual environments, no Docker images needed — all dependencies are statically compiled into a single executable. This distribution approach lets Ollama be installed and upgraded like traditional software, extremely user-friendly for non-technical users. While it sacrifices some flexibility (no dynamic Python plugin installation), this is the right trade-off for local inference scenarios.
+
+Behind these technical choices is a clear product positioning: Ollama is not meant to replace vLLM's role in data centers, but to let every developer easily run LLMs on their laptop, as naturally as using Docker to run a database. Every layer of the architecture is designed around this vision — technology serves the product, the product serves the user, forming a complete loop.
+
+## Recommended Learning Resources
+
+If you want to dive deeper into Ollama and llama.cpp, here are our curated resources:
+
+### Official Documentation and Source Code
+- **Ollama GitHub Repository** — Contains architecture documentation, REST API docs, model library, and multi-platform deployment guides. The primary source for understanding Ollama's design. (github.com/ollama/ollama)
+- **llama.cpp GitHub Repository** — A pure C/C++ LLM inference engine with detailed documentation on the GGUF format, 1.5-8 bit quantization support, multi-backend (CUDA/Metal/Vulkan/HIP) acceleration, CPU+GPU hybrid inference, and other core features. (github.com/ggerganov/llama.cpp)
+- **GGUF Format Specification** — The official specification document for the GGUF file format, defining the binary format for model metadata and tensor storage. A foundation for understanding local LLM deployment.
+
+### Blog Posts and Tutorials
+- **Finbarr Timbers "How is LLaMa.cpp possible?"** — Starts from memory bandwidth bottleneck analysis, explaining why quantized LLMs can run on consumer hardware. Includes performance calculations for different devices, helping understand llama.cpp's technical feasibility.
+- **Ollama Official Blog** — Publishes updates on new features, model support, architecture changes, and more. (ollama.com/blog)
+
+### Interactive Experiments
+- **Ollama Model Library** — Browse available models, view parameter specs and quantized versions, and directly experience the `ollama pull` + `ollama run` workflow. (ollama.com/library)
+- **GGUF Space (Hugging Face)** — Convert HF models to GGUF format online, zero-code experience of the model format conversion needed for llama.cpp. (huggingface.co/spaces/ggml-org/gguf-my-repo)

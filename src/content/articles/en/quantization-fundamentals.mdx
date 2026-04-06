@@ -1,0 +1,148 @@
+---
+title: "Quantization Fundamentals"
+slug: "quantization-fundamentals"
+locale: "en"
+tags: ["quantization", "data-types", "mixed-precision", "inference-optimization"]
+prerequisites: []
+difficulty: "intermediate"
+created: "2026-04-05"
+updated: "2026-04-06"
+references:
+  - type: "paper"
+    title: "A Survey of Quantization Methods for Efficient Neural Network Inference"
+    url: "https://arxiv.org/abs/2103.13630"
+  - type: "paper"
+    title: "Integer Quantization for Deep Learning Inference: Principles and Empirical Evaluation"
+    url: "https://arxiv.org/abs/2004.09602"
+  - type: "paper"
+    title: "FP8 Formats for Deep Learning"
+    url: "https://arxiv.org/abs/2209.05433"
+---
+
+import DataTypeBitLayout from '../../../components/interactive/DataTypeBitLayout.tsx';
+import QuantizationMapping from '../../../components/interactive/QuantizationMapping.tsx';
+import GranularityCompare from '../../../components/interactive/GranularityCompare.tsx';
+import HardwareComputePath from '../../../components/interactive/HardwareComputePath.tsx';
+
+Quantization is the core technique for LLM inference optimization — by reducing the numerical precision of weights and activations (e.g., FP16 → INT4), it achieves 2-4x memory savings and inference speedup. This article starts from data type fundamentals and builds a complete theoretical framework for quantization: What is the mathematical essence of quantization? What is the difference between symmetric and asymmetric? How does granularity choice affect accuracy? Does hardware support native low-precision computation? These foundational concepts are prerequisites for understanding advanced topics like PTQ, QAT, and KV Cache quantization.
+
+## Data Type Overview
+
+The data types involved in LLM inference span from 32-bit to 4-bit, each making different trade-offs between dynamic range and precision. Understanding their bit-level structure is the first step in quantization.
+
+Floating-point types (FP32, FP16, BF16, FP8) consist of three parts: sign + exponent + mantissa. The exponent determines dynamic range, and the mantissa determines precision. Key comparisons:
+
+- **FP16 vs BF16**: BF16 ("Brain Floating Point") retains FP32's 8-bit exponent, providing the same dynamic range ($\pm 3.4 \times 10^{38}$), but with only 7-bit mantissa (precision of approximately 2.4 significant digits). FP16's 5-bit exponent limits the range ($\pm 65504$), but the 10-bit mantissa provides higher precision. In practice, BF16 is better suited for training (no overflow), while FP16 is better for inference scenarios requiring precision.
+- **Two FP8 formats**: E4M3 (4-bit exponent + 3-bit mantissa) provides higher precision, used for weights and activations in the forward pass; E5M2 (5-bit exponent + 2-bit mantissa) has a wider range, used for gradients in the backward pass. NVIDIA H100/H200 natively supports both formats.
+
+Integer types (INT8, INT4) have no exponent/mantissa distinction — all bits represent an exact integer value. The advantage is simple computation and efficient hardware implementation; the disadvantage is the inability to represent the non-uniform distribution of floating-point numbers — they must be used with a scale factor.
+
+<DataTypeBitLayout client:visible locale="en" />
+
+## The Mathematical Essence of Quantization
+
+The core operation of quantization is mapping continuous floating-point values to discrete integers:
+
+$$q = \text{clip}\left(\text{round}\left(\frac{x}{s}\right) + z, \; q_{\min}, \; q_{\max}\right)$$
+
+Where $s$ is the scale factor, $z$ is the zero-point, and $q_{\min}$ and $q_{\max}$ are the range of quantized values. Dequantization restores the discrete values back to floating-point approximations:
+
+$$\hat{x} = s \cdot (q - z)$$
+
+Quantization error has two sources: **rounding error** (the round operation truncates the exact quotient to the nearest integer) and **clipping error** (the clip operation truncates out-of-range values to the boundary).
+
+### Symmetric vs Asymmetric Quantization
+
+- **Symmetric quantization**: $z = 0$, $s = \max(|x|) / q_{\max}$. The mapping is symmetric about zero, and float 0 maps exactly to int 0. The advantage is simplicity and efficiency (no need to store a zero-point); the drawback is that for biased distributions (such as ReLU activations, which are all positive), half the quantization range is wasted.
+- **Asymmetric quantization**: $z \neq 0$, $s = (\max(x) - \min(x)) / (q_{\max} - q_{\min})$. The mapping can be offset, fully utilizing the quantization range. Each group stores an additional zero-point.
+
+Rule of thumb: weight distributions are usually approximately symmetric → use symmetric quantization. Activations often have a bias (especially all-positive values after ReLU) → use asymmetric quantization.
+
+The interactive component below demonstrates the complete quantize → dequantize process. You can switch between symmetric and asymmetric modes to observe the differences:
+
+<QuantizationMapping client:visible locale="en" />
+
+## Quantization Granularity
+
+Quantization granularity determines "how large a range of weights shares a single scale":
+
+- **Per-tensor**: The entire weight tensor uses one scale. Simplest but highest error — if some channels have a value range 10x that of other channels, the normal channels' precision is degraded by the outlier.
+- **Per-channel**: Each output channel has an independent scale. The default choice of mainstream inference frameworks (TensorRT, ONNX Runtime), with a good balance of accuracy and overhead.
+- **Per-group**: Every $g$ weights share a scale. llama.cpp uses group size = 32 (called a "block"). Finer-grained than per-channel, suitable for low bit-width (4-bit) scenarios.
+- **Per-block**: A further refined grouping strategy. llama.cpp's K-quant uses a two-level structure of super-block (256 weights) + sub-block (32 weights).
+
+The finer the granularity, the more each group has its own independent scale/zero-point, resulting in smaller quantization error but larger metadata storage overhead. llama.cpp's choice of block size = 32 is an empirical trade-off between accuracy and overhead — 32 INT4 values (16 bytes) + 1 FP16 scale (2 bytes) = 18 bytes, with an effective precision of 4.5 bpw (bits per weight).
+
+<GranularityCompare client:visible locale="en" />
+
+## Dequantization vs Native Low-Precision Computation
+
+There are two paths for inference after quantization, depending on hardware support:
+
+**Dequant path (compatibility mode)**: Weights are stored as INT4/INT8 → dequantized to FP16 at inference time → matrix multiplication in FP16 → FP16 output. Most CPUs and older GPUs take this path. The benefit is good compatibility (any hardware supporting FP16); the cost is performance overhead from dequantization, with throughput not much faster than original FP16 (the main benefit is bandwidth savings).
+
+**Native low-precision path (acceleration mode)**: INT8 weight × INT8 activation → INT32 accumulation → FP16 output. No dequantization needed — hardware directly executes integer multiply-add. Supported hardware:
+- **NVIDIA Tensor Core** (A100/H100): INT8 and FP8 GEMM, with 2x throughput compared to FP16
+- **Apple ANE** (Apple Neural Engine): INT8 and partial INT4 support
+- **Intel VNNI/AMX**: INT8 vector/matrix operation acceleration
+
+Key insight: the benefit of quantization is not just "smaller storage." On hardware with native support, quantization can directly accelerate computation — this is the core value of W8A8 (weight INT8 + activation INT8) methods like SmoothQuant.
+
+<HardwareComputePath />
+
+## Mixed Precision in Practice
+
+In real deployments, different layers and operations in the model use different precisions. A typical mixed-precision configuration:
+
+| Module | Common Precision | Reason |
+|--------|-----------------|--------|
+| Embedding | FP16/FP32 | Vocabulary lookup is not a bottleneck, precision-sensitive |
+| Attention QKV Projection | INT8/INT4 | Large parameter count, high quantization benefit |
+| Attention Score ($QK^T$) | FP16 | Softmax is extremely precision-sensitive |
+| FFN Weight | INT4/INT8 | Largest parameter count (~2/3 of total), SwiGLU has a smoothing effect |
+| LayerNorm | FP32 | Accumulation and mean computation require high precision |
+| Output Head | FP16 | Affects the final logit distribution |
+
+The decision is based on **per-layer sensitivity analysis**: quantize layer by layer and measure the perplexity change after quantizing each layer. Layers that contribute most to perplexity (typically the Attention Q/K/V projection and the first/last few layers) retain high precision, while the remaining layers are aggressively quantized. llama.cpp's K-quant mixed-precision strategy is the engineering implementation of this concept.
+
+## PTQ vs QAT Overview
+
+Quantization methods fall into two major approaches:
+
+**Post-Training Quantization (PTQ)**: Quantizes weights directly after model training is complete, without modifying weights.
+- **Round-to-Nearest (RTN)**: Simplest approach, direct rounding. Viable at 8-bit, but accuracy collapses at 4-bit.
+- **GPTQ**: Uses the Hessian matrix for error compensation, achieving 4-bit accuracy close to FP16.
+- **AWQ**: Identifies important channels for protective quantization, more efficient than GPTQ.
+- **SmoothQuant**: Smooths activation outliers, enabling W8A8 inference acceleration.
+
+**Quantization-Aware Training (QAT)**: Simulates quantization during training, allowing the model to learn to adapt to low precision.
+- **Fake Quantization + STE**: Inserts fake quantization nodes into the training graph.
+- **LoRA-QAT**: Uses low-rank adapters to compensate for quantization loss, a low-cost approximation of QAT.
+- **BitNet**: Ternary weights {-1, 0, 1}, 1.58-bit extreme quantization where matrix multiplication degenerates to addition and subtraction.
+
+Empirical rule of thumb: **8-bit PTQ is sufficient, 4-bit PTQ is preferred, below 3-bit requires QAT**. Subsequent articles will dive deep into the algorithm details of each approach.
+
+## Recommended Learning Resources
+
+If you want to learn more deeply about LLM quantization techniques, here are our curated resources:
+
+### Classic Papers
+- **Frantar et al. "GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers"** — The GPTQ paper (ICLR 2023), proposing a one-shot quantization method based on approximate second-order information that can compress LLMs to 3-4 bits with minimal accuracy loss. A milestone work in the PTQ field.
+- **Lin et al. "AWQ: Activation-aware Weight Quantization for LLM Compression and Acceleration"** — The AWQ paper (MLSys 2024 Best Paper), discovering that protecting just 1% of salient weights can dramatically reduce quantization error by using activation statistics to identify important weight channels.
+
+### Video Courses
+- **DeepLearning.AI + Hugging Face "Quantization Fundamentals with Hugging Face"** — A free short course (~1 hour) covering linear quantization fundamentals, BFloat16 downcasting, etc., with hands-on coding exercises. Suitable for beginners.
+- **DeepLearning.AI + Hugging Face "Quantization in Depth"** — The advanced follow-up to the above course, diving deeper into quantization techniques.
+
+### Blogs and Tutorials (Visually Rich)
+- **Maarten Grootendorst "A Visual Guide to Quantization"** — **The best visually illustrated resource in the quantization field**. Contains 50+ custom illustrations covering floating-point representation, symmetric/asymmetric quantization, PTQ, GPTQ, GGUF, QAT, BitNet, and more. From fundamentals to cutting edge, with excellent visual explanations.
+- **Hugging Face Quantization Concept Guide** — A quantization theory guide in the Optimum documentation, systematically explaining float32→int8 quantization principles, affine/symmetric schemes, per-tensor/per-channel granularity, and calibration methods.
+- **Hugging Face Transformers Quantization Overview** — A comprehensive table of all supported quantization methods (GPTQ, AWQ, bitsandbytes, GGUF, torchao, and 18+ others), including hardware compatibility matrices and precision support comparisons.
+
+### Interactive Tools
+- **GGUF Space (Hugging Face)** — Convert Hugging Face models to GGUF format online, zero-code quantization workflow experience. (huggingface.co/spaces/ggml-org/gguf-my-repo)
+- **Bitsandbytes Space (Hugging Face)** — Quantize models to 4-bit/8-bit online using bitsandbytes. (huggingface.co/spaces/bnb-community/bnb-my-repo)
+
+## Summary
+
+The core of quantization is approximating continuous floating-point values with discrete integers — establishing mappings through scale factors and zero-points, with finer granularity producing smaller errors. Hardware determines the upper bound of quantization benefits: with native low-precision support, quantization saves not only storage but also accelerates computation; without it, the primary benefit is bandwidth savings. Real deployments use mixed precision, assigning different precisions to different layers through sensitivity analysis. Next, we will dive deep into the specific algorithms of the PTQ and QAT approaches.

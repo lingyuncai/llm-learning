@@ -1,0 +1,198 @@
+---
+title: "Matrix Acceleration Units — Tensor Core and XMX"
+slug: matrix-acceleration
+locale: en
+tags: [gpu, tensor-core, xmx, systolic-array, nvidia, intel]
+prerequisites: [gpu-architecture]
+difficulty: intermediate
+created: "2026-04-03"
+updated: "2026-04-06"
+references:
+  - type: website
+    title: "NVIDIA H100 Tensor Core GPU Architecture Whitepaper"
+    url: "https://resources.nvidia.com/en-us-tensor-core"
+  - type: paper
+    title: "Why Systolic Architectures? — H.T. Kung"
+    url: "https://www.cs.virginia.edu/~smk9u/CS4330S19/kung_1982.pdf"
+  - type: website
+    title: "NVIDIA PTX ISA — Matrix Multiply-Accumulate"
+    url: "https://docs.nvidia.com/cuda/parallel-thread-execution/"
+  - type: website
+    title: "Intel Xe2 Architecture — Xe-Core and XMX"
+    url: "https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/"
+  - type: paper
+    title: "DeepSeek-V3 Technical Report"
+    url: "https://arxiv.org/abs/2412.19437"
+---
+
+import TensorCoreVsCudaCore from '../../../components/interactive/TensorCoreVsCudaCore.tsx';
+import SystolicArrayAnimation from '../../../components/interactive/SystolicArrayAnimation.tsx';
+import SystolicDataflowCompare from '../../../components/interactive/SystolicDataflowCompare.tsx';
+import TensorCorePrecisionTimeline from '../../../components/interactive/TensorCorePrecisionTimeline.tsx';
+import TensorCoreMmaFlow from '../../../components/interactive/TensorCoreMmaFlow.tsx';
+import XmxArchitectureDiagram from '../../../components/interactive/XmxArchitectureDiagram.tsx';
+import TensorCoreXmxCompare from '../../../components/interactive/TensorCoreXmxCompare.tsx';
+import DualPipeOverlap from '../../../components/interactive/DualPipeOverlap.tsx';
+
+In the [GPU Architecture](/en/articles/gpu-architecture) article, we learned about the Processing Block structure inside an SM — each Block has a Warp Scheduler, FP32 CUDA Cores, INT32 Cores, and a **Tensor Core**.
+
+In that article, Tensor Core was just a name. This article answers the question: **what is actually inside it, and why can it speed up matrix multiplication by an order of magnitude**. We will also dive into Intel's counterpart — XMX (Xe Matrix eXtensions) — to understand how the two camps achieve the same goal with different hardware.
+
+## Section 1: Why Dedicated Matrix Units Are Needed
+
+Traditional CUDA Cores perform matrix multiplication as **element-wise scalar multiply-accumulate**. Take a 4×4 matrix multiply as an example:
+
+- C(4×4) = A(4×4) × B(4×4)
+- Each output element requires 4 multiplications + 3 additions = 7 scalar operations
+- 16 output elements × 7 = **112 scalar operations**
+
+A Tensor Core completes the entire matrix multiply-accumulate D = A·B + C with a single MMA (Matrix Multiply-Accumulate) instruction.
+
+<TensorCoreVsCudaCore client:visible locale="en" />
+
+The throughput gap is an order of magnitude: on H100 SXM, FP32 CUDA Core delivers about 67 TFLOPS, while FP16 Tensor Core delivers about 990 TFLOPS — **roughly a 15x gap**.
+
+In AI training and inference, 90%+ of compute is matrix multiplication (QKV projections, attention scores, FFN are all GEMM). This is why dedicated matrix acceleration units are so important — they directly determine the performance ceiling of AI workloads.
+
+So how do Tensor Core and XMX manage to complete a matrix multiply in one shot? The answer is **Systolic Array**.
+
+---
+
+## Section 2: Systolic Array — Data Pulsing Through the Array
+
+### Basic Concept
+
+A Systolic Array is a computational grid composed of many simple PEs (Processing Elements). The core idea:
+
+- **Data flows in from the edges**, passing between PEs in fixed directions
+- Each PE performs one **Multiply-Accumulate (MAC)**, then passes data to its neighbor
+- Data is **reused across multiple PEs** — a single input element passes through multiple PEs, participating in multiple computations
+- No need to read from memory every time — **extremely high data reuse** is the key to efficiency
+
+The name comes from "systole" (heart contraction), describing how data pulses rhythmically through the array like blood flowing.
+
+### 4×4 Systolic Array Animation
+
+The animation below shows how a 4×4 output-stationary systolic array works. Rows of matrix A flow in from the left, columns of matrix B flow in from the top, and each PE accumulates its responsible output element.
+
+<SystolicArrayAnimation client:visible locale="en" />
+
+Key observations:
+- **Wavefront diagonal** — active PEs sweep like a wave from the top-left to the bottom-right
+- **PE(i,j) processes the k-th input pair at cycle i+j+k** — staggered inputs ensure data arrives simultaneously
+- **A 4×4 matrix multiply takes 10 cycles** (not 1), but the hardware can **pipeline** multiple matrix groups
+
+### Dataflow Variants
+
+Systolic arrays have multiple dataflow modes, differing in **which matrix is "stationary" inside PEs and which "flows"**:
+
+<SystolicDataflowCompare />
+
+- **Output-Stationary**: Output matrix C stays fixed in PEs for accumulation, while A and B both flow through. The advantage is that partial sums don't need to move
+- **Weight-Stationary**: Weight matrix B is preloaded into PEs, input A flows through, and partial sums propagate downward. Suitable for inference (weights are fixed)
+
+The specific implementations of Tensor Core and XMX are proprietary, but both are essentially variants of systolic arrays.
+
+---
+
+## Section 3: NVIDIA Tensor Core
+
+### MMA Operation
+
+The core operation of a Tensor Core is matrix multiply-accumulate: **D = A × B + C**
+
+- The original conceptual size is 4×4, but from Volta to Blackwell, the actually supported block sizes have grown larger
+- Hopper (4th gen) wmma API commonly uses: `m16n16k16` — i.e., A(16×16) × B(16×16) → D(16×16); at the PTX level there is a smaller `m16n8k16`
+- Each SM has **4 Tensor Cores** (one per Processing Block)
+
+### Precision Support Evolution
+
+From Volta (2017) to Blackwell (2024), the precision formats supported by Tensor Cores have continuously expanded:
+
+<TensorCorePrecisionTimeline />
+
+The trend is crystal clear: lower precision, higher throughput. FP8 throughput is 2x that of FP16, and FP4 doubles it again. This is why FP8 training (e.g., DeepSeek V3) and FP4 quantized inference are becoming trends.
+
+Note: The INT4 and INT1 support from the Turing/Ampere era was removed after Hopper — real AI workloads prefer floating-point low-precision formats like FP8/FP4.
+
+### Warp-Level Operation
+
+Tensor Core operations are not initiated by a single thread — they are **warp-level cooperative operations**. All 32 threads in a warp collectively hold fragments of the input matrices and issue the MMA instruction together.
+
+<TensorCoreMmaFlow client:visible locale="en" />
+
+Key takeaways:
+- A **Fragment** is a distributed representation of a matrix block across the registers of 32 threads — each thread holds only a portion
+- `wmma::load_matrix_sync` loads from memory into fragments, `wmma::mma_sync` executes the matrix multiply, `wmma::store_matrix_sync` writes back to memory
+- The wmma API operates on m16n16k16 blocks; the underlying PTX instruction `mma.sync.aligned.m16n8k16` operates on smaller blocks, with the compiler handling the decomposition
+
+---
+
+## Section 4: Intel XMX
+
+Intel's matrix acceleration unit is called **XMX (Xe Matrix eXtensions)**, a core component of the Xe2 architecture.
+
+<XmxArchitectureDiagram />
+
+### Key Specs (Xe2 / Lunar Lake)
+
+- Each **Xe-Core** contains 8 XMX units + 2 Vector Engines
+- XMX internally is an **8×8 systolic array**
+- Supported precisions: FP16, BF16, TF32, INT8, INT4
+- Programming interfaces: SYCL `joint_matrix` (high-level) / ESIMD `dpas` (low-level)
+
+### Architecture Comparison with NVIDIA
+
+| NVIDIA | Intel | Description |
+|--------|-------|-------------|
+| SM | Xe-Core | Basic compute unit |
+| CUDA Core | Vector Engine | Scalar/vector computation |
+| Tensor Core | XMX | Matrix acceleration |
+| Warp (32 threads) | Sub-group (8/16 wide) | SIMD execution unit |
+| Shared Memory | SLM (Shared Local Memory) | On-chip shared storage within SM/Xe-Core |
+| wmma / mma.sync | joint_matrix / dpas | Matrix operation API |
+
+The core idea is exactly the same — both use systolic arrays for D = A × B + C. The main differences are in **scale** (data center GPU vs. client iGPU) and **programming model** (CUDA's warp-level vs. SYCL's sub-group).
+
+---
+
+## Section 5: Tensor Core vs XMX Detailed Comparison
+
+<TensorCoreXmxCompare client:visible locale="en" />
+
+The **similarities** between the two matter more than the differences:
+- Both are systolic array variants, both compute D = A·B + C
+- Both can only perform matrix multiplies of specific sizes and precisions — other operations still go through traditional CUDA Cores / Vector Engines
+- Both require software cooperation (tiling, data alignment) to achieve peak performance — this is the topic of the GEMM optimization article
+
+The **key differences** are mainly in scale and target scenarios:
+- H100 Tensor Core peaks at ~990 TFLOPS (FP16), targeting data center AI training
+- Lunar Lake XMX peaks at ~48 TOPS (INT8), targeting client AI inference
+- NVIDIA's 32-wide warp vs. Intel's 8/16-wide sub-group affects the programming approach
+
+---
+
+## Section 6: Dual-Pipe — Utilizing Both Compute Units Simultaneously
+
+Tensor Core and CUDA Core are different functional units within an SM, with independent execution pipelines. The traditional approach is sequential execution: matrix multiply (Tensor Core) completes before element-wise operations (CUDA Core) begin.
+
+**Dual-Pipe optimization** breaks this limitation: the input is split into multiple micro-batches, so while the Tensor Core processes **batch B's GEMM**, the CUDA Core simultaneously processes **batch A's activation/normalization**. There are no data dependencies between different batches, so they can safely overlap.
+
+<DualPipeOverlap client:visible locale="en" />
+
+Conditions for dual-pipe:
+- **No data dependencies** between different micro-batches — Tensor Core and CUDA Core process data from different batches
+- Careful scheduling of micro-batch order and data layout is required
+- Can significantly improve SM utilization, especially in architectures with many element-wise operations like MoE
+
+---
+
+## Summary
+
+Core design principles of matrix acceleration units:
+
+1. **Dedicated hardware for matrix multiply** — Systolic arrays achieve single-instruction completion of full matrix multiply-accumulate through extremely high data reuse
+2. **Trading precision for throughput** — From FP16 to FP8 to FP4, each precision reduction doubles throughput, and AI workloads can tolerate lower precision
+3. **Cooperative execution** — Matrix operations are warp/sub-group-level collaborations requiring software cooperation (fragment management, tiling strategies)
+
+The next article will take the programmer's perspective — the CUDA programming model, covering the thread/block/grid hierarchy, shared memory usage, memory coalescing, and other key concepts. This knowledge is a prerequisite for writing high-performance GPU code (including leveraging Tensor Cores).

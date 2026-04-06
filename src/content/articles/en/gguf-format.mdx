@@ -1,0 +1,148 @@
+---
+title: "The GGUF Model Format"
+slug: "gguf-format"
+locale: "en"
+tags: ["gguf", "llama-cpp", "model-format", "serialization"]
+prerequisites: ["ollama-architecture"]
+difficulty: "intermediate"
+created: "2026-04-04"
+updated: "2026-04-06"
+references:
+  - type: "repo"
+    title: "GGUF Specification"
+    url: "https://github.com/ggerganov/ggml/blob/master/docs/gguf.md"
+  - type: "website"
+    title: "Safetensors Documentation"
+    url: "https://huggingface.co/docs/safetensors/"
+  - type: "website"
+    title: "ONNX"
+    url: "https://onnx.ai/"
+---
+
+import GGUFFileStructure from '../../../components/interactive/GGUFFileStructure.tsx';
+import GGUFvsOtherFormats from '../../../components/interactive/GGUFvsOtherFormats.tsx';
+
+## Why GGUF
+
+Throughout the evolution of local LLM deployment, model formats have gone through multiple iterations. The early GGML format (GPT-Generated Model Language) supported quantized inference but lacked a structured metadata system, meaning every format change required reconverting all models. GGUF (GPT-Generated Unified Format) was created precisely to solve these problems as a unified format standard.
+
+GGUF's design goals are very clear: single-file self-containment, mmap-friendliness, and support for arbitrary quantization types. Unlike the Hugging Face ecosystem's safetensors, GGUF stores not only model weights but also packs the tokenizer configuration, model architecture parameters, and even the chat template into the same file. This design makes model distribution extremely simple — after downloading a single `.gguf` file, users can run inference directly without any additional configuration.
+
+More importantly, GGUF was optimized for mmap (memory-mapped file I/O) from the very beginning. Traditional model loading requires reading all weights into memory, whereas GGUF's 32-byte aligned tensor layout allows the operating system to map the file directly into virtual memory space, enabling on-demand loading and multi-process sharing. For a 70B parameter model, this feature can save tens of seconds in startup time and substantial memory overhead.
+
+## File Structure
+
+A GGUF file consists of four contiguous regions, each with clear responsibilities and format conventions. This clean layered design ensures parser simplicity while leaving room for future extensions.
+
+The **Header** region at the beginning of the file is fixed at 24 bytes, containing four fields: a 4-byte magic number "GGUF" (for quick file type identification), a 4-byte version number (currently 3), an 8-byte tensor count, and an 8-byte metadata KV count. After reading the header, the parser can precisely locate the boundaries of the two subsequent variable-length regions.
+
+Next comes the **Metadata KV** region, storing all of the model's configuration information. Each key-value pair contains: a key name (string), a value type (uint8 enum), and value data. Value types support uint32, float32, string, array, and other types, allowing GGUF to express complex structured information such as tokenizer vocabularies (string arrays) or quantization parameters (floating-point numbers).
+
+The third part is the **Tensor Info** region, recording metadata for each tensor: name, dimensions array, quantization type, and data offset. Note that this only stores "descriptive information" — no actual weight data. By pre-declaring the locations of all tensors, the parser can build a complete model topology without reading any data.
+
+The final **Tensor Data** region occupies the vast majority of the file's size (typically over 95%). All tensor data is stored with 32-byte boundary alignment, ensuring that pointers after mmap can be directly used with SIMD instructions (such as AVX2/NEON) without additional memory copying or rearrangement.
+
+Below is simplified pseudocode showing the read order of a GGUF parser:
+
+```python
+# 1. Read Header
+magic = read_bytes(4)  # "GGUF"
+version = read_uint32()
+tensor_count = read_uint64()
+kv_count = read_uint64()
+
+# 2. Read Metadata KV
+metadata = {}
+for _ in range(kv_count):
+    key = read_string()
+    value_type = read_uint8()
+    value = read_value(value_type)
+    metadata[key] = value
+
+# 3. Read Tensor Info
+tensors = []
+for _ in range(tensor_count):
+    name = read_string()
+    n_dims = read_uint32()
+    shape = [read_uint64() for _ in range(n_dims)]
+    dtype = read_uint32()
+    offset = read_uint64()
+    tensors.append(TensorInfo(name, shape, dtype, offset))
+
+# 4. Calculate data section start position and mmap
+data_offset = current_position()
+data_offset = align_to(data_offset, 32)
+mmap_region = mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
+```
+
+<GGUFFileStructure client:visible locale="en" />
+
+## Metadata System
+
+GGUF defines a standardized metadata key naming convention, ensuring consistent understanding of the same model across different toolchains. These key names are organized by namespace to avoid field conflicts and ambiguity.
+
+**General architecture information** is prefixed with `general.`, containing the model's identity and basic parameters:
+- `general.architecture` — model architecture type (e.g., "llama", "qwen3", "mistral")
+- `general.name` — model's friendly name (e.g., "Qwen3-4B")
+- `general.file_type` — quantization type (e.g., 1 for Q4_0, 17 for Q4_K_M)
+
+**Architecture-specific parameters** use the architecture name as prefix (e.g., `qwen3.`, `llama.`), storing the model's topological structure:
+- `qwen3.block_count = 36` — number of transformer blocks
+- `qwen3.embedding_length = 2560` — hidden state dimension
+- `qwen3.attention.head_count = 20` — number of attention heads
+- `qwen3.rope.freq_base = 1000000.0` — RoPE frequency base
+
+**Tokenizer configuration** is centralized under the `tokenizer.ggml.*` namespace, embedding the entire tokenizer within the model file:
+- `tokenizer.ggml.model = "gpt2"` — tokenizer type
+- `tokenizer.ggml.tokens = [array of 151665 strings]` — vocabulary
+- `tokenizer.ggml.scores = [array of 151665 floats]` — word frequency scores
+- `tokenizer.ggml.token_type = [array of 151665 uint8]` — token type (normal/control/unknown)
+- `tokenizer.ggml.merges = [array of strings]` — BPE merge rules
+
+Particularly important is the `tokenizer.chat_template` field, which stores a Jinja2 template string for converting multi-turn conversations into the model input format. This makes GGUF files truly plug-and-play — without external tokenizer libraries or configuration files, the parser can fully implement tokenization and conversation formatting just by reading these fields.
+
+The advantage of this design is especially evident in practical deployments. Ollama can read the GGUF chat template directly without maintaining a massive model configuration database; llama.cpp can also automatically identify model architectures through standardized key names, eliminating tedious command-line parameter passing.
+
+## Tensor Storage Layout
+
+GGUF's tensor data section is not merely a simple stacking of weights — its layout design is deeply tied to modern CPU hardware characteristics and operating system memory management mechanisms.
+
+**32-byte alignment** is the core constraint of the entire storage layout. Every tensor's start position is forced to align to a 32-byte boundary (`offset % 32 == 0`). This alignment satisfies two key requirements: first, modern SIMD instruction sets (such as AVX2's 256-bit registers and ARM NEON's 128-bit registers) require operand addresses to be aligned, otherwise hardware exceptions or performance penalties are triggered; second, OS mmap implementations typically require page boundary alignment (4KB or 64KB), and 32-byte alignment ensures most tensors' start positions are compatible with page boundaries.
+
+**Embedded quantization type** is a major innovation of GGUF compared to traditional formats. Each tensor explicitly declares its quantization type (e.g., Q4_K_M, Q8_0, F16) in the Tensor Info region, and the actual data is stored in that type's compact encoding. Taking Q4_K_M as an example, it compresses 32 float32 weights into a single "block": containing one float16 scale, a set of 6-bit scale offsets, and 32 4-bit quantized values. The parser only needs to read the type identifier from Tensor Info to correctly decode the data.
+
+The direct benefit of this design is **zero-copy inference**. The traditional flow requires: open file -> allocate memory buffer -> read() system call to copy data -> parse format -> potentially rearrange memory layout again. The GGUF + mmap flow simplifies to: open file -> mmap() to virtual address space -> directly access tensor data through pointers. The operating system loads file pages into physical memory on demand (demand paging), and unused tensors never occupy RAM.
+
+For a 70B Q4_K_M model (approximately 40GB), traditional loading requires reading the entire file into memory, while the mmap approach only gradually loads tensors as they're accessed during inference, with actual peak memory potentially only 10-15GB. More importantly, multiple processes can share the same mmap region — when running multiple inference instances simultaneously, only one copy of the model data needs to exist in physical memory.
+
+**Alignment padding** is the cost of achieving all this. To ensure 32-byte alignment for each tensor, GGUF inserts 0-31 bytes of padding between tensors. For large models containing hundreds of tensors, total padding overhead is typically less than 10KB — completely negligible compared to the multi-GB data volume — yet the resulting performance improvement is orders of magnitude.
+
+## Dual Parsers
+
+Within the GGUF ecosystem, two independently implemented parsers exist: llama.cpp's C language parser and Ollama's Go language parser. This apparent "reinventing the wheel" reflects fundamental differences in architectural positioning and engineering trade-offs between the two projects.
+
+**llama.cpp's C parser** (located in `ggml/src/ggml.c` and `examples/main/main.cpp`) is the reference implementation of the GGUF format. After mmapping the GGUF file into memory, it parses fields byte by byte through raw pointers (`uint8_t*`). The parsing process is tightly coupled with the inference kernel: after reading the header, it immediately initializes the ggml computation graph based on `general.architecture`; after reading tensor info, it directly constructs the tensor pointer array without additional intermediate data structures. This zero-abstraction-overhead design enables llama.cpp to smoothly run 7B models on embedded devices (such as Raspberry Pi).
+
+**Ollama's Go parser** (located in `llm/gguf.go`) takes a fundamentally different path. It first fully parses the GGUF file into Go structs (`type GGUF struct`), containing fields like `Metadata map[string]interface{}` and `Tensors []TensorInfo`, then accesses specific data based on business requirements. This "parse first, use later" pattern provides greater flexibility — Ollama can inspect model metadata without starting inference (e.g., `ollama show --modelfile`), or dynamically decide which underlying inference engine to use (llama.cpp or potentially other backends in the future) based on the metadata.
+
+The fundamental difference between the two is reflected in their memory management strategies. The C parser relies on mmap's lazy loading characteristics — tensor data is never "copied" into process heap memory; the Go parser also uses `syscall.Mmap`, but needs to deserialize the mmap region's metadata portion into Go objects, introducing some startup overhead (typically tens of milliseconds). This trade-off is perfectly reasonable in Ollama's context: as a model management service, it needs to frequently query model information without triggering inference, and complete in-memory objects are safer and more convenient than raw pointer operations.
+
+Why not share a parser? The technical reason is language interop cost — calling the C parser through cgo would break Go's garbage collection and concurrency model, introducing hard-to-debug memory issues. The deeper reason is architectural autonomy: Ollama needs full control over the model format to support future private extension fields (such as model licensing information, download sources) or optimize specific scenarios (such as incrementally pulling partial layers of large models). An independent Go implementation enables these needs at low cost, without waiting for upstream llama.cpp's release cycle.
+
+## Why They're Different
+
+In the field of AI model serialization, GGUF, safetensors, and ONNX each occupy different ecological niches. Their design differences stem from different answers to the question "what is a model?"
+
+The **GGUF vs safetensors** comparison best illustrates the divide between "inference optimization" and "training compatibility." Safetensors was born in the Hugging Face ecosystem, with the core goal of safely storing tensor data — preventing pickle deserialization vulnerabilities and ensuring cross-platform byte order consistency. It splits models into multiple files (`model-00001-of-00010.safetensors`), each containing partial weights and minimal metadata (tensor names, shapes, dtype). This design is very training-framework-friendly: multiple shards can be loaded in parallel, incremental checkpoint saving is convenient, and memory layouts are naturally compatible with PyTorch/JAX.
+
+But safetensors doesn't concern itself with inference deployment. It doesn't store the tokenizer (requiring a separate `tokenizer.json`), doesn't store the chat template (requiring `tokenizer_config.json`), and doesn't support quantization (formats like Q4_K_M require external tools like AutoAWQ for conversion). When distributing a model, users must download the entire Hugging Face repository, including a dozen configuration files and multiple safetensors shards. By contrast, GGUF's single-file design makes model distribution like distributing an executable — download, run, done.
+
+The **GGUF vs ONNX** difference is more fundamental, reflecting a philosophical divergence between "weight package" and "computation graph." ONNX (Open Neural Network Exchange) views a model as a complete computation graph: nodes are operators (such as MatMul, Conv, LayerNorm), edges represent tensor flow, and weights are embedded in the graph as initializers. This representation enables cross-framework migration — a PyTorch model exported to ONNX can be executed in any inference engine like TensorRT, OpenVINO, or ONNXRuntime, and can even undergo cross-platform optimization (such as operator fusion, memory layout rearrangement).
+
+But ONNX's generality also introduces redundancy. For LLM inference, the computation graph topology is highly standardized (essentially just stacks of attention, feedforward, and normalization), and explicitly storing it in protobuf format adds parsing overhead. GGUF chooses to store only weights + metadata, leaving computation graph construction to the inference engine (llama.cpp/Ollama). This separation makes GGUF files more compact (ONNX files for the same model are typically 10-20% larger than GGUF) and allows the inference engine to optimize more aggressively — for instance, llama.cpp's Metal backend for Apple Silicon dynamically rewrites the computation graph, which would be difficult to achieve with ONNX's "fixed graph" model.
+
+Another key difference is quantization granularity. ONNX quantization is typically at the whole-model level (int8/int4), requiring external tools (such as TensorRT-LLM's quantization toolkit) for conversion. GGUF allows mixed quantization: most layers can be quantized to Q4_K_M while keeping the embedding layer at F16. This flexibility lets users make fine-grained trade-offs between precision and speed.
+
+<GGUFvsOtherFormats client:visible locale="en" />
+
+In summary, each of the three formats has its strengths: safetensors is the standard choice in the Hugging Face ecosystem, ideal for training and fine-tuning; ONNX is a bridge for cross-framework interoperability, suited for enterprise multi-platform deployment; GGUF is the optimal solution for local LLM inference, deeply optimized for CPU inference and resource-constrained environments. Which one to choose depends on where your workflow sits in the model lifecycle — training, migration, or final deployment.

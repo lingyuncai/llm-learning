@@ -1,0 +1,91 @@
+---
+title: "PTQ Weight Quantization: From GPTQ to AWQ"
+slug: "ptq-weight-quantization"
+locale: "en"
+tags: ["quantization", "ptq", "gptq", "awq", "smoothquant"]
+difficulty: "advanced"
+prerequisites: ["quantization-fundamentals"]
+created: "2026-04-05"
+updated: "2026-04-06"
+references:
+  - type: "paper"
+    title: "GPTQ: Accurate Post-Training Quantization for Generative Pre-Trained Transformers"
+    url: "https://arxiv.org/abs/2210.17323"
+  - type: "paper"
+    title: "AWQ: Activation-aware Weight Quantization for LLM Compression and Acceleration"
+    url: "https://arxiv.org/abs/2306.00978"
+  - type: "paper"
+    title: "SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models"
+    url: "https://arxiv.org/abs/2211.10438"
+---
+
+import GPTQErrorPropagation from '../../../components/interactive/GPTQErrorPropagation.tsx';
+import AWQSalientChannels from '../../../components/interactive/AWQSalientChannels.tsx';
+import SmoothQuantTransform from '../../../components/interactive/SmoothQuantTransform.tsx';
+import PTQMethodComparison from '../../../components/interactive/PTQMethodComparison.tsx';
+
+Post-Training Quantization (PTQ) quantizes model weights directly after training is complete, without retraining. Its zero training cost advantage over QAT — requiring only a small amount of calibration data and a few minutes of processing time — makes PTQ the preferred quantization approach for LLM deployment. This article provides an in-depth analysis of the algorithmic principles and use cases of four mainstream PTQ methods.
+
+## The Limitations of Round-to-Nearest
+
+The simplest quantization approach is Round-to-Nearest (RTN): directly rounding each weight to the nearest quantized value. RTN performs reasonably well at **8-bit** — LLaMA2-7B's perplexity only increases from FP16's 5.47 to approximately 5.52. But at **4-bit**, perplexity spikes to above 7.2.
+
+The core problem: RTN processes each weight independently, ignoring correlations between weights. When quantizing one weight introduces an error, the impact of that error on model output depends on the relationship between that weight and other weights (the Hessian matrix). RTN completely ignores this structural information.
+
+## GPTQ: Hessian-Guided Error Compensation
+
+GPTQ (Frantar et al., 2022) is based on a key insight: **the error from quantizing one weight can be compensated by adjusting weights that have not yet been quantized**.
+
+The core of the algorithm is an efficient approximation of Optimal Brain Quantization (OBQ): it processes the weight matrix column by column, using $H^{-1}$ (the inverse Hessian matrix) to optimally distribute the current column's quantization error to subsequent columns. The update formula:
+
+$$\delta_F = -\frac{w_q - w}{[H_F^{-1}]_{qq}} \cdot (H_F^{-1})_{:,q}$$
+
+Key optimization: Lazy Batch Updates process every 128 columns in bulk, reducing memory access. Calibration requires forward propagation of 128-512 text samples to estimate the Hessian matrix.
+
+<GPTQErrorPropagation client:visible locale="en" />
+
+Practical results: LLaMA2-7B at INT4-g128 achieves a perplexity of only 5.67, close to FP16's 5.47. Quantizing a 7B model takes approximately 10 minutes on a single GPU.
+
+## AWQ: Activation-Aware Weight Quantization
+
+AWQ (Lin et al., 2023) approaches the problem from a different angle: **not all weights are equally important**. Observations reveal that approximately 1% of channels in LLM activations are salient channels, with activation values far larger than other channels.
+
+AWQ's solution is per-channel scaling: multiply the weights of salient channels by a larger scale factor $s$, making their quantization granularity finer. Simultaneously, activations are divided by $s$ to maintain mathematical equivalence:
+
+$$Y = XW = (X \cdot \text{diag}(s)^{-1}) \cdot (\text{diag}(s) \cdot W)$$
+
+<AWQSalientChannels client:visible locale="en" />
+
+AWQ's key advantages: no backpropagation required (quantization is fast at ~5 min), outputs standard INT4 format (compatible with vLLM/TRT-LLM), and excellent quality (LLaMA2-7B INT4-g128 perplexity ~5.60).
+
+The fundamental difference from GPTQ: GPTQ modifies unquantized weights during the quantization process to compensate for errors ("after-the-fact remedy"), while AWQ adjusts weight distributions before quantization to make them easier to quantize ("preventive preparation"). The two can be combined.
+
+## SmoothQuant: Smoothing Activation Outliers
+
+The previous methods focus on weight-only quantization. SmoothQuant (Xiao et al., 2022) addresses **W8A8** — simultaneously quantizing both weights and activations to leverage INT8 Tensor Cores for acceleration.
+
+The difficulty of activation quantization lies in outlier channels: some channels have a value range 100x or more larger than other channels, making per-tensor INT8 quantization unable to preserve the precision of both large and small values simultaneously.
+
+SmoothQuant's core idea — transfer quantization difficulty from activations to weights:
+
+$$Y = X \cdot W = (X \cdot \text{diag}(s)^{-1}) \cdot (\text{diag}(s) \cdot W) = X' \cdot W'$$
+
+The smoothing factor $s_j = \max(|X_j|)^\alpha$, where $\alpha = 0.5$ is the empirically optimal value. After the transformation, the dynamic range across channels of $X'$ becomes similar, and while $W'$ values increase slightly, they remain manageable — both can be quantized with per-tensor INT8.
+
+<SmoothQuantTransform client:visible locale="en" />
+
+SmoothQuant is most valuable in data center scenarios: W8A8 directly utilizes GPU INT8 Tensor Cores (A100/H100), achieving 1.5-2x throughput improvement compared to FP16.
+
+## Method Comparison and Selection Guide
+
+<PTQMethodComparison client:visible locale="en" />
+
+**Selection recommendations:**
+- **Consumer GPU deployment** (RTX 3090/4090): Choose AWQ or GPTQ with INT4-g128, use vLLM or ExLlamaV2
+- **Data center high throughput** (A100/H100): Choose SmoothQuant W8A8, use TensorRT-LLM
+- **Quick evaluation**: Start with RTN INT8 for validation, then switch to more refined methods
+- **Ultra-low bit** (2-3 bit): GPTQ supports it but with significant quality loss — evaluate whether QAT is needed
+
+## Summary
+
+PTQ weight quantization has developed a mature toolchain. GPTQ achieves high-quality column-by-column quantization through Hessian error compensation, AWQ uses activation-aware per-channel scaling to protect critical channels, and SmoothQuant makes W8A8 possible through mathematical transformations. Each has its own focus, and actual deployment should be based on hardware conditions and accuracy requirements.

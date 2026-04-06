@@ -1,0 +1,166 @@
+---
+title: "Reinforcement Learning Foundations: From Agent to Bellman Equation"
+slug: rl-foundations
+locale: en
+tags: [reinforcement-learning, mdp, bellman-equation, value-function, q-learning]
+difficulty: intermediate
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: []
+references:
+  - type: website
+    title: "Reinforcement Learning: An Introduction (Sutton & Barto, 2nd Edition)"
+    url: "http://incompleteideas.net/book/the-book-2nd.html"
+  - type: website
+    title: "David Silver UCL Reinforcement Learning Course"
+    url: "https://www.davidsilver.uk/teaching/"
+  - type: website
+    title: "OpenAI Spinning Up: Introduction to RL"
+    url: "https://spinningup.openai.com/en/latest/spinningup/rl_intro.html"
+  - type: website
+    title: "Hugging Face Deep RL Course"
+    url: "https://huggingface.co/learn/deep-rl-course"
+  - type: website
+    title: "A (Long) Peek into Reinforcement Learning — Lilian Weng"
+    url: "https://lilianweng.github.io/posts/2018-02-19-rl-overview/"
+  - type: website
+    title: "UC Berkeley CS285: Deep Reinforcement Learning"
+    url: "http://rail.eecs.berkeley.edu/deeprlcourse/"
+  - type: website
+    title: "Deep Reinforcement Learning: Pong from Pixels — Andrej Karpathy"
+    url: "https://karpathy.github.io/2016/05/31/rl/"
+---
+
+import AgentEnvironmentLoop from '../../../components/interactive/AgentEnvironmentLoop.tsx';
+import MDPGridWorld from '../../../components/interactive/MDPGridWorld.tsx';
+import BellmanBackup from '../../../components/interactive/BellmanBackup.tsx';
+import ValuePolicyViz from '../../../components/interactive/ValuePolicyViz.tsx';
+import QLearningDemo from '../../../components/interactive/QLearningDemo.tsx';
+import RLTaxonomy from '../../../components/interactive/RLTaxonomy.tsx';
+
+## What Is Reinforcement Learning
+
+Reinforcement Learning (RL) is the third major paradigm of machine learning, alongside supervised learning and unsupervised learning. Its core idea is simple yet profound: **an Agent learns the optimal behavioral policy through trial and error in an Environment**.
+
+The key differences from supervised learning are:
+- **No labels**: No one tells the Agent what the correct answer is — it can only learn from reward signals provided by the environment
+- **Delayed rewards**: A good decision may not show its effects until much later (e.g., opening moves in chess)
+- **Exploration-Exploitation Dilemma**: The Agent must balance between "trying new strategies" and "using known good strategies"
+
+<AgentEnvironmentLoop client:visible locale="en" />
+
+At each time step, this loop repeats:
+1. The Agent observes the current **State** $s_t$
+2. The Agent selects an **Action** $a_t$ based on its policy
+3. The Environment returns a **Reward** $r_t$ and a new state $s_{t+1}$
+4. The Agent adjusts its policy based on experience
+
+## Markov Decision Process (MDP)
+
+The mathematical foundation of RL is the **Markov Decision Process** (MDP), defined by the five-tuple $(S, A, P, R, \gamma)$:
+
+- **$S$**: State space (the set of all possible states)
+- **$A$**: Action space (the set of all possible actions)
+- **$P(s'|s,a)$**: State transition probability (the probability of transitioning to $s'$ after taking action $a$ in state $s$)
+- **$R(s,a,s')$**: Reward function (the immediate reward received during a state transition)
+- **$\gamma \in [0,1)$**: Discount factor (the decay coefficient for future rewards — the further away a reward, the less it is worth)
+
+The "Markov" property means **memorylessness**: the next state depends only on the current state and action, not on history. This assumption makes the problem tractable.
+
+<MDPGridWorld client:visible locale="en" />
+
+## Policy and Value Functions
+
+With the MDP framework in place, we need to define the Agent's behavioral model and evaluation criteria:
+
+**Policy** $\pi(a|s)$: The probability distribution over actions $a$ given state $s$. A policy can be deterministic (one fixed action per state) or stochastic (a probability distribution).
+
+**State Value Function** $V^\pi(s)$: The expected cumulative discounted reward starting from state $s$ and following policy $\pi$:
+
+$$V^\pi(s) = \mathbb{E}_\pi\left[\sum_{t=0}^{\infty} \gamma^t r_t \mid s_0 = s\right]$$
+
+**Action Value Function** $Q^\pi(s,a)$: The expected return after taking action $a$ in state $s$ and then following policy $\pi$:
+
+$$Q^\pi(s,a) = \mathbb{E}_\pi\left[\sum_{t=0}^{\infty} \gamma^t r_t \mid s_0 = s, a_0 = a\right]$$
+
+The relationship between the two: $V^\pi(s) = \sum_a \pi(a|s) \cdot Q^\pi(s,a)$ — the state value equals the policy-weighted sum of Q-values over all actions.
+
+## Bellman Equation
+
+The Bellman equation is the most fundamental recursive relationship in RL. Its intuition is simple: **the value of a state = immediate reward + discounted value of the next state**.
+
+$$V^\pi(s) = \sum_a \pi(a|s) \sum_{s'} P(s'|s,a) \left[R(s,a,s') + \gamma V^\pi(s')\right]$$
+
+The optimal Bellman equation (taking the best action rather than weighting by policy probabilities):
+
+$$V^*(s) = \max_a \sum_{s'} P(s'|s,a) \left[R(s,a,s') + \gamma V^*(s')\right]$$
+
+<BellmanBackup client:visible locale="en" />
+
+## Value-Based Methods
+
+The core idea of Value-Based methods is: **first learn an accurate Q function, then derive the optimal policy from it** (greedy: select the action with the highest Q-value).
+
+**Q-Learning** is the most classic Value-Based algorithm, with the update rule:
+
+$$Q(s,a) \leftarrow Q(s,a) + \alpha \left[r + \gamma \max_{a'} Q(s',a') - Q(s,a)\right]$$
+
+where $\alpha$ is the learning rate. This update rule directly approximates the optimal Q function without needing to know the environment's transition probabilities (model-free).
+
+When the state space is large (e.g., image inputs), storing Q-values in a table is impractical. **DQN** (Deep Q-Network) uses a neural network to approximate the Q function, marking a milestone in deep reinforcement learning.
+
+<QLearningDemo client:visible locale="en" />
+
+<ValuePolicyViz client:visible locale="en" />
+
+## From Value to Policy
+
+Q-Learning and DQN have been very successful in discrete action spaces like Atari games, but they have a fundamental limitation: **they are not well-suited for LLM scenarios**.
+
+The reason is that an LLM's "action space" is the entire vocabulary (typically 32K-128K tokens), and it involves sequential decision-making — after generating one token, the next must be generated. Using Q-Learning would require computing a Q-value for every token, which is computationally expensive and unnatural.
+
+A more natural approach is to **directly parameterize the policy**: have a network directly output "the probability of each action given the current state" — which is exactly what LLMs already do (next-token prediction is a policy).
+
+This is the motivation behind **Policy Gradient** methods, and the topic of the next article.
+
+## RL Method Landscape
+
+<RLTaxonomy client:visible locale="en" />
+
+As the diagram shows, LLM alignment (RLHF, DPO, GRPO) follows the **Policy-Based -> Actor-Critic -> PPO** path, not the Value-Based path. Understanding this evolutionary trajectory is key to learning the subsequent topics.
+
+## Recommended Learning Resources
+
+If you want to dive deeper into reinforcement learning, here are our curated resources:
+
+### Classic Textbooks
+- **Sutton & Barto "Reinforcement Learning: An Introduction" (2nd Edition)** — The bible of the RL field, available free online. Ideal for systematic study of MDP, dynamic programming, Monte Carlo methods, TD learning, and other fundamentals.
+- **Csaba Szepesvari "Algorithms for Reinforcement Learning"** — A more mathematically oriented concise textbook, suitable for readers who prefer theoretical derivations.
+
+### Video Courses
+- **David Silver UCL RL Course** — A classic course by DeepMind's Chief Scientist. 10 lectures covering fundamentals through function approximation and policy gradients. Each lecture is about 1.5 hours; best paired with slides.
+- **Sergey Levine UC Berkeley CS285** — A deep RL course focused on research frontiers, covering model-based RL, offline RL, and other advanced topics.
+- **Hugging Face Deep RL Course** — A free interactive course with hands-on practice, complete with companion code and assignment environments. Ideal for hands-on learners.
+- **Stanford CS234** — Taught by Emma Brunskill, with a stronger focus on theory and analysis.
+
+### Blogs and Tutorials
+- **Lilian Weng's Blog Series** — Covers RL fundamentals, Policy Gradient, RLHF, Reward Hacking, and more. Each post is a high-quality survey with excellent illustrations.
+- **OpenAI Spinning Up** — Official RL introduction tutorial, from concepts to code implementation. Particularly suited for those who want to understand algorithm details from scratch.
+- **Andrej Karpathy "Pong from Pixels"** — A classic introductory blog post that trains Pong from scratch using Policy Gradient, with excellent intuitive explanations.
+- **Nathan Lambert (interconnects.ai)** — An in-depth blog focused on RLHF and LLM alignment, tracking the latest research developments.
+- **Chip Huyen's RLHF Overview** — An RLHF introductory article aimed at engineers — clear and direct.
+
+### Interactive Experiments
+- **Gymnasium (formerly OpenAI Gym)** — The standard RL environment library, providing classic environments like CartPole, MountainCar, and more.
+- **CleanRL** — Single-file RL implementations, one file per algorithm, ideal for learning and modification.
+
+## Summary
+
+This article introduced the core concepts of reinforcement learning:
+1. The **Agent-Environment loop** is the fundamental framework of RL
+2. **MDP** provides the mathematical foundation for RL (states, actions, transitions, rewards, discount)
+3. The **Bellman equation** is the recursive relationship for value functions and the foundation of virtually all RL algorithms
+4. **Q-Learning / DQN** are classic Value-Based methods
+5. The unique characteristics of LLMs (huge action space, sequential decision-making) make **Policy-Based methods** more suitable
+
+In the next article, we will dive into Policy Gradient to understand how to directly optimize a policy — the key bridge connecting classical RL and LLM alignment.

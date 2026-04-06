@@ -1,0 +1,457 @@
+---
+title: "Model Ecosystem"
+slug: "ollama-model-ecosystem"
+locale: "en"
+tags: ["ollama", "registry", "modelfile", "lora", "multimodal"]
+prerequisites: ["ollama-architecture", "gguf-format"]
+difficulty: "intermediate"
+created: "2026-04-04"
+updated: "2026-04-06"
+references:
+  - type: "repo"
+    title: "Ollama Modelfile"
+    url: "https://github.com/ollama/ollama/blob/main/docs/modelfile.md"
+  - type: "repo"
+    title: "Ollama API"
+    url: "https://github.com/ollama/ollama/blob/main/docs/api.md"
+  - type: "paper"
+    title: "LLaVA: Visual Instruction Tuning"
+    url: "https://arxiv.org/abs/2304.08485"
+---
+
+import RegistryPullFlow from '../../../components/interactive/RegistryPullFlow.tsx';
+import ModelfileBuilder from '../../../components/interactive/ModelfileBuilder.tsx';
+import MultimodalPipeline from '../../../components/interactive/MultimodalPipeline.tsx';
+
+## Introduction
+
+Ollama is not just an inference engine — it has built a complete model ecosystem. From model distribution to custom configuration, from LoRA fine-tuning to multimodal support, Ollama provides a full toolchain for managing and extending local LLM applications.
+
+This article explores Ollama's model ecosystem in depth, covering:
+- **Ollama Registry**: A Docker-style model registry and distribution mechanism
+- **Layer deduplication**: How content-addressable storage saves storage space
+- **Modelfile system**: Declarative model configuration and customization
+- **Prompt Template**: A flexible conversation format system
+- **LoRA/Adapter support**: Low-cost model customization
+- **Multimodal capabilities**: Vision-language model integration
+- **New architecture extensions**: How to integrate new model architectures into Ollama
+
+## Ollama Registry: Docker-Style Model Distribution
+
+Ollama borrows design concepts from Docker to build its own model registry. Model naming follows the `namespace/model:tag` format:
+
+```
+library/qwen3:latest    # Official model, default namespace can be omitted
+myuser/custom-model:v1  # User-defined custom model
+llama3:8b               # Equivalent to library/llama3:8b
+```
+
+When you run `ollama pull qwen3`, it goes through a complete pull flow under the hood:
+
+<RegistryPullFlow client:visible locale="en" />
+
+This process is very similar to a Docker image pull, but is specifically optimized for LLM models. The manifest returned by the Registry API contains not only weight files but also metadata like tokenizer, chat template, and license — each file managed as an independent layer.
+
+## Layer Deduplication: Content-Addressable Storage
+
+Ollama uses **content-addressable storage** to manage model files. Each layer is uniquely identified by its SHA256 digest:
+
+```
+sha256:a1b2c3d4...  → blobs/sha256/a1/b2/a1b2c3d4...
+```
+
+This brings several key advantages:
+
+### 1. Cross-Model Deduplication
+Different models can share the same layers. For example:
+- `qwen3:8b` and `qwen3:4b` share the same tokenizer
+- Multiple models may use the same Apache 2.0 license file
+- Fine-tuned models based on the same base model share base weights
+
+When you download a second Qwen model, Ollama detects the existing tokenizer layer and skips the download, saving bandwidth and storage space.
+
+### 2. Incremental Updates
+When a model is updated, only changed layers need to be downloaded. If only the chat template changed while the weights remain the same, the download drops from the GB level to the KB level.
+
+### 3. Integrity Verification
+After download, Ollama verifies the SHA256 digest to ensure the file is not corrupted or tampered with:
+
+```go
+// Pseudocode
+func verifyBlob(path string, expectedDigest string) error {
+    h := sha256.New()
+    io.Copy(h, file)
+    actualDigest := hex.EncodeToString(h.Sum(nil))
+    if actualDigest != expectedDigest {
+        return ErrDigestMismatch
+    }
+    return nil
+}
+```
+
+All blobs are stored locally in the `~/.ollama/models/blobs/` directory, and the manifest records the mapping from models to blobs.
+
+## Modelfile: Declarative Model Configuration
+
+The Modelfile is Ollama's model configuration system, inspired by Dockerfile. It allows you to customize model behavior through declarative syntax:
+
+<ModelfileBuilder client:visible locale="en" />
+
+### Core Directives
+
+**FROM**: Specify the base model
+```
+FROM qwen3:8b
+FROM ./path/to/local/model.gguf
+```
+
+**PARAMETER**: Set inference parameters
+```
+PARAMETER temperature 0.8       # Sampling temperature
+PARAMETER top_p 0.9             # Nucleus sampling
+PARAMETER top_k 40              # Top-k sampling
+PARAMETER repeat_penalty 1.1    # Repetition penalty
+PARAMETER num_ctx 4096          # Context window size
+PARAMETER num_predict 128       # Maximum generated tokens
+```
+
+**SYSTEM**: Set the system prompt
+```
+SYSTEM """
+You are a professional Python programming assistant.
+- Follow PEP 8 code style
+- Prefer type annotations
+- Focus on code readability and maintainability
+"""
+```
+
+**TEMPLATE**: Custom prompt template (detailed in the next section)
+
+**ADAPTER**: Load a LoRA adapter (detailed in later sections)
+
+**MESSAGE**: Preset few-shot examples
+```
+MESSAGE user What is recursion?
+MESSAGE assistant Recursion is a programming technique where a function calls itself...
+```
+
+**LICENSE**: Specify the license file
+
+### Creating Custom Models
+
+```bash
+# 1. Write a Modelfile
+cat > Modelfile <<EOF
+FROM qwen3:8b
+PARAMETER temperature 0.7
+SYSTEM "You are a technical documentation writing assistant."
+EOF
+
+# 2. Create the model
+ollama create tech-writer -f Modelfile
+
+# 3. Use the custom model
+ollama run tech-writer
+```
+
+Modelfiles are not only used for creating new models but also serve as a way to document model configurations, making it easy for teams to share and version control.
+
+## Prompt Template System: Flexible Conversation Formats
+
+Different LLMs have different prompt format requirements. Llama3 uses `<|begin_of_text|>`, Qwen uses `<|im_start|>`, and ChatML uses yet another format. Ollama handles these differences through its **template system**.
+
+### Template Storage Location
+
+Prompt templates have two sources:
+
+1. **GGUF metadata**: Stored in the `tokenizer.chat_template` field (Jinja2 format)
+2. **Modelfile TEMPLATE directive**: Overrides the default template from GGUF
+
+### Go Template Syntax
+
+Ollama uses Go template syntax to define prompt formats:
+
+```go
+// Qwen2 template example
+{{- if .System }}
+<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}
+{{- range .Messages }}
+<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end }}
+<|im_start|>assistant
+```
+
+Key variables:
+- `.System`: System prompt
+- `.Messages`: Conversation history array
+- `.Role`: Message role (system/user/assistant)
+- `.Content`: Message content
+
+### From GGUF to Ollama Template
+
+If a GGUF file contains a Jinja2-format `chat_template`, Ollama automatically converts it to a Go template:
+
+```python
+# Jinja2 template in GGUF
+{% for message in messages %}
+{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n'}}
+{% endfor %}
+```
+
+Converted to Ollama Go template:
+
+```go
+{{- range .Messages }}
+<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end }}
+```
+
+This conversion happens automatically during model loading, and users typically don't need to worry about the underlying details.
+
+### Custom Templates
+
+If you need to customize the conversation format, you can specify it explicitly in the Modelfile:
+
+```
+FROM llama3:8b
+
+TEMPLATE """
+{{- if .System }}System: {{ .System }}
+
+{{ end -}}
+{{- range .Messages }}
+{{ .Role | upper }}: {{ .Content }}
+
+{{ end -}}
+Assistant: 
+"""
+```
+
+This flexibility allows Ollama to support arbitrary conversation formats, including custom or experimental prompt structures.
+
+## LoRA / Adapter Support: Low-Cost Customization
+
+**LoRA** (Low-Rank Adaptation) is a parameter-efficient fine-tuning technique that customizes models by training low-rank matrices without modifying the original weights. Ollama natively supports loading LoRA adapters.
+
+### Adapter File Format
+
+Ollama supports LoRA adapters in GGUF format. These files are typically only a few MB to a few dozen MB, much smaller than a full model:
+
+```
+base-model.gguf         2.6 GB   (base model)
+lora-adapter.gguf       15 MB    (LoRA weights)
+```
+
+### Using Adapters in Modelfile
+
+```
+FROM qwen3:8b
+ADAPTER ./my-lora.gguf
+PARAMETER temperature 0.7
+```
+
+Create and run:
+
+```bash
+ollama create custom-model -f Modelfile
+ollama run custom-model
+```
+
+### Stacking Multiple Adapters
+
+Ollama supports loading multiple adapters:
+
+```
+FROM llama3:8b
+ADAPTER ./domain-knowledge.gguf
+ADAPTER ./style-adapter.gguf
+```
+
+These adapters are applied to the base model in sequence, enabling multi-dimensional customization.
+
+### Adapter Implementation Under the Hood
+
+At the llama.cpp level, LoRA is implemented by modifying matrix multiplication:
+
+```c
+// Original: Y = W * X
+// LoRA: Y = (W + A * B) * X
+//      = W * X + A * (B * X)
+```
+
+Where $A \in \mathbb{R}^{d \times r}$ and $B \in \mathbb{R}^{r \times k}$ are low-rank matrices ($r \ll d, k$). During inference, only the additional `A * (B * X)` needs to be computed and added to the original output, with minimal computational overhead.
+
+## Multimodal Support: Vision-Language Models
+
+Ollama supports multimodal models such as **LLaVA** (Large Language and Vision Assistant), **BakLLaVA**, **Obsidian**, and others. These models can process both image and text inputs simultaneously.
+
+### Multimodal Inference Data Flow
+
+<MultimodalPipeline client:visible locale="en" />
+
+Key steps:
+
+1. **Image Preprocessing** (Ollama Go layer):
+   - Decode the image file (JPEG/PNG)
+   - Resize to the model's required resolution (typically 336x336 or 448x448)
+   - Normalize to the [-1, 1] or [0, 1] range
+   - Convert to NCHW format tensor
+
+2. **Vision Encoder** (GGML execution):
+   - Typically a CLIP ViT (Vision Transformer)
+   - Input: Image tensor
+   - Output: Image embedding sequence, e.g., `[CLS] token + 576 patch embeddings`
+
+3. **Embedding Merging** (Ollama coordination):
+   - Text is converted to text embeddings via the tokenizer
+   - Image embeddings and text embeddings are concatenated into a unified sequence
+   - For example: `[<image> tokens, user text tokens]`
+
+4. **Transformer Decoder** (GGML execution):
+   - Performs autoregressive generation on the merged sequence
+   - Uses the same decoder architecture as text-only models
+
+### Using Multimodal Models
+
+```bash
+# Download the LLaVA model
+ollama pull llava:7b
+
+# Command line usage
+ollama run llava:7b "Describe this image" --image photo.jpg
+
+# API usage
+curl http://localhost:11434/api/generate -d '{
+  "model": "llava:7b",
+  "prompt": "What is in this image?",
+  "images": ["<base64-encoded-image>"]
+}'
+```
+
+### Multimodal Metadata in GGUF
+
+The GGUF files for multimodal models contain additional metadata:
+
+```
+llava.projector.type: "mlp"          # Projector type
+llava.image_size: 336                # Input image size
+vision.encoder: "clip_vit_large"     # Vision encoder type
+```
+
+Ollama reads this metadata to correctly configure image preprocessing and embedding projection.
+
+### Engineering Challenges of Multimodal
+
+1. **Image preprocessing overhead**: Image decoding and resizing execute on CPU, which can become a bottleneck
+2. **Memory usage**: Image embedding sequences are long (typically 576+ tokens), significantly increasing KV cache requirements
+3. **Model size**: The vision encoder adds extra parameters (typically 300M-400M)
+
+## New Architecture Support: Extending Ollama
+
+Ollama's architectural design makes adding new models relatively straightforward. The main steps are:
+
+### 1. llama.cpp Level Support
+
+First, implement the computational graph for the new architecture in llama.cpp:
+
+```cpp
+// Add new architecture in llama.cpp
+enum llm_arch {
+    LLM_ARCH_LLAMA,
+    LLM_ARCH_QWEN,
+    LLM_ARCH_DEEPSEEK,  // New architecture
+};
+
+// Implement build_graph function
+static struct ggml_cgraph * llm_build_deepseek(...) {
+    // Define forward pass computational graph
+    // ...
+}
+```
+
+### 2. GGUF Conversion Script
+
+Write a Python script to convert original weights to GGUF:
+
+```python
+# convert-hf-to-gguf-deepseek.py
+def convert_deepseek_to_gguf(model_path, output_path):
+    # Load HuggingFace weights
+    model = AutoModelForCausalLM.from_pretrained(model_path)
+    
+    # Write GGUF metadata
+    gguf_writer.add_architecture("deepseek")
+    gguf_writer.add_context_length(4096)
+    gguf_writer.add_embedding_length(4096)
+    # ...
+    
+    # Convert weight tensors
+    for name, tensor in model.state_dict().items():
+        gguf_name = convert_tensor_name(name)
+        gguf_writer.add_tensor(gguf_name, tensor.numpy())
+```
+
+### 3. Ollama Registry Integration
+
+Upload the converted model to the Ollama registry:
+
+```bash
+# Create a Modelfile
+cat > Modelfile <<EOF
+FROM ./deepseek-v2.gguf
+PARAMETER temperature 0.7
+EOF
+
+# Create local model
+ollama create deepseek:v2 -f Modelfile
+
+# (Optional) Push to the public registry
+ollama push myuser/deepseek:v2
+```
+
+### 4. Testing and Validation
+
+```bash
+ollama run deepseek:v2
+
+# Run benchmark
+ollama run deepseek:v2 --verbose < prompts.txt
+
+# Validate output quality
+```
+
+### Community Contribution Process
+
+The Ollama community welcomes contributions for new architectures:
+
+1. Submit a PR to llama.cpp implementing the computational graph
+2. Submit the GGUF conversion script
+3. Provide test cases and benchmark results
+4. Update documentation describing the new architecture's features
+
+Many popular architectures (Gemma, Qwen, DeepSeek, Phi, etc.) were integrated through community contributions.
+
+## Summary
+
+Ollama's model ecosystem provides comprehensive model management capabilities through the following mechanisms:
+
+1. **Registry**: Docker-style model distribution with version management and deduplicated storage
+2. **Modelfile**: A declarative configuration system for model customization and documentation
+3. **Template**: A flexible prompt format system supporting arbitrary conversation structures
+4. **LoRA**: Parameter-efficient fine-tuning for low-cost model customization
+5. **Multimodal**: Vision-language model integration, expanding the boundaries of LLM applications
+6. **Extensibility**: Clear architectural layering that makes adding new model support straightforward
+
+These capabilities make Ollama not just an inference engine, but a complete local LLM application platform. Whether using existing models or customizing your own, Ollama provides a concise yet powerful toolchain.
+
+## Further Reading
+
+- [Ollama Library](https://ollama.com/library) — Official model library
+- [GGUF Specification](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md) — GGUF format specification
+- [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685) — The original LoRA paper
+- [LLaVA: Visual Instruction Tuning](https://arxiv.org/abs/2304.08485) — LLaVA multimodal model
+- [llama.cpp Architecture Guide](https://github.com/ggerganov/llama.cpp/blob/master/docs/architecture.md) — llama.cpp architecture documentation

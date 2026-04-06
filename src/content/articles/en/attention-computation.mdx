@@ -1,0 +1,240 @@
+---
+title: "Attention Computation in Detail"
+slug: attention-computation
+locale: en
+tags: [transformer, attention, softmax]
+prerequisites: [qkv-intuition]
+difficulty: intermediate
+created: "2026-03-31"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Attention Is All You Need"
+    url: "https://arxiv.org/abs/1706.03762"
+  - type: website
+    title: "The Illustrated Transformer"
+    url: "https://jalammar.github.io/illustrated-transformer/"
+  - type: website
+    title: "LLM Visualization — Brendan Bycroft"
+    url: "https://bbycroft.net/llm"
+  - type: website
+    title: "Transformer Explainer — Georgia Tech / Polo Club"
+    url: "https://poloclub.github.io/transformer-explainer/"
+---
+
+import AttentionStepAnimation from '../../../components/interactive/AttentionStepAnimation.tsx';
+import TensorShapeTracker from '../../../components/interactive/TensorShapeTracker.tsx';
+import ScalingFactorDemo from '../../../components/interactive/ScalingFactorDemo.tsx';
+import CausalMaskDemo from '../../../components/interactive/CausalMaskDemo.tsx';
+
+## Introduction: Attention Is the Core of the Transformer
+
+In the previous article, we learned how the Q, K, V matrices are obtained through linear projection. This article will dissect the **computation process** of Attention in detail — starting from Q, K, V and deriving the final output step by step.
+
+The essence of the Attention mechanism is a **differentiable soft retrieval**: using Queries to match all Keys, then computing a weighted average of Values based on the degree of matching. Each token's output is no longer fixed but dynamically aggregated based on context.
+
+## The Complete Formula: Scaled Dot-Product Attention
+
+The form of Attention used in Transformers is called **Scaled Dot-Product Attention**:
+
+$$
+\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{QK^T}{\sqrt{d_k}}\right) V
+$$
+
+Where:
+- $Q \in \mathbb{R}^{S \times d_k}$ — Query matrix
+- $K \in \mathbb{R}^{S \times d_k}$ — Key matrix
+- $V \in \mathbb{R}^{S \times d_v}$ — Value matrix (typically $d_v = d_k$)
+- $d_k$ — dimension of each attention head
+- $\sqrt{d_k}$ — scaling factor to prevent dot products from growing too large
+
+This formula appears concise but contains five key steps. Let us break them down one by one.
+
+<TensorShapeTracker client:visible locale="en" />
+
+## Step-by-Step Breakdown: The Mathematical Meaning of Each Step
+
+### Step 1: $QK^T$ — Computing Raw Attention Scores
+
+$$
+\text{Scores} = QK^T \in \mathbb{R}^{S \times S}
+$$
+
+This is a matrix multiplication: $Q$ has shape $(S, d_k)$, $K^T$ has shape $(d_k, S)$, and the result is $(S, S)$.
+
+**Intuition:** Entry $(i, j)$ in the result matrix is the dot product of Query vector $q_i$ and Key vector $k_j$:
+
+$$
+\text{Scores}_{ij} = q_i \cdot k_j = \sum_{l=1}^{d_k} q_{il} \cdot k_{jl}
+$$
+
+The dot product measures the "similarity" between two vectors: the larger the value, the more attention token $i$ pays to token $j$.
+
+### Step 2: Divide by $\sqrt{d_k}$ — Scaling
+
+$$
+\text{Scaled} = \frac{QK^T}{\sqrt{d_k}}
+$$
+
+Why is scaling needed? This is not an arbitrary design choice but is based on rigorous statistical analysis. See the "Necessity of Scaling" section below for details.
+
+### Step 3: Mask — Masking (Optional)
+
+$$
+\text{Masked}_{ij} = \begin{cases} \text{Scaled}_{ij} & \text{if } j \leq i \\ -\infty & \text{if } j > i \end{cases}
+$$
+
+In the Decoder's self-attention, token $i$ cannot see tokens after position $i$ (because those tokens do not yet exist during autoregressive generation). By setting the upper triangle to $-\infty$, the corresponding weights become 0 after softmax. See the "Causal Mask" section below for details.
+
+### Step 4: Softmax — Row Normalization
+
+$$
+\text{Weights}_i = \text{softmax}(\text{Masked}_i) = \frac{e^{\text{Masked}_{ij}}}{\sum_{j} e^{\text{Masked}_{ij}}}
+$$
+
+Softmax is applied independently to **each row** of the score matrix, converting raw scores into a probability distribution (non-negative and summing to 1).
+
+### Step 5: Multiply by $V$ — Weighted Summation
+
+$$
+\text{Output} = \text{Weights} \cdot V \in \mathbb{R}^{S \times d_v}
+$$
+
+The weight matrix $(S, S)$ multiplied by the Value matrix $(S, d_v)$ produces the final output $(S, d_v)$. Each token's output is a weighted average of all Value vectors:
+
+$$
+\text{Output}_i = \sum_{j=1}^{S} \text{Weights}_{ij} \cdot v_j
+$$
+
+## Interactive Animation: The Full Attention Computation Process
+
+Below is a small example ($S=4$, $d_k=3$) demonstrating the complete computation across all five steps. Click "Next Step" to progress through each stage.
+
+<AttentionStepAnimation client:visible locale="en" />
+
+## Necessity of Scaling: Why Divide by $\sqrt{d_k}$
+
+This is one of the most frequently asked questions in interviews and study. The original paper (Vaswani et al., 2017) provides a clear explanation:
+
+### Statistical Analysis
+
+Assume each component of $q$ and $k$ is an independent random variable with mean 0 and variance 1. Then their dot product:
+
+$$
+q \cdot k = \sum_{l=1}^{d_k} q_l \cdot k_l
+$$
+
+has the following statistical properties:
+
+$$
+\mathbb{E}[q \cdot k] = 0, \quad \text{Var}(q \cdot k) = d_k
+$$
+
+Variance derivation: The variance of each $q_l \cdot k_l$ is $\text{Var}(q_l) \cdot \text{Var}(k_l) = 1$ (since the variance of the product of zero-mean random variables equals the product of their variances), and summing $d_k$ independent terms gives a total variance of $d_k$.
+
+### The Problem
+
+When $d_k$ is large (e.g., GPT-3 uses $d_k = 128$), the magnitude of the dot product is approximately $\sqrt{128} \approx 11.3$. This means the softmax inputs become very large, leading to:
+
+1. **Softmax output approaches one-hot**: $\text{softmax}([10, 1, 1]) \approx [0.9999, 0.0001, 0.0001]$
+2. **Gradients nearly vanish**: In the saturated region of softmax, gradients approach 0, preventing the model from learning effectively
+
+### The Solution
+
+After dividing by $\sqrt{d_k}$, the variance of the dot product is restored to 1:
+
+$$
+\text{Var}\!\left(\frac{q \cdot k}{\sqrt{d_k}}\right) = \frac{d_k}{d_k} = 1
+$$
+
+This keeps the softmax inputs within a reasonable range, ensuring smooth gradient flow and stable training.
+
+<ScalingFactorDemo client:visible locale="en" />
+
+> Original paper quote: "We suspect that for large values of $d_k$, the dot products grow large in magnitude, pushing the softmax function into regions where it has extremely small gradients."
+
+## Causal Mask: The Decoder's Causal Masking
+
+### Why Masking Is Needed
+
+In autoregressive language models, when generating token $i$, only tokens $1, 2, \ldots, i$ are visible — tokens $i+1, i+2, \ldots$ cannot be seen (because they have not been generated yet).
+
+During training, for parallelization, we feed the entire sequence at once but need to simulate the "cannot see the future" constraint through masking.
+
+### The Mask Matrix
+
+$$
+M_{ij} = \begin{cases} 0 & \text{if } j \leq i \\ -\infty & \text{if } j > i \end{cases}
+$$
+
+The mask is added to the scaled scores: $\text{Masked} = \text{Scaled} + M$
+
+Since $e^{-\infty} = 0$, the weights at masked positions become 0 after softmax.
+
+### Shape of the Mask
+
+For sequence length $S = 4$:
+
+$$
+M = \begin{pmatrix} 0 & -\infty & -\infty & -\infty \\ 0 & 0 & -\infty & -\infty \\ 0 & 0 & 0 & -\infty \\ 0 & 0 & 0 & 0 \end{pmatrix}
+$$
+
+This is a lower triangular matrix. Row $i$ retains only the scores for the first $i$ positions.
+
+<CausalMaskDemo client:visible locale="en" />
+
+### Masking Strategies for Different Scenarios
+
+| Scenario | Mask Type | Description |
+|----------|-----------|-------------|
+| Encoder Self-Attention | No mask or padding mask | Bidirectional attention, can see the entire sequence |
+| Decoder Self-Attention | Causal mask | Can only see current and preceding tokens |
+| Cross-Attention | Padding mask | Decoder queries Encoder output, no causal constraint |
+
+## Numerical Stability of Softmax
+
+### The Overflow Problem
+
+A naive softmax implementation:
+
+$$
+\text{softmax}(x_i) = \frac{e^{x_i}}{\sum_j e^{x_j}}
+$$
+
+When $x_i$ is very large (e.g., $x_i = 1000$), $e^{1000}$ exceeds the representable range of floating-point numbers, causing numerical overflow (producing `Inf` or `NaN`).
+
+### The Standard Trick: Subtract the Maximum
+
+$$
+\text{softmax}(x_i) = \frac{e^{x_i - \max(x)}}{\sum_j e^{x_j - \max(x)}}
+$$
+
+This is mathematically equivalent (multiplying both numerator and denominator by $e^{-\max(x)}$), but ensures the exponent inputs are $\leq 0$, so $e^{x_i - \max(x)} \leq 1$, preventing overflow.
+
+**Proof of equivalence:**
+
+$$
+\frac{e^{x_i - m}}{\sum_j e^{x_j - m}} = \frac{e^{x_i} \cdot e^{-m}}{\sum_j e^{x_j} \cdot e^{-m}} = \frac{e^{x_i}}{\sum_j e^{x_j}}
+$$
+
+Where $m = \max(x)$.
+
+### Implementation in Practice
+
+All major deep learning frameworks (PyTorch, JAX, TensorFlow) have this trick built into their softmax implementations. In optimized implementations like Flash Attention, maintaining numerical stability during tiled computation is a more complex problem that we will discuss in subsequent articles.
+
+## Summary
+
+The computation of Scaled Dot-Product Attention can be decomposed into five clear steps:
+
+| Step | Operation | Output Shape | Purpose |
+|------|-----------|--------------|---------|
+| 1 | $QK^T$ | $(S, S)$ | Compute similarity between all token pairs |
+| 2 | $\div \sqrt{d_k}$ | $(S, S)$ | Prevent large dot products from causing vanishing gradients |
+| 3 | $+ \text{Mask}$ | $(S, S)$ | Mask positions that should not be attended to |
+| 4 | Softmax | $(S, S)$ | Normalize into a probability distribution |
+| 5 | $\times V$ | $(S, d_v)$ | Aggregate Values by attention weights |
+
+**Core intuition**: Attention is essentially a "soft addressing" mechanism — each token uses its Query to match against all Keys and extracts information from all Values based on match quality. Scaling ensures training stability, and masking ensures causality.
+
+The next article will introduce **Multi-Head Attention** — how multiple attention heads operate in parallel and combine to further enhance the model's expressiveness.

@@ -1,0 +1,107 @@
+---
+title: "Reward Design and Scaling"
+slug: reward-modeling
+locale: en
+tags: [reward-model, reward-hacking, process-reward, outcome-reward, constitutional-ai]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [rlhf]
+references:
+  - type: paper
+    title: "Let's Verify Step by Step (Lightman et al., 2023)"
+    url: "https://arxiv.org/abs/2305.20050"
+  - type: paper
+    title: "Training Verifiers to Solve Math Word Problems (Cobbe et al., 2021)"
+    url: "https://arxiv.org/abs/2110.14168"
+  - type: paper
+    title: "Constitutional AI: Harmlessness from AI Feedback (Bai et al., 2022)"
+    url: "https://arxiv.org/abs/2212.08073"
+  - type: paper
+    title: "Scaling Laws for Reward Model Overoptimization (Gao et al., 2022)"
+    url: "https://arxiv.org/abs/2210.10760"
+  - type: website
+    title: "Reward Hacking in Reinforcement Learning — Lilian Weng"
+    url: "https://lilianweng.github.io/posts/2024-11-28-reward-hacking/"
+  - type: website
+    title: "Reward Model 系列 — Nathan Lambert (interconnects.ai)"
+    url: "https://www.interconnects.ai/"
+---
+
+import ORMvsPRM from '../../../components/interactive/ORMvsPRM.tsx';
+import RewardHackingGallery from '../../../components/interactive/RewardHackingGallery.tsx';
+import RewardScalingChart from '../../../components/interactive/RewardScalingChart.tsx';
+import ConstitutionalAIFlow from '../../../components/interactive/ConstitutionalAIFlow.tsx';
+import RewardToVerifier from '../../../components/interactive/RewardToVerifier.tsx';
+
+## The Reward Model Is Central to Alignment
+
+Whether you choose RLHF, DPO, or GRPO, everything ultimately depends on some form of **reward signal**. RLHF explicitly trains an RM; DPO implicitly learns reward; GRPO uses rules or an RM for scoring.
+
+The quality of the RM directly determines the ceiling of alignment effectiveness. A perfect RM would mean perfect alignment -- but in reality, RMs are always imperfect, which gives rise to a series of core challenges.
+
+## Outcome Reward vs Process Reward
+
+Traditional RMs are **Outcome Reward Models (ORM)**: they look only at the final result and assign a single score. But for reasoning tasks (math, code, logic), this coarse-grained signal has clear shortcomings.
+
+**Process Reward Models (PRM)** score each step of the reasoning process, providing a more fine-grained supervision signal.
+
+<ORMvsPRM client:visible locale="en" />
+
+Key advantages of PRM:
+- Can identify cases where "the answer happens to be correct but the reasoning is wrong"
+- Provides node-level evaluation signals for MCTS-style search
+- Better credit assignment (pinpoints which step went wrong)
+
+However, PRM annotation costs are significantly higher -- each step's correctness must be labeled individually. OpenAI's "Let's Verify Step by Step" paper showed that PRM significantly outperforms ORM on mathematical reasoning.
+
+## Deep Dive into Reward Hacking
+
+**Goodhart's Law** manifests in RL alignment: when the RM score becomes the optimization target, the model finds "shortcuts" that maximize the score without genuinely improving quality.
+
+<RewardHackingGallery client:visible locale="en" />
+
+Common reward hacking patterns:
+- **Verbose padding**: RM prefers detailed responses, so the model learns to produce redundant content
+- **Sycophantic language**: RM prefers friendly tone, so the model substitutes praise for substance
+- **Format wrapping**: RM prefers structured output, so form trumps content
+- **Safety evasion**: Safety RM penalizes too aggressively, so the model refuses to answer even normal questions
+
+## Reward Model Scaling
+
+The good news: **larger RMs are harder to hack**. Research by Gao et al. (2022) shows that both RM parameter count and training data volume follow scaling laws:
+
+<RewardScalingChart client:visible locale="en" />
+
+This provides clear engineering guidance: **invest in a larger, better RM rather than a more complex training algorithm**.
+
+## Constitutional AI and Automated Rewards
+
+Human preference annotation is expensive and hard to scale. Anthropic's **Constitutional AI** proposed an alternative: **let the LLM generate its own preference judgments**.
+
+<ConstitutionalAIFlow client:visible locale="en" />
+
+The core idea behind this RLAIF (RL from AI Feedback) approach:
+1. Humans only define high-level principles (a "constitution")
+2. The LLM self-evaluates and revises its responses according to these principles
+3. The before-and-after response pairs form training data
+
+This dramatically reduces annotation costs, enabling alignment training to be automated at scale.
+
+## From Reward to Verifier
+
+The evolution path of the Reward Model: **from scorer to verifier**.
+
+<RewardToVerifier client:visible locale="en" />
+
+This evolution paves the way for **Test-Time Scaling**: with a verifier, we can generate multiple candidate responses at inference time and use the verifier to select the best one -- this is the central topic of the next article.
+
+## Summary
+
+1. **The RM is central to alignment**, and its quality directly determines the alignment ceiling
+2. **PRM outperforms ORM**: step-by-step scoring provides more fine-grained signals, especially for reasoning tasks
+3. **Reward Hacking** is Goodhart's Law in action; larger RMs are harder to hack
+4. **Constitutional AI** replaces human annotation with LLM self-evaluation, enabling large-scale RLAIF
+5. **RM to PRM to Verifier**: this evolution lays the foundation for test-time scaling
+
+In the next article, we will explore test-time scaling: how to invest more computation at inference time to improve LLM output quality.

@@ -1,0 +1,339 @@
+---
+title: "Compute Graphs and Inference Engines"
+slug: "ollama-compute-graph"
+locale: "en"
+tags: ["ggml", "compute-graph", "inference-engine", "operator-fusion"]
+prerequisites: ["llama-cpp-quantization"]
+difficulty: "advanced"
+created: "2026-04-04"
+updated: "2026-04-06"
+references:
+  - type: "repo"
+    title: "GGML"
+    url: "https://github.com/ggerganov/ggml"
+  - type: "repo"
+    title: "llama.cpp"
+    url: "https://github.com/ggerganov/llama.cpp"
+  - type: "paper"
+    title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+    url: "https://arxiv.org/abs/2205.14135"
+---
+
+import GGMLGraphBuilder from '../../../components/interactive/GGMLGraphBuilder.tsx';
+import OperatorFusion from '../../../components/interactive/OperatorFusion.tsx';
+import DualRunnerComparison from '../../../components/interactive/DualRunnerComparison.tsx';
+
+## GGML Compute Graph
+
+**GGML (Georgi Gerganov Machine Learning)** is a tensor library designed specifically for efficient LLM inference on CPUs and GPUs, serving as the core of llama.cpp. Unlike training frameworks such as PyTorch, GGML is fully optimized for inference scenarios, with the following key features:
+
+**Core Concepts:**
+- **Tensor**: Multi-dimensional arrays supporting multiple quantization types including F32, F16, Q4_0, Q8_0, etc.
+- **Graph**: A directed acyclic graph (DAG) composed of operation nodes (Op Nodes) and data dependency edges
+- **Context**: A memory pool from which all tensors are allocated, with unified lifecycle management
+- **Backend**: An abstraction layer supporting multiple hardware targets including CPU, CUDA, Metal, Vulkan, etc.
+
+**Lazy Evaluation:**
+
+GGML employs a "build first, execute later" two-phase model. When you call `ggml_mul_mat(A, B)`, GGML does not compute immediately. Instead, it:
+1. Creates a MatMul node
+2. Records the dependency relationships of inputs A and B
+3. Returns an "not yet computed" output tensor
+
+The entire graph is only scheduled for execution when `ggml_graph_compute()` is called. This design has two major benefits:
+- **Global Optimization**: The entire graph can be analyzed before execution for operator fusion, memory reuse, and other optimizations
+- **Cross-Device Scheduling**: Different nodes can be assigned to CPU/GPU/NPU based on hardware capabilities
+
+**Static vs Dynamic Graph:**
+
+GGML's compute graph is **semi-static**:
+- **Static Structure**: Once the model architecture (number of layers, dimensions) is fixed, the graph topology does not change
+- **Dynamic Input**: The number of input tokens (seq_len) can vary between inference runs, and the KV Cache also expands dynamically
+
+This differs from both PyTorch (fully dynamic graph) and TensorRT (fully static graph). GGML maintains flexibility while allowing optimization of fixed patterns.
+
+## Graph Construction Process
+
+Using a **Qwen3-8B** Transformer Block as an example, let's see how GGML builds the compute graph step by step. Model configuration:
+- hidden_size: 4096
+- num_attention_heads: 32 (Q)
+- num_key_value_heads: 8 (K/V, GQA)
+- intermediate_size: 11008 (FFN)
+- Activation function: SwiGLU
+
+**Pseudocode:**
+
+```c
+// 1. Create input tensor (assuming seq_len=10)
+struct ggml_tensor* input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4096, 10);
+
+// 2. RMSNorm before Attention
+struct ggml_tensor* attn_norm = ggml_rms_norm(ctx, input);
+
+// 3. QKV Projection (GQA: Q=4096, K/V=512)
+struct ggml_tensor* Q = ggml_mul_mat(ctx, wq, attn_norm); // (10, 4096)
+struct ggml_tensor* K = ggml_mul_mat(ctx, wk, attn_norm); // (10, 512)
+struct ggml_tensor* V = ggml_mul_mat(ctx, wv, attn_norm); // (10, 512)
+
+// 4. RoPE Positional Encoding
+Q = ggml_rope_inplace(ctx, Q, freq_base, freq_scale);
+K = ggml_rope_inplace(ctx, K, freq_base, freq_scale);
+
+// 5. FlashAttention (fused QK^T, softmax, ×V)
+struct ggml_tensor* attn_out = ggml_flash_attn(ctx, Q, K, V, true);
+
+// 6. Attention Output Projection
+attn_out = ggml_mul_mat(ctx, wo, attn_out);
+
+// 7. Residual Connection
+struct ggml_tensor* h = ggml_add(ctx, input, attn_out);
+
+// 8. RMSNorm before FFN
+struct ggml_tensor* ffn_norm = ggml_rms_norm(ctx, h);
+
+// 9. SwiGLU: (Gate × Up) fusion
+struct ggml_tensor* gate = ggml_mul_mat(ctx, w_gate, ffn_norm);
+struct ggml_tensor* up = ggml_mul_mat(ctx, w_up, ffn_norm);
+struct ggml_tensor* ffn_hidden = ggml_mul(ctx, ggml_silu(ctx, gate), up);
+
+// 10. FFN Down Projection + Residual
+struct ggml_tensor* ffn_out = ggml_mul_mat(ctx, w_down, ffn_hidden);
+struct ggml_tensor* output = ggml_add(ctx, h, ffn_out);
+```
+
+**Visual construction process:**
+
+<GGMLGraphBuilder client:visible locale="en" />
+
+Each blue/orange box represents a GGML operation node, and gray arrows indicate data dependencies. Note:
+- **RMSNorm** is the normalization method used by Qwen3 (replacing LayerNorm)
+- **GQA** (Grouped Query Attention): Q has 32 heads, K/V have only 8 heads, saving KV Cache memory
+- **Residual connections** (blue nodes): Add the input directly to the output to prevent gradient vanishing
+
+## Operator Fusion
+
+After building the graph, GGML performs **Operator Fusion** optimization. In the traditional approach, each operation requires:
+1. Reading input from HBM (High Bandwidth Memory)
+2. Computing on GPU/CPU
+3. Writing results back to HBM
+
+When multiple operations execute consecutively, intermediate results are repeatedly read from and written to HBM, creating a massive memory bandwidth bottleneck. Operator fusion merges multiple operations into a single kernel, keeping intermediate results in registers or SRAM, dramatically reducing memory accesses.
+
+**Common fusion patterns:**
+
+<OperatorFusion client:visible locale="en" />
+
+**1. FlashAttention Fusion:**
+
+The original Attention requires 5 independent steps:
+```python
+scores = Q @ K.T          # (seq, seq) matrix multiplication
+scores = scores / sqrt(d) # Scale
+scores = scores + mask    # Causal Mask
+attn = softmax(scores)    # Softmax
+output = attn @ V         # Final matrix multiplication
+```
+
+FlashAttention fuses all steps into a single CUDA kernel, and additionally:
+- **Tiled computation**: Processes one small tile at a time, reducing SRAM usage
+- **Online softmax**: No need to store the complete scores matrix
+- **IO optimization**: Intermediate results are not written back to HBM
+
+Result: **Memory access reduced from O(N²) to O(N)**, with 2-4x speed improvement.
+
+**2. RMSNorm + MatMul Fusion:**
+
+Before Attention/FFN, normalization is always followed by a linear transformation:
+```c
+x = rms_norm(x, weight_norm);
+x = matmul(weight_proj, x);
+```
+
+After fusion, normalization can be completed during MatMul, eliminating one round of global read/write.
+
+**3. SwiGLU Fusion:**
+
+The SwiGLU activation function involves 4 operations:
+```python
+gate = linear_gate(x)
+up = linear_up(x)
+activated = silu(gate) * up
+```
+
+The fused `fused_swiglu(x, w_gate, w_up)` completes all computations within a single kernel, avoiding 3 intermediate result stores.
+
+**Pattern Matching:**
+
+GGML automatically identifies fusible patterns through its **Graph Optimizer**. For example:
+- Detecting a `rms_norm → mul_mat` sequence → replaces with `fused_rmsnorm_matmul`
+- Detecting `rope → rope → flash_attn` → inlines RoPE into FlashAttention
+
+This process is completed before `ggml_graph_compute()` and is transparent to the user.
+
+## ollamarunner vs llamarunner
+
+Ollama supports two inference engines that build compute graphs in completely different ways:
+
+<DualRunnerComparison client:visible locale="en" />
+
+**ollamarunner (Go native, new direction):**
+
+- **Language**: Go, minimizing CGo calls
+- **Graph construction**: Hand-written `Forward()` methods for each model architecture in Go, directly calling the GGML C API
+- **Execution mode**: Pipeline async execution, prefill and decode can run in parallel
+- **Supported architectures**: ~21 (Llama 3, Qwen3, Gemma 2, Mistral, ...)
+- **Advantages**: Greater performance optimization potential, reduced CGo overhead, more aggressive batching possible
+- **Disadvantages**: Each new architecture requires hand-written Go code
+
+**llamarunner (C++ binding, fallback):**
+
+- **Language**: C++, bound to llama.cpp's C API through CGo
+- **Graph construction**: Completely relies on llama.cpp's `llama_decode()`, black-box invocation
+- **Execution mode**: Synchronous execution, waits for current batch to complete before submitting the next
+- **Supported architectures**: ~120+ (covers all models supported by llama.cpp)
+- **Advantages**: Strongest compatibility, no need for the Ollama team to maintain model code
+- **Disadvantages**: High CGo call overhead, difficult to implement custom optimizations
+
+**Why two runners?**
+
+Ollama's strategy is:
+1. **ollamarunner first**: For mainstream models (Llama, Qwen, Mistral), hand-written Go implementations pursuing peak performance
+2. **llamarunner fallback**: For long-tail models (Phi, CodeLlama, various fine-tuned models), relying on llama.cpp's broad support
+
+Users don't need to worry about which runner is used — Ollama automatically selects based on the model file's `architecture` field. Both runners ultimately submit compute graphs to the same **GGML Backend**, so hardware acceleration (CUDA, Metal, Vulkan) implementations are shared.
+
+**Architecture evolution:**
+
+- **v0.1.x - v0.2.x**: Only llamarunner, fully dependent on llama.cpp
+- **v0.3.x**: Introduced ollamarunner, supporting Llama 3/3.1
+- **v0.4.x**: ollamarunner supports Qwen3, Gemma 2, Phi, etc.
+- **Future**: Plans to migrate more models to ollamarunner, and potentially implement their own backend (decoupled from GGML)
+
+## Backend Scheduling
+
+After building the compute graph and completing operator fusion, GGML's **Scheduler** is responsible for assigning operations to different hardware backends for execution.
+
+**Backend Abstraction:**
+
+GGML defines a unified Backend interface:
+```c
+struct ggml_backend {
+    const char* name;          // "CPU", "CUDA", "Metal"
+    ggml_backend_buffer_t (*alloc_buffer)(size_t);
+    void (*compute_graph)(ggml_backend_t, struct ggml_cgraph*);
+    bool (*supports_op)(enum ggml_op);
+};
+```
+
+Each backend implements three core capabilities:
+1. **Memory allocation**: Allocating tensor storage in CPU RAM / GPU VRAM
+2. **Graph execution**: Traversing graph nodes and calling corresponding kernel implementations (cuBLAS, cuDNN, Metal Performance Shaders, ...)
+3. **Capability query**: Reporting which operations are supported (e.g., CPU does not support FlashAttention)
+
+**Device Assignment:**
+
+Ollama supports three modes:
+- **CPU Only**: All operations on CPU, using AVX2/AVX-512 SIMD instructions
+- **GPU Only**: All operations on GPU (CUDA/Metal/Vulkan)
+- **Hybrid**: Model layers distributed across multiple devices
+
+In Hybrid mode, GGML automatically assigns based on memory capacity:
+```plaintext
+Layer  0 -  10: GPU 0
+Layer 11 -  20: GPU 1
+Layer 21 -  32: CPU
+```
+
+**Cross-Device Data Transfer:**
+
+When a node's inputs come from different devices, GGML automatically inserts transfer nodes:
+```c
+// Layer 10 (GPU) → Layer 11 (GPU)
+tensor_gpu = ggml_mul_mat(gpu_backend, w10, x10);
+
+// Layer 11 (GPU) → Layer 12 (CPU)
+tensor_cpu = ggml_backend_copy(gpu_backend, cpu_backend, tensor_gpu);
+x12 = ggml_mul_mat(cpu_backend, w12, tensor_cpu);
+```
+
+Transfers use:
+- **CUDA → CPU**: cudaMemcpyAsync + pinned memory
+- **CPU → CUDA**: cudaMemcpyAsync + page-locked memory
+- **GPU → GPU**: NVLink (if available) or PCIe
+
+**Multi-GPU Scheduling:**
+
+In multi-GPU environments, GGML supports two parallelism strategies:
+1. **Tensor Parallelism**: Splitting a single MatMul across multiple GPUs
+   ```plaintext
+   Q @ K^T  →  [Q1 @ K1^T] GPU0
+               [Q2 @ K2^T] GPU1
+   ```
+2. **Pipeline Parallelism**: Assigning different layers to different GPUs
+   ```plaintext
+   Layer 0-15: GPU 0
+   Layer 16-31: GPU 1
+   ```
+
+Ollama uses **Pipeline Parallelism** by default, as it is simpler to implement with lower communication overhead.
+
+## How It Differs
+
+GGML's design philosophy differs significantly from other mainstream frameworks. Let's compare:
+
+**vs PyTorch (Dynamic Graph Training Framework):**
+
+| Feature | GGML | PyTorch |
+|---------|------|---------|
+| **Graph Type** | Semi-static (fixed structure, variable input) | Fully dynamic (Eager Execution) |
+| **Target Scenario** | Inference | Training + Inference |
+| **Memory Management** | Context pool allocation, deterministic lifecycle | Dynamic allocation + GC, requires reference counting |
+| **Operator Fusion** | Automatic compile-time fusion | Requires manual TorchScript/torch.jit |
+| **Quantization Support** | Native Q4/Q8 inference | Requires ONNX Runtime or third-party libraries |
+| **Hardware Support** | Extreme CPU optimization (AVX-512, Neon) | Average CPU performance, primarily GPU-optimized |
+
+PyTorch's advantage lies in flexibility (dynamic control flow, immediate debugging), but inference performance is inferior to GGML. Typical comparison:
+- **Llama 3-8B inference (CPU, 1 thread)**: GGML ~15 tok/s, PyTorch ~3 tok/s
+- **Memory usage (Q4_K_M)**: GGML ~4.5GB, PyTorch (FP16) ~16GB
+
+**vs TensorRT (NVIDIA Inference Engine):**
+
+| Feature | GGML | TensorRT |
+|---------|------|---------|
+| **Graph Type** | Semi-static | Fully static (fixed after compilation) |
+| **Deployment Flow** | Load GGUF directly → run | Export ONNX → compile → serialize → run |
+| **Hardware Dependency** | Cross-platform (CPU/CUDA/Metal/...) | NVIDIA GPU only |
+| **Quantization Granularity** | Per-tensor or per-channel | Per-channel + INT8 calibration |
+| **Optimization Level** | Operator fusion + kernel selection | Operator fusion + kernel tuning + layer fusion + precision calibration |
+
+TensorRT delivers the best performance on NVIDIA GPUs (specifically optimized for Tensor Core), but:
+- **Long compilation time**: 5-30 minutes for the first run
+- **No dynamic input support**: batch_size and seq_len must be fixed in advance
+- **Complex deployment**: Requires ONNX export + calibration dataset
+
+GGML sacrifices some performance in exchange for:
+- **Instant startup**: No compilation needed, load model and start inference directly
+- **Cross-platform**: Same GGUF file runs on Mac/Windows/Linux
+- **Flexible input**: Arbitrary-length input sequences
+
+**vs ONNX Runtime (Cross-Framework Inference):**
+
+| Feature | GGML | ONNX Runtime |
+|---------|------|---------|
+| **Model Format** | GGUF (custom binary) | ONNX (Protobuf) |
+| **Quantization Method** | GGML native quantization (Q4_K_M, IQ3_XS, ...) | INT8/INT4 PTQ + QDQ nodes |
+| **Backend Selection** | Fixed at compile time (CPU/CUDA/Metal) | Runtime selection (EP: CPU/CUDA/TensorRT/OpenVINO/...) |
+| **Memory Optimization** | KV Cache reuse + prefix cache | Depends on backend implementation |
+
+ONNX Runtime's advantage is **universality** (supporting 100+ backends), but it is less focused than GGML for LLM inference. For example:
+- ONNX Runtime's INT4 quantization requires exporting per-channel scales, while GGML supports more complex block-wise quantization
+- ONNX Runtime's KV Cache management must be implemented manually by the user, whereas GGML has it built-in
+
+**Summary:**
+
+GGML's core competitive advantages are:
+1. **Extreme CPU performance**: Usable even without a GPU
+2. **Deep integration of quantization and inference**: GGUF format natively supports low-bit inference
+3. **Simple deployment workflow**: One file + one command, no complex compilation/optimization needed
+
+This makes GGML (and Ollama) the best choice for **edge device** and **local deployment** scenarios. For peak performance, TensorRT or vLLM may be more suitable; for unified training and inference, PyTorch is the better choice. But if the goal is "easily run LLMs on any device," GGML is currently unmatched.

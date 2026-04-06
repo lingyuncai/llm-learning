@@ -1,0 +1,105 @@
+---
+title: "Performance Analysis and Bottleneck Diagnosis"
+slug: igpu-performance-analysis
+locale: en
+tags: [intel, performance, profiling, roofline, vtune, bottleneck]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [onednn-gpu-optimization, openvino-graph-pipeline]
+references:
+  - type: website
+    title: "Intel VTune Profiler — GPU Analysis — Intel"
+    url: "https://www.intel.com/content/www/us/en/docs/vtune-profiler/user-guide/current/gpu-compute-media-hotspots-analysis.html"
+  - type: website
+    title: "OpenVINO Benchmark Tool — Intel"
+    url: "https://docs.openvino.ai/2024/learn-openvino/openvino-samples/benchmark-tool.html"
+  - type: website
+    title: "Intel GPU Top — intel_gpu_top man page"
+    url: "https://manpages.ubuntu.com/manpages/noble/man1/intel_gpu_top.1.html"
+---
+
+import IGpuRoofline from '../../../components/interactive/IGpuRoofline.tsx';
+import BottleneckDiagnosisTree from '../../../components/interactive/BottleneckDiagnosisTree.tsx';
+import VTuneGpuProfile from '../../../components/interactive/VTuneGpuProfile.tsx';
+import BenchmarkDashboard from '../../../components/interactive/BenchmarkDashboard.tsx';
+
+## The Unique Challenges of iGPU Performance Analysis
+
+Performance analysis on integrated GPUs (iGPUs) differs significantly from discrete GPUs. iGPUs share memory and power budget with the CPU, and their performance is affected by multiple system-level factors: shared LPDDR memory bandwidth (typically 50-120 GB/s), dynamic power allocation (CPU and GPU competing for limited TDP), and thermal throttling that reduces clock frequencies. These factors intertwine, making bottleneck diagnosis more complex.
+
+Common bottlenecks in Intel's iGPU architectures (such as Xe, Xe2) during inference scenarios include: **memory-bound** (insufficient memory bandwidth for small batches or low-reuse operators like Softmax and LayerNorm), **compute-bound** (large matrix multiplications with underutilized XMX), **host-bound** (excessive synchronization points or frequent scheduling of small kernels), and **throttling** (frequency reduction due to power or thermal limits). Accurately identifying the bottleneck type is a prerequisite for optimization, and the Roofline model, VTune Profiler, and OpenVINO Benchmark Tool are the three core instruments.
+
+The goal of performance analysis is not only to find where things are slow, but more importantly to understand **why they are slow** and **where the optimization headroom lies**. For example, if EU (Execution Unit) utilization is only 30%, it could be due to insufficient occupancy (too few threads) or frequent barriers causing stalls. Only by combining GPU architecture characteristics with tool data can an effective optimization strategy be formulated.
+
+## Toolchain Overview
+
+The Intel iGPU performance analysis toolstack consists of three layers: **system-level monitoring** (`intel_gpu_top`, for real-time GPU utilization, frequency, and power viewing), **application-level profiling** (VTune Profiler, for deep analysis of EU activity, memory bandwidth, and XMX usage), and **inference benchmarking** (OpenVINO `benchmark_app`, for end-to-end latency and throughput testing).
+
+`intel_gpu_top` is a lightweight monitoring tool, similar to `nvidia-smi`, that displays real-time GPU Render and Compute engine occupancy, current frequency, power consumption, and more. It is suitable for quickly confirming whether the GPU is active and whether it is throttling. VTune Profiler is a heavyweight tool that collects hardware counter data through sampling or instrumentation, precisely identifying which kernels are slow, whether EUs are stalling, L3 cache hit rates, XMX busy levels, and more. Its GPU Compute/Media Hotspots analysis view is the core tool for diagnosing iGPU bottlenecks.
+
+OpenVINO's `benchmark_app` is an inference-specific benchmarking tool that supports multi-threaded asynchronous inference (via the `nireq` parameter for concurrent request count), first-inference warmup (eliminating kernel compilation overhead), and detailed latency statistics (Median, Average, Min, Max, P99). Its output is the gold standard for end-to-end performance and serves as the baseline for verifying optimization effects. The three tools work together: `intel_gpu_top` for quick system-level troubleshooting, VTune for deep microarchitectural bottleneck analysis, and `benchmark_app` for optimization verification.
+
+## Roofline Analysis on iGPU
+
+The Roofline model is a classic performance analysis method that maps an operator's **Arithmetic Intensity (AI)** and actual performance onto a 2D chart. By comparing against theoretical peaks, it intuitively determines whether an operator is compute-bound or memory-bound. For Intel iGPUs, the Roofline has two compute peak lines: the **XMX peak** (for matrix operations, approximately 2 TOPS FP16 on Xe2) and the **vector peak** (for non-matrix operations, approximately 50-60% of XMX).
+
+The memory bandwidth slope is determined by LPDDR bandwidth (approximately 90 GB/s for LPDDR5x). When an operator's AI is low (e.g., Softmax with AI < 5 FLOP/Byte), performance is bandwidth-limited and falls on the slope line. When AI is high (e.g., large MatMul with AI > 50), performance approaches the compute peak and becomes compute-bound. The **Ridge Point** is the intersection of the two lines (AI = peak TOPS / bandwidth GB/s), marking the critical transition from memory-bound to compute-bound.
+
+The chart below shows the Roofline model for the Xe2 iGPU, along with the performance distribution of typical Transformer operators. You can see that `MatMul-large` approaches the XMX peak, while `Softmax` and `LayerNorm` are bandwidth-limited. Click to switch between different operators and observe their positions on the Roofline. For memory-bound operators, the optimization focus is **reducing memory access** (operator fusion, blocked format); for compute-bound operators, the focus is **improving compute efficiency** (lowering precision, fully utilizing XMX).
+
+<IGpuRoofline client:visible locale="en" />
+
+The limitation of the Roofline model is that it assumes operators can reach the theoretical peak, but in practice, insufficient occupancy, cache misses, synchronization overhead, and other factors cause deviations. Therefore, the Roofline is primarily used for **initial bottleneck type identification** rather than precise performance prediction. It tells us the optimization direction — specific optimization techniques require profiler data.
+
+## Common Bottleneck Patterns
+
+The root causes of poor iGPU inference performance can typically be categorized into four types: **Compute-bound** (insufficient compute capability), **Memory-bound** (insufficient memory bandwidth), **Host-bound** (excessive CPU-side overhead), and **Throttling** (power or thermal limitations). The starting point for identifying bottlenecks is **GPU utilization**: if GPU Busy exceeds 80%, the bottleneck is on the GPU side (compute or memory); if GPU Busy is below 50%, the bottleneck may be on the CPU side or at the system level.
+
+For GPU-side bottlenecks, further analysis uses **Arithmetic Intensity**: high-AI operators (such as large MatMul) are typically compute-bound — optimization directions include lowering precision (FP16/INT8), using the XMX matrix engine, or algorithmically reducing computation (such as sparsification or knowledge distillation). Low-AI operators (such as Softmax, LayerNorm, small MatMul) are typically memory-bound — optimization directions include reducing data movement (operator fusion, in-place operations), using blocked format to improve cache hit rates, or increasing data reuse (such as shared local memory).
+
+For host-bound bottlenecks, common causes include frequent synchronization points (`clFinish`, `clEnqueueBarrier`), scheduling overhead for small kernels, or excessive host-device data copies. Optimization methods include: using asynchronous inference APIs (OpenVINO's `InferRequest::start_async()`), batching multiple inference requests, reducing unnecessary synchronization, and avoiding data copies on every inference (reusing tensors). Throttling issues require system-level solutions: checking power configuration (ensuring turbo is enabled), improving cooling, or adjusting DVFS strategy.
+
+<BottleneckDiagnosisTree client:visible locale="en" />
+
+## Optimization Decision Tree
+
+The decision tree above shows the complete path from performance problems to specific optimization techniques. In practice, the recommended workflow is: first run `intel_gpu_top` and `benchmark_app` to obtain GPU utilization and end-to-end latency; then based on utilization levels, decide whether to use VTune for deep GPU-side analysis (examining EU Active/Stall/Idle, L3 bandwidth, XMX usage) or perf/strace for CPU-side overhead analysis.
+
+If VTune shows **high EU Active (>70%) with L3 bandwidth near peak**, it indicates memory-bound — prioritize operator fusion (e.g., fusing MatMul+Add+ReLU into a single kernel), using OneDNN's blocked format (`nChw16c`), or checking for redundant reorder operations. If **EU Active is high but bandwidth is not saturated**, it indicates compute-bound — check whether XMX is being used (look at the XMX Busy metric in VTune), whether precision is too high (switch FP32 to FP16), or whether the operator implementation is efficient (compare OneDNN optimized kernel vs. custom implementation).
+
+If **EU Idle or Stall is high**, it indicates insufficient occupancy or excessive synchronization. Check thread group size configuration (whether it is too small, leaving EUs idle), whether there are frequent barriers (reducing parallelism), or whether SLM (Shared Local Memory) usage is excessive (reducing occupancy). If **GPU Busy is low but CPU utilization is high**, use VTune's Threading Analysis to examine CPU-side thread activity, identifying whether the bottleneck is inference API call overhead (switch to async), data preprocessing (such as OpenCV resize — consider GPU preprocessing), or framework overhead (such as Python GIL — consider C++ API).
+
+## VTune GPU Analysis in Practice
+
+VTune Profiler's **GPU Compute/Media Hotspots** analysis view is the core tool for diagnosing iGPU bottlenecks. Run the command: `vtune -collect gpu-hotspots -result-dir vtune_results -- ./my_app`, then open the results in the GUI. Key metrics include: **EU Active** (the proportion of time EUs execute valid instructions — higher is better, target >80%), **EU Stall** (time EUs spend waiting for data or synchronization — high stall indicates memory-bound or excessive synchronization), and **EU Idle** (EU idle time — high idle indicates insufficient occupancy, possibly due to improper kernel launch configuration).
+
+**L3 Bandwidth** shows actual memory bandwidth as a proportion of peak. If close to 100%, it indicates memory-bound and data movement needs to be reduced. **SLM Usage** shows Shared Local Memory consumption (64KB per subslice). Excessive SLM usage reduces occupancy (because limited hardware resources cannot run more thread groups simultaneously). **XMX Busy** shows matrix engine utilization — if matrix operations are a high proportion but XMX Busy is low, XMX may not be enabled or the data type is unsupported (only FP16/BF16/INT8 can use XMX).
+
+The diagram below simulates VTune's output view, showing the meaning of each metric and diagnostic directions. In practice, combining the **Bottom-up by GPU Task** view (sorted by kernel) and the **Timeline** view (showing kernel execution sequence) enables precise identification of the longest-running kernels, unnecessary synchronization points, and CPU-GPU pipeline bubbles (GPU waiting for CPU to submit the next task).
+
+<VTuneGpuProfile />
+
+VTune also supports **Source View** (requires debug symbols), which can pinpoint hotspots to specific code lines. For OpenVINO inference, most time will be spent inside OneDNN kernels, and you need to cross-reference OneDNN's verbose log (`ONEDNN_VERBOSE=1`) to correlate kernel names with operators. For example, if a `brgemm` kernel is taking long with low XMX Busy, it indicates MatMul is not using XMX — check the data type or OneDNN primitive hint.
+
+## OpenVINO Benchmark in Practice
+
+OpenVINO's `benchmark_app` is the standard tool for inference performance testing. Basic usage: `benchmark_app -m model.xml -d GPU -niter 1000`. Key parameters: `-d GPU` specifies the device, `-niter` specifies the iteration count (at least 1000 for stable statistics), `-nireq N` sets the number of concurrent inference requests (for asynchronous inference, simulating real throughput scenarios), and `-nstreams` sets the GPU stream count (typically 2-4 on Xe architecture).
+
+The most important metric in the output is **Latency**. **Median** is the median latency — the most stable and least affected by outliers, and the preferred metric for performance comparison. **Average** is the mean latency, used for throughput calculation (FPS = 1000 / avg_latency × nireq). **Min** is the best case, but the first inference is typically not the minimum (due to kernel compilation overhead). **Max** is the worst case, usually occurring during the first inference (the initial execution of OpenCL kernels triggers JIT compilation, taking 10-100ms), with subsequent inferences using the cache.
+
+**P99 (99th percentile)** means 99% of requests have latency below this value. It reflects real **tail latency** better than Max and is commonly used for SLA guarantees. If P99 is much higher than Median (e.g., Median 10ms, P99 50ms), it indicates sporadic performance spikes, possibly caused by CPU scheduling jitter, thermal throttling, or cache misses. **Throughput** is the number of frames processed per second, calculated as: `FPS = 1000 / (avg_latency / nireq)`. Increasing throughput is achieved by increasing `nireq` (fully utilizing GPU parallelism), but latency increases correspondingly.
+
+<BenchmarkDashboard />
+
+When running `benchmark_app` for the first time, Max will be very high (due to OpenCL kernel compilation). The solution is to use **OpenCL kernel cache**: set environment variables `CL_CONFIG_USE_PERSISTENT_CACHE=1` and `CL_CONFIG_PERSISTENT_CACHE_PATH=/path/to/cache`. After the first run, cache files are generated, and subsequent runs load them directly, eliminating compilation overhead. For production deployments, it is recommended to pre-generate the cache (during a warmup phase) and distribute it with the application.
+
+When comparing different optimization approaches, always use **identical test conditions**: the same `niter`, `nireq`, `nstreams`, and the same input data (to avoid cache effect differences). Run multiple times and take the average of Medians to eliminate system noise. If the Median decreases by {"<"}5% after optimization, it may be within the margin of error (more samples or longer test duration needed); if it decreases by >20%, the optimization is significantly effective.
+
+## Summary
+
+iGPU performance analysis is a systems engineering discipline that requires understanding hardware architecture (EU, XMX, L3, memory bandwidth), mastering the toolchain (Roofline, VTune, benchmark_app), and familiarity with inference frameworks (OpenVINO, OneDNN). The methodology presented in this article is: **first use Roofline to identify bottleneck type** → **use VTune for deep microarchitectural metric analysis** → **use benchmark_app to verify optimization effects** → **select optimization techniques using the decision tree**.
+
+Practical optimization is an iterative process, not a one-time effort. First, address low-hanging fruit (such as enabling FP16, fixing format mismatches, eliminating redundant reorders), which typically yields 20-50% improvement. Then target hotspot kernels for focused optimization (operator fusion, SLM optimization, thread group tuning), potentially gaining another 10-30%. Finally, algorithm-level optimization (model pruning, distillation, sparsification) is a long-term effort. The value of performance analysis lies in **quantifying the benefit of each optimization step**, avoiding blind attempts and premature optimization.
+
+For production environments, it is recommended to establish a **performance regression testing framework**: automatically run `benchmark_app` after each model update or framework upgrade and compare against historical data to promptly detect performance regressions. Combined with VTune's Command Line Interface (`vtune -collect gpu-hotspots -r result -report summary`), key metrics can be integrated into the CI/CD pipeline. The ultimate goal is to make performance analysis part of the development workflow, not an afterthought.

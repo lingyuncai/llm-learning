@@ -1,0 +1,144 @@
+---
+title: "State Space Models and Mamba"
+slug: "state-space-models"
+locale: "en"
+tags: [ssm, mamba, state-space-model, selective-scan, sequence-modeling]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [attention-computation]
+references:
+  - type: paper
+    title: "Efficiently Modeling Long Sequences with Structured State Spaces (S4)"
+    url: "https://arxiv.org/abs/2111.00396"
+  - type: paper
+    title: "Mamba: Linear-Time Sequence Modeling with Selective State Spaces"
+    url: "https://arxiv.org/abs/2312.00752"
+  - type: paper
+    title: "Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality"
+    url: "https://arxiv.org/abs/2405.21060"
+---
+
+import SSMStateRecurrence from '../../../components/interactive/SSMStateRecurrence.tsx';
+import RecurrenceConvDuality from '../../../components/interactive/RecurrenceConvDuality.tsx';
+import SelectiveScanViz from '../../../components/interactive/SelectiveScanViz.tsx';
+import MambaBlockDiagram from '../../../components/interactive/MambaBlockDiagram.tsx';
+import SSDAttentionEquivalence from '../../../components/interactive/SSDAttentionEquivalence.tsx';
+
+## Introduction
+
+Standard Attention has $O(n^2)$ computational complexity, and the KV cache grows linearly with sequence length during inference. For long-context scenarios with 100K+ tokens, Attention's memory and compute costs become a critical bottleneck. Is there a sequence modeling method that can process sequences of arbitrary length in **linear time** while maintaining a fixed-size inference cache?
+
+**State Space Models (SSMs)** are exactly such an approach. Originating from control theory and signal processing, the core idea is to compress the entire history of a sequence into a **fixed-size state vector**, updating the state for each new token rather than looking back over the full history.
+
+---
+
+## 1. Continuous State Space Models
+
+The mathematical foundation of SSMs is a continuous-time linear dynamical system:
+
+$$
+\dot{x}(t) = Ax(t) + Bu(t), \quad y(t) = Cx(t) + Du(t)
+$$
+
+Here $u(t)$ is the input signal, $x(t) \in \mathbb{R}^N$ is the hidden state, and $y(t)$ is the output. Matrix $A \in \mathbb{R}^{N \times N}$ governs how the state evolves, $B \in \mathbb{R}^{N \times 1}$ controls how input is written into the state, and $C \in \mathbb{R}^{1 \times N}$ controls how the output is read from the state.
+
+Intuition: **The state $x$ is a "compressed history summary."** Unlike Attention — which looks back over the entire token sequence at every step — an SSM maintains only a fixed-size state, with all historical information compressed into these $N$ dimensions. Think of it as a "filter with memory": the input signal passes through the system, gets remembered and mixed by the state, then produces the output.
+
+<SSMStateRecurrence client:visible locale="en" />
+
+---
+
+## 2. Discretization: From Continuous to Sequential
+
+Language models process discrete token sequences, so the continuous SSM must be discretized. Using the Zero-Order Hold (ZOH) method with step size $\Delta$:
+
+$$
+\bar{A} = e^{\Delta A}, \quad \bar{B} = (\Delta A)^{-1}(e^{\Delta A} - I) \cdot \Delta B
+$$
+
+The discretized recurrence formula:
+
+$$
+x_k = \bar{A} x_{k-1} + \bar{B} u_k, \quad y_k = C x_k
+$$
+
+The physical meaning of step size $\Delta$: it controls the system's "temporal resolution." A **large $\Delta$** means each step spans a longer time interval, making the system focus on long-range dependencies; a **small $\Delta$** makes the system focus on short-range details. In the subsequent Mamba model, $\Delta$ becomes an input-dependent learnable parameter — this is the key to the selectivity mechanism.
+
+---
+
+## 3. Duality of Recurrence and Convolution
+
+Discrete SSMs possess an elegant property: the same model can be computed in two entirely different ways.
+
+**Recurrence mode**: Step-by-step recursion $x_k = \bar{A}x_{k-1} + \bar{B}u_k$, with $O(1)$ computation per step. Ideal for **inference** — each new token requires only a single state update.
+
+**Convolution mode**: Unrolling the recursion yields $y = \bar{K} * u$, where the convolution kernel is $\bar{K} = (C\bar{B}, C\bar{A}\bar{B}, C\bar{A}^2\bar{B}, ...)$. The entire sequence can be computed in parallel using FFT in $O(N \log N)$ time. Ideal for **training** — all tokens are processed simultaneously.
+
+<RecurrenceConvDuality client:visible locale="en" />
+
+This duality is the core contribution of S4 (Structured State Spaces for Sequence Modeling): use convolution mode during training to fully exploit GPU parallelism, then switch to recurrence mode at inference for $O(1)$ incremental generation.
+
+---
+
+## 4. Mamba's Selectivity Mechanism
+
+Early SSMs like S4 have a fundamental limitation: the parameters $A$, $B$, $C$ are **fixed** (input-independent). This means the system treats all input tokens identically — whether critical content words or noise filler words, the SSM processes them the same way.
+
+**Mamba** (Gu & Dao, 2023) introduces the core innovation of **Selectivity**: making key parameters dependent on the current input.
+
+- **Selective $B$**: $B_k = \text{Linear}(u_k)$ — controls "what to write into the state"
+- **Selective $C$**: $C_k = \text{Linear}(u_k)$ — controls "what to read from the state"
+- **Selective $\Delta$**: $\Delta_k = \text{softplus}(\text{Linear}(u_k))$ — controls "forgetting speed"
+
+$\Delta$ is the most intuitive: for important tokens (e.g., content words like "cat", "mat"), the model learns to output a large $\Delta$, causing the information to **be retained**; for noise tokens (e.g., "the", "on"), it outputs a small $\Delta$, causing old information to **quickly forget** the new input.
+
+<SelectiveScanViz client:visible locale="en" />
+
+The cost of selectivity: once parameters depend on input, the SSM is no longer a linear time-invariant (LTI) system — the convolution kernel $\bar{K}$ changes with input, so FFT acceleration is no longer possible. Mamba uses a **hardware-aware parallel scan algorithm** instead — performing scan operations in GPU SRAM to avoid HBM reads/writes, achieving training efficiency close to convolution.
+
+### Mamba Block Architecture
+
+Mamba replaces the traditional Attention + MLP structure with a more streamlined block:
+
+<MambaBlockDiagram />
+
+The entire block has no Attention layer and no separate MLP layer. The input first goes through a linear projection to expand dimensions, then splits into two paths: one path through Conv1d + SSM for sequence processing, the other as a gate. The two paths are multiplied together, then dimensions are contracted for output.
+
+---
+
+## 5. Mamba-2: State Space Duality
+
+**Mamba-2** (Dao & Gu, ICML 2024) establishes a deep mathematical connection between SSMs and Attention — **State Space Duality (SSD)**.
+
+Core finding: unrolling the SSM recurrence into matrix form $Y = M \cdot U$, the matrix $M$ is a **semiseparable matrix**. Meanwhile, in standard Attention computation $Y = \text{softmax}(QK^T) \cdot V$, the score matrix $QK^T$ is a **dense matrix**.
+
+<SSDAttentionEquivalence client:visible locale="en" />
+
+In other words: **SSM is a form of Attention with structural constraints.** The semiseparable structure = causal mask + exponential decay, and this structure allows the matrix multiplication to be completed in $O(N)$ time using chunk-wise algorithms — similar to Flash Attention's blocking strategy.
+
+Practical significance: Mamba-2 is **2-8x** faster than Mamba-1, while introducing **multi-head SSM** (analogous to multi-head attention), which gives the model greater expressive power.
+
+---
+
+## Summary
+
+SSMs provide a fundamentally different sequence modeling paradigm from Attention:
+
+| | Attention | SSM |
+|---|---|---|
+| Training complexity | $O(N^2)$ | $O(N)$ or $O(N \log N)$ |
+| Inference cache | $O(N)$ (KV cache) | $O(1)$ (fixed state) |
+| History access | Exact (any token) | Compressed (fixed dimensions) |
+| Core bottleneck | Long-sequence memory/compute | Copying / ICL capability |
+
+SSM's advantages lie in linear complexity and constant inference cache, but a fixed-size state vector means information must be compressed — when precise recall of a specific distant token is needed (e.g., copying, in-context learning), SSMs fall short.
+
+This fundamental limitation leads to the topic of the next article: how **Hybrid architectures** combine Attention's precise retrieval with SSM's efficient summarization, leveraging the strengths of both.
+
+## Further Reading
+
+- [Attention Computation](./attention-computation) — Understanding the standard Attention computation process
+- [Flash Attention](./flash-attention) — Another approach to optimizing Attention efficiency
+- [Attention Variants](./attention-variants) — Sliding Window, MLA, and other Attention optimizations
+- [Hybrid Architectures](./hybrid-architectures) — Fusing Mamba with Attention

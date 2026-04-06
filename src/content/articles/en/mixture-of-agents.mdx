@@ -1,0 +1,119 @@
+---
+title: "Multi-Model Collaboration: From Picking One to Using Many"
+slug: mixture-of-agents
+locale: en
+tags: [model-routing, mixture-of-agents, ensemble, council-mode, collaboration]
+difficulty: advanced
+prerequisites: [model-routing-landscape]
+created: "2026-04-06"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Council Mode: Multi-LLM Collaboration for Hallucination Reduction"
+    url: "https://arxiv.org/abs/2604.02923"
+  - type: website
+    title: "Mixture of Agents - Together AI"
+    url: "https://www.together.ai/blog/together-moa"
+---
+
+import SelectVsSynthesize from '../../../components/interactive/SelectVsSynthesize.tsx';
+import CouncilModeFlow from '../../../components/interactive/CouncilModeFlow.tsx';
+import MoAHierarchy from '../../../components/interactive/MoAHierarchy.tsx';
+import EnsembleVotingViz from '../../../components/interactive/EnsembleVotingViz.tsx';
+import CostScalingChart from '../../../components/interactive/CostScalingChart.tsx';
+
+**Important distinction**: MoE (Mixture of Experts) is an expert routing mechanism *within* a single model, while MoA (Mixture of Agents) is collaboration *between* multiple complete LLM models — the granularity is entirely different.
+
+The previous articles all discussed "how to choose the single best model," but there is another approach: why choose at all? Can we use multiple models simultaneously and synthesize their answers? This is the core idea behind Mixture of Agents (MoA).
+
+## Selection vs Synthesis
+
+The traditional paradigm of Model Routing is **Selection**: given a request, the router picks the single most suitable model. This approach is efficient and cost-controllable, but may miss the strengths of other models.
+
+The **Synthesis** paradigm is fundamentally different: call multiple models, collect all their answers, and merge them using some strategy. This approach costs more but leverages the complementarity between models, reducing single-model hallucination and bias.
+
+<SelectVsSynthesize client:visible locale="en" />
+
+Selection pursues efficiency; synthesis pursues quality. Real-world systems often seek a balance between the two: use selection for simple requests and synthesis for critical ones.
+
+## Council Mode: Parallel Generation, Centralized Synthesis
+
+Council Mode (2024) is a classic architecture for multi-model collaboration. Its workflow consists of two phases:
+
+1. **Parallel Generation Phase**: Multiple LLMs (called council members) independently generate answers, unaware of each other's outputs.
+2. **Synthesis Phase**: A synthesizer model collects all answers, analyzes their consensus and divergence, and produces the final answer.
+
+Experiments show that Council Mode can reduce the hallucination rate by **35.9%**. When council members' answers are highly consistent, the synthesizer has higher confidence; when answers diverge significantly, the synthesizer flags uncertainty.
+
+<CouncilModeFlow client:visible locale="en" />
+
+Three common synthesis strategies:
+
+- **Merge**: Extract the core information from each answer and construct a comprehensive answer incorporating all perspectives.
+- **Majority Vote**: Select the answer that appears most frequently — suitable for classification or multiple-choice tasks.
+- **Best-of-N**: Have the synthesizer score all answers and select the highest-quality one.
+
+## Hierarchical MoA: From Flat to Pyramid
+
+Simple Council Mode uses a flat structure where all models are equal. More complex systems use a **hierarchical structure**, building decision trees or pyramids.
+
+**HieraMAS** (Hierarchical Multi-Agent System) runs a mini-council at each decision node, where each layer's output becomes the next layer's input. This enables handling complex tasks that require multi-step reasoning.
+
+**Pyramid MoA** is an architecture proposed by Together AI, with layers that progressively narrow:
+
+- **Layer 1**: 5 general-purpose models generate initial answers.
+- **Layer 2**: 3 models synthesize Layer 1's outputs.
+- **Layer 3**: 1 strongest model produces the final answer.
+
+This design leverages decision-theoretic routing: early layers quickly filter out obviously wrong answers, while later layers focus on refinement. The system can decide whether to early-stop based on intermediate layer consensus, saving computational costs.
+
+<MoAHierarchy client:visible locale="en" />
+
+The advantage of hierarchical structure lies in flexibility: different layers can use models of different sizes (fast models at the bottom, high-quality models at the top), finding the optimal configuration between cost and quality.
+
+## Ensemble and Voting
+
+The core of Ensemble Learning is **diversity**: if all models make the same mistakes, voting won't help. An ideal ensemble should include:
+
+- Models with **different architectures** (e.g., GPT-4, Claude, Gemini).
+- Models of **different sizes** (large models excel at reasoning, small models at speed).
+- Models trained on **different data** (to reduce shared biases).
+
+Three common voting mechanisms:
+
+1. **Majority Voting**: Each model gets one vote; the answer with the most votes wins. Simple but ignores differences in model quality.
+2. **Weighted Voting**: Assign weights $w_i$ based on each model's historical accuracy; the answer score is $\sum_{i} w_i \cdot \mathbb{1}[\text{model}_i = \text{answer}]$.
+3. **Best-of-N Selection**: Use a judge model to score all answers and select the highest scorer.
+
+<EnsembleVotingViz client:visible locale="en" />
+
+Ensemble is most effective when models have **divergent strengths**: Model A excels at math, Model B at creative writing, Model C at factual queries. Through ensemble, the system can automatically leverage each model's strengths across different tasks.
+
+## Cost and Diminishing Returns
+
+The biggest challenge of multi-model collaboration is **diminishing returns**. Experimental data shows:
+
+- Going from 1 model to 3 models: quality improves by about **+6%**, cost increases **3x**.
+- Going from 3 models to 10 models: quality improves by only **+2%**, cost increases another **3.3x**.
+
+Marginal benefit drops rapidly while marginal cost grows linearly. For most applications, **2-3 models** is the cost-effectiveness sweet spot.
+
+<CostScalingChart client:visible locale="en" />
+
+Another hidden cost is **latency**. When calling multiple models in parallel, total latency is determined by the slowest model. If called sequentially, latencies accumulate. For real-time applications, this can be a dealbreaker.
+
+Real-world systems need to weigh trade-offs based on the scenario:
+
+- **High-value tasks** (e.g., medical diagnosis, legal consultation): prioritize quality, can accept an ensemble of 5-10 models.
+- **Medium tasks** (e.g., content generation, code review): Council Mode with 2-3 models.
+- **Low-value tasks** (e.g., simple Q&A, format conversion): single-model routing is sufficient.
+
+## Summary
+
+This article completes the final stop on the Model Routing learning path. Starting from the simplest **classifier routing**, we journeyed through **cascade routing**, **hybrid strategies**, **online learning**, and finally arrived at **multi-model collaboration** — from "pick the best one" to "use many together."
+
+The core advantages of multi-model collaboration are **robustness** and **complementarity**, at the cost of expense and complexity. As model capabilities improve and costs decline, this field is shifting from a "luxury" to a "standard configuration."
+
+The future trend is **adaptive orchestration**: systems dynamically decide — based on request characteristics, historical performance, and budget constraints — whether to use a single model or multiple models, parallel or sequential, flat or hierarchical. Model Routing is no longer a static configuration but a real-time intelligent decision.
+
+The next decade of LLM applications is not about "which model is the strongest," but about "how to combine the strengths of all models."

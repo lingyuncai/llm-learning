@@ -1,0 +1,153 @@
+---
+title: "SPIR-V Compilation and Level Zero Runtime"
+slug: spirv-level-zero
+locale: en
+tags: [intel, spirv, level-zero, compiler, runtime, jit, aot]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [xe2-execution-model]
+references:
+  - type: website
+    title: "SPIR-V Specification — Khronos Group"
+    url: "https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html"
+  - type: website
+    title: "oneAPI Level Zero Specification — Intel"
+    url: "https://spec.oneapi.io/level-zero/latest/index.html"
+  - type: repo
+    title: "Intel Graphics Compiler (IGC) — GitHub"
+    url: "https://github.com/intel/intel-graphics-compiler"
+  - type: website
+    title: "SPIR-V Guide — Khronos"
+    url: "https://github.com/KhronosGroup/SPIRV-Guide"
+---
+
+import CompilationPipeline from '../../../components/interactive/CompilationPipeline.tsx';
+import SpirvVsPtx from '../../../components/interactive/SpirvVsPtx.tsx';
+import JitVsAot from '../../../components/interactive/JitVsAot.tsx';
+import LevelZeroDispatch from '../../../components/interactive/LevelZeroDispatch.tsx';
+import MemoryModelViz from '../../../components/interactive/MemoryModelViz.tsx';
+
+## The Full Pipeline from Source Code to GPU Execution
+
+In the Intel iGPU ecosystem, from the DPC++ code written by developers to the final execution on Xe2 execution units, there is a carefully designed compilation and runtime pipeline. At the core of this pipeline are two key technologies: **SPIR-V (Standard Portable Intermediate Representation - V)** as the cross-platform intermediate representation, and **Level Zero** as the low-level GPU runtime API.
+
+Understanding this compilation pipeline helps developers not only optimize performance (e.g., choosing between JIT and AOT compilation) but also quickly locate bottlenecks when problems arise. Unlike the NVIDIA CUDA ecosystem, Intel uses the open standard SPIR-V, meaning the same SPIR-V code can theoretically run on any GPU that supports the standard -- including Intel, AMD, ARM, and even mobile Mali GPUs.
+
+The visualization below shows the complete compilation flow:
+
+<CompilationPipeline client:visible locale="en" />
+
+Two stages in this compilation pipeline deserve particular attention:
+
+1. **SPIR-V Generation**: LLVM IR is converted to binary format through the SPIR-V Backend, at which point the code is still platform-agnostic. SPIR-V modules can be saved to files (.spv), distributed with the application, and deferred to runtime for hardware-specific compilation.
+
+2. **IGC JIT Compilation**: When `zeModuleCreate()` is called, the Intel Graphics Compiler (IGC) translates SPIR-V into native Xe2 ISA instructions for the current device in real time. Since this happens at runtime, it can leverage actual hardware characteristics (such as specific EU count and cache sizes) for aggressive optimization.
+
+## The Design Philosophy of SPIR-V
+
+SPIR-V is a cross-API, cross-vendor GPU instruction set defined by the Khronos Group. Similar to NVIDIA's PTX (Parallel Thread Execution), it is an intermediate layer between high-level programming languages and hardware machine code. However, SPIR-V has two important design goals that fundamentally distinguish it from PTX:
+
+**Multi-vendor neutrality**: SPIR-V does not belong to any single hardware vendor. AMD's ROCm, Intel's oneAPI, and ARM's Mali drivers can all consume SPIR-V. In contrast, PTX is an NVIDIA proprietary format that only runs on NVIDIA GPUs. This openness allows developers to write code once and deploy it to different hardware platforms, reducing porting costs.
+
+**Binary format optimized for distribution**: SPIR-V is designed as a compact binary format rather than text (PTX was originally a text format, though it now also has a binary version). The binary format parses faster, produces smaller files, and is suitable for embedding in applications for distribution. For mobile and embedded systems, this significantly reduces startup time and storage overhead.
+
+The comparison below shows the similarities and differences between the SPIR-V and PTX compilation pipelines:
+
+<SpirvVsPtx locale="en" />
+
+The two compilation pipelines are structurally very similar: both go through the stages of "source code -> frontend -> LLVM IR -> intermediate representation -> hardware assembly." But the key difference is:
+
+- The **SPIR-V stage** is standardized by Khronos, and any GPU conforming to the Vulkan or OpenCL specification must be able to consume SPIR-V;
+- The **PTX stage** is NVIDIA-proprietary, limited to their own hardware ecosystem, although PTX itself is very stable and mature.
+
+From a developer's perspective, the significance of SPIR-V is: if you write code using SYCL or OpenCL, a single binary package can simultaneously support Intel iGPUs, AMD dGPUs, and ARM Mali, without recompiling source code for each platform. This "compile once, run everywhere" model is the core value proposition of SPIR-V.
+
+## Compilation Strategies: JIT vs AOT
+
+When loading SPIR-V modules onto the GPU, there are two mainstream compilation strategies: **JIT (Just-In-Time)** and **AOT (Ahead-Of-Time)**. The choice depends on the application scenario's performance requirements.
+
+**JIT Compilation**: Dynamically compiles SPIR-V to native ISA at runtime (specifically when `zeModuleCreate()` is called). The advantage is that it can leverage runtime information for aggressive optimization, such as adjusting tiling strategies based on the actual device's cache size. The disadvantage is a noticeable compilation delay on first execution (typically tens to hundreds of milliseconds). For compute-intensive tasks (such as training a neural network), this startup cost is relatively acceptable since actual computation time far exceeds compilation time.
+
+**AOT Compilation**: Pre-compiles SPIR-V during the build phase, generating native binaries for multiple target architectures (e.g., simultaneously generating ISA for Xe-LP, Xe-HPG, and Xe2-LPG). The advantage is zero startup delay. The disadvantage is larger binary size and inability to leverage runtime-specific optimizations. OpenVINO's model caching is a typical AOT application: the inference engine compiles optimized IR into device-specific binary caches, which are loaded directly on subsequent runs, avoiding repeated compilation overhead.
+
+<JitVsAot client:visible locale="en" />
+
+In practice, many libraries adopt a hybrid strategy:
+
+- **oneDNN (oneAPI Deep Neural Network Library)**: Uses JIT by default, because deep learning operators are sensitive to memory layout and data types, and runtime information significantly improves optimization quality.
+- **OpenVINO**: JIT-compiles on first run, then caches the compiled artifacts to disk (AOT cache). Subsequent startups load the cache directly, balancing startup speed and optimization depth.
+- **Game engines**: Typically use AOT pre-compiled shaders, since players don't want to wait for compilation stalls at startup.
+
+Choosing between JIT and AOT is fundamentally a tradeoff between "compilation latency" and "runtime optimization potential." For resource-constrained devices like iGPUs, JIT's dynamic optimization capability is particularly important, as it can adjust execution strategies based on real-time information such as current CPU load and memory bandwidth.
+
+## Core Abstractions of the Level Zero API
+
+Level Zero is the low-level GPU runtime interface of Intel oneAPI, positioned similarly to Vulkan or DirectX 12 -- providing fine-grained hardware control at the cost of ease of use for maximum performance. Its design goal is zero abstraction overhead, hence the name "Level Zero."
+
+The core abstractions of Level Zero include:
+
+1. **Driver & Device**: Abstractions for physical GPU devices in the system. A single driver can manage multiple devices (e.g., iGPU + dGPU hybrid configurations).
+
+2. **Context**: A lifecycle container for device resources. All memory allocations and module loads occur under a specific context. Contexts are isolated from each other, similar to the concept of processes in an operating system.
+
+3. **Module**: The loading unit for SPIR-V binaries. Calling `zeModuleCreate()` triggers JIT compilation. A single module can contain multiple kernels.
+
+4. **Kernel**: A single compute function extracted from a module. After setting the work-group size and parameters, it can be submitted for execution.
+
+5. **Command List & Command Queue**: Command buffers and execution queues. Developers record multiple operations (kernel launches, memory copies, synchronization barriers) into a command list, then submit them in batch to a queue for execution, reducing API call overhead.
+
+6. **Event & Fence**: Synchronization primitives. Events are used for intra-GPU synchronization (e.g., kernel A must complete before kernel B starts), while Fences are used for CPU-GPU synchronization (CPU waits for GPU tasks to complete).
+
+These abstractions are very similar to Vulkan's design: both emphasize explicit memory management, command batching, and fine-grained synchronization. For developers familiar with Vulkan, Level Zero will feel natural; but for those accustomed to OpenCL or the CUDA Runtime API, Level Zero's verbosity may require an adjustment period. The good news is that in most cases you don't need to use Level Zero directly -- high-level frameworks like SYCL and oneDNN already encapsulate the low-level details.
+
+## Kernel Dispatch Flow
+
+From creating a context to kernel execution completion, the complete Level Zero workflow consists of six steps:
+
+<LevelZeroDispatch client:visible locale="en" />
+
+While this flow may seem complex, it actually embodies the core principle of modern GPU APIs: **separating command construction from submission**. The Command List design allows multiple threads to build command buffers in parallel, then submit them all at once to the queue, significantly reducing performance losses from multi-threaded contention. This is particularly important for large parallel tasks (such as batch image processing and multi-model inference).
+
+Several key details:
+
+- **zeModuleCreate is a performance bottleneck**: This is where JIT compilation occurs, potentially taking tens of milliseconds. If the application frequently creates/destroys modules, consider using module caching or AOT compilation.
+- **Command Lists are reusable**: A built command list can be submitted multiple times, avoiding the overhead of re-recording commands. For periodic tasks (such as each frame in video encoding), this can significantly improve efficiency.
+- **Fences are not the only synchronization method**: For advanced users, Level Zero provides the Event mechanism for fine-grained synchronization. For example, data written by kernel A can signal kernel B to start immediately via an event, without CPU involvement.
+
+## Memory Management
+
+The defining characteristic of iGPUs is sharing physical memory (LPDDR5x) with the CPU, without dedicated video memory. Level Zero provides three memory allocation modes for this architecture:
+
+<MemoryModelViz client:visible locale="en" />
+
+The fundamental difference between the three modes lies in **page table management and caching strategy**:
+
+- **Host mode**: Memory pages are prioritized for CPU access, with the GPU accessing them through a cache coherence protocol. Suitable for CPU-dominated computation where the GPU only accelerates certain steps (e.g., CPU does preprocessing, GPU does inference, CPU does postprocessing).
+
+- **Device mode**: Memory pages are marked as GPU-priority, with CPU access triggering page faults and migration overhead. Suitable for GPU-intensive computation where only small amounts of data need to be read by the CPU (e.g., classification results from batch inference).
+
+- **Shared (USM) mode**: CPU and GPU share a unified address space, and the runtime's migration engine automatically optimizes page placement based on access patterns. This is the unique advantage of iGPUs -- because there is no physically isolated video memory, unified memory access achieves true zero-copy.
+
+Compared to NVIDIA dGPUs: since CPU memory and GPU video memory are physically separated, unified memory (UVM) requires synchronizing data across both sides via PCIe or NVLink, incurring significant transfer latency. iGPU USM operates on the same physical memory, only needing to adjust virtual address mappings and cache attributes, with minimal overhead.
+
+This architectural advantage makes iGPUs more efficient than dGPUs in certain scenarios (such as real-time inference and frequent CPU-GPU interaction). Of course, the iGPU's disadvantage is also clear: sharing bandwidth with the CPU means mutual competition for memory resources in high-concurrency scenarios.
+
+## Summary
+
+SPIR-V and Level Zero form the core infrastructure of Intel's oneAPI GPU programming stack. SPIR-V, as a Khronos standard, provides cross-vendor portability; Level Zero, as the low-level API, provides fine-grained hardware control. Together, they ensure both openness and performance potential.
+
+For most developers, using high-level frameworks like SYCL and oneDNN is sufficient, without needing to dive into Level Zero details. However, understanding the underlying mechanisms can help you:
+
+- Diagnose performance issues (e.g., first-execution stalls caused by JIT compilation latency)
+- Choose the correct memory allocation strategy (Host/Device/Shared)
+- Evaluate technical differences between Intel GPU and NVIDIA/AMD solutions
+
+The iGPU's unified memory architecture is its unique advantage over dGPUs, and Level Zero's USM design fully leverages this capability. In edge computing, real-time inference, and lightweight training scenarios, iGPU performance-per-watt is gradually approaching and even surpassing entry-level dGPUs.
+
+## Further Reading
+
+- **SPIR-V Specification**: Deep dive into the SPIR-V instruction set design, including control flow, memory model, and data type system.
+- **Level Zero Programming Guide**: Intel's official documentation with complete API reference and example code.
+- **IGC Source Code**: The Intel Graphics Compiler is open source, and you can study its JIT compilation optimization strategies (e.g., loop unrolling, register allocation, instruction scheduling).
+- **Vulkan vs Level Zero**: Both are low-level GPU APIs, but Vulkan is oriented toward graphics rendering while Level Zero focuses on compute. Understanding the design tradeoffs between the two helps in choosing the right technology stack.

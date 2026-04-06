@@ -1,0 +1,367 @@
+---
+title: "KV Cache and Batch Scheduling"
+slug: "ollama-kv-cache-scheduling"
+locale: "en"
+tags: ["kv-cache", "batch-scheduling", "continuous-batching", "prefix-cache"]
+prerequisites: ["ollama-compute-graph", "kv-cache"]
+difficulty: "advanced"
+created: "2026-04-04"
+updated: "2026-04-06"
+references:
+  - type: "paper"
+    title: "Efficient Memory Management for LLM Serving with PagedAttention"
+    url: "https://arxiv.org/abs/2309.06180"
+  - type: "repo"
+    title: "Ollama GitHub"
+    url: "https://github.com/ollama/ollama"
+---
+
+import KVCacheSlotManager from '../../../components/interactive/KVCacheSlotManager.tsx';
+import PrefixCacheHit from '../../../components/interactive/PrefixCacheHit.tsx';
+import ContinuousBatchingTimeline from '../../../components/interactive/ContinuousBatchingTimeline.tsx';
+
+## llama.cpp's KV Cache Implementation
+
+llama.cpp uses a **slot**-based KV Cache management strategy, which is a fixed allocation memory management scheme. Each slot represents the KV Cache space used by an independent inference request, with fixed-size memory blocks pre-allocated at server startup.
+
+### Slot-Based Design Principles
+
+In llama.cpp, the core data structure for KV Cache is `llama_kv_cache`, which contains multiple slots:
+
+```cpp
+struct llama_kv_cache {
+    struct ggml_tensor * k; // [n_layer, n_ctx, n_embd_k_gqa]
+    struct ggml_tensor * v; // [n_layer, n_ctx, n_embd_v_gqa]
+    
+    struct llama_kv_cell {
+        llama_pos pos;   // Current token's position in the sequence
+        llama_seq_id seq_id; // The sequence ID it belongs to
+        bool has_seq_id(llama_seq_id id);
+    } * cells;
+    
+    uint32_t size;  // Total number of cells (n_ctx)
+    uint32_t used;  // Number of cells in use
+};
+```
+
+Each slot corresponds to an independent sequence ID (`llama_seq_id`). In concurrent inference scenarios, different requests are assigned to different slots. Each slot's capacity is determined by the model's context length (e.g., 2048, 4096, or 8192 tokens).
+
+### Memory Layout
+
+The KV Cache memory layout uses layered storage:
+
+- **K tensor**: Shape `[n_layer, n_ctx, n_embd_k_gqa]`, stores Key vectors for all layers
+- **V tensor**: Shape `[n_layer, n_ctx, n_embd_v_gqa]`, stores Value vectors for all layers
+- **Cells array**: Each cell records metadata for that position (position index, sequence ID)
+
+When inferring a new token, llama.cpp will:
+1. Find the slot corresponding to the request (via `seq_id`)
+2. Find the next free cell position within that slot
+3. Write the newly computed K/V vectors to the corresponding position
+4. Update the cell's metadata (`pos` and `seq_id`)
+
+### Trade-offs of Fixed Allocation
+
+The advantages of slot-based fixed allocation are **simple implementation**, **predictable memory access**, and **no dynamic memory management needed**. The downside is potential **memory waste**: if a request only uses 50 tokens but the slot allocated space for 2048 tokens, the remaining 1998 tokens of space are wasted.
+
+<KVCacheSlotManager client:visible locale="en" />
+
+The diagram above shows llama.cpp's slot manager: each slot is a fixed-size container, concurrent requests occupy different slots, and when a request completes, the slot is released for new requests.
+
+## Ollama's Go KV Cache Management
+
+Ollama's Go layer builds a higher-level KV Cache management abstraction on top of llama.cpp's slot mechanism, with the main code located in the `llm/kvcache/` package.
+
+### kvcache Package Design
+
+Ollama defines two KV Cache types:
+
+**1. Causal Cache**
+
+Used for standard Transformer decoder models (e.g., Llama, Mistral), where each token can only attend to tokens before it (causal attention):
+
+```go
+type CausalCache struct {
+    numLayers    int
+    numHeads     int
+    headDim      int
+    maxSeqLen    int
+    dtype        DataType
+    tensors      []Tensor  // K/V tensors for each layer
+}
+```
+
+**2. Recurrent Cache**
+
+Used for models with recurrent structures (e.g., Mamba, RWKV), which don't use standard attention mechanisms but instead use state space models (SSM) or recurrent units:
+
+```go
+type RecurrentCache struct {
+    numLayers   int
+    stateSize   int
+    convWidth   int  // Convolution window width
+    states      []Tensor
+}
+```
+
+### KV Cache Lifecycle Management
+
+Ollama's KV Cache management follows this lifecycle:
+
+1. **Initialization** (`NewCache`): When loading a model, creates the corresponding cache instance based on model architecture type
+2. **Warmup** (`Warmup`): Optional step, pre-allocates GPU memory to avoid latency on the first inference
+3. **Update** (`Update`): During each inference, writes newly computed K/V or state to the cache
+4. **Clear** (`Clear`): After a request completes, clears the cache data for that sequence
+5. **Free** (`Free`): When the model is unloaded, releases all GPU/CPU memory
+
+Ollama also implements **cross-request cache reuse mechanisms** — if multiple requests share the same system prompt, Ollama can reuse the KV Cache for the shared prefix. This is the Prefix Cache discussed in the next section.
+
+## Prefix Cache / Prompt Cache
+
+**Prefix Cache** (also called Prompt Cache) is an optimization technique for **reusing KV Cache with shared prefixes**, significantly reducing computation during the prefill phase.
+
+### Core Concept
+
+In practice, many requests share the same prefix. The most typical scenario is the **system prompt**:
+
+```
+System: You are a helpful AI assistant. Always respond politely.
+User: What is the weather today?
+```
+
+If the system prompt has 1000 tokens, performing a full prefill of these 1000 tokens for every new request is a massive computational waste. The Prefix Cache approach is:
+
+1. **First request**: Full prefill of the system prompt, computing and caching the KV for these 1000 tokens
+2. **Subsequent requests**: Detect the same system prompt, directly **reuse the cached KV**, only needing to prefill the user's new input tokens
+
+### Hash Matching Algorithm
+
+Ollama and llama.cpp use a hash-based prefix matching algorithm:
+
+```
+# Pseudocode
+def find_prefix_match(tokens: List[int]) -> int:
+    """Returns the length of the longest common prefix"""
+    for length in range(len(tokens), 0, -1):
+        prefix_hash = hash(tokens[:length])
+        if prefix_hash in cache_index:
+            # Found a match, verify token sequences are identical
+            cached_tokens = cache_index[prefix_hash].tokens
+            if tokens[:length] == cached_tokens:
+                return length
+    return 0  # No match
+
+def prefill_with_cache(tokens: List[int]):
+    prefix_len = find_prefix_match(tokens)
+    if prefix_len > 0:
+        # Reuse KV Cache for the first prefix_len tokens
+        reuse_kv_cache(sequence_id, 0, prefix_len)
+        # Only need to prefill new tokens
+        new_tokens = tokens[prefix_len:]
+        compute_and_cache_kv(new_tokens, start_pos=prefix_len)
+    else:
+        # Full prefill
+        compute_and_cache_kv(tokens, start_pos=0)
+```
+
+<PrefixCacheHit client:visible locale="en" />
+
+The diagram above shows the Prefix Cache workflow: the first request performs a full prefill and caches KV, while the second request matches the common prefix and directly reuses the cached KV, only needing to prefill newly added tokens, thereby reducing TTFT (Time To First Token) by 67%.
+
+### Implementation Details
+
+In llama.cpp, prefix cache is implemented through the `llama_kv_cache_seq_cp` function for KV copying:
+
+```cpp
+// Copy KV Cache from seq_id=src to seq_id=dst
+void llama_kv_cache_seq_cp(
+    struct llama_context * ctx,
+    llama_seq_id seq_id_src,
+    llama_seq_id seq_id_dst,
+    llama_pos p0,  // Start position
+    llama_pos p1   // End position
+);
+```
+
+When a prefix match is detected, simply calling this function copies the cached KV to the new sequence without recomputation.
+
+## Continuous Batching
+
+**Continuous Batching** is a critical optimization technique in LLM inference serving for improving GPU utilization and reducing latency. It stands in stark contrast to traditional **Static Batching**.
+
+### Static Batching vs Continuous Batching
+
+**Static Batching:**
+
+- Groups multiple requests into a batch that **starts together** and **ends together**
+- Problem: If one request in the batch generates 1000 tokens while others generate only 10, the short requests are forced to wait for the long request to complete
+- Result: **GPU resource waste**, **increased latency for short requests**
+
+**Continuous Batching:**
+
+- Dynamically maintains a batch of active requests
+- When a request completes, it is **immediately removed from the batch**
+- If a new request arrives, it is **immediately added to the batch**
+- Result: Batch size varies dynamically, maximizing GPU utilization
+
+<ContinuousBatchingTimeline client:visible locale="en" />
+
+### Mixed Prefill/Decode Batches
+
+Another key optimization of Continuous Batching is **mixing prefill and decode requests** in the same batch:
+
+- **Prefill**: Processes the input prompt, computing KV Cache for all tokens (compute-intensive)
+- **Decode**: Generates one new token (memory bandwidth-intensive)
+
+The traditional approach separates prefill and decode into different batches, which leads to:
+- Decode batches waiting for prefill batches to complete before executing
+- Short prefill requests unable to be quickly inserted
+
+Continuous Batching allows mixed execution within the same batch:
+
+```
+Batch at t=3:
+  Request A: decode (generating the 50th token)
+  Request B: decode (generating the 200th token)
+  Request C: prefill (processing input prompt tokens 10-30)
+```
+
+llama.cpp supports this mixed batch through the `llama_batch` structure:
+
+```cpp
+struct llama_batch {
+    int32_t n_tokens;  // Total tokens in the batch
+    
+    llama_token  * token;    // Token ID for each token
+    llama_pos    * pos;      // Position index for each token
+    llama_seq_id * seq_id;   // Sequence each token belongs to
+    int8_t       * logits;   // Whether to compute logits (decode=1, prefill=0)
+};
+```
+
+The key is the `logits` field: only tokens being decoded need logits computed, while prefill tokens only need KV Cache computation.
+
+## Context Management
+
+During long-context inference, KV Cache size grows linearly with the number of generated tokens, eventually reaching the model's **max context length** limit. Ollama and llama.cpp implement multiple context management strategies to handle this.
+
+### Max Context Limit
+
+Each model has a maximum context length set during pre-training (e.g., Llama 2 is 4096, Llama 3 is 8192). Exceeding this length leads to:
+- Attention score computation failure (positional encoding exceeds training range)
+- KV Cache memory overflow
+
+llama.cpp strictly checks during inference:
+
+```cpp
+if (n_past + n_tokens > n_ctx) {
+    // Context limit exceeded, need to trigger context shifting
+    llama_kv_cache_seq_shift(...);
+}
+```
+
+### Context Shifting
+
+When the context limit is reached, the **context shifting** strategy removes the earliest tokens to make room for new ones:
+
+```
+Original sequence: [tok_0, tok_1, ..., tok_4095]  (full)
+When generating tok_4096:
+  1. Remove the first N tokens (e.g., first 512)
+  2. Shift position indices of remaining tokens forward by N
+  3. Append new token at the end
+Result: [tok_512, tok_513, ..., tok_4095, tok_4096]
+```
+
+In llama.cpp this is implemented through `llama_kv_cache_seq_rm` and `llama_kv_cache_seq_shift`:
+
+```cpp
+// Remove the first 512 tokens
+llama_kv_cache_seq_rm(ctx, seq_id, 0, 512);
+
+// Shift remaining tokens' positions forward by 512
+llama_kv_cache_seq_shift(ctx, seq_id, 512, -1, -512);
+```
+
+### Sliding Window Attention
+
+Some models (e.g., Mistral 7B) use **sliding window attention**, attending only to the most recent W tokens (e.g., W=4096). This mechanism naturally supports long contexts:
+
+- KV Cache only retains the most recent W tokens
+- KV beyond the window is automatically discarded
+- No complex shifting logic needed
+
+llama.cpp automatically applies this strategy based on the model's `sliding_window` configuration:
+
+```cpp
+if (model.sliding_window > 0 && n_past >= model.sliding_window) {
+    // Automatically remove KV beyond the window
+    llama_kv_cache_seq_rm(ctx, seq_id, 0, n_past - model.sliding_window);
+}
+```
+
+### Memory Management Strategies
+
+Ollama also implements intelligent memory management strategies at the upper layer:
+
+1. **Dynamic offloading**: When GPU memory is insufficient, offloads part of the KV Cache to CPU memory
+2. **Priority eviction**: Decides which KV Cache to retain based on request priority
+3. **Compressed storage**: For cold data, uses lower-precision storage (e.g., FP16 → INT8) to reduce memory usage
+
+## How It Differs: Comparison with PagedAttention
+
+Ollama and llama.cpp's slot-based KV Cache management differs significantly from the **PagedAttention** approach popular in academia (vLLM).
+
+### Core Idea of PagedAttention
+
+PagedAttention borrows from operating system **virtual memory paging**:
+
+- Divides KV Cache into fixed-size **pages** (e.g., 64 tokens per page)
+- Each sequence's KV Cache consists of multiple pages (which can be non-contiguous)
+- Uses a **page table** to map logical addresses to physical addresses
+- Supports **copy-on-write** (COW) and **memory sharing**
+
+Advantages:
+- **Zero memory waste**: Page-level fine-grained allocation, virtually no fragmentation
+- **Flexible sharing**: Multiple sequences can share the same pages (e.g., beam search)
+- **High memory utilization**: vLLM's paper shows 2-4x throughput improvement
+
+### Design Trade-offs of Slot-Based
+
+Reasons llama.cpp chose slot-based over PagedAttention:
+
+**1. Implementation Complexity**
+- Slot-based: Simple and straightforward, small codebase, easy to maintain
+- PagedAttention: Requires implementing page tables, COW, memory allocators — high complexity
+
+**2. Cross-Platform Compatibility**
+- Slot-based: Unified implementation across CPU/GPU/Metal/Vulkan
+- PagedAttention: Highly dependent on CUDA, difficult to support cross-platform
+
+**3. Single-Machine vs Service-Oriented**
+- llama.cpp positioning: Local inference, typically single-user or low concurrency
+- vLLM positioning: Cloud serving, high concurrency, high throughput
+- In low-concurrency scenarios, slot-based memory waste is acceptable
+
+**4. Hardware Differences**
+- vLLM: Targets A100/H100 and other large-VRAM GPUs, where memory management gains are significant
+- llama.cpp: Supports 8GB consumer GPUs, Apple Silicon, CPUs — relatively less memory pressure
+
+### Ollama's Middle Ground
+
+Ollama adds Go-layer abstractions on top of llama.cpp, providing some PagedAttention-like features:
+
+- **Prefix Cache**: Achieves effects similar to page sharing through hash matching
+- **Dynamic slot allocation**: Go layer dynamically decides how much context to allocate per request
+- **Cross-request reuse**: Achieves COW-like mechanisms through sequence copy
+
+This design strikes a balance between **implementation complexity** and **memory efficiency**, fitting Ollama's positioning as an "easy-to-use local LLM service."
+
+---
+
+## Further Reading
+
+- [PagedAttention Paper](https://arxiv.org/abs/2309.06180): Understanding paging-based KV Cache management
+- [vLLM Source Code](https://github.com/vllm-project/vllm): Learning production-grade LLM inference system implementation
+- [llama.cpp KV Cache Source](https://github.com/ggerganov/llama.cpp/blob/master/llama.cpp#L3000): Deep dive into slot-based implementation details
+- [Continuous Batching in LLM Serving](https://www.anyscale.com/blog/continuous-batching-llm-inference): Anyscale's detailed analysis of continuous batching

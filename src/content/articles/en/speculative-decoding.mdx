@@ -1,0 +1,256 @@
+---
+title: "Speculative Decoding — Accelerating LLM Inference via Guessing"
+slug: speculative-decoding
+locale: en
+tags: [inference, optimization, speculative-decoding]
+prerequisites: [sampling-and-decoding, prefill-vs-decode]
+difficulty: advanced
+created: "2026-04-02"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Fast Inference from Transformers via Speculative Decoding"
+    url: "https://arxiv.org/abs/2211.17192"
+  - type: paper
+    title: "Accelerating Large Language Model Decoding with Speculative Sampling"
+    url: "https://arxiv.org/abs/2302.01318"
+  - type: paper
+    title: "Medusa: Simple LLM Inference Acceleration Framework with Multiple Decoding Heads"
+    url: "https://arxiv.org/abs/2401.10774"
+  - type: paper
+    title: "Better & Faster Large Language Models via Multi-Token Prediction"
+    url: "https://arxiv.org/abs/2404.19737"
+  - type: paper
+    title: "EAGLE: Speculative Sampling Requires Rethinking Feature Uncertainty"
+    url: "https://arxiv.org/abs/2401.15077"
+  - type: paper
+    title: "EAGLE-2: Faster Inference of Language Models with Dynamic Draft Trees"
+    url: "https://arxiv.org/abs/2406.16858"
+  - type: paper
+    title: "Break the Sequential Dependency of LLM Inference Using Lookahead Decoding"
+    url: "https://arxiv.org/abs/2402.02057"
+  - type: website
+    title: "DeepSeek-V3 Technical Report"
+    url: "https://arxiv.org/abs/2412.19437"
+  - type: paper
+    title: "EAGLE-3: Scaling up Inference Acceleration of Large Language Models via Training-Time Test"
+    url: "https://arxiv.org/abs/2503.01840"
+---
+
+import DraftVerifyAnimation from '../../../components/interactive/DraftVerifyAnimation.tsx';
+import AcceptanceRateCalculator from '../../../components/interactive/AcceptanceRateCalculator.tsx';
+import MedusaTreeViz from '../../../components/interactive/MedusaTreeViz.tsx';
+import MTPTrainInferBridge from '../../../components/interactive/MTPTrainInferBridge.tsx';
+import EagleArchitecture from '../../../components/interactive/EagleArchitecture.tsx';
+import SpecMethodComparison from '../../../components/interactive/SpecMethodComparison.tsx';
+import DraftTreeStructure from '../../../components/interactive/DraftTreeStructure.tsx';
+import TreeAttentionMask from '../../../components/interactive/TreeAttentionMask.tsx';
+import EagleEvolution from '../../../components/interactive/EagleEvolution.tsx';
+import DraftVerifyPipeline from '../../../components/interactive/DraftVerifyPipeline.tsx';
+
+The decode phase of LLM inference is **memory-bound** — each step generates only 1 token, leaving vast GPU compute capacity idle. The core bottleneck of autoregressive generation is **sequential dependency**: generating each token depends on the result of the previous one.
+
+The central idea behind Speculative Decoding is: **use a fast but less accurate method to "guess" multiple future tokens, then have the target large model verify all guesses in a single parallel forward pass.** If the guesses are correct, a single round produces multiple tokens; if wrong, resample from the error position — while guaranteeing that the final output distribution is **exactly identical** to generating with the large model alone.
+
+## Motivation — Why Decode Is Slow
+
+Recall the conclusions from prefill-vs-decode:
+
+- **Prefill phase:** Processes all prompt tokens in parallel, is **compute-bound** (GPU compute fully utilized)
+- **Decode phase:** Generates tokens one by one, each step performs GEMV (matrix-vector multiplication), is **memory-bound**
+
+Each forward pass during decode requires loading the entire model weights from HBM to the compute units, yet only performs a minimal amount of computation (GEMV for a single token). GPU compute utilization is extremely low.
+
+The core question: Can we generate tokens "in batch"? Direct batching is impossible (due to autoregressive dependency), but we can **guess first, then verify** — this is Speculative Decoding.
+
+## Draft-then-Verify — The Classic Approach
+
+### Draft Phase
+
+Use a much smaller **draft model** (e.g., a 68M model paired with a 7B target model) to autoregressively generate $K$ candidate tokens. The small model is fast but less accurate.
+
+### Verify Phase
+
+The target large model runs **a single forward pass** over the $K$ candidate tokens — just like the prefill phase, this is parallel, obtaining probability distributions for all $K$ positions at once.
+
+<DraftVerifyAnimation client:visible locale="en" />
+
+### Rejection Sampling — Guaranteeing Distribution Consistency
+
+This is the most elegant part of Speculative Decoding — rejection sampling guarantees that the output distribution is **exactly identical** to generating with the large model alone:
+
+For each position $i$, compare the draft probability $q(x_i)$ with the target probability $p(x_i)$:
+
+- If $q(x) \leq p(x)$: **Accept** — the draft's conservative guess is safe
+- If $q(x) > p(x)$: **Reject** with probability $1 - p(x)/q(x)$
+
+After rejection, resample 1 token from the corrected distribution $\text{norm}(\max(0, p(x) - q(x)))$.
+
+**Key guarantee:** No matter how poor the draft model is, the final output distribution is exactly the same as generating with the target model alone. A poor draft model only reduces the speedup (more rejections), without affecting quality.
+
+### Speedup Analysis
+
+Define acceptance rate $\alpha$ — the average probability that a draft token is accepted.
+
+The expected number of tokens generated per round is:
+
+$$
+E[\text{tokens}] = \frac{1 - \alpha^{K+1}}{1 - \alpha}
+$$
+
+The higher $\alpha$ is (more accurate draft) and the larger $K$ is (more guesses per round), the higher the speedup:
+
+<AcceptanceRateCalculator client:visible locale="en" />
+
+Practical speedup is typically **2-3x** (depending on draft model quality and target model size).
+
+## Medusa — Adding Multiple Heads at Inference Time
+
+Cai et al. (2024) proposed an approach that does not require a separate draft model.
+
+### Core Improvement
+
+Attach **multiple lightweight prediction heads** on top of the target model's last-layer hidden state:
+- Head 1 predicts the next token
+- Head 2 predicts the token after that
+- Head K predicts the $K$-th token
+
+### Tree Attention Verification
+
+Predictions from multiple heads are combined into a **candidate tree** (rather than a single sequence), and a tree attention mask verifies all candidate paths in a single forward pass, selecting the longest accepted path:
+
+<MedusaTreeViz client:visible locale="en" />
+
+### Training
+
+The target model is frozen, and only the additional prediction heads are trained. Training cost is low, requiring only a small amount of data and few parameters.
+
+**Advantages:** No extra model needed, simple deployment, low training cost
+
+**Limitations:** Heads are not jointly trained (added only at inference time), so prediction quality is limited — acceptance rate is lower than Eagle (discussed below)
+
+## Multi-Token Prediction (MTP) — Adding Multiple Heads at Training Time
+
+### Core Idea
+
+The key difference from Medusa: **the model is trained to simultaneously predict future tokens 1, 2, ..., K.** Each prediction head shares the backbone network and has its own independent output layer, with training loss = sum (or weighted sum) of all head losses.
+
+### Key Difference from Medusa
+
+| | Medusa | MTP |
+|---|---|---|
+| Training | Freeze main model at inference, train heads separately | Joint training, heads and backbone optimized together |
+| Head quality | Never saw the main model's training process | Co-optimized with the backbone |
+| Analogy | An aftermarket guessing add-on | Factory-built multi-step prediction capability |
+
+<MTPTrainInferBridge client:visible locale="en" />
+
+### Bridge from Training to Inference
+
+Multi-head prediction during training translates directly to speculative drafting at inference time. No separate draft model is needed — **the model itself is both drafter and verifier** (self-speculative).
+
+### Practical Applications
+
+- **DeepSeek-V3:** Trains with MTP, then leverages MTP heads for speculative decoding at inference
+- **Meta 2024:** "Better & Faster LLMs via Multi-Token Prediction" systematically validated MTP's effectiveness
+
+## Eagle — Feature-Level Drafting
+
+Li et al. (2024) proposed the approach with the highest acceptance rate to date.
+
+### Core Insight
+
+Drafting does not need to start from token embeddings — the target model's last-layer **hidden state** already encodes rich contextual semantic information. Drafting directly from hidden state features provides far more information than token-level drafting, naturally yielding higher accuracy.
+
+<EagleArchitecture client:visible locale="en" />
+
+### Architecture
+
+Eagle's "auto-regression head" is a lightweight decoder layer:
+
+- **Input:** Target model's top-layer hidden state + current token embedding
+- **Output:** Feature vector for the next position, mapped to token probabilities via the target model's LM head
+- **Autoregressive:** Can use its own output to continue predicting further positions
+
+### Why Acceptance Rate Is Higher
+
+- **Feature-level information >> token-level:** Hidden states contain complete context, semantic relationships, and syntactic patterns
+- **Token embeddings only carry the token's own information**, losing context
+- Experiments show Eagle's acceptance rate is approximately **10-15%** higher than Medusa's
+
+### Eagle-2 Improvements
+
+Introduces a **context-aware dynamic draft tree**:
+- Dynamically adjusts tree structure based on each node's confidence
+- High-confidence branches expand deeper (more candidates)
+- Low-confidence branches are pruned early (saving verification compute)
+- Result: further speedup improvement over Eagle-1
+
+### Training
+
+The target model is frozen, and only the lightweight decoder is trained (similar to Medusa's training approach), but since the input is features rather than tokens, performance is better for the same amount of training.
+
+## Draft Tree — Tree-Structured Speculation
+
+Both Medusa and Eagle-2 mentioned tree attention above — here we elaborate on the structure and verification mechanism of draft trees.
+
+### Why Trees Beat Sequences
+
+Classic Draft-then-Verify generates a chain (sequence): once a position is rejected, all subsequent tokens are discarded. A **draft tree** maintains multiple candidate paths, verifying all paths in a single forward pass — rejection only affects a single branch, leaving other paths unaffected.
+
+<DraftTreeStructure client:visible locale="en" />
+
+### Tree Attention Mask
+
+To verify the entire tree in a single forward pass, a special attention mask must be constructed: each node can only attend to nodes along its **ancestor path** (not all preceding nodes). This is sparser than a standard causal mask:
+
+<TreeAttentionMask />
+
+After verification, the **longest accepted path** in the tree is selected as output. Under a fixed token budget, tree structures yield significantly more expected accepted tokens than chain structures.
+
+## EAGLE-3 — Scaling Up Speculative Decoding
+
+The EAGLE series currently achieves the highest acceptance rate among speculative decoding methods. The core evolution from EAGLE-1 to EAGLE-3:
+
+<EagleEvolution client:visible locale="en" />
+
+### Key Improvements in EAGLE-3
+
+EAGLE-1/2 predict **feature vectors** (the target model's hidden states), then map them to tokens. EAGLE-3 switches to **direct token prediction** — predicting the next token directly while incorporating multi-layer feature fusion from the target model, leveraging Training-Time Test techniques for better training data scaling.
+
+<DraftVerifyPipeline client:visible locale="en" />
+
+In benchmarks, EAGLE-3 achieves **6.5x speedup**, approximately 1.4x better than EAGLE-2. Within the SGLang inference framework, throughput improves by 1.38x at batch=64.
+
+## Lookahead Decoding — No Draft Model
+
+Fu et al. (2024) proposed a fundamentally different approach.
+
+### Based on Jacobi Iteration
+
+No draft model or extra heads required — based on **Jacobi iteration**, multiple future token positions are guessed simultaneously, verified in parallel, and iteratively refined until convergence.
+
+**How it works:**
+
+1. **Initialize:** Randomly guess tokens at positions $t+1, t+2, \ldots, t+K$
+2. **Each step:** Run the target model's forward pass on all positions in parallel
+3. If a position's prediction matches the guess, that position has "converged"
+4. Unconverged positions are replaced with new predictions, and iteration continues
+5. Typically converges in 2-3 iterations
+
+**Advantages:** Zero extra parameters, zero training cost, plug-and-play with any model
+
+**Limitations:** Speedup is typically lower than Medusa/Eagle (number of iterations is unpredictable), practically around 1.5-2x
+
+## Comparison Summary
+
+<SpecMethodComparison client:visible locale="en" />
+
+### Selection Guide
+
+- **Already have a paired small model** -> Draft-then-Verify
+- **Training a new model from scratch** -> MTP (build multi-head prediction into pretraining)
+- **Have an existing large model, want quick acceleration** -> Eagle > Medusa > Lookahead
+- **Don't want to train anything** -> Lookahead (plug-and-play)
+
+All methods guarantee **distribution consistency** through rejection sampling — the acceleration is lossless, affecting only speed, not quality. The core difference lies in the **source and quality** of the draft, which determines the acceptance rate and final speedup.

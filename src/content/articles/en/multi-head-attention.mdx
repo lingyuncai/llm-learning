@@ -1,0 +1,255 @@
+---
+title: "Multi-Head Attention"
+slug: multi-head-attention
+locale: en
+tags: [transformer, attention, multi-head]
+prerequisites: [attention-computation]
+difficulty: intermediate
+created: "2026-03-31"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Attention Is All You Need"
+    url: "https://arxiv.org/abs/1706.03762"
+  - type: website
+    title: "The Illustrated Transformer"
+    url: "https://jalammar.github.io/illustrated-transformer/"
+  - type: website
+    title: "LLM Visualization — Brendan Bycroft"
+    url: "https://bbycroft.net/llm"
+  - type: website
+    title: "Transformer Explainer — Georgia Tech / Polo Club"
+    url: "https://poloclub.github.io/transformer-explainer/"
+---
+
+import SingleVsMultiHeadAttention from '../../../components/interactive/SingleVsMultiHeadAttention.tsx';
+import OutputProjectionFusion from '../../../components/interactive/OutputProjectionFusion.tsx';
+import MultiHeadParallelDiagram from '../../../components/interactive/MultiHeadParallelDiagram.tsx';
+
+## Introduction: Why a Single Head Is Not Enough
+
+In the previous article, we dissected the computation of Scaled Dot-Product Attention in detail. But in actual Transformers, attention is not computed just once — it is **computed multiple times in parallel**, which is **Multi-Head Attention**.
+
+Why do we need multiple heads? Consider this sentence:
+
+> "The animal didn't cross the street because **it** was too tired."
+
+For the token "it," we need to attend to multiple different types of relationships simultaneously:
+- **Coreference**: it → animal (semantic coreference)
+- **Syntactic relationship**: it → was (subject-verb agreement)
+- **Causal relationship**: it → because (logical connection)
+
+If there is only one attention head, its softmax output is a single probability distribution — it can only produce **one** pattern of weights. This means the model must "mix" all different types of relationships into the same set of weights, severely limiting expressiveness.
+
+**The core idea of Multi-Head Attention**: let different attention heads independently compute attention in different **subspaces**, where each head can focus on different types of patterns, and then concatenate the results.
+
+## Mathematical Formulation of Multi-Head
+
+### Complete Formula
+
+$$
+\text{MultiHead}(Q, K, V) = \text{Concat}(\text{head}_1, \ldots, \text{head}_h) \, W^O
+$$
+
+Where each head is computed as:
+
+$$
+\text{head}_i = \text{Attention}(Q W_i^Q, \, K W_i^K, \, V W_i^V)
+$$
+
+The shapes of the parameter matrices:
+- $W_i^Q \in \mathbb{R}^{H \times d_k}$ — Query projection for the $i$-th head
+- $W_i^K \in \mathbb{R}^{H \times d_k}$ — Key projection for the $i$-th head
+- $W_i^V \in \mathbb{R}^{H \times d_v}$ — Value projection for the $i$-th head
+- $W^O \in \mathbb{R}^{h \cdot d_v \times H}$ — Output projection matrix
+
+Where $H$ is the model's hidden dimension, $h$ is the number of heads, and $d_k = d_v = H / h$.
+
+### Relationship to Single-Head Attention
+
+Single-head Attention computes in the full $H$-dimensional space:
+
+$$
+\text{SingleHead}(Q, K, V) = \text{Attention}(Q, K, V)
+$$
+
+Multi-Head Attention splits the $H$-dimensional space into $h$ subspaces of $d_k$ dimensions, computes attention independently in each subspace, and then merges:
+
+$$
+H = h \times d_k
+$$
+
+**Key point**: The **total parameter count and computation** of Multi-Head Attention is nearly identical to single-head (using the full dimension). We have not increased cost, but rather distributed the computation across multiple parallel subspaces.
+
+## Intuition Behind Subspace Splitting: Different Heads Attend to Different Patterns
+
+Why is computing attention in subspaces better than in the full space? The intuition is that each head can learn an independent "attention pattern."
+
+Researchers analyzing trained Transformers have found that different heads indeed learn different functions (see the original paper's appendix and subsequent studies):
+
+| Head Type | Attention Pattern | Example |
+|-----------|-------------------|---------|
+| Positional Head | Always attends to adjacent tokens | Head 3 attends to the previous token |
+| Syntactic Head | Attends to syntactic dependencies | Head 7 attends to the verb's subject |
+| Semantic Head | Attends to semantically related tokens | Head 5 attends to coreference relations |
+| Separator Head | Attends to special tokens (e.g., [SEP]) | Head 11 attends to sentence separators |
+
+Each head, within its own low-dimensional subspace, learns different projection patterns through independent $W_i^Q$, $W_i^K$, $W_i^V$, thereby computing attention from different "perspectives."
+
+<SingleVsMultiHeadAttention client:visible locale="en" />
+
+## Dimension Analysis: Detailed Tracking of Reshape and Transpose
+
+In practice, we **do not** perform separate matrix multiplications for each head — that would be too slow. Instead, we use a single large projection + reshape + transpose to efficiently compute all heads in parallel.
+
+### Detailed Tensor Shape Transformations
+
+Using Query as an example (Key and Value follow the same pattern), with batch size $B$, sequence length $S$, hidden dimension $H$, number of heads $h$, and per-head dimension $d_k = H / h$:
+
+**Step 1: Linear Projection**
+
+$$
+X \in \mathbb{R}^{B \times S \times H} \xrightarrow{W^Q} Q \in \mathbb{R}^{B \times S \times H}
+$$
+
+Here $W^Q \in \mathbb{R}^{H \times H}$ is a unified large projection matrix, equivalent to the concatenation of $h$ small projection matrices $W_i^Q$.
+
+**Step 2: Reshape — Split into Heads**
+
+$$
+Q \in \mathbb{R}^{B \times S \times H} \xrightarrow{\text{reshape}} Q \in \mathbb{R}^{B \times S \times h \times d_k}
+$$
+
+The last dimension is split from $H$ into $h \times d_k$.
+
+**Step 3: Transpose — Move the Head Dimension Forward**
+
+$$
+Q \in \mathbb{R}^{B \times S \times h \times d_k} \xrightarrow{\text{transpose}} Q \in \mathbb{R}^{B \times h \times S \times d_k}
+$$
+
+The $S$ and $h$ dimensions are swapped. This way, each head corresponds to a $(S, d_k)$ matrix, and attention can be computed in parallel across $B \times h$ "batches."
+
+**Step 4: Scaled Dot-Product Attention**
+
+$$
+Q \in \mathbb{R}^{B \times h \times S \times d_k}, \quad K \in \mathbb{R}^{B \times h \times S \times d_k}, \quad V \in \mathbb{R}^{B \times h \times S \times d_k}
+$$
+
+$$
+\text{Scores} = \frac{QK^T}{\sqrt{d_k}} \in \mathbb{R}^{B \times h \times S \times S}
+$$
+
+$$
+\text{Output} = \text{softmax}(\text{Scores}) \cdot V \in \mathbb{R}^{B \times h \times S \times d_k}
+$$
+
+**Step 5: Transpose Back + Reshape**
+
+$$
+\mathbb{R}^{B \times h \times S \times d_k} \xrightarrow{\text{transpose}} \mathbb{R}^{B \times S \times h \times d_k} \xrightarrow{\text{reshape}} \mathbb{R}^{B \times S \times H}
+$$
+
+All heads' outputs are concatenated back into an $H$-dimensional vector.
+
+**Step 6: Output Projection**
+
+$$
+\mathbb{R}^{B \times S \times H} \xrightarrow{W^O} \mathbb{R}^{B \times S \times H}
+$$
+
+### PyTorch Pseudocode
+
+```python
+# Linear projection (compute all heads at once)
+Q = self.W_q(X)                      # (B, S, H)
+K = self.W_k(X)                      # (B, S, H)
+V = self.W_v(X)                      # (B, S, H)
+
+# reshape + transpose
+Q = Q.view(B, S, h, d_k).transpose(1, 2)  # (B, h, S, d_k)
+K = K.view(B, S, h, d_k).transpose(1, 2)  # (B, h, S, d_k)
+V = V.view(B, S, h, d_k).transpose(1, 2)  # (B, h, S, d_k)
+
+# Scaled Dot-Product Attention (parallel across all heads)
+scores = Q @ K.transpose(-2, -1) / math.sqrt(d_k)  # (B, h, S, S)
+weights = F.softmax(scores, dim=-1)                  # (B, h, S, S)
+output = weights @ V                                  # (B, h, S, d_k)
+
+# transpose + reshape + output projection
+output = output.transpose(1, 2).contiguous().view(B, S, H)  # (B, S, H)
+output = self.W_o(output)                                     # (B, S, H)
+```
+
+## Multi-Head Parallel Computation Diagram
+
+<MultiHeadParallelDiagram client:visible locale="en" />
+
+## Output Projection: The Role of $W^O$
+
+After multi-head concatenation, the resulting vector is already back to $H$ dimensions. So why do we still need an output projection $W^O$?
+
+### Role 1: Fusing Multi-Head Information
+
+Each head computes independently in its own subspace with no cross-head interaction. $W^O$ provides a **cross-head linear transformation**, allowing information captured by different heads to mix and interact.
+
+Think of it this way:
+- Each head is an "expert" capturing a specific attention pattern
+- $W^O$ is a "fusion layer" that synthesizes all experts' opinions into a final decision
+
+### Role 2: Maintaining Residual Connection Compatibility
+
+In Transformers, each sublayer's output needs to be added to the input via a residual connection: $\text{Output} = \text{SubLayer}(X) + X$. $W^O$ ensures that the multi-head attention output has the same dimension and value range as the input, allowing the residual connection to function properly.
+
+<OutputProjectionFusion client:visible locale="en" />
+
+### Parameter Count Analysis
+
+For a multi-head attention layer, the parameter count of the projection matrices is:
+
+$$
+\underbrace{3 \times H^2}_{W^Q, W^K, W^V} + \underbrace{H^2}_{W^O} = 4H^2
+$$
+
+Note that $h$ matrices $W_i^Q$ (each $H \times d_k$) concatenated together are equivalent to a single $H \times H$ matrix — so regardless of how the number of heads changes, the **total parameter count remains the same**.
+
+## Typical Configurations: Head Designs Across Different Models
+
+| Model | Hidden Dim $H$ | Heads $h$ | Per-Head Dim $d_k$ | Layers |
+|-------|:---:|:---:|:---:|:---:|
+| Transformer (original paper) | 512 | 8 | 64 | 6 |
+| GPT-2 (Small) | 768 | 12 | 64 | 12 |
+| GPT-2 (Medium) | 1024 | 16 | 64 | 24 |
+| GPT-3 (175B) | 12288 | 96 | 128 | 96 |
+| LLaMA-7B | 4096 | 32 | 128 | 32 |
+| LLaMA-65B | 8192 | 64 | 128 | 80 |
+
+**Interesting observations**:
+- Smaller models typically use $d_k = 64$ (the original paper's choice)
+- Larger models tend to use $d_k = 128$ (greater subspace capacity)
+- The number of heads grows with model size, but $d_k$ usually stays constant
+- This suggests there is a reasonable range for "subspace granularity," and more heads means more parallel attention patterns
+
+### Variants: Multi-Query Attention and Grouped-Query Attention
+
+In recent years, several efficiency-optimized variants have emerged:
+
+- **Multi-Query Attention (MQA)**: All heads share the same set of K and V; only Q differs. This drastically reduces the memory footprint of the KV cache.
+- **Grouped-Query Attention (GQA)**: A compromise approach that divides $h$ heads into $g$ groups, with each group sharing K and V. LLaMA-2 70B uses 8-group GQA.
+
+The core trade-off of these variants is: accepting a small accuracy loss in exchange for significant inference efficiency gains.
+
+## Summary
+
+The design philosophy of Multi-Head Attention is **divide and conquer**:
+
+| Concept | Description |
+|---------|-------------|
+| Why multiple heads | A single head can learn only one attention pattern; multiple heads can attend to different relationships in parallel |
+| Subspace splitting | $H = h \times d_k$, each head computes independently in a $d_k$-dimensional subspace |
+| Implementation trick | reshape + transpose enables parallel computation across all heads with no extra overhead |
+| Dimension flow | $(B,S,H) \to (B,h,S,d_k) \to \text{Attention} \to (B,S,H)$ |
+| Output projection | $W^O$ fuses information from all heads and maintains dimensional compatibility |
+| Parameter count | $4H^2$, independent of the number of heads |
+
+**Core intuition**: Multi-Head Attention is not simply "doing Attention multiple times." Its elegance lies in splitting a high-dimensional space **into multiple low-dimensional subspaces**, enabling the model to understand token relationships from multiple perspectives simultaneously without increasing computation. It is like filming the same scene with multiple cameras from different angles — each angle captures unique information, and only together do they form the complete picture.

@@ -1,0 +1,179 @@
+---
+title: "Sampling & Decoding — From Probabilities to Text"
+slug: sampling-and-decoding
+locale: en
+tags: [inference, sampling, decoding, perplexity]
+prerequisites: [transformer-overview]
+difficulty: intermediate
+created: "2026-04-02"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "The Curious Case of Neural Text Degeneration"
+    url: "https://arxiv.org/abs/1904.09751"
+  - type: paper
+    title: "Hierarchical Neural Story Generation"
+    url: "https://arxiv.org/abs/1805.04833"
+  - type: paper
+    title: "Perplexity — a Measure of the Difficulty of Speech Recognition Tasks"
+    url: "https://ieeexplore.ieee.org/document/1457626"
+  - type: paper
+    title: "Language Models are Unsupervised Multitask Learners"
+    url: "https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf"
+---
+
+import PerplexityIntuition from '../../../components/interactive/PerplexityIntuition.tsx';
+import TemperatureDistribution from '../../../components/interactive/TemperatureDistribution.tsx';
+import SamplingStrategyComparison from '../../../components/interactive/SamplingStrategyComparison.tsx';
+import BeamSearchTree from '../../../components/interactive/BeamSearchTree.tsx';
+
+A language model's output is a **probability distribution** — predicted probabilities for every token in the vocabulary. But what we ultimately need is a **concrete piece of text**. The process of selecting actual tokens from a probability distribution is **Sampling & Decoding**.
+
+Different sampling strategies produce vastly different text: deterministic Greedy is suitable for code generation, while high-temperature Top-p is ideal for creative writing. And **Perplexity** is the core metric for measuring model prediction quality — it tells us how "confused" the model is at each position.
+
+## Perplexity — A Language Model's "Confusion"
+
+### Information Theory Foundations
+
+Before understanding Perplexity, we need two information theory concepts:
+
+**Entropy:** Measures the uncertainty of a random variable
+
+$$
+H(p) = -\sum_{x} p(x) \log_2 p(x)
+$$
+
+**Cross-Entropy:** Measures how well model $q$ approximates the true distribution $p$
+
+$$
+H(p, q) = -\sum_{x} p(x) \log_2 q(x)
+$$
+
+The better the model, the lower the cross-entropy.
+
+### Perplexity Definition
+
+$$
+\text{PPL} = 2^{H(p,q)}
+$$
+
+Intuition: **On average, how many tokens the model has to choose from at each position.** PPL = 1 means complete certainty (the model always knows the next token), while PPL = |V| (vocabulary size) means completely random guessing.
+
+For a text sequence $w_1, w_2, \ldots, w_N$, the practical computation formula is:
+
+$$
+\text{PPL} = \exp\left(-\frac{1}{N}\sum_{i=1}^{N} \ln p(w_i | w_{<i})\right)
+$$
+
+<PerplexityIntuition client:visible locale="en" />
+
+### Limitations of PPL
+
+- **Low PPL does not equal high generation quality:** A model can achieve low PPL by conservatively predicting high-frequency words, yet the generated text may lack diversity and creativity
+- **Different tokenizers are incomparable:** PPL values depend on how the vocabulary segments text; BPE and SentencePiece PPL cannot be directly compared
+- **Length normalization matters:** Without normalization, longer sentences will have systematically higher PPL
+
+So, once the model outputs a probability distribution, how should we select the next token?
+
+## Greedy Decoding
+
+The simplest strategy — pick the highest-probability token at each step:
+
+$$
+w_t = \arg\max_{w} p(w | w_{<t})
+$$
+
+**Pros:** Deterministic, fast, simple to implement
+
+**Problems:**
+- **Local optimum trap:** Greedy choices don't necessarily yield the globally optimal sequence
+- **Degenerate repetition:** Tends to produce repetitive loops like "the the the..."
+- **Lack of diversity:** The same input always produces the same output
+
+**Use cases:** Classification, information extraction, and other tasks that don't require creativity.
+
+## Temperature Scaling
+
+Divide logits by a temperature parameter $T$ before softmax:
+
+$$
+p_i = \frac{\exp(z_i / T)}{\sum_j \exp(z_j / T)}
+$$
+
+- **T < 1:** Distribution becomes sharper → more deterministic, approaches Greedy
+- **T > 1:** Distribution becomes flatter → more random, increases diversity
+- **T → 0:** Degenerates to Greedy; **T → infinity:** Degenerates to uniform distribution
+
+<TemperatureDistribution client:visible locale="en" />
+
+Relationship between Temperature and Perplexity: higher T → more dispersed selections → higher PPL of generated text.
+
+## Top-k Sampling
+
+Fan et al. (2018) proposed keeping only the top $k$ most probable tokens, setting all other probabilities to 0, re-normalizing, and then sampling.
+
+**The dilemma of choosing k:**
+- **k too small** → Misses reasonable options ("I ate a ___" — there are many possible foods)
+- **k too large** → Includes extremely low-probability noise tokens
+
+The core problem: $k$ is **fixed** and cannot adapt to different contexts' levels of certainty. A high-certainty context ("the capital of France is") only needs to keep 1-2 tokens, while a low-certainty context needs to keep many more.
+
+## Top-p / Nucleus Sampling
+
+Holtzman et al. (2020) proposed the solution — **dynamic truncation:**
+
+Select the smallest set of tokens $V_p$ such that the cumulative probability $\sum_{w \in V_p} p(w) \geq p$.
+
+- High-certainty context ("the capital of France is") → Small set (1-2 tokens suffice)
+- Uncertain context ("I like to eat") → Larger set (more tokens needed to reach the threshold)
+
+<SamplingStrategyComparison client:visible locale="en" />
+
+Top-p is more **adaptive** than Top-k and works better in practice. Typical settings are $p = 0.9 \sim 0.95$.
+
+## Beam Search
+
+Unlike the sampling strategies above, Beam Search is a **search algorithm**. It maintains $B$ candidate sequences (beams), expanding all possible next tokens at each step and keeping the top $B$ sequences by total score:
+
+$$
+\text{score}(w_{1:t}) = \sum_{i=1}^{t} \log p(w_i | w_{<i})
+$$
+
+A **length penalty** is usually added to avoid biasing toward shorter sequences.
+
+<BeamSearchTree client:visible locale="en" />
+
+**Pros:** Global search produces better results than Greedy
+
+**Cons:** Computation is $B$ times that of Greedy; generated text tends to be "safe" (lacking surprise and creativity); not suitable for open-ended generation
+
+**Use cases:** Machine translation, text summarization, and other tasks requiring high accuracy.
+
+## Repetition Penalty and Other Techniques
+
+In practice, sampling strategies are usually not used in isolation:
+
+- **Frequency Penalty:** Reduce logits of already-generated tokens proportionally to their occurrence count
+- **Presence Penalty:** Subtract a fixed value from logits of all tokens that have appeared
+- **Min-P Sampling:** Set a minimum probability threshold; tokens below $p_{min} \times p_{max}$ are filtered out
+
+Example combination: Temperature + Top-p + Repetition Penalty together is the standard configuration for current LLM APIs (such as OpenAI and Anthropic).
+
+## Strategy Selection Guide
+
+| Scenario | Recommended Strategy | Parameter Reference |
+|------|---------|---------|
+| Code generation | Greedy or low-temp Top-p | T=0.2, p=0.9 |
+| Creative writing | High-temp Top-p | T=0.9, p=0.95 |
+| Translation/Summarization | Beam Search | B=4, length_penalty=0.6 |
+| Dialogue | Mid-temp Top-p + Repetition | T=0.7, p=0.9, rep=1.1 |
+
+## Summary
+
+- **Perplexity** measures model prediction quality and is the core metric for evaluating language models
+- **Greedy** is simple but degenerates; suited for deterministic tasks
+- **Temperature** controls distribution sharpness and serves as the foundation for other strategies
+- **Top-k** uses fixed truncation — simple but not adaptive enough
+- **Top-p** uses dynamic truncation and is the most commonly used sampling strategy today
+- **Beam Search** performs global search, suited for precision tasks like translation
+- In practice, **multiple strategies are typically combined**

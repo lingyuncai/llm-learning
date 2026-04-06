@@ -1,0 +1,103 @@
+---
+title: "PagedAttention and Continuous Batching"
+slug: paged-attention
+locale: en
+tags: [paged-attention, continuous-batching, vllm, memory-management, kv-cache]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [kv-cache]
+references:
+  - type: paper
+    title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    url: "https://arxiv.org/abs/2309.06180"
+  - type: paper
+    title: "Orca: A Distributed Serving System for Transformer-Based Generative Models"
+    url: "https://arxiv.org/abs/2206.06003"
+  - type: website
+    title: "vLLM: Easy, Fast, and Cheap LLM Serving with PagedAttention"
+    url: "https://blog.vllm.ai/2023/06/20/vllm.html"
+---
+
+import MemoryWasteComparison from '../../../components/interactive/MemoryWasteComparison.tsx';
+import BlockTableMapping from '../../../components/interactive/BlockTableMapping.tsx';
+import FragmentationAnalysis from '../../../components/interactive/FragmentationAnalysis.tsx';
+import CopyOnWriteBeam from '../../../components/interactive/CopyOnWriteBeam.tsx';
+import ContinuousBatchingTimeline from '../../../components/interactive/ContinuousBatchingTimeline.tsx';
+import ThroughputBenchmark from '../../../components/interactive/ThroughputBenchmark.tsx';
+
+## The Memory Dilemma of KV Cache
+
+In [KV Cache Fundamentals](./kv-cache), we learned that during inference, the Key and Value tensors at each layer must be cached to avoid redundant computation. However, the traditional implementation has a serious problem: **it pre-allocates contiguous memory of max_seq_len for every request**.
+
+Suppose max_seq_len = 2048, but user requests only use 512 tokens on average. This means 75% of GPU memory is pre-allocated but never used. Worse yet, when KV Caches from multiple requests are allocated contiguously in GPU memory, the memory freed by completed requests creates fragmentation (**external fragmentation**), potentially preventing new requests from starting because no sufficiently large contiguous block can be found.
+
+<MemoryWasteComparison client:visible locale="en" />
+
+Empirical data from Kwon et al. (2023) shows that in real serving scenarios, **KV Cache consumes 60-80% of GPU memory, with over 60% wasted on pre-allocation and fragmentation**.
+
+## Inspiration from Operating Systems
+
+This problem closely resembles memory management in operating systems. Early operating systems allocated contiguous physical memory for each process, leading to the same fragmentation issues. The solution was **virtual memory + paging**: each process sees a contiguous virtual address space, while the OS maps virtual pages to scattered physical page frames behind the scenes.
+
+PagedAttention brings this idea to KV Cache management:
+
+| OS Concept | PagedAttention Equivalent |
+|------------|--------------------------|
+| Virtual page | Logical block (KV for a group of contiguous tokens) |
+| Physical page frame | Physical block (fixed-size region in GPU memory) |
+| Page table | Block Table (logical block → physical block mapping) |
+| On-demand allocation | New physical blocks allocated only when new tokens arrive |
+| Page size | Block size (typically 16 tokens) |
+
+## Core Mechanism of PagedAttention
+
+Each request's KV Cache is divided into **logical blocks**, each storing Key/Value for a fixed number of tokens (e.g., 16). Logical blocks are mapped to **physical blocks** in GPU memory via a **Block Table**, and physical blocks need not be contiguous.
+
+<BlockTableMapping client:visible locale="en" />
+
+Key design choices:
+
+1. **On-demand allocation**: Instead of pre-allocating max_seq_len, the system checks whether the current block has room each time a new token is generated. A new physical block is allocated only when the current one is full
+2. **No external fragmentation**: Physical blocks are fixed-size and uniform, so any free block can be used by any request
+3. **Minimal internal fragmentation**: Waste occurs only in the last block of each request (the unfilled portion), averaging &lt; block_size / 2 tokens
+
+<FragmentationAnalysis client:visible locale="en" />
+
+## Copy-on-Write
+
+In beam search and parallel sampling scenarios, multiple candidate sequences share the same prefix. PagedAttention uses **Copy-on-Write (CoW)** optimization: multiple sequences' Block Tables can point to the same physical block, and the block is copied only when a sequence needs to modify its contents.
+
+Each physical block maintains a **ref_count** (reference count). A write when ref_count > 1 triggers a copy. This is identical to the Linux fork() + CoW mechanism.
+
+<CopyOnWriteBeam client:visible locale="en" />
+
+## Continuous Batching
+
+With PagedAttention efficiently managing memory, the next step is optimizing request scheduling.
+
+Traditional **Static Batching** (the approach before Orca): a batch of requests is grouped together, and the next batch is processed only after all requests in the current batch have completed. Short requests are held back by long ones, leaving the GPU largely idle during the wait.
+
+**Continuous Batching** (iteration-level scheduling, proposed by Orca): after each decode iteration, completed requests immediately release their slots, and new requests from the waiting queue immediately fill in. No idle waiting — GPU utilization is maximized.
+
+<ContinuousBatchingTimeline client:visible locale="en" />
+
+## Performance Analysis
+
+Throughput differences across three batching strategies at varying concurrency levels:
+
+<ThroughputBenchmark client:visible locale="en" />
+
+Key takeaways:
+- **Low concurrency** (1-4 requests): minimal difference between the three strategies, since the GPU is not fully utilized anyway
+- **High concurrency** (16+ requests): the advantage of continuous batching grows exponentially, as it avoids long-tail requests blocking the entire batch
+- **Empirical results**: with PagedAttention + continuous batching, vLLM achieves **2-4x** higher throughput than HuggingFace Text Generation Inference, and **24x** higher than raw transformers
+
+## Summary
+
+PagedAttention solves the memory waste problem of KV Cache through the "virtual memory paging" concept, while Continuous Batching eliminates GPU idleness between requests through "iteration-level scheduling." Together, they enable vLLM to serve more requests simultaneously with higher GPU efficiency — which is why vLLM has become the de facto standard for cloud-based LLM serving.
+
+## Further Reading
+
+- Want to learn about scheduling strategies and preemption mechanisms? Read [Scheduling and Preemption](./inference-scheduling)
+- Want to learn about prefix caching optimizations? Read [Prefix Caching and RadixAttention](./prefix-caching)

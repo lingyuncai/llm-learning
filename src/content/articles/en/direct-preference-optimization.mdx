@@ -1,0 +1,131 @@
+---
+title: "From DPO to GRPO: Direct Preference Optimization"
+slug: direct-preference-optimization
+locale: en
+tags: [dpo, grpo, ipo, preference-optimization, offline-rl]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [rlhf]
+references:
+  - type: paper
+    title: "Direct Preference Optimization: Your Language Model is Secretly a Reward Model (Rafailov et al., 2023)"
+    url: "https://arxiv.org/abs/2305.18290"
+  - type: paper
+    title: "A General Theoretical Paradigm to Understand Learning from Human Feedback (Azar et al., 2023)"
+    url: "https://arxiv.org/abs/2310.12036"
+  - type: paper
+    title: "KTO: Model Alignment as Prospect Theoretic Optimization (Ethayarajh et al., 2024)"
+    url: "https://arxiv.org/abs/2402.01306"
+  - type: paper
+    title: "DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models (Shao et al., 2024)"
+    url: "https://arxiv.org/abs/2402.03300"
+  - type: website
+    title: "Hugging Face TRL Documentation: DPO Trainer"
+    url: "https://huggingface.co/docs/trl/dpo_trainer"
+  - type: website
+    title: "Preference Tuning LLMs — Lilian Weng"
+    url: "https://lilianweng.github.io/posts/2024-11-28-reward-hacking/"
+---
+
+import RLHFvsDPOArchitecture from '../../../components/interactive/RLHFvsDPOArchitecture.tsx';
+import DPOLossViz from '../../../components/interactive/DPOLossViz.tsx';
+import OfflineVsOnline from '../../../components/interactive/OfflineVsOnline.tsx';
+import GRPOGroupSampling from '../../../components/interactive/GRPOGroupSampling.tsx';
+import MethodEvolution from '../../../components/interactive/MethodEvolution.tsx';
+import TrainingCostCompare from '../../../components/interactive/TrainingCostCompare.tsx';
+
+## Pain Points of RLHF
+
+In the previous article, we covered the complete three-stage RLHF pipeline. While it successfully powered the creation of ChatGPT, it also exposed several core pain points:
+
+1. **High training complexity**: requires running 4 models simultaneously (policy, reference, RM, critic), and PPO training is unstable
+2. **The Reward Model is a bottleneck**: RM quality directly caps the alignment ceiling, and it's easy to exploit
+3. **Hyperparameter sensitivity**: PPO's clip epsilon, learning rate, KL penalty beta, and other parameters require careful tuning
+
+Can we **skip the RM and PPO entirely** and optimize the policy directly from preference data? This is the core motivation behind DPO.
+
+<RLHFvsDPOArchitecture client:visible locale="en" />
+
+## Core Derivation of DPO
+
+DPO's key insight is: **within the RLHF framework, there exists a closed-form relationship between the optimal policy and the reward function**.
+
+Starting from RLHF's KL-constrained optimization objective:
+
+$$\max_\pi \mathbb{E}[r(x,y)] - \beta \cdot KL(\pi \| \pi_{ref})$$
+
+We can derive the optimal policy as:
+
+$$\pi^*(y|x) = \frac{1}{Z(x)} \pi_{ref}(y|x) \exp\left(\frac{1}{\beta} r(x,y)\right)$$
+
+Conversely, the reward can be expressed in terms of the policy:
+
+$$r(x,y) = \beta \log \frac{\pi^*(y|x)}{\pi_{ref}(y|x)} + \beta \log Z(x)$$
+
+Substituting this relationship into the Bradley-Terry model, the $Z(x)$ term cancels out, yielding the **DPO Loss**:
+
+$$\mathcal{L}_{DPO}(\theta) = -\mathbb{E}\left[\log \sigma\left(\beta \left(\log \frac{\pi_\theta(y_w|x)}{\pi_{ref}(y_w|x)} - \log \frac{\pi_\theta(y_l|x)}{\pi_{ref}(y_l|x)}\right)\right)\right]$$
+
+<DPOLossViz client:visible locale="en" />
+
+## Advantages and Issues of DPO
+
+**Advantages:**
+- Eliminates the Reward Model and PPO, requiring only 2 models (policy + reference)
+- Training is as simple as SFT (forward pass + backward pass)
+- No online sampling needed; trains directly on offline preference data
+
+**Issues:**
+- **Offline distribution shift**: training data comes from an old policy; as the model updates, the data no longer matches the current policy
+- **Sensitive to data quality**: noise in preference pairs directly affects the optimization direction
+- **Prone to overfitting**: especially evident on small datasets
+
+## IPO and KTO
+
+To address DPO's problems, researchers have proposed several variants:
+
+**IPO (Identity Preference Optimization)**: adds a regularization term to prevent overfitting, so the model doesn't need to push the margin of preference pairs to infinity.
+
+**KTO (Kahneman-Tversky Optimization)**: the biggest innovation is that it **doesn't require paired preference data** -- it only needs to know whether each response is "good" or "bad," significantly reducing annotation costs.
+
+## GRPO: DeepSeek's Approach
+
+**GRPO (Group Relative Policy Optimization)** comes from DeepSeek, with a core innovation of **eliminating the Critic network**:
+
+1. For the same prompt, sample a group (G) of responses
+2. Use a reward function (rules-based or an RM) to score each response
+3. Compute Advantage using within-group relative ranking: $A_i = \frac{r_i - \text{mean}(r)}{\text{std}(r)}$
+4. Update the policy using a PPO-style clipped objective
+
+<GRPOGroupSampling client:visible locale="en" />
+
+GRPO's advantage is that it doesn't need a Critic network (saving one large model's worth of GPU memory), and online sampling avoids distribution shift. DeepSeek-R1 used GRPO with rule-based rewards to train a model that exhibited emergent thinking capabilities.
+
+<OfflineVsOnline client:visible locale="en" />
+
+## Method Selection
+
+<MethodEvolution client:visible locale="en" />
+
+There is no perfect alignment method. The choice depends on your constraints:
+
+| Dimension | RLHF | DPO | GRPO |
+|-----------|------|-----|------|
+| Training complexity | High (4 models) | Low (2 models) | Medium (2 models + online generation) |
+| Data requirements | Preference pairs + prompts | Preference pairs | Prompts + reward rules |
+| Training stability | PPO is unstable | Stable like SFT | Fairly stable |
+| Performance ceiling | High (online optimization) | Medium (offline limitations) | High (online + emergence) |
+| Use cases | Best alignment quality | Fast iteration, limited resources | Math/reasoning tasks |
+
+<TrainingCostCompare client:visible locale="en" />
+
+## Summary
+
+1. **DPO** uses a closed-form relationship to eliminate the RM and PPO, making alignment training as simple as SFT
+2. **IPO** adds regularization to prevent overfitting; **KTO** removes the need for paired data
+3. **GRPO** removes the Critic and uses group sampling to compute Advantage, balancing efficiency with online optimization
+4. Choosing a method requires trade-offs: training resources / data quality / performance requirements
+5. DeepSeek-R1 demonstrated GRPO's enormous potential for reasoning tasks
+
+In the next article, we will dive into reward design: ORM vs PRM, the deeper causes of reward hacking, and how reward models are evolving into verifiers.

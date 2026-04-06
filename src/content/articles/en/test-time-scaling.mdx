@@ -1,0 +1,126 @@
+---
+title: "Test-Time Scaling and Reasoning Enhancement"
+slug: test-time-scaling
+locale: en
+tags: [test-time-scaling, chain-of-thought, mcts, deepseek-r1, thinking, verifier]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [reward-modeling]
+references:
+  - type: paper
+    title: "Scaling LLM Test-Time Compute Optimally can be More Effective than Scaling Model Parameters (Snell et al., 2024)"
+    url: "https://arxiv.org/abs/2408.03314"
+  - type: paper
+    title: "DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning (2025)"
+    url: "https://arxiv.org/abs/2501.12948"
+  - type: paper
+    title: "Let's Verify Step by Step (Lightman et al., 2023)"
+    url: "https://arxiv.org/abs/2305.20050"
+  - type: paper
+    title: "AlphaZero-like Tree-Search can Guide Large Language Model Decoding and Training (Feng et al., 2024)"
+    url: "https://arxiv.org/abs/2309.17179"
+  - type: course
+    title: "Hugging Face Deep RL Course"
+    url: "https://huggingface.co/learn/deep-rl-course"
+  - type: blog
+    title: "Deep Reinforcement Learning: Pong from Pixels — Andrej Karpathy"
+    url: "https://karpathy.github.io/2016/05/31/rl/"
+---
+
+import ScalingParadigmCompare from '../../../components/interactive/ScalingParadigmCompare.tsx';
+import BestOfNSimulator from '../../../components/interactive/BestOfNSimulator.tsx';
+import MCTSReasoningTree from '../../../components/interactive/MCTSReasoningTree.tsx';
+import DeepSeekR1Pipeline from '../../../components/interactive/DeepSeekR1Pipeline.tsx';
+import EmergentThinking from '../../../components/interactive/EmergentThinking.tsx';
+import ComputeOptimalInference from '../../../components/interactive/ComputeOptimalInference.tsx';
+
+## Train-Time vs Test-Time Scaling
+
+Traditional scaling laws focus on **train-time scaling**: increasing model parameters, training data, and compute leads to steady performance improvements. But this curve is flattening — the gains from scaling from 100B to 1T parameters are becoming increasingly marginal.
+
+**Test-Time Scaling** proposes a different approach: **keep the model size fixed and invest more compute at inference time to improve output quality**.
+
+<ScalingParadigmCompare client:visible locale="en" />
+
+The key finding from Snell et al. (2024): on certain tasks, **increasing inference-time compute is more cost-effective than scaling up the model**. A 14B model with sufficient test-time compute can outperform the direct output of a 70B model.
+
+## Chain-of-Thought from an RL Perspective
+
+Chain-of-Thought (CoT) is more than just a prompting trick. From an RL perspective:
+
+- Each reasoning step = an **action**
+- The chain of thought = a **trajectory**
+- The correctness of the final answer = the **reward**
+
+This means we can use RL to optimize **how the model thinks** — not just optimizing the final answer, but optimizing the entire reasoning process. This is the core idea behind DeepSeek-R1.
+
+## Best-of-N and Rejection Sampling
+
+The simplest test-time scaling method: generate N responses and use a verifier to select the best one.
+
+<BestOfNSimulator client:visible locale="en" />
+
+Best-of-N's advantage is its simplicity, but computational cost scales linearly with N. For easy problems, N=1 suffices; for hard problems, you may need N=64 or more. The key requirement is a good verifier to select the best answer.
+
+## MCTS + LLM
+
+A more advanced test-time scaling approach models the reasoning process as a **tree search**. Drawing from the AlphaGo/AlphaZero paradigm:
+
+- Each node represents a reasoning step
+- A PRM (Process Reward Model) evaluates the "value" of each node
+- The MCTS policy determines **which reasoning paths to explore**
+
+<MCTSReasoningTree client:visible locale="en" />
+
+The four-step MCTS loop:
+1. **Select**: Starting from the root, use the UCB formula to choose the most promising path
+2. **Expand**: Generate new reasoning steps at the leaf node
+3. **Evaluate**: Use the PRM to assess the quality of the new step
+4. **Backpropagate**: Propagate the evaluation result back to update the entire path
+
+This approach is more efficient than Best-of-N because instead of independently sampling N paths, it **intelligently explores and prunes**.
+
+## DeepSeek-R1 Style Thinking
+
+DeepSeek-R1 demonstrates a more profound form of test-time scaling: **using RL to train the model to learn how to "think"**.
+
+<DeepSeekR1Pipeline client:visible locale="en" />
+
+Key finding: when given a simple reward signal (answer correctness) and trained with GRPO, the model spontaneously develops a range of sophisticated reasoning behaviors:
+
+<EmergentThinking client:visible locale="en" />
+
+These emergent behaviors include:
+- **Step-by-step reasoning**: Automatically decomposing complex problems into sub-steps
+- **Self-verification**: Proactively checking its own computations
+- **Backtracking and error correction**: Going back and re-reasoning upon discovering mistakes
+- **Strategy selection**: Trying different approaches to solve the same problem
+
+Nobody explicitly taught the model these behaviors — they emerged entirely from the simple signal of "is the answer correct or not."
+
+## Compute-Optimal Inference
+
+Not all problems require extensive reasoning compute. **"2+2=?"** doesn't need MCTS search, but an **IMO competition problem** justifies investing heavily in search.
+
+<ComputeOptimalInference client:visible locale="en" />
+
+The core idea of compute-optimal inference is to **dynamically allocate inference budget based on problem difficulty**:
+- **Easy problems**: Direct answer (1x compute)
+- **Medium problems**: CoT reasoning (3-5x compute)
+- **Hard problems**: Best-of-N + Verifier (8-24x compute)
+- **Extremely hard problems**: Deep MCTS search (40-60x compute)
+
+Automatically assessing problem difficulty and selecting the appropriate strategy is the key to making test-time scaling practical.
+
+## Summary
+
+This article covered the core ideas and methods of test-time scaling:
+
+1. **Test-Time Scaling** is a new paradigm complementary to train-time scaling
+2. **Best-of-N** is the simplest approach, using a verifier to select the best from multiple candidates
+3. **MCTS** models the reasoning process as a tree search, intelligently exploring reasoning paths
+4. **DeepSeek-R1** uses GRPO to train emergent thinking behaviors, representing the pinnacle of test-time scaling
+5. **Compute-Optimal** strategies dynamically allocate inference compute based on problem difficulty
+
+From MDP fundamentals to test-time scaling, we have traced the complete chain of RL in the LLM domain. RL not only teaches LLMs to "do the right thing" (alignment) but also to "how to think" (reasoning) — this may well be the critical path toward more capable AI.

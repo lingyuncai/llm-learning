@@ -1,0 +1,134 @@
+---
+title: "RLHF: Learning from Human Feedback"
+slug: rlhf
+locale: en
+tags: [rlhf, reward-model, alignment, instruct-gpt, kl-divergence]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [ppo-actor-critic]
+references:
+  - type: paper
+    title: "Training language models to follow instructions with human feedback (Ouyang et al., 2022)"
+    url: "https://arxiv.org/abs/2203.02155"
+  - type: paper
+    title: "Deep Reinforcement Learning from Human Preferences (Christiano et al., 2017)"
+    url: "https://arxiv.org/abs/1706.03741"
+  - type: paper
+    title: "Fine-Tuning Language Models from Human Preferences (Ziegler et al., 2019)"
+    url: "https://arxiv.org/abs/1909.08593"
+  - type: website
+    title: "RLHF: Reinforcement Learning from Human Feedback — Chip Huyen"
+    url: "https://huyenchip.com/2023/05/02/rlhf.html"
+  - type: website
+    title: "RLHF 系列 — Nathan Lambert (interconnects.ai)"
+    url: "https://www.interconnects.ai/"
+  - type: website
+    title: "Reward Hacking in Reinforcement Learning — Lilian Weng"
+    url: "https://lilianweng.github.io/posts/2024-11-28-reward-hacking/"
+---
+
+import RLHFPipeline from '../../../components/interactive/RLHFPipeline.tsx';
+import PreferenceLabeling from '../../../components/interactive/PreferenceLabeling.tsx';
+import RewardModelTraining from '../../../components/interactive/RewardModelTraining.tsx';
+import KLPenaltyViz from '../../../components/interactive/KLPenaltyViz.tsx';
+import RewardHackingDemo from '../../../components/interactive/RewardHackingDemo.tsx';
+import AlignmentMethodTimeline from '../../../components/interactive/AlignmentMethodTimeline.tsx';
+
+## Why Alignment Is Needed
+
+Pretrained language models have a fundamental problem: their training objective is "predict the next token," not "be a helpful, honest, and harmless assistant." This means:
+
+- The model may **generate harmful content** (the training data contains harmful text)
+- The model **doesn't follow instructions** (it learned to complete text, not answer questions)
+- The model **fabricates facts** (it doesn't understand "truth," only "what looks plausible")
+- The model's **format and style** don't match user expectations
+
+**Alignment** aims to make the model's behavior match human expectations and values. The challenge is: **"helpful and safe" cannot be directly encoded as a loss function**. We need some way to turn human preferences into an optimization signal -- this is the core motivation behind RLHF.
+
+## The Three Stages of RLHF
+
+InstructGPT (2022) established the standard three-stage RLHF pipeline:
+
+<RLHFPipeline client:visible locale="en" />
+
+**Stage 1: SFT (Supervised Fine-Tuning)**
+Use human-written, high-quality (prompt, response) data to perform supervised fine-tuning on the pretrained model. This teaches the model the basic format and ability to "follow instructions."
+
+**Stage 2: Reward Model Training**
+Collect human preference data -- for two responses to the same prompt, annotate which one is better -- and train a Reward Model to quantify human preferences as scalar scores.
+
+**Stage 3: PPO Policy Optimization**
+Use the Reward Model as the reward signal, and PPO optimizes the LLM policy so that its generated responses achieve higher RM scores. A KL penalty is added to prevent drift.
+
+## Reward Model Training
+
+Training the Reward Model is the most critical step in RLHF. It needs to transform fuzzy "human preferences" into precise mathematical signals.
+
+<PreferenceLabeling client:visible locale="en" />
+
+The training data consists of preference pairs $(y_w, y_l)$: for the same prompt $x$, human annotators choose $y_w$ (winner) as preferred over $y_l$ (loser).
+
+**The Bradley-Terry model** frames preferences as probabilities:
+
+$$P(y_w \succ y_l | x) = \sigma(r_\phi(x, y_w) - r_\phi(x, y_l))$$
+
+Training loss function:
+
+$$\mathcal{L}(\phi) = -\mathbb{E}_{(x, y_w, y_l)}\left[\log \sigma(r_\phi(x, y_w) - r_\phi(x, y_l))\right]$$
+
+<RewardModelTraining client:visible locale="en" />
+
+## PPO Alignment Optimization
+
+With the Reward Model in hand, we can use PPO to optimize the LLM. The optimization objective is:
+
+$$\max_\theta \; \mathbb{E}_{x \sim D, \; y \sim \pi_\theta(\cdot|x)}\left[r_\phi(x, y) - \beta \cdot KL(\pi_\theta \| \pi_{ref})\right]$$
+
+where $\pi_{ref}$ is the SFT model (serving as the reference policy) and $\beta$ is the KL penalty coefficient.
+
+The meaning of this objective: **maximize the RM score, but don't drift too far from the pretrained model**.
+
+## The Importance of the KL Constraint
+
+The KL divergence $KL(\pi_\theta \| \pi_{ref})$ measures the "distance" between the new policy and the reference policy. $\beta$ controls the strength of this constraint.
+
+<KLPenaltyViz client:visible locale="en" />
+
+What happens without the KL penalty? The model discovers weaknesses in the RM and exploits them aggressively -- this is **Reward Hacking**.
+
+<RewardHackingDemo client:visible locale="en" />
+
+## Limitations of RLHF
+
+Although RLHF has achieved tremendous success (InstructGPT, ChatGPT), it also has clear limitations:
+
+1. **The Reward Model is a bottleneck**
+   - RM quality directly caps the alignment ceiling
+   - Human preferences are inconsistent (different annotators may give opposite judgments)
+   - RMs are easy to exploit (reward hacking)
+
+2. **High training complexity**
+   - Requires running 4 models simultaneously: policy, reference policy, reward model, critic
+   - PPO training is unstable and hyperparameter-sensitive
+   - Significant computational resource requirements
+
+3. **High annotation costs**
+   - Requires large amounts of high-quality preference data
+   - Human annotations are noisy and biased
+
+These limitations have given rise to alternatives like DPO and GRPO -- discussed in detail in the next article.
+
+<AlignmentMethodTimeline client:visible locale="en" />
+
+## Summary
+
+This article provided a complete overview of the three-stage RLHF pipeline:
+
+1. **SFT** teaches the model the basic ability to follow instructions
+2. **Reward Model** quantifies human preferences as scalar scores (Bradley-Terry model)
+3. **PPO** optimizes the policy to align the LLM, with KL penalty to prevent reward hacking
+4. **Reward Hacking** is the primary risk when there is no KL constraint
+5. RLHF is successful but complex, giving rise to simpler alternatives like DPO and GRPO
+
+In the next article, we will dive into DPO and GRPO, exploring how to skip the Reward Model and optimize the policy directly from preference data.

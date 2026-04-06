@@ -1,0 +1,171 @@
+---
+title: "GPU Architecture — From Transistors to Threads"
+slug: gpu-architecture
+locale: en
+tags: [gpu, architecture, hardware, nvidia]
+prerequisites: [ai-compute-stack]
+difficulty: intermediate
+created: "2026-04-03"
+updated: "2026-04-06"
+references:
+  - type: website
+    title: "NVIDIA H100 Tensor Core GPU Architecture Whitepaper"
+    url: "https://resources.nvidia.com/en-us-tensor-core"
+  - type: website
+    title: "NVIDIA CUDA C++ Programming Guide"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/"
+---
+
+import CpuGpuTransistorCompare from '../../../components/interactive/CpuGpuTransistorCompare.tsx';
+import LatencyHidingCompare from '../../../components/interactive/LatencyHidingCompare.tsx';
+import GpuChipTopology from '../../../components/interactive/GpuChipTopology.tsx';
+import SmInternalDiagram from '../../../components/interactive/SmInternalDiagram.tsx';
+import SmResourceTable from '../../../components/interactive/SmResourceTable.tsx';
+import WarpExecutionAnimation from '../../../components/interactive/WarpExecutionAnimation.tsx';
+import WarpSchedulerTimeline from '../../../components/interactive/WarpSchedulerTimeline.tsx';
+import MemoryHierarchyDetailed from '../../../components/interactive/MemoryHierarchyDetailed.tsx';
+
+In the [AI Compute Stack Overview](/en/articles/ai-compute-stack) article, we understood the seven-layer structure from inference frameworks to hardware ISA from a software stack perspective. The bottommost layer in that article was "Hardware ISA — the only thing a GPU can execute."
+
+This article drills one level deeper: **what GPU hardware itself looks like**. Understanding hardware architecture is a prerequisite for writing high-performance GPU code — you need to know what physical structures instructions execute on before you can make correct optimization decisions.
+
+## Section 1: GPU vs CPU — Two Design Philosophies
+
+CPUs and GPUs face two fundamentally different computing demands, and thus took entirely different design paths.
+
+**CPU design goal: Minimize the latency of a single task.** To achieve this, CPUs invest a large transistor budget in:
+- **Large multi-level caches** (L1/L2/L3, sometimes 50%+ of chip area) — keeping data as close to compute units as possible
+- **Complex control logic** — branch prediction, out-of-order execution, register renaming, making each individual thread run as fast as possible
+- **A small number of high-performance cores** (4-8) — each core is a "heavy infantry"
+
+**GPU design goal: Maximize total throughput.** A completely different strategy:
+- **Massive numbers of simple ALUs** — thousands of small compute units, each weak individually, but with extremely high aggregate throughput
+- **Minimized control logic** — no complex branch prediction or out-of-order execution, control logic takes a minimal share
+- **Small caches, using thread switching to hide latency** — instead of relying on cache hits to speed things up when encountering memory waits, the GPU immediately switches to another group of threads to continue execution
+
+<CpuGpuTransistorCompare locale="en" />
+
+### Latency Hiding: Two Radically Different Strategies
+
+When a CPU encounters a cache miss (data not in cache), the thread **stalls** — doing nothing, waiting idly for data to return from memory. This waiting time is completely wasted. The CPU's countermeasure is: use larger caches to reduce the probability of misses.
+
+The GPU's countermeasure is entirely different: **don't reduce the waiting, but do other work during the wait**. A GPU has thousands of threads active simultaneously (grouped into warps). When one group of threads is waiting for memory, the hardware warp scheduler immediately switches to another group of threads that are ready. As long as there are enough concurrently active threads, the waiting time can be completely filled.
+
+<LatencyHidingCompare locale="en" />
+
+This is why GPUs need massive numbers of threads — not because there are that many independent tasks to do, but because **enough threads are needed to mask memory latency**. This concept is called **latency hiding**, and it is the most fundamental idea for understanding GPU architecture.
+
+---
+
+## Section 2: NVIDIA GPU Global Structure
+
+Using the NVIDIA H100 as an example, here is the hierarchical structure from chip level to the smallest compute unit:
+
+**GPU Chip** → **GPC** (Graphics Processing Cluster) → **TPC** (Texture Processing Cluster) → **SM** (Streaming Multiprocessor)
+
+- **GPC** is the largest logical grouping. The H100 has 8 GPCs.
+- Each GPC contains several **TPCs** (Texture Processing Clusters). TPC is a legacy name (from graphics rendering); in compute scenarios, it's mainly a container for SMs.
+- Each TPC contains 2 **SMs** — the SM is the GPU's core compute unit and the level we most need to understand.
+- All SMs share a large **L2 Cache** (~50MB on H100).
+- Beyond L2 is **HBM** (High Bandwidth Memory) — the GPU's main memory.
+
+**H100 SXM full chip:** 8 GPC x 9 TPC x 2 SM = 144 SM (132 actually enabled), 50 MB L2, 80 GB HBM3.
+
+<GpuChipTopology client:visible locale="en" />
+
+> For comparison: RTX 4090 has 128 SMs, 96 MB L2, 24 GB GDDR6X. The architecture core is the same (both based on Ada / Hopper SM), but scale and memory technology differ.
+
+---
+
+## Section 3: Inside the SM
+
+The SM (Streaming Multiprocessor) is the unit within the GPU that **actually executes computation**. Understanding the SM's internal structure means understanding the GPU's execution model.
+
+### Four Processing Blocks
+
+Each SM is divided into **4 Processing Blocks** (also called Sub-partitions), each containing:
+
+- **1 Warp Scheduler** + 1 Dispatch Unit — selects and issues instructions
+- **FP32 CUDA Cores** — perform floating-point multiply-add (32 per block on Hopper, 128 per SM total)
+- **INT32 Cores** — integer operations
+- **Tensor Cores** — matrix multiply-accumulate acceleration units (detailed in the next article)
+- **SFU** (Special Function Unit) — computes transcendental functions like sin/cos/exp
+- **Load/Store Units** — load/store data from/to memory
+
+<SmInternalDiagram locale="en" />
+
+### Shared Resources
+
+The 4 Processing Blocks share:
+
+- **Register File** — 256 KB, the fastest storage on the GPU. Each thread can use up to 255 32-bit registers. The register file is large because the GPU needs to simultaneously maintain the register state of thousands of threads (the key to achieving zero-overhead warp switching)
+- **Shared Memory / L1 Cache** — 228 KB (Hopper), high-speed storage shared among threads within a Block. The allocation ratio between shared memory and L1 cache is configurable
+
+### Generational Evolution
+
+<SmResourceTable client:visible locale="en" />
+
+---
+
+## Section 4: Warp — The GPU's Minimum Execution Unit
+
+### What Is a Warp
+
+A **Warp** = a group of 32 threads, the minimum unit of GPU scheduling and execution. The 32 threads in a warp execute the **same instruction in lockstep** at the hardware level (SIMT — Single Instruction, Multiple Threads).
+
+Think of it like a platoon of soldiers marching in step — 32 people step left simultaneously, step right simultaneously. They execute the same "instruction" (cadence) but each on different "data" (ground position).
+
+Each Processing Block's Warp Scheduler selects one **ready warp** (a warp not waiting on memory) each cycle and issues one instruction for it. The 4 Processing Blocks can each select a warp simultaneously, so an SM can issue up to 4 instructions per cycle.
+
+### Warp Divergence
+
+All 32 threads must execute the **same instruction** — so what happens if the code has an `if/else`?
+
+This is **Warp Divergence**: when threads within a warp take different branch paths, the hardware cannot execute both paths simultaneously. The solution is **serialization** — first execute the if-path (threads not taking the if-path are masked out), then execute the else-path (threads not taking the else-path are masked out). The time for both paths is added together.
+
+<WarpExecutionAnimation client:visible locale="en" />
+
+> This is why GPU code should minimize branching — not that you can't write if/else, but that all 32 threads in the same warp should ideally take the same path.
+
+### Warp Scheduler and Latency Hiding
+
+The warp scheduler is the SM's "scheduling brain." Its job is simple: **pick a ready warp and issue its next instruction**.
+
+When a warp executes a memory load instruction, it needs to wait hundreds of cycles for the data. The scheduler doesn't wait — it immediately switches to another ready warp to continue execution. **This switch has zero overhead** (zero-overhead context switch), because all warps' register states permanently reside in the SM's register file, requiring no save/restore.
+
+<WarpSchedulerTimeline client:visible locale="en" />
+
+---
+
+## Section 5: Memory Hierarchy
+
+The GPU's memory hierarchy is the single biggest factor affecting performance. From fastest to slowest:
+
+| Level | Capacity (H100) | Bandwidth | Latency | Scope |
+|------|------------|------|------|--------|
+| Register File | 256 KB / SM | Extremely high (on-chip) | 0 cycles | Thread-private |
+| Shared Memory / L1 | 228 KB / SM | Extremely high (on-chip) | ~20-30 cycles | Shared within Block |
+| L2 Cache | 50 MB | ~12 TB/s (theoretical) | ~200 cycles | Globally shared |
+| HBM3 | 80 GB | 3.35 TB/s | ~400-600 cycles | Global |
+
+<MemoryHierarchyDetailed locale="en" />
+
+Key numbers: The latency gap from register to HBM is **several hundred times**, and the bandwidth gap is **5-6x**. This means:
+
+- **Keeping data in registers and shared memory as long as possible** is the core of optimization
+- Reading data from HBM is expensive — once loaded, it should be **reused as many times as possible**
+- This is the fundamental motivation behind tiling strategies, which we'll cover in detail in the GEMM optimization article
+
+> Flash Attention's core innovation is precisely based on this memory hierarchy — tiling the Attention computation into SRAM (shared memory) to avoid writing large intermediate matrices back to HBM. See [Flash Attention Tiling Principles](/en/articles/flash-attention) for details.
+
+---
+
+## Summary
+
+The core design philosophy of GPU architecture can be summarized in three points:
+
+1. **Throughput-first** — Thousands of simple cores, sacrificing single-thread latency for total throughput
+2. **Latency hiding** — Don't reduce wait time; instead, fill the waiting with massive numbers of threads (warps). This requires the register file to permanently hold all warp states
+3. **Memory hierarchy** — Latency differs by hundreds of times from register to HBM; optimization = keep data in fast storage as much as possible
+
+The next article will dive deep into the GPU's most important specialized acceleration units — Tensor Core and XMX, understanding why they can make matrix multiplication an order of magnitude faster.

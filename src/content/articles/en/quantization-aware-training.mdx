@@ -1,0 +1,161 @@
+---
+title: "Quantization-Aware Training (QAT)"
+slug: "quantization-aware-training"
+locale: "en"
+tags: ["quantization", "qat", "straight-through-estimator", "bitnet", "lora"]
+difficulty: "advanced"
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: ["quantization-fundamentals"]
+references:
+  - type: "paper"
+    title: "Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference"
+    url: "https://arxiv.org/abs/1712.05877"
+  - type: "paper"
+    title: "BitNet: Scaling 1-bit Transformers for Large Language Models"
+    url: "https://arxiv.org/abs/2310.11453"
+  - type: "paper"
+    title: "The Era of 1-bit LLMs: All Large Language Models are in 1.58 Bits"
+    url: "https://arxiv.org/abs/2402.17764"
+  - type: "paper"
+    title: "QLoRA: Efficient Finetuning of Quantized LLMs"
+    url: "https://arxiv.org/abs/2305.14314"
+  - type: "paper"
+    title: "LQ-LoRA: Low-rank Plus Quantized Matrix Decomposition for Efficient Language Model Finetuning"
+    url: "https://arxiv.org/abs/2311.12023"
+---
+
+import FakeQuantForwardBackward from '../../../components/interactive/FakeQuantForwardBackward.tsx';
+import BitNetArithmetic from '../../../components/interactive/BitNetArithmetic.tsx';
+import QATvsPTQBoundary from '../../../components/interactive/QATvsPTQBoundary.tsx';
+
+## The Core Problem: Why Is Post-Training Quantization Not Enough?
+
+In [Quantization Fundamentals](/en/articles/quantization-fundamentals), we learned the basic principles of PTQ (Post-Training Quantization): directly applying quantization mapping to weights after training is complete. This approach is simple and efficient, but suffers from catastrophic accuracy degradation in ultra-low bit scenarios (≤4 bit):
+
+- **Quantization noise accumulation**: Quantization error at each layer accumulates and amplifies through deep networks
+- **Activation distribution mismatch**: The model is trained assuming FP32 precision; after quantization, activation distributions shift
+- **Vanishing gradients**: The round() operation has a derivative of exactly 0, making it impossible to recover accuracy through fine-tuning
+
+**Quantization-Aware Training (QAT)** addresses this by simulating quantization noise during training, allowing the model to learn to adapt to low-precision representations and maintain accuracy even at ultra-low bit widths.
+
+## QAT Core Mechanism: Fake Quantization + Straight-Through Estimator
+
+The QAT training pipeline introduces two key techniques:
+
+1. **Fake Quantization**: Insert quantize-dequantize operations during the forward pass to simulate the precision loss at inference time
+2. **Straight-Through Estimator (STE)**: During backpropagation, let gradients "pass through" the non-differentiable round() operation
+
+<FakeQuantForwardBackward client:visible locale="en" />
+
+### Mathematical Formulation
+
+Standard quantization function (non-differentiable):
+
+$$
+Q(x) = \text{round}\left(\frac{x}{s}\right) \cdot s
+$$
+
+STE approximate gradient (Bengio et al. 2013):
+
+$$
+\frac{\partial Q(x)}{\partial x} \approx \begin{cases}
+1 & \text{if } |x| < \text{clip\_range} \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+During training, an FP32 Master Weight $W$ is maintained. The forward pass uses $Q(W)$, while backpropagation gradients directly update $W$:
+
+$$
+W_{t+1} = W_t - \eta \cdot \frac{\partial L}{\partial Q(W)} \quad (\text{gradient approximated as } \frac{\partial L}{\partial W})
+$$
+
+## LoRA-QAT vs QLoRA: Two Approaches to Quantization + Fine-Tuning
+
+In the LLM era, combining QAT with LoRA (Low-Rank Adaptation) has produced two distinct technical approaches:
+
+### Approach 1: QLoRA (Quantize First, Then Fine-Tune)
+
+QLoRA (Dettmers et al. 2023) applies PTQ to quantize the pretrained model, then fine-tunes with FP16 LoRA adapters:
+
+```python
+# QLoRA pipeline (simplified example)
+base_model = quantize_to_4bit(pretrained_model)  # PTQ quantize base model
+lora_adapter = LoRA(rank=16, dtype=fp16)         # FP16 low-rank adapter
+
+for batch in dataloader:
+    out = base_model(batch) + lora_adapter(batch)  # Quantized weights + FP16 adapter
+    loss.backward()  # Only update LoRA parameters
+```
+
+**Advantages**: Memory efficient (4-bit base + small adapter), no need to retrain the base model  
+**Disadvantages**: Base weights are already quantized to 4-bit and cannot adapt to quantization noise through training
+
+### Approach 2: LoRA-QAT (Quantization-Aware During Training)
+
+LQ-LoRA (Han et al. 2023) applies Fake Quantization to base weights during LoRA fine-tuning:
+
+```python
+# LoRA-QAT pipeline (simplified example)
+base_model = pretrained_model  # Keep FP32
+lora_adapter = LoRA(rank=16, dtype=fp16)
+
+for batch in dataloader:
+    W_q = fake_quantize(base_model.weight, bits=4)  # Fake quantization
+    out = matmul(W_q, batch) + lora_adapter(batch)
+    loss.backward()  # Update base and adapter via STE
+```
+
+**Advantages**: Base weights become aware of quantization noise during training, yielding higher final accuracy  
+**Disadvantages**: Requires inserting Fake Quant nodes during fine-tuning, slightly higher training cost
+
+## Extreme Case: BitNet's 1.58-bit QAT
+
+BitNet (Wang et al. 2023) uses QAT to quantize Transformer weights to **{-1, 0, +1}** ternary values, achieving extreme compression:
+
+### Computational Advantages of Ternary Quantization
+
+<BitNetArithmetic client:visible locale="en" />
+
+The core of BitNet is **absmean quantization**:
+
+$$
+W_{\text{ternary}} = \text{sign}(W) \cdot \mathbb{1}_{|W| > \alpha \cdot \text{mean}(|W|)}
+$$
+
+where $\alpha \approx 0.5$ is a threshold hyperparameter controlling sparsity.
+
+### Training Strategy
+
+1. **Train ternary weights directly** (not PTQ): Initialize as FP32, quantize to {-1,0,+1} before each forward pass
+2. **Use STE gradients**: $\frac{\partial \text{sign}(x)}{\partial x} \approx \mathbb{1}_{|x| \leq 1}$
+3. **Keep activations at 8-bit**: 1.58-bit weights + 8-bit activations balance accuracy and efficiency
+
+Experimental results (LLaMA architecture):
+- **3B model**: BitNet vs FP16 perplexity gap &lt;3%
+- **Memory & energy**: Inference energy reduced by 71%, throughput improved 2.7×
+
+## QAT vs PTQ Accuracy Boundary
+
+<QATvsPTQBoundary locale="en" />
+
+Experimental data from Jacob et al. (2018) comparing on ResNet-50/ImageNet:
+
+| Bit Width | PTQ Top-1 Acc | QAT Top-1 Acc | Gap   |
+|-----------|---------------|---------------|-------|
+| 8-bit     | 76.1%         | 76.5%         | +0.4% |
+| 4-bit     | 68.3%         | 74.8%         | +6.5% |
+| 3-bit     | 42.1%         | 71.2%         | **+29.1%** |
+| 2-bit     | 12.5%         | 65.4%         | **+52.9%** |
+
+**Key Takeaways**:
+- **≥4 bit**: PTQ is sufficient; QAT provides diminishing returns
+- **≤3 bit**: PTQ accuracy collapses; QAT becomes essential
+- **Engineering trade-off**: QAT requires retraining, but is the only viable approach at ultra-low bit widths
+
+## Further Reading
+
+- [Quantization Fundamentals](/en/articles/quantization-fundamentals) — Basic principles of PTQ
+- [INT8 Training Techniques](https://arxiv.org/abs/1805.08170) — Full INT8 quantization during training
+- [Mixed-Precision Training](https://arxiv.org/abs/1710.03740) — Gradient accumulation strategies combining FP16 and FP32

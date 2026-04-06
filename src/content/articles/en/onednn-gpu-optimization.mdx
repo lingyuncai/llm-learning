@@ -1,0 +1,131 @@
+---
+title: "oneDNN GPU Kernel Optimization"
+slug: onednn-gpu-optimization
+locale: en
+tags: [intel, onednn, kernel-optimization, gemm, xmx, mixed-precision]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [onednn-primitives]
+references:
+  - type: website
+    title: "oneDNN Performance Profiling and Inspection — Intel"
+    url: "https://oneapi-src.github.io/oneDNN/dev_guide_profiling.html"
+  - type: website
+    title: "oneAPI GPU Optimization Guide — GEMM — Intel"
+    url: "https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/2025-0/general-matrix-multiply.html"
+  - type: website
+    title: "XMX and XVE Architecture — Intel"
+    url: "https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/2025-0/xe-matrix-extensions-xmx.html"
+---
+
+import GemmTilingHierarchy from '../../../components/interactive/GemmTilingHierarchy.tsx';
+import XmxUtilization from '../../../components/interactive/XmxUtilization.tsx';
+import SlmBankConflict from '../../../components/interactive/SlmBankConflict.tsx';
+import MixedPrecisionCompare from '../../../components/interactive/MixedPrecisionCompare.tsx';
+import MemoryAccessPattern from '../../../components/interactive/MemoryAccessPattern.tsx';
+
+## The Central Role of GEMM in AI Inference
+
+General Matrix Multiply (GEMM) is the core operation of deep learning computation, accounting for 70-90% of the compute workload in modern neural network inference. Whether it is the self-attention mechanism in Transformer models (Q×K<sup>T</sup>, Attention×V), fully-connected layer weight computations, or matrix operations after im2col transformation in convolution layers, they all fundamentally reduce to GEMM. Therefore, GEMM performance directly determines the throughput and latency of the entire inference system.
+
+oneDNN's GEMM implementation on Intel GPUs is deeply optimized for the hardware characteristics of the Xe architecture. Unlike generic matrix operation libraries, oneDNN fully leverages the Xe2 architecture's XMX (Xe Matrix Extensions) hardware acceleration units, hierarchical memory system (Global Memory, SLM, GRF), and EU parallel execution model. Understanding these optimization strategies is crucial for achieving optimal inference performance on Intel iGPUs, especially in resource-constrained edge device scenarios where every memory access and compute unit utilization directly impacts power consumption and response time.
+
+This article provides an in-depth analysis of oneDNN GPU kernel optimization techniques, including multi-level tiling strategies, XMX utilization maximization, SLM usage patterns, mixed-precision inference, and memory access optimization. These techniques apply not only to GEMM but also serve as foundational knowledge for understanding modern GPU compute optimization.
+
+## Xe2 GEMM Tiling Strategy
+
+A GEMM operation computes $C = A \times B$, where $A \in \mathbb{R}^{M \times K}$, $B \in \mathbb{R}^{K \times N}$, $C \in \mathbb{R}^{M \times N}$. For large matrices (e.g., 4096×4096), directly loading them into GPU memory and computing would face bandwidth bottlenecks and memory capacity limitations. oneDNN employs a multi-level tiling strategy that decomposes the matrix into progressively smaller tiles, enabling each level to efficiently utilize its corresponding memory hierarchy.
+
+The Xe2 architecture's three-level tiling strategy decomposes computation into:
+1. **Global Tile** (256×256): The complete matrix C is partitioned into 256×256 tiles, with each tile assigned to a work-group. This level corresponds to data transfer from Global Memory to SLM, reducing the number of memory transactions through bulk loading.
+2. **Sub-group Tile** (32×64): Within each work-group, the 256×256 tile is further divided into 32×64 sub-tiles assigned to different sub-groups. Data is stored in SLM (Shared Local Memory), shared among multiple sub-groups within the same work-group, avoiding redundant loads from Global Memory.
+3. **Register Tile** (8×16): Sub-groups further decompose 32×64 tiles into 8×16 minimal compute units stored in the GRF (General Register File). This is the native operation granularity of the XMX engine — a single XMX instruction can complete a multiply-accumulate operation on an 8×16 tile.
+
+The core objective of this hierarchical tiling is to maximize data reuse: once A and B data blocks are cached in SLM, they can be reused by multiple sub-groups without requiring repeated reads from bandwidth-limited Global Memory. The Register Tile level ensures the XMX engine always operates at its most efficient granularity, avoiding fragmented computation.
+
+<GemmTilingHierarchy client:visible locale="en" />
+
+## XMX Utilization Optimization
+
+XMX (Xe Matrix Extensions) is the dedicated matrix compute unit in the Xe architecture, similar to NVIDIA's Tensor Cores. The Xe2 architecture's XMX engine supports multiple data types including INT8, BF16, and FP16, with theoretical peak throughput of:
+- **INT8**: 128 ops/cycle (per EU)
+- **BF16/FP16**: 64 ops/cycle (per EU)
+
+However, reaching this theoretical peak requires strict alignment requirements. The XMX engine's minimum compute granularity is a fixed matrix block (32×32 for INT8, 16×16 for FP16/BF16). If the input matrix dimensions are not integer multiples of the alignment granularity, the hardware automatically performs padding, resulting in significant wasted computation.
+
+For example, an FP16 GEMM operation with dimensions M=250, K=500, N=1000 would be padded to M=256, K=512, N=1024. This causes approximately 8% of compute resources to be wasted on the padding region. More critically, if dimensions are severely misaligned (e.g., M=33), padding to M=48 would result in nearly 50% compute waste.
+
+oneDNN's optimization strategies include:
+1. **Dynamic Tile Size Adjustment**: Automatically selecting optimal tile sizes based on input dimensions so that most tiles are fully aligned, with only boundary tiles requiring padding.
+2. **Batch Dimension Aggregation**: For batch inference, aggregating multiple small matrices into larger ones to reduce the boundary proportion.
+3. **Dimension Recommendations**: During model design, oneDNN can analyze and recommend adjusting hidden layer dimensions to multiples of the alignment granularity (e.g., 768 → 768, 1024 → 1024), which is particularly important for Transformer models.
+
+<XmxUtilization client:visible locale="en" />
+
+## SLM Usage Patterns
+
+Shared Local Memory (SLM) is the on-chip shared memory in the Xe architecture, similar to CUDA's Shared Memory. SLM access latency is much lower than Global Memory (approximately 20-30 cycles vs. 200-400 cycles), but capacity is limited (128KB SLM per Xe-core). In GEMM computation, SLM caches tiles of matrices A and B, enabling multiple sub-groups within the same work-group to share data.
+
+SLM is internally organized into 16 banks, each capable of independently servicing one memory request. When multiple threads simultaneously access different banks, accesses can complete in parallel (1 cycle). However, if multiple threads access different addresses within the same bank, a **bank conflict** occurs, causing accesses to be serialized with multiplied latency (N-way conflict → N cycles).
+
+oneDNN's GEMM kernel avoids bank conflicts through the following strategies:
+1. **Swizzle Layout**: Storing matrix data in a specific interleaved pattern so that data accessed by consecutive threads naturally distributes across different banks. For example, for column-major matrices, instead of storing as `[col0][col1][col2]...`, data is interleaved as `[col0_row0-7][col1_row0-7][col0_row8-15]...`.
+2. **Padding**: Adding a small amount of padding after matrix dimensions (e.g., 1-2 elements) to break regular stride access patterns and avoid periodic conflicts.
+3. **Access Pattern Analysis**: During kernel generation, statically analyzing access patterns and adjusting thread-to-data mappings to ensure concurrent accesses are distributed across different banks.
+
+In practice, optimized SLM access can reduce the bank conflict rate from 30-40% to below 5%, improving GEMM performance by approximately 15-25%.
+
+<SlmBankConflict client:visible locale="en" />
+
+## Mixed-Precision Inference
+
+Mixed-Precision Inference uses lower-precision data types (such as FP16, BF16, INT8) instead of FP32 while maintaining model accuracy, achieving higher compute throughput and lower memory bandwidth requirements. The Xe2 architecture's XMX engine provides hardware acceleration for low-precision operations, making mixed precision a key optimization technique for Intel iGPU inference.
+
+**FP16 (Half Precision)**: 16-bit floating point with a range of $\pm 6.55 \times 10^4$ and approximately 3-4 significant digits of precision. FP16 is the preferred inference precision — on mainstream models like Transformers and ResNet, it incurs virtually no accuracy loss while delivering 2× throughput and 2× bandwidth savings. XMX's native support for FP16 makes it the default inference precision on Intel iGPUs.
+
+**BF16 (Brain Float 16)**: A 16-bit floating-point format proposed by Google that shares the same exponent width (8 bits) as FP32, achieving a dynamic range of $\pm 3.4 \times 10^{38}$, but with only 7 mantissa bits (approximately 2-3 digits of precision). BF16 is particularly suited for training scenarios because its large dynamic range prevents gradient overflow. In inference, BF16 can be used for numerically sensitive layers (such as LayerNorm and Softmax).
+
+**INT8 (8-bit Integer)**: Integer quantization with a range of -128 to 127 or 0 to 255. INT8 inference can achieve 4× throughput, but requires Quantization-Aware Training (QAT) or Post-Training Quantization (PTQ) to calibrate quantization parameters (scale, zero-point). oneDNN provides out-of-the-box INT8 inference support, and combined with Intel Neural Compressor, can automatically complete the quantization workflow with accuracy loss < 1% on models like BERT and ResNet.
+
+oneDNN's mixed-precision strategy is dynamic: compute-intensive operations (GEMM, Conv) use INT8/FP16, precision-sensitive operations (Softmax, LayerNorm) retain FP32, and intermediate results are automatically converted between different precisions. This fine-grained precision control maximizes hardware acceleration efficiency while maintaining model quality.
+
+<MixedPrecisionCompare client:visible locale="en" />
+
+## Memory Access Optimization
+
+Memory bandwidth is a critical bottleneck for GEMM performance, especially on iGPUs where the GPU shares system memory with the CPU, and bandwidth is typically only 1/5 to 1/10 that of discrete GPUs. oneDNN maximizes effective bandwidth utilization by optimizing memory access patterns.
+
+**Coalesced Access**: When threads within the same sub-group access contiguous memory addresses, the GPU can merge multiple accesses into a single memory transaction. For example, 16 threads accessing addresses 0, 4, 8, ..., 60 (stride=4 bytes) can be coalesced into a single 64-byte cache line read. This access pattern achieves close to 100% bandwidth utilization.
+
+**Scattered Access**: If thread addresses are randomly distributed, each access requires a separate memory transaction. Even when the actual data needed is small, multiple full cache line reads are triggered, causing severe bandwidth waste. In practice, scattered access can reduce effective bandwidth utilization to as low as 10-20%, with 5-8× performance degradation.
+
+oneDNN's GEMM kernel ensures coalesced access through the following strategies:
+1. **Row-Major Layout**: Using row-major storage by default so that elements within a matrix row are contiguous in memory, naturally coalescing when sub-group threads access along the row direction.
+2. **Vectorized Loads**: Using vectorized instructions (e.g., SIMD loads) to load multiple elements at once, reducing instruction overhead while ensuring address alignment.
+3. **Prefetching**: Asynchronously prefetching the next tile's data into cache during current tile computation, hiding memory latency. oneDNN's JIT kernel generator automatically inserts prefetch instructions without manual optimization.
+
+In practice, optimized memory access can increase GEMM kernel effective bandwidth utilization from 30-40% to 70-85%, achieving 2-3× performance improvements in memory-intensive large matrix operations.
+
+<MemoryAccessPattern client:visible locale="en" />
+
+## Summary
+
+oneDNN's kernel optimization on Intel GPUs is a systematic engineering practice spanning from hardware characteristic understanding to algorithm implementation. The core optimization strategies include:
+
+1. **Multi-Level Tiling**: A three-level decomposition from Global (256×256) → SLM (32×64) → GRF (8×16), maximizing data reuse and reducing bandwidth pressure.
+2. **XMX Alignment**: Ensuring matrix dimensions align to XMX hardware's minimum granularity through dimension adjustment and dynamic tile sizing, avoiding padding waste.
+3. **SLM Optimization**: Employing swizzle layouts and access pattern analysis to reduce bank conflict rates below 5%.
+4. **Mixed Precision**: Using INT8/FP16 for compute-intensive operations and retaining FP32 for precision-sensitive operations, automatically balancing performance and quality.
+5. **Memory Access**: Ensuring coalesced access through row-major layout, vectorized loads, and prefetching, achieving effective bandwidth utilization > 70%.
+
+These optimization techniques apply not only to GEMM but are universal principles for all GPU compute kernels. In practice, developers typically do not need to manually implement these optimizations — oneDNN's primitive API automatically selects the optimal kernel implementation. However, understanding these underlying mechanisms is essential for performance tuning, profiling analysis, and writing custom kernels in scenarios where oneDNN does not provide coverage.
+
+Next, we will explore how to use oneDNN's profiling tools to analyze kernel performance, identify bottlenecks, and further improve inference throughput through parameter tuning.
+
+## Further Reading
+
+- [Intel oneAPI GPU Optimization Guide](https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/2025-0/overview.html) — Intel's official comprehensive GPU optimization guide
+- [oneDNN Performance Profiling](https://oneapi-src.github.io/oneDNN/dev_guide_profiling.html) — Guide to using oneDNN performance profiling tools
+- [Understanding Tensor Cores](https://developer.nvidia.com/blog/programming-tensor-cores-cuda-9/) — NVIDIA Tensor Core programming, with similarities to XMX
+- [Optimizing GEMM on GPUs](https://siboehm.com/articles/22/CUDA-MMM) — Deep dive into CUDA GEMM optimization, with universally applicable principles

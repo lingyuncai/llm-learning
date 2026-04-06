@@ -1,0 +1,96 @@
+---
+title: "Scheduling and Preemption: The Inference Engine Scheduler"
+slug: inference-scheduling
+locale: en
+tags: [scheduling, preemption, chunked-prefill, vllm, inference]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [paged-attention]
+references:
+  - type: paper
+    title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    url: "https://arxiv.org/abs/2309.06180"
+  - type: paper
+    title: "Sarathi: Efficient LLM Inference by Piggybacking Decodes with Chunked Prefills"
+    url: "https://arxiv.org/abs/2308.16369"
+  - type: paper
+    title: "Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve"
+    url: "https://arxiv.org/abs/2403.02310"
+---
+
+import SchedulerStateMachine from '../../../components/interactive/SchedulerStateMachine.tsx';
+import SchedulingPolicyGantt from '../../../components/interactive/SchedulingPolicyGantt.tsx';
+import PreemptionCompare from '../../../components/interactive/PreemptionCompare.tsx';
+import ChunkedPrefillTimeline from '../../../components/interactive/ChunkedPrefillTimeline.tsx';
+import SchedulingTradeoffSlider from '../../../components/interactive/SchedulingTradeoffSlider.tsx';
+
+## The Scheduler: Brain of the Inference Engine
+
+In the [previous article](./paged-attention), we solved the memory management problem (PagedAttention) and the batching problem (Continuous Batching). But a key question remains: **when GPU resources are insufficient to serve all requests simultaneously, who goes first? Who gets paused?**
+
+This is the Scheduler's responsibility. It is the "brain" of the inference engine, making a decision at every decode iteration: which requests continue running, which new requests can join, and which running requests need to be preempted to make room.
+
+## Request State Machine
+
+Each request in the Scheduler has four states:
+
+<SchedulerStateMachine client:visible locale="en" />
+
+- **Waiting**: the request has arrived and is queued for a GPU slot
+- **Running**: actively executing prefill or decode on the GPU
+- **Swapped**: preempted, with KV Cache moved to CPU or discarded, awaiting restoration
+- **Finished**: generated an EOS token or reached max_length, all resources released
+
+Core transitions: `Waiting → Running` (scheduling), `Running → Swapped` (preemption), `Swapped → Running` (restoration). After each iteration, the Scheduler re-evaluates the state of all requests.
+
+## Scheduling Policies
+
+The most basic policy is **FCFS** (First Come, First Served), but it does not account for request priority. Production environments typically require more sophisticated policies:
+
+<SchedulingPolicyGantt client:visible locale="en" />
+
+**FCFS**: Simple and fair, but VIP users' requests may get stuck behind a large volume of ordinary requests.
+
+**Priority Scheduling**: Assigns different priority levels to requests (e.g., VIP users, paid users, free users), with higher-priority requests getting GPU slots first. The downside is that low-priority requests may be "starved."
+
+**Shortest Job First (SJF)**: Estimates request length and prioritizes shorter requests, minimizing average completion time. However, long requests may be continually postponed.
+
+## Preemption Mechanisms
+
+When GPU memory is insufficient, the Scheduler must select one or more Running requests for **preemption**, releasing the GPU memory occupied by their KV Caches. There are two strategies:
+
+<PreemptionCompare client:visible locale="en" />
+
+**How to choose?** vLLM's default policy is: if a request has already generated many tokens (large KV Cache), prefer **Swap** (high transfer cost but no wasted computation); if the request just started (small KV Cache), prefer **Recompute** (low recomputation cost and avoids PCIe transfer).
+
+## Chunked Prefill
+
+Long prompts introduce another problem: the prefill phase needs to process thousands of tokens at once, monopolizing the GPU during this time and blocking all decode requests. Users experience this directly as "stuttering" — a streaming response that was flowing smoothly suddenly freezes.
+
+**Chunked Prefill** (Sarathi, 2023) solves this by splitting long prompts into fixed-size chunks, with each chunk occupying only one iteration, leaving the remaining iterations for decode requests:
+
+<ChunkedPrefillTimeline />
+
+Sarathi-Serve further optimizes by **piggybacking** prefill chunks and decode requests within each iteration — leveraging the complementary nature of prefill (compute-bound) and decode (memory-bound). Mixing both simultaneously maximizes utilization of both GPU compute units and memory bandwidth.
+
+## The Scheduling Trade-off
+
+Throughput, latency, and fairness — you cannot optimize all three at once. The Scheduler's configuration is essentially choosing a position within this triangle:
+
+<SchedulingTradeoffSlider client:visible locale="en" />
+
+In practice, these parameters are typically configurable:
+- `max_num_seqs`: maximum concurrent requests (higher → more throughput, lower → less latency)
+- `enable_chunked_prefill`: whether to enable chunked prefill (on → lower latency, off → higher throughput)
+- `preemption_mode`: preemption strategy (swap / recompute)
+- `scheduling_policy`: scheduling algorithm selection
+
+## Summary
+
+The Scheduler is the most "engineering-heavy" part of an inference engine — there is no one-size-fits-all optimal solution, and tuning is required for each scenario. But the core principles are clear: **a state machine manages request lifecycles, preemption handles resource shortages, chunked prefill eliminates long-prompt blocking, and the trade-off triangle guides configuration choices**.
+
+## Further Reading
+
+- Want to learn how prefix caching further optimizes performance? Read [Prefix Caching and RadixAttention](./prefix-caching)
+- Want to learn about SGLang's programming model? Read [SGLang Programming Model](./sglang-programming-model)

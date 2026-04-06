@@ -1,0 +1,410 @@
+---
+title: "AI Compute Stack Overview — From Inference Frameworks to Hardware ISA"
+slug: ai-compute-stack
+locale: en
+tags: [gpu, compute, software-stack, runtime, inference]
+difficulty: intermediate
+created: "2026-04-03"
+updated: "2026-04-06"
+references:
+  - type: website
+    title: "NVIDIA CUDA C++ Programming Guide"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/"
+  - type: website
+    title: "Khronos OpenCL Specification"
+    url: "https://www.khronos.org/opencl/"
+  - type: website
+    title: "Khronos SYCL Specification"
+    url: "https://www.khronos.org/sycl/"
+  - type: website
+    title: "Intel oneAPI Level Zero Specification"
+    url: "https://spec.oneapi.io/level-zero/latest/index.html"
+  - type: website
+    title: "AMD ROCm HIP Programming Guide"
+    url: "https://rocm.docs.amd.com/projects/HIP/en/latest/"
+  - type: website
+    title: "Apple Metal Shading Language Specification"
+    url: "https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf"
+  - type: repo
+    title: "ggml / llama.cpp"
+    url: "https://github.com/ggerganov/llama.cpp"
+  - type: website
+    title: "ONNX Runtime Documentation"
+    url: "https://onnxruntime.ai/docs/"
+---
+
+import StackLayerDiagram from '../../../components/interactive/StackLayerDiagram.tsx';
+import MatmulJourney from '../../../components/interactive/MatmulJourney.tsx';
+import EcosystemPathSelector from '../../../components/interactive/EcosystemPathSelector.tsx';
+import ShaderKernelPathway from '../../../components/interactive/ShaderKernelPathway.tsx';
+import CommandModelDiagram from '../../../components/interactive/CommandModelDiagram.tsx';
+import GpuContextDiagram from '../../../components/interactive/GpuContextDiagram.tsx';
+
+## Why Are These Concepts So Confusing?
+
+When you hear names like CUDA, OpenCL, SYCL, ROCm, and oneAPI, the most common mistake is treating each one as "one thing." In reality, each of them is **a brand name for "a suite of things"** that spans programming languages, compilers, runtimes, operator libraries, and more.
+
+Take OpenCL, for example — it has both a programming language (OpenCL C) and a runtime (OpenCL Runtime). SYCL is a language, but it doesn't have its own runtime; instead, it borrows other backends (OpenCL Runtime / Level Zero / CUDA Runtime). This "one name covering multiple layers" design is the root cause of the confusion.
+
+The goal of this article: use a 7-layer panoramic diagram to clearly explain **what each layer is, why it exists, and who it communicates with**. After reading this, whenever you encounter any GPU computing term, you'll be able to precisely place it at the correct layer.
+
+## Section 0: Panoramic Overview
+
+Let's start by building a global perspective. The interactive stack diagram below shows the 7 layers of the AI/GPU software stack, from the topmost inference framework to the bottommost hardware ISA. **Click any layer** to expand and see the specific technologies it contains; the **brand buttons at the bottom** highlight all layers a given brand spans.
+
+<StackLayerDiagram client:visible locale="en" />
+
+### The Journey of a MatMul
+
+The best way to understand the relationship between layers is to trace the complete call chain of a concrete operation. Below, we follow a matrix multiplication from `model.forward()` as it descends through the stack all the way to hardware execution:
+
+<MatmulJourney client:visible locale="en" />
+
+Next, we'll expand each layer from bottom to top.
+
+---
+
+## Section 1: Hardware ISA — The Only Thing a GPU Can Execute
+
+**Why this layer exists:** This is the lowest level a GPU can directly execute — binary machine instructions.
+
+An ISA (Instruction Set Architecture) is the instruction set that GPU hardware understands, analogous to x86 or ARM for CPUs. Each GPU vendor's ISA is incompatible with others:
+
+| ISA | Vendor | Characteristics |
+|-----|------|------|
+| SASS | NVIDIA | Different for each GPU architecture generation (Ampere, Hopper...), full documentation not publicly available |
+| RDNA ISA | AMD | RDNA 3, RDNA 4 each have their own |
+| Gen ISA | Intel | Arc / Data Center GPU (Xe is the architecture brand name; the ISA is called Gen ISA) |
+| Apple GPU ISA | Apple | M1/M2/M3 series, completely undocumented |
+
+**Why don't you write ISA directly?** Too low-level, vendors don't publish complete documentation, and switching hardware means rewriting all code.
+
+**PTX vs SASS (NVIDIA-specific):** PTX (Parallel Thread Execution) is NVIDIA's **virtual ISA** — a stable intermediate layer that remains unchanged across GPU generations. SASS is the actual hardware ISA, different for each generation. The Driver handles the final PTX-to-SASS translation. This allows your CUDA programs to run on new GPUs (forward compatibility).
+
+> We need a layer to shield us from hardware differences → **Driver**
+
+---
+
+## Section 2: Driver — More Than Just a "Driver"
+
+**Why this layer exists:** Abstracts away hardware differences, providing a stable interface to upper layers.
+
+The GPU Driver's role is similar to a device driver in an operating system, but it does far more than you might think:
+
+### Contains a Compiler Backend
+
+**This is something many people don't know** — the Driver isn't just about "making hardware work." It contains a complete **compiler backend** responsible for translating intermediate representations (IR) into hardware ISA:
+
+| Vendor | IR → ISA | Compilation Mode |
+|------|----------|---------|
+| NVIDIA | PTX → SASS | **AOT** (pre-compiled at build time with `ptxas`) or **JIT** (compiled at runtime by the Driver, enabling forward compatibility with new GPUs) |
+| Intel | SPIR-V → Gen ISA | JIT (Driver contains a SPIR-V → Gen ISA compiler) |
+| AMD | LLVM IR / AMD IL → RDNA ISA | Primarily AOT (generates target ISA at compile time), also supports JIT |
+
+### Hardware Resource Management
+
+- GPU memory allocation/deallocation
+- Compute unit scheduling
+- Multi-process GPU isolation
+
+> The Driver interface is too low-level (ioctl-level) — we need a friendlier programming abstraction → **Runtime**
+
+---
+
+## Section 3: Runtime — The GPU's "C Runtime"
+
+**Why this layer exists:** Provides programmers with a programming interface for "operating the GPU," encapsulating the Driver's low-level details.
+
+### Understanding the Runtime Correctly
+
+The GPU Runtime's role is similar to **C Runtime (libc)** or **JRE**:
+- C Runtime gives you `malloc/free` + `pthread_create`
+- GPU Runtime gives you `bufferAlloc/free` + `kernelDispatch`
+
+It is **not an operating system** (that's the Driver's role) but rather a **programming language-level runtime library**.
+
+### Five Core Responsibilities of the Runtime
+
+**1. Device Discovery** — Query what GPUs are in the system and their capabilities
+
+**2. Context** — The "session/sandbox" for GPU programming. A Context is a container that binds: one GPU device + all its associated buffers, queues, programs, and kernels. Multiple processes each create independent Contexts with no resource interference. Analogy: a database Connection — you create Transactions and execute Queries on a Connection; the Connection is the Context.
+
+<GpuContextDiagram client:visible locale="en" />
+
+CUDA Runtime API implicitly manages Context (you don't need to create one manually), but it still exists under the hood. OpenCL / Level Zero / Vulkan all require explicit Context creation.
+
+**3. Buffer Management** — Allocate/free memory blocks on GPU memory (analogous to CPU's `malloc/free`)
+
+**4. Command Queue / Command List:**
+
+GPUs don't work like CPUs where "calling a function executes immediately." Instead, they work through a "command submission" model. There are two models:
+
+- **Command Queue** (CUDA / OpenCL style): **Immediate submission** — each API call immediately places a command in the queue, and the GPU executes them in order. You can't "replay" the same command sequence; to run it again, you must call the APIs again
+- **Command List** (Level Zero / Vulkan / Metal style): **Record-then-submit** — first record an entire set of commands into a command list (the GPU does nothing at this point), then submit the whole batch to the GPU for execution. The benefit is that the driver can pre-compile and pre-validate the entire command sequence during recording, with minimal overhead at submission time. The same command list can be **submitted repeatedly** (replayed), ideal for per-frame rendering and iterative training scenarios
+
+<CommandModelDiagram client:visible locale="en" />
+
+Command list parameters are bound at recording time. If you need to change parameters, you can: (1) record a new command list; (2) use push constants (Vulkan) to inject small parameters at submission time; (3) use indirect dispatch — parameters are read dynamically from a GPU buffer.
+
+**5. Kernel Dispatch** — Load a compiled kernel program onto the GPU, configure the thread grid (grid/block), and submit for execution
+
+### Kernel Dispatch Workflow (OpenCL Example)
+
+```
+1. Platform/Device discovery — clGetPlatformIDs() → clGetDeviceIDs()
+2. Context + Queue — clCreateContext() → clCreateCommandQueue()
+3. Buffer — clCreateBuffer(size_A)              // analogous to malloc
+4. Data transfer — clEnqueueWriteBuffer(queue, bufA, hostA)
+5. Kernel loading — clCreateProgramWithIL(spirv) → clCreateKernel("matmul")
+6. Argument binding + Dispatch — clSetKernelArg() → clEnqueueNDRangeKernel()
+7. Synchronization + Readback — clFinish() → clEnqueueReadBuffer()
+```
+
+This workflow ties together the relationships between Context, Buffer, Queue, Kernel, and Dispatch. The CUDA Runtime API provides more implicit encapsulation (auto-managing Context), but the underlying logic is the same.
+
+### Extensions
+
+Vulkan / OpenCL's core specifications define baseline functionality, but GPU capabilities are evolving rapidly. The Extension mechanism allows adding new capabilities without modifying the core specification:
+
+- **Cross-vendor standard extensions** (`VK_KHR_xxx`): Officially approved by Khronos, implemented by multiple vendors. For example, `VK_KHR_ray_tracing_pipeline` added ray tracing to Vulkan
+- **Vendor-specific extensions** (`VK_NV_xxx`, `VK_AMD_xxx`): Implemented by a single vendor, may be standardized later
+- Before using an extension, you must **query at runtime** whether the GPU supports it; only then can it be enabled
+
+This is similar to browser Web APIs — the core specification is the baseline, and new features are first offered as experimental APIs before being incorporated into the standard.
+
+### Major Runtime Comparison
+
+| Runtime | Vendor | Characteristics |
+|---------|------|------|
+| CUDA Runtime API | NVIDIA | Highest-level abstraction, implicit context management, first choice for NVIDIA GPU development |
+| CUDA Driver API | NVIDIA | Lower-level, explicit control over context/modules |
+| OpenCL Runtime | Khronos | Cross-platform, explicit buffer/queue management |
+| Level Zero | Intel | Low-overhead, explicit control, the underlying runtime for oneAPI. Spec is vendor-neutral, but only Intel has an implementation in practice |
+| Vulkan (Compute) | Khronos | Maximum explicit control, command buffer recording. Not just a graphics API — llama.cpp uses it for cross-platform GPU inference |
+| Metal | Apple | Apple exclusive, command buffer model |
+| HIP Runtime | AMD | ROCm's runtime, API nearly identical to CUDA Runtime |
+
+### Common Misconceptions
+
+- **CUDA Runtime API vs CUDA Driver API**: Two levels of abstraction from the same vendor. Runtime is simpler (implicit context); Driver API is lower-level. Most people only use the Runtime API
+- **Vulkan is not just a graphics API**: Vulkan Compute can run general-purpose compute kernels
+- **Level Zero vs OpenCL Runtime**: Both can drive Intel GPUs; Level Zero is newer and lower-level (similar to Vulkan's design philosophy)
+
+---
+
+## Section 4: Language → Compiler → IR → Kernel
+
+**Why this layer exists:** You need to write GPU programs (kernels) in some language, and a compiler translates them into a format that the Runtime can dispatch.
+
+### Four Concepts
+
+- **Language** — The programming language/extension for writing GPU code
+- **Kernel** — A compiled compute program that the Runtime can dispatch to the GPU for parallel execution. It doesn't know how to run itself — it needs the Runtime to allocate buffers and dispatch it
+- **Compiler** — The translator from Language to IR (nvcc, DPC++, hipcc, clang...)
+- **IR (Intermediate Representation)** — The compiled intermediate bytecode, analogous to **Java bytecode** — platform-independent, with the Driver's compiler performing the final translation to hardware ISA
+
+### Single-Source vs Dual-Source
+
+A key architectural difference affecting development experience:
+
+- **Single-source (CUDA C++, SYCL, HIP):** Host code and kernel written in the same file; the compiler extracts each separately. Better development experience, can share type definitions
+- **Dual-source (OpenCL C, GLSL, HLSL):** Kernels written in separate files/strings; host code loads them via Runtime API. Flexible but a fragmented experience
+
+### HIP's Cross-Platform Mechanism
+
+HIP is a great example of how the language layer achieves cross-platform support:
+- HIP syntax is nearly identical to CUDA C++ (`hipMalloc` ↔ `cudaMalloc`)
+- The `hipcc` compiler detects the target platform: AMD GPU → HIP-Clang (LLVM) generates AMDGCN; NVIDIA GPU → nvcc generates PTX
+- This is **source-level portability**: the same code, choosing different backends at compile time
+
+### GPU Programming Language Landscape
+
+| Language | Ecosystem | Compilation Target (IR) | Characteristics |
+|----------|------|-------------|------|
+| CUDA C++ | NVIDIA | PTX | NVIDIA exclusive, most mature ecosystem |
+| HIP | AMD (ROCm) | AMD GPU IR / PTX | AMD's answer to CUDA, nearly identical syntax |
+| OpenCL C | Khronos | SPIR-V | Cross-platform, C99 style, older |
+| SYCL | Khronos | SPIR-V (via DPC++) | Modern C++ single-source, championed by Intel |
+| Triton | OpenAI | Triton IR → MLIR → LLVM IR → PTX/AMDGCN | Python-style kernel writing, automatic tiling |
+| GLSL | Khronos | SPIR-V | Graphics shading language, also usable for compute shaders |
+| HLSL | Microsoft | DXIL / SPIR-V | DirectX shading language |
+| WGSL | W3C | SPIR-V / HLSL / MSL (via Tint/Naga) | WebGPU shading language |
+| Metal SL | Apple | Metal IR (AIR) | Apple exclusive |
+| Slang | Khronos open source | SPIR-V / HLSL / MSL / CUDA / GLSL | Next-generation cross-platform shading language, multi-backend output |
+
+### Shader vs Kernel — Two Paths, Same Hardware
+
+These two terms come from different historical traditions, but ultimately run on the **exact same GPU hardware** (SM/CU):
+
+- **Kernel**: A general-purpose compute program submitted through a **Compute API** (CUDA, OpenCL, Level Zero, HIP). These APIs are designed specifically for parallel computing, with no involvement of the graphics pipeline
+- **Shader**: A GPU program submitted through a **Graphics API** (Vulkan, Metal, DirectX 12, WebGPU). The name comes from graphics rendering — GPUs originally only did "shading," and the programmable stages of the pipeline were called shaders (vertex shader, fragment shader, etc.)
+- **Compute Shader**: A compute path within the Graphics API that is **independent of the graphics pipeline**. Functionally equivalent to a kernel, but submitted through the Graphics API's compute pipeline, **bypassing vertex/rasterize/fragment and other graphics stages**
+
+Why do some people use compute shaders instead of kernels? Because Vulkan/Metal have **much broader cross-platform coverage than CUDA** — llama.cpp uses Vulkan compute shaders to run inference across NVIDIA/AMD/Intel/mobile GPUs.
+
+<ShaderKernelPathway client:visible locale="en" />
+
+### IR Comparison
+
+| IR | Corresponding Language | Consumer | Characteristics |
+|----|---------|--------|------|
+| PTX | CUDA C++ | NVIDIA Driver | NVIDIA proprietary virtual ISA, human-readable text format |
+| SPIR-V | OpenCL C, SYCL, GLSL, HLSL, WGSL, Slang | OpenCL RT, Vulkan, Level Zero | Khronos standard, binary format, cross-platform universal |
+| DXIL | HLSL | DirectX 12 Driver | Microsoft proprietary |
+| Metal IR (AIR) | Metal SL | Metal Driver | Apple proprietary |
+| LLVM IR | Triton, HIP | Various vendor LLVM backends | General-purpose compiler IR, reused by multiple toolchains |
+
+---
+
+## Section 5: Operator Library — You Don't Write Kernels by Hand
+
+**Why this layer exists:** Writing kernels by hand is too hard. Operator libraries provide **pre-optimized kernel collections + glue code that calls the Runtime**.
+
+They expose a `matmul(A, B, C)` interface to upper layers, while internally selecting the optimal kernel, configuring tiling strategies, and using Runtime APIs to allocate buffers and dispatch. Matrix partitioning (tiling) happens at this layer — large matrices are split into tiles that fit in GPU shared memory.
+
+Correct analogy: operator library = **Intel MKL / BLAS** — a performance-optimized algorithm library, not a "standard library" (that's too broad).
+
+| Operator Library | Vendor | Runtime Dependency | Covered Operators |
+|--------|------|-------------|---------|
+| cuDNN | NVIDIA | CUDA Runtime | Convolution, normalization, Attention |
+| cuBLAS | NVIDIA | CUDA Runtime | Matrix multiplication, BLAS operations |
+| oneDNN | Intel | OpenCL RT / Level Zero / CPU JIT | Convolution, MatMul, normalization |
+| MPS | Apple | Metal | Matrix multiplication, convolution, image processing |
+| XNNPACK | Google | Direct CPU calls | Mobile CPU-optimized operators |
+| rocBLAS / MIOpen | AMD | HIP Runtime | BLAS / deep learning operators |
+
+### How oneDNN Works Internally
+
+oneDNN is the best example for understanding "how an operator library uses kernels + runtime." It supports multiple **backends**, each being a complete set of kernel implementations for specific hardware + corresponding runtime calls:
+
+- **Intel GPU backend**: Kernels written in OpenCL C, or generated at runtime with nGen → submitted via OpenCL Runtime or Level Zero to the GPU
+- **CPU backend**: Uses Xbyak (x86) / Xbyak_aarch64 (ARM) to generate optimized machine code at runtime
+- **NVIDIA GPU backend**: Submits kernels via CUDA Runtime
+- **AMD GPU backend**: Submits kernels via HIP Runtime
+- **Selection logic**: oneDNN automatically selects the optimal backend and kernel implementation based on input tensor shape, data types, and current hardware
+
+**nGen** is oneDNN's internal Intel GPU **JIT assembler** (not a compiler). It doesn't accept any programming language input; instead, it's a C++ API where developers construct Intel GPU instructions one by one through C++ function calls (similar to Xbyak assembling x86 instructions on the CPU side), directly outputting binary at runtime. nGen generates **real Gen ISA instructions** (not a virtual ISA like PTX), but the API abstracts away encoding differences between different Gen generations (Gen9 vs Gen12, etc.), so the same C++ code can generate correct binaries for different Intel GPU generations.
+
+**Xbyak** follows the same approach for the CPU side — an x86/x64 JIT assembler. oneDNN uses it on the CPU side to dynamically generate optimal machine code based on runtime-detected CPU features (AVX-512? AVX2?), which is more flexible than "generating multiple versions at compile time + selecting at runtime."
+
+This demonstrates the essence of operator libraries: **kernel collections + runtime glue + automatic selection strategies**.
+
+### Triton's Special Position
+
+Triton sits between hand-written kernels and operator libraries — you write kernel logic in Python style, and the Triton compiler automatically handles tiling and optimization. PyTorch 2.0+'s `torch.compile` backend extensively uses Triton to generate kernels.
+
+---
+
+## Section 6: Inference Framework + Graph Optimizer
+
+**Why this layer exists:** You don't want to manually call operator library APIs. The inference framework loads model files, performs graph optimization, and dispatches each operator to the corresponding operator library/backend.
+
+### ONNX Format vs ONNX Runtime (Common Confusion)
+
+- **ONNX** — An open model interchange **format** (.onnx files), analogous to HTML
+- **ONNX Runtime** — Microsoft's inference **engine**, analogous to Chrome
+- Other engines (TensorRT, OpenVINO) can also consume .onnx files
+
+### What Frameworks Do
+
+1. **Model loading** — Parse .onnx / .tflite / .gguf and other model files
+2. **Graph optimization** — Operator fusion (MatMul+BiasAdd+ReLU → one fused kernel), constant folding, layout conversion
+3. **Scheduling** — Dispatch each operator in the graph to the corresponding backend
+
+| Framework | Input Format | Backend Mechanism | Typical Call Chain |
+|------|---------|---------|-----------|
+| ONNX Runtime | .onnx | Execution Provider plugins | → CUDA EP → cuDNN → CUDA RT |
+| TensorRT | .onnx / .plan | NVIDIA proprietary engine | → own kernels → CUDA RT |
+| OpenVINO | multiple → internal IR | Built-in plugins | → oneDNN → OpenCL/L0 |
+| LiteRT (TFLite) | .tflite | Delegate plugins | → GPU delegate → OpenCL/Vulkan |
+| CoreML | .mlmodel | Apple proprietary | → MPS / ANE |
+| llama.cpp | .gguf | ggml backends | → ggml → CUDA/Metal/Vulkan |
+
+### Graph Optimizer = Graph-Level Compiler
+
+TensorRT, XLA, and Apache TVM aren't simple inference frameworks — they are **graph-level compilers**: they take a computation graph as input and output an optimized kernel call sequence. What they do: operator fusion, memory planning, precision optimization (FP16/INT8), automatic kernel selection.
+
+### llama.cpp / ggml's Vertical Integration
+
+**Traditional layering** (using NVIDIA as an example):
+
+```
+TensorRT → cuDNN/cuBLAS → CUDA Runtime → Driver
+```
+
+Each layer manages its own concerns, separated by standard interfaces. cuDNN serves only the CUDA backend; TensorRT doesn't care how cuDNN implements kernels internally; when GPU generations change, only cuDNN needs to update kernels, and TensorRT doesn't need changes.
+
+**ggml's approach** — swallows the "operator library" layer entirely, **writing kernels from scratch for every hardware backend**:
+
+```
+llama.cpp → ggml ──┬── ggml-cuda.cu   → CUDA Runtime → Driver
+                   ├── ggml-metal.m   → Metal        → Driver
+                   ├── ggml-vulkan.cpp → Vulkan       → Driver
+                   └── ggml-cpu.c     → (direct execution)
+```
+
+ggml and cuDNN/oneDNN/MPS **are at the same layer** — they're all operator libraries. The difference is: ggml defines its **own operator interface** (tailored for LLM inference: matrix multiplication, softmax, RoPE, Q4_K_M quantization, etc.), then implements multiple backends for this interface. It doesn't use cuDNN not because they're at different levels, but because cuDNN's operator interface doesn't match ggml's needs (e.g., cuDNN lacks the special quantization kernels ggml needs), plus ggml pursues zero-dependency deployment.
+
+In essence, ggml is an **operator library with a built-in cross-platform strategy** — achieving cross-platform support by "writing kernels from scratch for each backend," rather than reusing standard runtime abstraction layers like oneDNN does.
+
+- **Benefits**: Ultimate control, zero third-party dependencies, a single binary for all platforms, deep customization (custom quantization format GGUF, aggressive operator fusion)
+- **Costs**: Every time a new hardware backend is added, all operators must be implemented from scratch. cuDNN's matmul kernel has been optimized by NVIDIA engineers over many years; ggml's CUDA kernel may not match that performance
+
+---
+
+## Section 7: Cross-Layer Brand Anatomy
+
+**The ultimate answer to the core confusion**: These names aren't "one thing" — they're brand names for "a suite of things."
+
+Use the interactive tool below to select different scenarios and see the technology stack paths:
+
+<EcosystemPathSelector client:visible locale="en" />
+
+### Five Brands × Six Layers Comparison
+
+| Layer | CUDA (NVIDIA) | ROCm (AMD) | oneAPI (Intel) | OpenCL (Khronos) | Metal (Apple) |
+|----|--------------|------------|---------------|-----------------|--------------|
+| Language | CUDA C++ | HIP | SYCL (DPC++) | OpenCL C | Metal SL |
+| Compiler | nvcc / NVRTC | hipcc (Clang) | DPC++ / ICX | Vendor-specific | Metal Compiler |
+| IR | PTX | LLVM IR→AMDGCN | SPIR-V | SPIR-V | AIR |
+| Runtime | CUDA RT | HIP RT (ROCr) | Level Zero | OpenCL RT | Metal |
+| Operator Lib | cuDNN/cuBLAS | MIOpen/rocBLAS | oneDNN/oneMKL | — | MPS |
+| Framework | TensorRT | — | OpenVINO | — | CoreML |
+
+**Note**: "—" means the brand has no component at that layer.
+
+**SYCL's unique aspect:** It has no runtime of its own; instead, it uses OpenCL RT, Level Zero, or CUDA RT through backend plugins. This is the only solution where "the language layer and the runtime layer are completely decoupled."
+
+---
+
+## Recommended Learning Resources
+
+If you want to deepen your understanding of the GPU compute stack, here are our curated resources:
+
+### Official Documentation
+- **NVIDIA CUDA C++ Programming Guide** — The authoritative reference for CUDA programming, covering the programming model, thread hierarchy, memory hierarchy, kernel execution, and other core concepts. The most comprehensive primary source.
+- **NVIDIA GPU Performance Background User's Guide** — A deep learning performance documentation series covering GPU architecture fundamentals (SM, memory hierarchy), arithmetic intensity and roofline analysis framework, and DNN operation classification. Essential reading for understanding compute-bound vs memory-bound.
+
+### Video Courses
+- **NVIDIA DLI "Fundamentals of Accelerated Computing with CUDA C/C++"** — NVIDIA's official CUDA introductory course, hands-on focused, with GPU cloud lab environments.
+
+### Blog Posts and Tutorials
+- **NVIDIA "CUDA Refresher" Series** — A CUDA fundamentals refresh series on the NVIDIA developer blog, covering GPU computing origins, programming model, thread hierarchy, memory hierarchy, and more, with clear architecture diagrams and hierarchy illustrations.
+- **Simon Boehm "How to Optimize a CUDA Matmul Kernel for cuBLAS-like Performance"** — A complete optimization log from a naive kernel to near-cuBLAS performance (94%). Covers memory coalescing, shared memory, block-tiling, warp-level parallelism, and roofline analysis. While not purely introductory, it demonstrates the real process of GPU optimization with rich performance analysis charts.
+
+### Tools
+- **NVIDIA Nsight Compute** — The official GPU kernel performance analysis tool, with built-in roofline charts, memory bandwidth analysis, occupancy analysis, and other visualization features. A hands-on tool for understanding compute stack performance bottlenecks.
+
+## Summary
+
+The AI/GPU software stack can be clearly divided into 7 layers, each solving a specific problem:
+
+1. **Hardware ISA** — Machine instructions the GPU can execute (vendor-proprietary)
+2. **Driver** — Hardware management + IR→ISA compiler backend
+3. **Runtime** — Programming interface: buffer, queue, kernel dispatch (analogous to libc/JRE)
+4. **Language + IR** — Language for writing kernels + compiled platform-independent bytecode (analogous to Java bytecode)
+5. **Operator Library** — Pre-optimized kernel collections + runtime glue (analogous to MKL/BLAS)
+6. **Graph Optimizer** — Graph-level compiler, operator fusion and memory optimization
+7. **Inference Framework** — Loads models, dispatches operators
+
+The reason CUDA/OpenCL/SYCL/ROCm/oneAPI are confusing is that each one spans multiple layers. Keep this 7-layer model in mind, and when you encounter a new technology term, first ask "which layer is it on?" to quickly orient yourself.

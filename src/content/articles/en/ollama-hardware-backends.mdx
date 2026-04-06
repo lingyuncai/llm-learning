@@ -1,0 +1,362 @@
+---
+title: "Hardware Backends"
+slug: "ollama-hardware-backends"
+locale: "en"
+tags: ["ggml", "cuda", "metal", "vulkan", "hardware-backend"]
+prerequisites: ["ollama-compute-graph"]
+difficulty: "advanced"
+created: "2026-04-04"
+updated: "2026-04-06"
+references:
+  - type: "repo"
+    title: "GGML Backend API"
+    url: "https://github.com/ggerganov/ggml"
+  - type: "website"
+    title: "CUDA Programming Guide"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/"
+  - type: "website"
+    title: "Metal Shading Language"
+    url: "https://developer.apple.com/metal/"
+  - type: "website"
+    title: "Vulkan Compute"
+    url: "https://www.khronos.org/vulkan/"
+---
+
+import BackendArchitecture from '../../../components/interactive/BackendArchitecture.tsx';
+import DeviceSplitVisualizer from '../../../components/interactive/DeviceSplitVisualizer.tsx';
+import BackendPerformanceCompare from '../../../components/interactive/BackendPerformanceCompare.tsx';
+
+## Introduction
+
+One of the most notable features of GGML/llama.cpp is **cross-platform hardware support**: the same codebase can run on NVIDIA GPUs (CUDA), Apple Silicon (Metal), AMD GPUs (Vulkan), and even pure CPU, without users needing to manually switch frameworks. This capability stems from GGML's multi-backend architecture.
+
+This article covers in depth:
+- How GGML supports multiple hardware backends through a unified compute graph abstraction
+- Core optimization techniques for each backend (CUDA / Metal / Vulkan / CPU)
+- How device split works and its performance implications
+- The fundamental differences between llama.cpp and CUDA-only frameworks (such as vLLM / TensorRT-LLM)
+
+## Multi-Backend Architecture
+
+GGML's backend system uses a layered design of **unified compute graph + scheduler + multiple backend implementations**:
+
+<BackendArchitecture client:visible locale="en" />
+
+### Design Principles
+
+1. **Unified Compute Graph**: All tensor operations (matmul / rope / rms_norm, etc.) are represented in the GGML compute graph using unified `ggml_tensor` and `ggml_op` types, independent of the underlying hardware.
+
+2. **Backend Abstraction**: GGML defines a standard Backend API (`ggml_backend_interface`), including:
+   - `init()` / `free()`: Backend initialization and cleanup
+   - `buffer_alloc()`: Allocating hardware memory (GPU VRAM / unified memory / system RAM)
+   - `set_tensor()` / `get_tensor()`: Host-device data transfer
+   - `graph_compute()`: Executing the compute graph
+
+3. **Scheduler Role**: `ggml_backend_sched` is responsible for:
+   - Analyzing compute graph dependencies
+   - Selecting the optimal backend for each op (based on tensor location and backend capabilities)
+   - Inserting necessary data transfers (e.g., GPU → CPU copies)
+   - Executing independent ops in parallel
+
+This design allows upper-layer applications (llama.cpp) to be completely hardware-agnostic — they only need to build the compute graph and call `ggml_backend_sched_graph_compute()`.
+
+## CUDA Backend
+
+The CUDA backend is llama.cpp's highest-performing backend, fully leveraging NVIDIA GPU compute power.
+
+### Core Optimization Techniques
+
+**1. Quantized MatMul Kernels**
+
+The CUDA backend implements specialized fused kernels for each quantization format (Q4_K_M / Q5_K_S / Q8_0, etc.):
+```cpp
+// dequantize + matmul + accumulate fused in a single CUDA kernel
+// Pseudocode: actual implementation in ggml-cuda/mmq.cu
+__global__ void mul_mat_q4_K(...) {
+  // Warp-level cooperation: each warp processes 32 columns of weights
+  // On-chip dequantization: decode directly from int4 to fp16, avoiding global memory overhead
+  // Uses wmma (Tensor Core) or dp4a (INT8 DP) for acceleration
+}
+```
+
+**2. FlashAttention Fusion**
+
+llama.cpp integrates the FlashAttention-2 CUDA implementation, fusing the three-step Q×K^T → softmax → ×V operation into a single kernel, reducing HBM access:
+```cpp
+// ggml-cuda/fattn.cu
+// Block-level tiling: each block processes a portion of the query
+// Online softmax: incrementally computes max/sum, avoiding multiple scans
+```
+
+**3. Tensor Core Acceleration**
+
+On Turing+ architectures (RTX 20/30/40 series), GGML automatically uses Tensor Cores for FP16 matrix multiplication:
+- INT4 weights are dequantized to FP16 in registers
+- Uses `wmma::mma_sync()` (CUDA C++ API) or PTX `mma.sync` instructions
+- Theoretical compute: RTX 4090 reaches 1321 TFLOPS (FP16 Tensor Core)
+
+**4. Stream Parallelism**
+
+The CUDA backend uses multiple CUDA streams to overlap computation and data transfer:
+```cpp
+// Pseudocode
+cudaMemcpyAsync(layer_i_input, ..., stream_copy);
+matmul_kernel<<<..., stream_compute>>>(layer_i);
+cudaMemcpyAsync(layer_i_output, ..., stream_copy);
+```
+
+## Metal Backend
+
+The Metal backend is specifically optimized for Apple Silicon, fully leveraging the Unified Memory Architecture.
+
+### Core Features
+
+**1. Unified Memory Advantage**
+
+Apple Silicon's CPU and GPU share the same physical memory, eliminating PCIe transfers:
+```swift
+// Pseudocode: Metal Shading Language (MSL)
+// CPU-allocated memory can be directly accessed by GPU, zero-copy
+MTLBuffer *buffer = [device newBufferWithBytesNoCopy:ptr length:len];
+```
+
+This gives the Metal backend extremely low latency for small-batch inference (avoiding CUDA's cudaMemcpy overhead).
+
+**2. Compute Pipeline + MSL**
+
+Metal uses Compute Shaders for GPGPU tasks:
+```metal
+// MatMul kernel in ggml-metal.metal (simplified)
+kernel void kernel_mul_mat_q4_K(
+    device const uchar *src0, device const float *src1,
+    device float *dst, uint3 tgpig [[threadgroup_position_in_grid]]) {
+  // Threadgroup optimization: leveraging 32KB shared memory
+  threadgroup float shared[...];
+  // SIMD-group (warp) level reduction
+}
+```
+
+**3. Threadgroup Optimization**
+
+Metal's threadgroup is similar to CUDA's thread block. llama.cpp optimizes threadgroup sizes for Apple GPU characteristics:
+- M1/M2: 512-1024 threads per threadgroup
+- Fully utilizes 32KB of threadgroup memory (analogous to CUDA shared memory)
+
+**4. Full Lineup Support**
+
+The Metal backend supports all Apple Silicon chips:
+- M1 (8-core GPU): ~2.6 TFLOPS FP32
+- M3 Max (40-core GPU): ~14.2 TFLOPS FP32
+- M4 Max: Further improvements in dynamic caching and bandwidth
+
+## Vulkan Backend
+
+The Vulkan backend provides **cross-platform GPU compute** capability, supporting AMD / Intel / mobile GPUs.
+
+### Implementation Principles
+
+**1. SPIR-V Compute Shader**
+
+Vulkan uses SPIR-V (Standard Portable Intermediate Representation) bytecode for computation:
+```glsl
+// Original GLSL compute shader (compiled to SPIR-V)
+#version 450
+layout(local_size_x = 256) in;
+layout(binding = 0) buffer Input { float data[]; } input;
+layout(binding = 1) buffer Output { float data[]; } output;
+
+void main() {
+  uint idx = gl_GlobalInvocationID.x;
+  output.data[idx] = input.data[idx] * 2.0;
+}
+```
+
+llama.cpp loads pre-compiled SPIR-V modules at runtime and submits them to the GPU through the Vulkan API.
+
+**2. Cross-Platform Compatibility**
+
+The main advantage of the Vulkan backend is **broad hardware support**:
+- **AMD GPU**: RX 6000 / 7000 series (RDNA 2/3 architecture)
+- **Intel Arc**: A750 / A770 (Alchemist architecture)
+- **Mobile GPU**: Adreno (Qualcomm) / Mali (ARM)
+- **Cross-OS**: Windows / Linux / Android
+
+**3. Ecosystem Challenges**
+
+Compared to CUDA, Vulkan's GPGPU ecosystem is still maturing:
+- Compiler optimization (SPIR-V → hardware instructions) is less mature than NVIDIA's PTX → SASS
+- Lacks dedicated AI acceleration units similar to Tensor Core (AMD RDNA 3 introduced an AI accelerator, but the software stack is not yet complete)
+- Driver quality varies significantly (especially AMD's Vulkan drivers on Linux)
+
+## CPU Backend
+
+The CPU backend is llama.cpp's **universal fallback**, ensuring operation on any hardware.
+
+### Optimization Strategies
+
+**1. SIMD Instruction Sets**
+
+The CPU backend uses corresponding SIMD instructions for different architectures:
+- **x86-64**: AVX2 (256-bit) / AVX-512 (512-bit)
+- **ARM**: NEON (128-bit) / SVE (scalable vector length)
+
+Example: Using AVX2 to accelerate FP32 vector dot product:
+```cpp
+// Implementation in ggml.c
+__m256 sum = _mm256_setzero_ps();
+for (int i = 0; i < n; i += 8) {
+  __m256 a = _mm256_loadu_ps(&x[i]);
+  __m256 b = _mm256_loadu_ps(&y[i]);
+  sum = _mm256_fmadd_ps(a, b, sum); // FMA: a*b + sum
+}
+```
+
+**2. Direct INT4/INT8 Computation**
+
+The CPU backend directly processes quantized weights in SIMD registers without full dequantization:
+```cpp
+// AVX2 INT8 dot product (using _mm256_maddubs_epi16)
+// Input: int8 activation, int4 weight (unpacked to int8)
+// Output: int32 accumulated result → scaled to fp32
+```
+
+AVX-512 introduced the `VPDPBUSD` instruction (INT8×UINT8 + INT32), further accelerating quantized inference.
+
+**3. Multi-threaded Parallelism**
+
+The CPU backend uses OpenMP to parallelize matrix multiplication:
+```cpp
+#pragma omp parallel for collapse(2)
+for (int i = 0; i < rows; i++) {
+  for (int j = 0; j < cols; j++) {
+    // Each thread handles a portion of the output matrix
+  }
+}
+```
+
+Modern high-end CPUs (e.g., i9-14900K: 24 cores, 32 threads) can achieve respectable inference speeds.
+
+**4. Runs Without a GPU**
+
+The CPU backend's greatest value is **zero dependencies**:
+- No need to install CUDA / ROCm / Vulkan drivers
+- Suitable for cloud servers (VMs without GPUs), embedded devices, and older hardware
+
+## Device Split
+
+When GPU VRAM is insufficient to hold the complete model, llama.cpp supports **device split**: placing some layers on the GPU and the rest on the CPU.
+
+<DeviceSplitVisualizer client:visible locale="en" />
+
+### How It Works
+
+**Layer-by-Layer Split**
+
+llama.cpp assigns devices at the Transformer layer level:
+```bash
+# Command-line example: put the first 20 layers on GPU, rest on CPU
+ollama run qwen:8b --gpu-layers 20
+```
+
+The scheduler during compute graph execution:
+1. GPU executes all ops for the first 20 layers (attention + FFN)
+2. Transfers layer 20's output from GPU to CPU (via PCIe)
+3. CPU executes the remaining 12 layers
+4. Final output is on the CPU
+
+**PCIe Bottleneck**
+
+Each token's decode requires cross-PCIe transfer of intermediate activations:
+- Activation tensor size: ~hidden_size × sizeof(fp16) = 4096 × 2 = 8 KB (per token per layer boundary)
+- PCIe 3.0 x16 bandwidth: ~16 GB/s (effective bandwidth ~12 GB/s)
+- For batch_size=1 interactive inference, PCIe latency (rather than bandwidth) is the primary bottleneck
+
+**Performance Impact**
+
+As seen in the visualization above:
+- **Full GPU** (sufficient VRAM): Best performance, no extra transfer overhead
+- **Hybrid mode** (partial GPU + partial CPU): Performance between pure GPU and pure CPU, each PCIe boundary crossing costs approximately 2-5 tok/s
+- **Pure CPU** (VRAM = 0): Performance depends entirely on CPU compute power and memory bandwidth
+
+## Performance Comparison
+
+The chart below compares actual inference speeds of the same model (Qwen3-8B Q4_K_M) across four backends:
+
+<BackendPerformanceCompare client:visible locale="en" />
+
+### Performance Analysis
+
+**1. CUDA's Absolute Advantage**
+
+The RTX 4090's 115 tok/s is nearly 10x that of CPU, thanks to:
+- Ultra-high compute: 1321 TFLOPS (FP16 Tensor Core) vs CPU ~1 TFLOPS
+- High memory bandwidth: 1008 GB/s (GDDR6X) vs CPU ~80 GB/s (DDR5-5600)
+- Highly optimized CUDA kernels (decades of NVIDIA investment)
+
+**2. Metal's Unified Memory Advantage**
+
+While M3 Max has lower raw compute than RTX 4090, it excels in small-batch inference:
+- Unified memory avoids PCIe transfers, lowering latency
+- Well-suited for interactive conversation scenarios (batch_size=1)
+- Far lower power consumption than RTX 4090 (whole system &lt;100W vs 450W+)
+
+**3. Vulkan's Catch-Up Journey**
+
+The RX 7900 XTX has hardware specs close to the RTX 4090 (96 CU, 24GB), yet performance is only about 1/3, mainly because:
+- AMD lacks AI acceleration units comparable to Tensor Core (RDNA 3's AI accelerator has insufficient software support)
+- Vulkan compiler optimization is less mature than CUDA
+- llama.cpp's Vulkan backend was developed later with less optimization depth than CUDA
+
+**4. CPU as Baseline**
+
+The i9-14900K's 12 tok/s represents the baseline for pure CPU inference:
+- Sufficient for simple conversations (human reading speed is ~5 tok/s)
+- Noticeably inferior to GPU for long text generation
+- But for environments without a GPU, it's the only option
+
+## How It Differs
+
+### llama.cpp vs CUDA-Only Frameworks
+
+Many production-grade LLM inference frameworks (such as vLLM / TensorRT-LLM / DeepSpeed-Inference) only support NVIDIA GPUs, forming a stark contrast with llama.cpp's multi-backend architecture:
+
+**vLLM / TensorRT-LLM's Approach**:
+- **Pure CUDA optimization**: Deep utilization of CUDA features (such as CUDA Graph / Cooperative Groups / Hopper's TMA)
+- **PagedAttention**: vLLM's core innovation, requiring CUDA's fine-grained memory management
+- **Dynamic batching**: Requires flexible scheduling of CUDA kernels
+- **Production scenarios**: Cloud deployments typically come standard with NVIDIA GPUs, with weaker cross-platform requirements
+
+**llama.cpp's Trade-offs**:
+- **Cross-platform first**: Single codebase supports all hardware, sacrificing some peak performance
+- **Desktop-friendly**: Supports MacBook (Metal) / gaming laptops (CUDA) / older laptops (CPU)
+- **Embedded deployment**: Can run on Raspberry Pi / Android phones
+- **Development efficiency**: No need to maintain separate codebases for each platform
+
+### The Cost of Abstraction
+
+The unified abstraction of the multi-backend architecture brings flexibility but also introduces overhead:
+1. **Runtime scheduling**: `ggml_backend_sched` needs to analyze the compute graph at each inference to decide op assignment
+2. **Generic kernels**: GGML's CUDA kernels must accommodate multiple quantization formats and tensor shapes, unable to optimize for specific models as TensorRT does
+3. **Feature synchronization**: New technologies (such as FlashAttention-3) need to be adapted for all backends, extending development cycles
+
+But for llama.cpp's target users (local deployment, rapid experimentation, educational learning), these costs are worthwhile.
+
+## Summary
+
+GGML's multi-backend architecture achieves one codebase across all hardware through **unified compute graph + backend abstraction + scheduler**. Key takeaways:
+
+- **CUDA backend**: Highest performance, deeply leveraging Tensor Core / FlashAttention / Stream parallelism
+- **Metal backend**: Unified memory architecture, low latency, ideal for Apple Silicon
+- **Vulkan backend**: Cross-platform GPU, ecosystem still maturing, performance catching up
+- **CPU backend**: Universal fallback, SIMD-optimized, runs without a GPU
+- **Device split**: Automatically distributes layers to GPU/CPU when VRAM is insufficient, with PCIe bottleneck as the key consideration
+
+This design makes Ollama/llama.cpp the go-to tool for local LLM inference — whether your hardware is an RTX 4090 or an older laptop, you'll get a usable inference experience.
+
+## Further Reading
+
+- **GGML Source Code**: [ggml-backend.c](https://github.com/ggerganov/ggml/blob/master/src/ggml-backend.c) — Backend interface definitions
+- **CUDA Kernel Implementation**: [ggml-cuda/](https://github.com/ggerganov/llama.cpp/tree/master/ggml/src/ggml-cuda) — Including mmq.cu / fattn.cu and more
+- **Metal Shader**: [ggml-metal.metal](https://github.com/ggerganov/llama.cpp/blob/master/ggml/src/ggml-metal.metal) — MSL compute shaders
+- **Vulkan Backend**: [ggml-vulkan.cpp](https://github.com/ggerganov/llama.cpp/blob/master/ggml/src/ggml-vulkan.cpp) — SPIR-V and Vulkan API interaction
+- **vLLM PagedAttention**: [Original Paper](https://arxiv.org/abs/2309.06180) — Comparing pure CUDA framework design

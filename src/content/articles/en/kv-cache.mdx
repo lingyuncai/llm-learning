@@ -1,0 +1,279 @@
+---
+title: "KV Cache Fundamentals"
+slug: kv-cache
+locale: en
+tags: [inference, kv-cache, memory, optimization]
+prerequisites: [prefill-vs-decode, attention-computation]
+difficulty: advanced
+created: "2026-03-31"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    url: "https://arxiv.org/abs/2309.06180"
+  - type: website
+    title: "The Illustrated Transformer"
+    url: "https://jalammar.github.io/illustrated-transformer/"
+  - type: website
+    title: "LLM Visualization — Brendan Bycroft"
+    url: "https://bbycroft.net/llm"
+---
+
+import KVCacheDemo from '../../../components/interactive/KVCacheDemo.tsx';
+import RedundantComputationViz from '../../../components/interactive/RedundantComputationViz.tsx';
+import KVCacheCalculator from '../../../components/interactive/KVCacheCalculator.tsx';
+import PagedAttentionComparison from '../../../components/interactive/PagedAttentionComparison.tsx';
+import ContinuousBatchingTimeline from '../../../components/interactive/ContinuousBatchingTimeline.tsx';
+
+## Introduction: KV Cache Is Key to Inference Acceleration
+
+In the previous article, we learned that LLM inference is divided into Prefill and Decode stages. The Decode stage is **autoregressive token-by-token generation** — each step produces only one new token.
+
+Here lies a critical issue: in standard Self-Attention, each new token's Query needs to compute dot products with **the Keys of all preceding tokens** in the sequence, then compute a weighted sum using **all preceding tokens' Values**. If we recompute all tokens' K and V from scratch at every step, the computation grows **quadratically** with generation length — this is unacceptable.
+
+The core idea of **KV Cache** is simple: **cache the already-computed Key and Value vectors, and at each step only compute K and V for the new token, then append them to the cache.** This reduces the Decode stage's computational complexity from $O(N^2)$ to $O(N)$ (for linear layers), making it standard practice in modern LLM inference systems.
+
+## The Problem: $O(N^2)$ Wasted Computation Without Cache
+
+### Naive Autoregressive Generation
+
+Consider a Decode process generating a sequence of length $N$. Without KV Cache, at step $t$ when generating the $t$-th token, the model needs to:
+
+1. Feed all $t$ preceding tokens into the Transformer
+2. For each layer, compute $Q$, $K$, $V$ for **all $t$ tokens**
+3. Execute the full Attention computation
+4. Take only the last position's output to predict the next token
+
+In the total computation, the linear projections alone require:
+
+$$
+\sum_{t=1}^{N} t \times (2 \times 3 \times d^2) = 3d^2 \times N(N+1) \approx O(N^2 d^2)
+$$
+
+where $3d^2$ corresponds to the computation for the Q, K, V projection matrices (each token passes through $W^Q$, $W^K$, $W^V$).
+
+### Where Is the Waste?
+
+Key observation: **the K and V of the first $t-1$ tokens at step $t$ are identical to those at step $t-1$**. Since these tokens' inputs haven't changed (the Decoder uses causal masking, so earlier tokens' representations are unaffected by later tokens), their K and V projections produce exactly the same results.
+
+In other words, every step redundantly recomputes Keys and Values that have already been calculated — this is pure computational waste.
+
+<RedundantComputationViz client:visible locale="en" />
+
+## KV Cache Mechanism: Cache and Append
+
+### Core Idea
+
+The KV Cache mechanism is very straightforward:
+
+1. **Prefill stage**: Process the full prompt, compute K and V for all tokens, and **save the results to cache**
+2. **Each Decode step**:
+   - Feed only the 1 new token into the model
+   - Compute the new token's $q$, $k$, $v$ (vectors, not matrices)
+   - **Append** $k$ and $v$ to the end of the cache
+   - Compute Attention between $q$ and the full K Cache
+   - Compute weighted sum over the full V Cache using the Attention weights
+
+### Mathematical Formulation
+
+At step $t$:
+- New token's Query: $q_t = x_t W^Q \in \mathbb{R}^{1 \times d_k}$
+- New token's Key: $k_t = x_t W^K \in \mathbb{R}^{1 \times d_k}$
+- New token's Value: $v_t = x_t W^V \in \mathbb{R}^{1 \times d_v}$
+
+Cache update:
+
+$$
+K_{\text{cache}} \leftarrow \text{concat}(K_{\text{cache}},\ k_t) \in \mathbb{R}^{t \times d_k}
+$$
+
+$$
+V_{\text{cache}} \leftarrow \text{concat}(V_{\text{cache}},\ v_t) \in \mathbb{R}^{t \times d_v}
+$$
+
+Attention computation:
+
+$$
+\text{scores} = q_t \cdot K_{\text{cache}}^T / \sqrt{d_k} \in \mathbb{R}^{1 \times t}
+$$
+
+$$
+\text{output}_t = \text{softmax}(\text{scores}) \cdot V_{\text{cache}} \in \mathbb{R}^{1 \times d_v}
+$$
+
+### Computation Comparison
+
+| | Without KV Cache | With KV Cache |
+|------|:---:|:---:|
+| Linear projections at step $t$ | Recompute all $t$ tokens | Only 1 new token |
+| Linear projection FLOPs/step | $2 \times 3 \times t \times d^2$ | $2 \times 3 \times d^2$ |
+| Total linear projection FLOPs | $O(N^2 d^2)$ | $O(Nd^2)$ |
+| Attention FLOPs/step | $O(t^2 d_k)$ | $O(t \cdot d_k)$ |
+| Cost | No extra memory | Must cache K, V |
+
+KV Cache **trades memory for computation**, reducing the total linear projection computation from $O(N^2)$ to $O(N)$.
+
+## Interactive Demo
+
+The demo below simulates a 5-step Decode process. The initial cache contains K/V from the Prefill stage for 2 tokens. At each step, observe:
+- How the new token's Q vector computes attention scores against the entire K Cache
+- How the K Cache and V Cache grow by one row each step (highlighted in green)
+
+<KVCacheDemo client:visible locale="en" />
+
+## Memory Footprint Analysis
+
+KV Cache is **one of the main sources of memory consumption** in LLM inference. Understanding its memory formula is crucial.
+
+### Single Layer, Single Head KV Cache
+
+For one Transformer layer with one attention head, caching a sequence of length $S$:
+
+$$
+\text{Single-head KV Cache} = 2 \times S \times d_k \times \text{dtype\_size}
+$$
+
+where the factor of 2 accounts for one copy each of K and V.
+
+### Full Model KV Cache
+
+For the complete model, let $L$ be the number of Transformer layers, $n_h$ the number of attention heads, and $d_k$ the per-head dimension ($d_k = d_{\text{model}} / n_h$):
+
+$$
+\text{KV Cache} = 2 \times L \times n_h \times S \times d_k \times \text{dtype\_size}
+$$
+
+Since $n_h \times d_k = d_{\text{model}}$, this simplifies to:
+
+$$
+\boxed{\text{KV Cache} = 2 \times L \times d_{\text{model}} \times S \times \text{dtype\_size}}
+$$
+
+### Concrete Numbers
+
+For **LLaMA-2 7B** ($L=32$, $d_{\text{model}}=4096$, FP16):
+
+| Sequence length $S$ | KV Cache size |
+|:---:|:---:|
+| 512 | $2 \times 32 \times 4096 \times 512 \times 2 = 256$ MB |
+| 2048 | $2 \times 32 \times 4096 \times 2048 \times 2 = 1$ GB |
+| 4096 | $2 \times 32 \times 4096 \times 4096 \times 2 = 2$ GB |
+
+For **LLaMA-2 70B** ($L=80$, $d_{\text{model}}=8192$, FP16):
+
+| Sequence length $S$ | KV Cache size |
+|:---:|:---:|
+| 2048 | $2 \times 80 \times 8192 \times 2048 \times 2 = 5.0$ GiB |
+| 4096 | $2 \times 80 \times 8192 \times 4096 \times 2 = 10.0$ GiB |
+
+> **Note**: The above uses the standard MHA formula ($n_h = 64$), assuming all heads cache KV independently. In practice, LLaMA-2 70B uses GQA ($n_{kv} = 8$), so the actual KV Cache is only $1/8$ of the table above (approximately 1.25 GiB at S=4096). See the [GQA/MQA section](#relationship-with-gqamqa-another-way-to-reduce-kv-cache) below for details.
+
+As you can see, for large models and long sequences, **KV Cache memory consumption can match or even exceed the model parameters themselves**. This is why KV Cache management and compression is a core direction in inference optimization.
+
+<KVCacheCalculator client:visible locale="en" />
+
+### Batch Scenario
+
+When serving multiple concurrent requests, KV Cache grows linearly with batch size $B$:
+
+$$
+\text{Total KV Cache} = B \times 2 \times L \times d_{\text{model}} \times S \times \text{dtype\_size}
+$$
+
+For example, LLaMA-2 7B with $S=2048$ and $B=32$: total KV Cache = $32 \times 1\text{ GB} = 32$ GB. The KV Cache alone can exhaust an entire GPU's memory.
+
+## Cache Management: Introduction to PagedAttention
+
+Traditional KV Cache implementations face a serious problem: **memory fragmentation**.
+
+### Problems with the Traditional Approach
+
+In the simplest implementation, the system **pre-allocates** cache space for the maximum sequence length per request. For example, with a max length of 2048, even if only 100 tokens are actually used, space for 2048 positions must be reserved. This leads to:
+
+- **Internal fragmentation**: Pre-allocated but unused space is wasted
+- **External fragmentation**: Space freed after requests complete is hard for new requests to fully utilize
+- **Low memory utilization**: Effective utilization may be only 20-40%
+
+### PagedAttention
+
+**PagedAttention** (from vLLM, paper "Efficient Memory Management for Large Language Model Serving with PagedAttention", arXiv 2309.06180) borrows the **virtual memory paging** concept from operating systems:
+
+1. Divide KV Cache space into fixed-size **Blocks** (similar to memory pages, typically 16 or 32 tokens)
+2. Each request maintains a **Block Table** (similar to a page table), mapping logical blocks to physical blocks
+3. Allocate blocks on demand: a new block is only allocated when the current block is full
+4. When a request finishes, its blocks can be reclaimed and assigned to new requests
+
+Key advantages:
+- **Eliminates fragmentation**: Fixed-size block allocation and reclamation produces no fragmentation
+- **Dynamic growth**: No need to pre-allocate maximum length; grows on demand
+- **High memory utilization**: Effective utilization can approach 100%
+- **Supports complex scheduling**: For example, multiple beam search candidates can share prefix KV Cache blocks
+
+<PagedAttentionComparison client:visible locale="en" />
+
+### Continuous Batching
+
+Another important technique that works alongside PagedAttention is **Continuous Batching**:
+
+- Traditional Static Batching: All requests in a batch must wait for the longest one to finish before new requests can be processed
+- Continuous Batching: When a request finishes, a new request is **immediately** inserted to fill the slot, without waiting for other requests
+
+This keeps GPU utilization consistently high, significantly improving inference throughput. Mainstream inference engines like vLLM and TensorRT-LLM all adopt the PagedAttention + Continuous Batching combination.
+
+<ContinuousBatchingTimeline client:visible locale="en" />
+
+## Relationship with GQA/MQA: Another Way to Reduce KV Cache
+
+The KV Cache memory bottleneck has driven researchers to seek solutions at the **model architecture** level.
+
+### Revisiting the KV Cache Formula
+
+$$
+\text{KV Cache} = 2 \times L \times \underbrace{n_h \times d_k}_{d_{\text{model}}} \times S \times \text{dtype\_size}
+$$
+
+where $n_h \times d_k$ corresponds to the KV dimensions across all attention heads. If we can **reduce the number of KV heads that need caching**, we directly shrink the KV Cache.
+
+### MQA (Multi-Query Attention)
+
+MQA has all attention heads **share a single set** of K and V, keeping only Q multi-headed. The KV Cache shrinks to:
+
+$$
+\text{KV Cache}_{\text{MQA}} = 2 \times L \times 1 \times d_k \times S \times \text{dtype\_size}
+$$
+
+This is $n_h$ times smaller compared to MHA (e.g., 32x smaller when $n_h=32$).
+
+### GQA (Grouped-Query Attention)
+
+GQA is a compromise between MHA and MQA: the $n_h$ Q heads are divided into $g$ groups, each sharing one set of K and V. The KV Cache becomes:
+
+$$
+\text{KV Cache}_{\text{GQA}} = 2 \times L \times g \times d_k \times S \times \text{dtype\_size}
+$$
+
+This is $n_h/g$ times smaller compared to MHA. LLaMA-2 70B uses GQA ($n_h=64$, $g=8$), reducing KV Cache to $1/8$ of the original.
+
+### Comparison
+
+| Method | KV Heads | Relative KV Cache Size | Quality Impact |
+|------|:---:|:---:|:---:|
+| MHA | $n_h$ | $1\times$ (baseline) | Best |
+| GQA | $g$ ($1 < g < n_h$) | $g/n_h$ | Minimal loss |
+| MQA | $1$ | $1/n_h$ | Slight loss |
+
+GQA significantly reduces KV Cache with virtually no impact on model quality, and has been adopted by mainstream models including LLaMA-2/3 and Mistral. For a more detailed introduction to GQA/MQA, see the [MQA and GQA](/articles/en/gqa-mqa) article.
+
+## Summary
+
+| Concept | Description |
+|------|------|
+| KV Cache | Caches computed K and V vectors to avoid redundant computation during Decode |
+| Cost without Cache | Recomputes all KV each step, total computation $O(N^2 d^2)$ |
+| Speedup with Cache | Computes only 1 new token's KV per step and appends, total $O(Nd^2)$ |
+| Memory formula | $2 \times L \times d_{\text{model}} \times S \times \text{dtype\_size}$ |
+| PagedAttention | Borrows virtual memory paging to eliminate memory fragmentation and improve utilization |
+| GQA/MQA | Reduces KV head count at the architecture level, directly shrinking cache |
+| Core tradeoff | KV Cache trades **memory** for **computation** — a classic space-time tradeoff |
+
+**Core intuition**: KV Cache is like an ever-growing "notebook." During autoregressive generation, each new token only needs to add one line of its own K and V at the end of the notebook, then flip through the entire notebook to decide what to attend to. Without this notebook, every step would require recomputing all previous tokens' K and V from scratch — like having to review everything from the very first lesson before every class, which is obviously a massive waste.

@@ -1,0 +1,151 @@
+---
+title: "NPU Architecture and GPU+NPU Co-Inference"
+slug: npu-gpu-co-inference
+locale: en
+tags: [intel, npu, openvino, hetero, multi-device, co-inference]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [openvino-graph-pipeline, igpu-performance-analysis]
+references:
+  - type: website
+    title: "OpenVINO Multi-Device Execution — Intel"
+    url: "https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/multi-device.html"
+  - type: website
+    title: "OpenVINO AUTO Device — Intel"
+    url: "https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/auto-device-selection.html"
+  - type: website
+    title: "Intel NPU Device — OpenVINO Documentation"
+    url: "https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/npu-device.html"
+  - type: website
+    title: "Heterogeneous Execution — OpenVINO Docs"
+    url: "https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/hetero-execution.html"
+---
+
+import NpuVsIgpu from '../../../components/interactive/NpuVsIgpu.tsx';
+import DevicePluginSelector from '../../../components/interactive/DevicePluginSelector.tsx';
+import HeteroSubgraphSplit from '../../../components/interactive/HeteroSubgraphSplit.tsx';
+import PowerPerfTradeoff from '../../../components/interactive/PowerPerfTradeoff.tsx';
+
+## Introduction
+
+In Intel Core Ultra processors, alongside the Xe2 integrated graphics (iGPU), there is a dedicated AI inference accelerator called the NPU (Neural Processing Unit), commercially branded as AI Boost. The NPU and iGPU have different design objectives: the NPU is optimized for low-power, fixed-topology neural network inference scenarios, while the iGPU offers greater computational flexibility and broader model support.
+
+OpenVINO provides device plugins such as AUTO, MULTI, and HETERO that allow developers to leverage the strengths of both NPU and GPU within a single inference session. AUTO mode automatically selects the optimal device, MULTI mode distributes inference requests in parallel across multiple devices, and HETERO mode splits the computation graph across different devices based on operator support. These mechanisms enable developers to flexibly balance power consumption, latency, and throughput.
+
+This article provides a detailed introduction to the Intel NPU's hardware architecture, compares NPU and iGPU use cases, provides an in-depth analysis of OpenVINO's multi-device inference strategies, and uses interactive visualizations to demonstrate the performance and power trade-offs of GPU+NPU co-inference.
+
+## Intel NPU Architecture Overview
+
+The Intel NPU is based on the NCE (Neural Compute Engine) architecture, consisting of multiple dedicated inference compute units. Unlike the general-purpose GPU Execution Units, the NCE is hardware-optimized for common neural network operators such as convolution, matrix multiplication, and activation functions, eliminating the overhead of general-purpose instruction decoding and scheduling.
+
+The NPU's core components include:
+
+- **NCE Arrays**: Parallel compute arrays that execute core operations such as convolution and matrix multiplication. Each NCE contains dedicated MAC (Multiply-Accumulate) units and a local register file.
+- **DMA Engines**: Efficient Direct Memory Access engines responsible for transferring data between system memory, NPU on-chip SRAM, and the NCE, minimizing CPU intervention.
+- **On-chip SRAM**: High-speed on-chip cache that stores intermediate activations and weights, reducing DRAM access latency and power consumption.
+- **Dispatcher**: The task scheduler that manages computation graph execution flow and coordinates the parallel operation of multiple NCEs.
+
+In the Intel Core Ultra (Lunar Lake), the NPU's peak compute capability is approximately 48 TOPS (INT8), but its core advantage lies in energy efficiency: for the same inference task, the NPU's power consumption is typically only 1/3 to 1/5 that of the iGPU. This makes the NPU the preferred choice for battery-life-sensitive scenarios such as laptops and mobile devices.
+
+It is worth noting that the earlier Intel Movidius architecture used SHAVE DSP cores, but in the modern NPU of Core Ultra, these have been replaced by NCE arrays — the architecture has been completely redesigned to accommodate inference demands of newer models such as Transformers.
+
+## NPU vs iGPU Use Cases
+
+The NPU and iGPU have fundamental design differences, and therefore suit different inference scenarios. The radar chart below compares their performance across five key dimensions.
+
+<NpuVsIgpu client:visible locale="en" />
+
+**NPU Advantage Scenarios**:
+
+- **Low-power sustained operation**: For example, real-time speech recognition (Whisper), continuous background vision tasks (face detection, OCR), requiring the device to operate for extended periods on battery power.
+- **Fixed-topology small models**: Models with stable structure, high operator support coverage, and smaller parameter counts (e.g., MobileNet, EfficientNet, small Transformers).
+- **Latency-sensitive single inference**: The NPU's on-chip SRAM and pipeline design result in extremely low single-inference startup overhead, suitable for interaction scenarios requiring fast response.
+
+**iGPU Advantage Scenarios**:
+
+- **Large models, high throughput**: LLMs with 7B+ parameters, or vision tasks requiring large-batch parallel inference — the iGPU has advantages in memory capacity and parallelism.
+- **Dynamic graphs, custom operators**: Models containing operators not supported by the NPU (e.g., sparse attention, custom CUDA kernels), or inference with dynamically changing graph structure.
+- **Plugged-in scenarios, performance-first**: On desktops or plugged-in laptops where power constraints are relaxed, the iGPU delivers higher absolute performance.
+
+In practical deployment, developers often need to weigh the trade-offs between NPU and iGPU based on the specific model, hardware environment, and application scenario. OpenVINO's multi-device inference mechanisms make this process more flexible.
+
+## OpenVINO Device Plugin System
+
+OpenVINO's Device Plugin is the abstraction layer between the inference runtime and specific hardware. Each Plugin is responsible for mapping the compiled computation graph (Compiled Model) to the target device's (GPU, NPU, CPU) execution engine.
+
+In addition to single-device plugins (such as `GPU`, `NPU`, `CPU`), OpenVINO provides three multi-device coordination modes:
+
+- **AUTO Mode**: Automatic device selection. During the first inference, OpenVINO queries all available devices' capabilities (Capability Query), runs lightweight benchmarks, and then selects the device with the lowest latency or highest throughput.
+- **MULTI Mode**: Multi-device parallel inference. Distributes inference requests in round-robin fashion across multiple devices (e.g., GPU and NPU), with each device independently executing the complete computation graph, and results aggregated before returning. Suitable for throughput-sensitive batch processing scenarios.
+- **HETERO Mode**: Heterogeneous subgraph partitioning. Splits the computation graph into multiple subgraphs based on operator support, executing them on different devices. For example, NPU-supported convolution and matrix multiplication run on the NPU, while unsupported custom operators run on the GPU, connected through cross-device memory copies.
+
+The interactive flowchart below illustrates how these three modes work.
+
+<DevicePluginSelector client:visible locale="en" />
+
+## AUTO Plugin In Detail
+
+The AUTO plugin is designed for "out-of-the-box" optimal performance. When developers specify `device="AUTO"`, OpenVINO executes the following steps:
+
+1. **Device Enumeration**: Scans all available inference devices in the current system (GPU, NPU, CPU), querying their hardware specifications and driver versions.
+2. **Capability Query**: Sends Capability Queries to each device's Plugin to obtain supported operator lists, precision support (FP32/FP16/INT8), memory limits, and other information.
+3. **Benchmarking**: If the configuration file has no cached performance data, AUTO runs one or more inferences on each device, measuring latency and throughput.
+4. **Device Selection**: Based on the `ov::hint::PerformanceMode` configuration (latency-first or throughput-first), selects the optimal device. For example, `LATENCY` mode selects the device with the lowest latency (typically NPU), while `THROUGHPUT` mode selects the device with the highest throughput (typically GPU).
+5. **Fallback Mechanism**: If the preferred device is unavailable (e.g., driver not installed, insufficient memory), AUTO automatically falls back to the next best device.
+
+The advantage of AUTO mode is simplifying device selection complexity — developers can achieve reasonable performance without explicitly specifying a device. However, its limitation is that it can only select one device and cannot simultaneously leverage multiple devices' compute power.
+
+## GPU+NPU Hybrid Inference Pipeline
+
+In certain scenarios, a single device cannot meet all requirements: for example, the model contains operators not supported by the NPU, or the NPU's memory is insufficient for the entire model. In these cases, the HETERO plugin can partition the computation graph into multiple subgraphs, executing them on different devices.
+
+The core logic of HETERO is **Subgraph Partitioning**:
+
+1. **Operator Support Query**: Traverses each operator (Operation) in the computation graph, querying whether the NPU Plugin supports it. For example, `Convolution`, `MatMul`, and `ReLU` are typically supported, while `NonMaxSuppression` and `TopK` may not be.
+2. **Subgraph Partitioning**: Assigns contiguous regions of supported operators (Subgraphs) to the NPU, and unsupported regions to GPU or CPU. Partition points are the cross-device boundaries.
+3. **Cross-Device Data Transfer**: Inserts memory copy operators (MemCopy) at partition points to transfer intermediate activation tensors from one device's memory to another. This step introduces additional latency and power overhead.
+4. **Scheduled Execution**: Each subgraph executes on its corresponding device in parallel or serial, with OpenVINO's Scheduler managing dependencies and synchronization.
+
+The interactive component below shows a simplified Transformer model being partitioned between NPU and GPU. You can drag the slider to adjust partition points and observe changes in NPU/GPU load, communication overhead, and latency.
+
+<HeteroSubgraphSplit client:visible locale="en" />
+
+**Key Insights**:
+
+- **Fewer partition points is better**: Each additional partition point requires transferring intermediate results between devices, introducing latency and power overhead. Ideally, the computation graph should be divided into as few contiguous subgraphs as possible.
+- **Load balancing**: If one device is overloaded (e.g., NPU receives 80% of the computation), it becomes the bottleneck; overall latency is optimal when load is balanced.
+- **Model design considerations**: During model training, operator selection (e.g., using standard convolution instead of Deformable Convolution) can improve NPU operator support coverage and reduce the number of partition points.
+
+## Power and Performance Trade-offs
+
+In real-world deployment, developers need to balance power consumption, latency, and throughput. The chart below shows power-performance curves for different device configurations (NPU-only, GPU-only, GPU+NPU hybrid) across different model scales.
+
+<PowerPerfTradeoff client:visible locale="en" />
+
+**Key Findings**:
+
+- **NPU-only**: Lowest power consumption (5-12W), but throughput is limited by NPU parallelism and memory capacity. Suitable for small models and battery-life-sensitive scenarios.
+- **GPU-only**: Highest throughput (70-80 infer/s), but also highest power consumption (18-50W). The GPU's performance advantage becomes more pronounced as model size increases.
+- **GPU+NPU Hybrid**: Provides the best energy efficiency (throughput/watt) in most scenarios. Placing power-sensitive frontend operators (such as Token Embedding, shallow Attention) on the NPU and compute-intensive backend operators (such as deep FFN) on the GPU achieves a balance between power and performance.
+
+**Deployment Recommendations**:
+
+- **Battery-life first** (laptop on battery, mobile devices): Prefer NPU-only or AUTO mode (Latency optimization).
+- **Performance first** (desktops, plugged-in laptops): Prefer GPU-only or MULTI mode (Throughput optimization).
+- **Flexible deployment** (cloud, edge hybrid): Use HETERO mode, dynamically adjusting partition points based on runtime power and performance monitoring.
+
+## Summary
+
+Intel Core Ultra's NPU and iGPU provide developers with multiple choices for power and performance. The NPU's low power consumption and low latency make it ideal for mobile and embedded scenarios, while the iGPU's high throughput and flexibility suit large models and plugged-in scenarios.
+
+OpenVINO's AUTO, MULTI, and HETERO plugin mechanisms further enhance flexibility. AUTO mode allows developers to achieve reasonable performance without explicitly selecting a device, MULTI mode improves throughput through parallel distribution, and HETERO mode enables cross-device collaboration through subgraph partitioning. In practical deployment, developers should choose appropriate device configurations and inference strategies based on model characteristics, hardware environment, and application requirements.
+
+As NPU hardware capabilities continue to improve (e.g., FP16 support, dynamic shapes, sparsification) and the OpenVINO software stack continues to be optimized, GPU+NPU co-inference will become an important trend in AI application deployment. Mastering the principles and best practices of multi-device inference is a key capability for building efficient, low-power AI systems.
+
+## Further Reading
+
+- The [MULTI device documentation](https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/multi-device.html) in the official OpenVINO docs provides detailed guidance on multi-device parallel inference configuration and performance tuning strategies.
+- Intel's [NPU device documentation](https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/npu-device.html) lists NPU-supported operators, precision configuration, and compilation options.
+- The [HETERO heterogeneous execution documentation](https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/hetero-execution.html) provides sample code and debugging methods for subgraph partitioning.
+- Review Intel's AI PC white papers and Core Ultra technical specifications for NPU deployment cases and performance data in real products.

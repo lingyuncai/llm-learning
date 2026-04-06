@@ -1,0 +1,113 @@
+---
+title: "The Complete Journey of a Single Inference"
+slug: "ollama-inference-journey"
+locale: "en"
+tags: ["ollama", "llama-cpp", "inference", "pipeline"]
+prerequisites: ["ollama-architecture"]
+difficulty: "intermediate"
+created: "2026-04-04"
+updated: "2026-04-06"
+references:
+  - type: "repo"
+    title: "Ollama GitHub"
+    url: "https://github.com/ollama/ollama"
+  - type: "paper"
+    title: "Qwen3 Technical Report"
+    url: "https://arxiv.org/abs/2505.09388"
+  - type: "repo"
+    title: "llama.cpp GitHub"
+    url: "https://github.com/ggerganov/llama.cpp"
+---
+
+import InferenceJourney from '../../../components/interactive/InferenceJourney.tsx';
+import PrefillVsDecode from '../../../components/interactive/PrefillVsDecode.tsx';
+
+## Core Design Notes
+
+When we run `ollama run qwen3 "Explain quantum computing"` in the terminal, this simple command triggers a complete inference pipeline behind the scenes — from CLI input to final streaming text output, spanning two technology stacks: Ollama and llama.cpp. Using the Qwen3-8B model as an example, this article traces the full lifecycle of an inference request, showing the core operations, data flow, and layer boundaries at each stage.
+
+Understanding this inference journey is essential for optimizing inference performance, diagnosing issues, and deeply mastering LLM system architecture. We will see how Ollama provides a user-friendly interface and scheduling logic, how llama.cpp performs low-level compute-intensive tensor operations, and how the two collaborate efficiently through process boundaries and the HTTP protocol. Particularly noteworthy is the fundamental difference between the Prefill and Decode phases — the former is compute-intensive parallel processing, while the latter is bandwidth-intensive sequential generation — and how these differing characteristics directly influence hardware selection, batching strategies, and latency optimization.
+
+Additionally, we'll explore how the Prefix Cache mechanism dramatically reduces redundant computation by reusing previously computed KV Cache. In multi-turn conversations or requests with similar prefixes, this optimization can save up to 60-70% of Prefill computation, significantly reducing Time To First Token (TTFT).
+
+<InferenceJourney client:visible locale="en" />
+
+## Prompt Input
+
+The inference journey begins when the user enters a prompt on the command line. The Ollama CLI first parses the command arguments, extracting the model name `qwen3` and the user message `"Explain quantum computing"`. The CLI layer performs basic parameter validation, such as checking the model name format and message length limits. If the user specifies additional runtime parameters (such as temperature, top_p, or context window size), these configurations are also parsed and packaged at this stage.
+
+Next, the CLI constructs this information into a standard HTTP POST request, sent to the locally running Ollama Server (listening by default at `http://localhost:11434`). The request path is `/api/chat`, and the body is in JSON format, containing the model identifier, message list, sampling parameters, and other fields. This design allows Ollama to support both CLI and Web API interaction modes, and makes integration with third-party tools straightforward.
+
+On the server side, the Gin Web framework's router dispatches the request to the `ChatHandler`. At this point, we're still within Ollama's Go code. The Handler executes a series of middleware logic: authentication (if enabled), request logging, concurrency control (limiting simultaneous requests to prevent memory overflow), and model lookup (resolving the user-specified model name to a local GGUF file path). All operations in this phase are lightweight, primarily metadata queries and request preprocessing, preparing for the subsequent model loading and inference.
+
+## Model Loading
+
+Once the ChatHandler confirms the request is valid and the model exists, the next step is loading the model from disk into memory. Ollama uses its own blob storage mechanism to manage model files. Each model is split into multiple layers (base weights, LoRA adapters, system prompts, etc.), stored in a content-addressable manner under the `~/.ollama/models/blobs` directory. Ollama first locates the main weights file (typically a GGUF-format file) and obtains the file handle and metadata.
+
+At this point, control begins transferring from Ollama to llama.cpp. Ollama calls llama.cpp's C++ functions via CGo, passing the GGUF file path to llama.cpp's loading logic. llama.cpp first uses the `mmap` system call to map the entire GGUF file into virtual memory space — this zero-copy technique avoids explicit file read operations and lets the operating system load data pages on demand. The advantage of mmap is that it allows multiple processes to share the same model data and automatically pages out unused data when memory is tight.
+
+Next comes the tensor allocation phase. llama.cpp reads the model architecture information from the GGUF file header (number of layers, attention heads, hidden dimensions, vocabulary size, etc.) and calculates the size and layout of each tensor based on these parameters. Then, llama.cpp decides which layers to place on the GPU and which to keep on the CPU based on the current hardware configuration (available GPU VRAM, CPU memory, whether Metal/CUDA/ROCm is enabled). For a model like Qwen3-8B with 8B parameters, if GPU VRAM is sufficient (e.g., 16GB or more), all 32 Transformer Blocks are typically loaded onto the GPU; if VRAM is insufficient, the first N layers go to the GPU and the remaining layers stay on the CPU. This hybrid execution mode introduces CPU-GPU data transfer overhead but enables running larger models on limited hardware.
+
+## Runner Startup
+
+After model loading is complete, Ollama needs to launch an independent Runner child process to execute the inference task. Ollama uses a main process-child process architecture: the main process handles HTTP requests, manages model lifecycles, and schedules concurrent tasks, while the actual inference computation runs in child processes. This design has several benefits: first, a child process crash won't affect the main process's stability; second, different Runner binaries can be launched for different backends (CPU, CUDA, Metal, ROCm), avoiding the main process's dependency on multiple backends' dynamic libraries; finally, resource limits (cgroup, ulimit) can isolate each Runner's memory and CPU usage.
+
+Ollama uses `exec.Command` to launch the Runner child process (`ollamarunner` on macOS, `llamarunner` on Linux/Windows), passing the model path, port number, number of parallel slots, and other configuration via command-line arguments. After startup, the child process binds to a random local port and reports this port number to the main process. The main process then communicates with the child process via HTTP, sending inference requests and receiving streaming output.
+
+The first step of child process startup is initializing the inference infrastructure. This includes building the GGML computation graph — GGML is the tensor computation engine used by llama.cpp, representing the neural network's forward propagation as a directed acyclic graph (DAG). Each node is an operator (matrix multiplication, RoPE positional encoding, RMSNorm normalization, SiLU activation, etc.), and edges represent data dependencies. The computation graph is built during the first inference and can be reused for subsequent inferences, requiring only updates to the input node data.
+
+Another critical initialization task is allocating the KV Cache buffer. The KV Cache stores the Key and Value matrices from each Transformer Layer, with its size determined by the maximum context length, batch size, number of heads, and hidden dimensions. For Qwen3-8B (32 layers, 32 Attention heads, 8 KV heads, context length 32768), the KV Cache size is approximately `2 × 32 layers × 32768 tokens × 8 heads × (4096 / 32) dimensions × 2 bytes (FP16) ≈ 16GB`. In practice, the context length is dynamically adjusted per request, but sufficient buffer must be reserved to support long conversations.
+
+## Prefill Phase
+
+Once Runner initialization is complete, inference enters its first phase: Prefill. This phase takes the user's Prompt ("Explain quantum computing") as input and outputs the KV Cache for all Prompt Tokens plus the logits of the last Token (used to generate the first output Token).
+
+First comes Tokenization. Ollama calls the model's accompanying Tokenizer (Qwen3 uses a BPE-based Tiktoken Tokenizer) to convert the text string "Explain quantum computing" into a Token ID sequence, for example `[849, 3455, 31810, 25213]` (actual Token IDs will vary by Tokenizer version). English text typically has a higher token compression rate than Chinese, with one word often mapping to 1-3 tokens.
+
+Next, llama.cpp assembles these Token IDs into a Batch. During the Prefill phase, the Batch contains all N Prompt Tokens (N=4 in this example), which can be processed in parallel. The Batch data structure includes the Token ID array, position index array (`[0, 1, 2, 3]`, used for RoPE positional encoding), and Sequence ID array (used to distinguish multiple concurrent requests).
+
+With the Batch data ready, llama.cpp begins forward propagation. First is the Embedding layer, which maps Token IDs to 4096-dimensional word vectors. Then it passes sequentially through 32 Transformer Layers, each containing Multi-Head Attention (MHA), Feed-Forward Network (FFN), and RMSNorm normalization. In the Attention layer, Query, Key, and Value matrices are computed through linear projections, then Attention Scores are calculated and weighted-summed with Values. At this point, the computed Keys and Values are stored in the KV Cache for reuse during the subsequent Decode phase.
+
+The Prefill phase is characterized by high parallelism and compute intensity. The GPU can simultaneously perform identical operations (e.g., matrix multiplication, activation functions) across all N Token positions, fully utilizing SIMD and tensor cores. For Qwen3-8B on an A100 GPU, processing 128 Tokens during Prefill takes approximately 20-30ms, with throughput reaching 5000-8000 tokens/s. The bottleneck in this phase is GPU compute capacity, not memory bandwidth.
+
+## The Fundamental Difference Between Prefill and Decode
+
+<PrefillVsDecode client:visible locale="en" />
+
+## Decode Phase
+
+After the Prefill phase completes, the system has the full Prompt context and the KV Cache is populated — now it can begin generating output Tokens one by one. The Decode phase is an iterative process, generating one Token per iteration until an end-of-sequence token (EOS) is encountered or the maximum generation length is reached.
+
+The first step of each Decode iteration is Sampling. The model's previous step (Prefill or the prior Decode iteration) produced a logits vector with dimensions equal to the vocabulary size (Qwen3's vocabulary is approximately 152K). The Sampling module transforms and filters the logits according to the user-specified sampling strategy (temperature, top_p, top_k), then draws a Token ID from the probability distribution. For example, with temperature=0.7 and top_p=0.9, Sampling first divides the logits by 0.7 to flatten the distribution, then filters the Token set whose cumulative probability reaches 90%, and finally randomly samples from this set. Lower temperature produces more deterministic output; higher temperature produces more diverse output.
+
+The sampled Token ID is immediately returned to the Ollama main process via HTTP Chunked Response, which then forwards it to the CLI or API client. This streaming output mechanism lets users see generation progress in real time rather than waiting for the entire response to complete. Simultaneously, the Token ID is appended to the current Sequence, prepared for the next Decode iteration.
+
+The next Decode iteration takes the just-generated Token ID and assembles it into a Batch with batch_size=1 (a single Token). This Batch passes through the 32 Transformer Layers again, but unlike Prefill, the Attention computation now needs to read all historical Keys and Values stored in the KV Cache (including the N Prompt Tokens and the M previously generated Tokens), computing Attention Scores between the new Token and all historical Tokens. After computation, the new Token's Key and Value are appended to the end of the KV Cache for the next iteration.
+
+The Decode phase is characterized by being sequential and bandwidth-intensive. Only one Token is processed at a time, unable to parallelize like Prefill. The computation volume is small (reduced by N times compared to Prefill), but large amounts of KV Cache data must be read from VRAM. For long-context scenarios (e.g., 32K Tokens), KV Cache reading becomes the main bottleneck, GPU compute power is wasted, and latency is primarily limited by memory bandwidth. This is why Decode phase throughput (measured in tokens/s) is far lower than Prefill — for an A100 GPU, typical Decode throughput is about 100-200 tokens/s.
+
+The loop continues until an EOS Token is sampled (indicating the model considers the response complete) or the `max_tokens` limit is reached. At this point, the Runner child process sends a completion signal to the main process, the main process closes the HTTP Stream, and the entire inference request is finished.
+
+## Prefix Cache Hit
+
+In real-world application scenarios, multi-turn conversations or different requests between users often share common prefixes. For example, a user first asks "Explain quantum computing" and then asks "Explain quantum entanglement" — the shared prefix tokens are identical. If the KV Cache for these repeated tokens were recomputed for every request, it would result in significant computational waste.
+
+The Prefix Cache mechanism solves this problem by caching and reusing previously computed KV Cache. During the Prefill phase, llama.cpp associates each token position's KV values with its Token ID for storage. When the next request arrives, llama.cpp compares the new request's Token sequence with the cached sequence, finding the longest common prefix. For the common prefix portion, corresponding KV values are loaded directly from cache, skipping redundant computation; only new Tokens after the prefix need to undergo Prefill.
+
+In the example above, the KV Cache for "Explain quantum computing" was already computed and cached during the first request. For the second request "Explain quantum entanglement," llama.cpp detects that the first few tokens match, directly reuses the existing KV Cache, and only needs to perform Prefill for the differing tokens. This saves a significant portion of Prefill computation, corresponding to substantial latency optimization.
+
+The effectiveness of Prefix Cache depends on the similarity of request patterns. In conversation systems, the system prompt is typically a common prefix shared across all requests; in RAG (Retrieval-Augmented Generation) scenarios, knowledge base context snippets may recur across multiple queries. Both Ollama and llama.cpp implement automatic Prefix Cache management — no user intervention is needed. As long as cache capacity is sufficient and the LRU (Least Recently Used) eviction policy is reasonable, significant performance improvements can be achieved.
+
+It's worth noting that Prefix Cache only accelerates the Prefill phase, with no impact on the Decode phase. However, since Prefill computation is far greater than a single Decode step, reducing Prefill computation can dramatically lower Time To First Token (TTFT), which is critical for user experience.
+
+## Summary
+
+From CLI input to streaming output, a single Ollama + llama.cpp inference request traverses multiple architectural layers working in concert: Ollama provides the user interface, scheduling, and process management, while llama.cpp handles low-level model loading, computation graph construction, and tensor operations. The Prefill and Decode phases have fundamentally different performance characteristics — the former is limited by GPU compute power, the latter by memory bandwidth — requiring us to make trade-offs in hardware selection and optimization strategies. The Prefix Cache mechanism provides significant latency optimization in multi-turn conversations and high-similarity request scenarios by reusing computation results.
+
+Understanding every link in this inference journey helps us diagnose performance bottlenecks, optimize resource allocation, and design more efficient inference services. Whether adjusting batch sizes, choosing quantization precision, configuring KV Cache capacity, or optimizing system prompts to improve Prefix Cache hit rates, all require a deep understanding of the complete inference pipeline.
+
+## Further Reading
+
+- [Ollama Architecture Design](ollama-architecture) - Deep dive into Ollama's overall architecture
+- [KV Cache Optimization Techniques](https://arxiv.org/abs/2211.05102) - PagedAttention and paged KV Cache
+- [Quantization and the GGUF Format](https://github.com/ggerganov/llama.cpp/blob/master/docs/GGUF.md) - llama.cpp's model format specification

@@ -1,0 +1,151 @@
+---
+title: "llama.cpp Quantization Methods"
+slug: "llama-cpp-quantization"
+locale: "en"
+tags: ["quantization", "llama-cpp", "gguf", "inference-optimization"]
+prerequisites: ["quantization-fundamentals", "gguf-format"]
+difficulty: "advanced"
+created: "2026-04-04"
+updated: "2026-04-06"
+references:
+  - type: "repo"
+    title: "llama.cpp Quantization Types"
+    url: "https://github.com/ggerganov/llama.cpp/blob/master/ggml/include/ggml.h"
+  - type: "repo"
+    title: "K-quant PR"
+    url: "https://github.com/ggerganov/llama.cpp/pull/1684"
+  - type: "paper"
+    title: "GPTQ: Accurate Post-Training Quantization"
+    url: "https://arxiv.org/abs/2210.17323"
+  - type: "paper"
+    title: "AWQ: Activation-aware Weight Quantization"
+    url: "https://arxiv.org/abs/2306.00978"
+---
+
+import QuantizationProcess from '../../../components/interactive/QuantizationProcess.tsx';
+import KQuantMixedPrecision from '../../../components/interactive/KQuantMixedPrecision.tsx';
+import QuantizationTradeoff from '../../../components/interactive/QuantizationTradeoff.tsx';
+import Q4KMBitPacking from '../../../components/interactive/Q4KMBitPacking.tsx';
+
+## Why Quantization
+
+When you try to run the Llama 3.1 8B model locally, you'll find that even at FP16 precision, the model weights require about 16 GB of VRAM (8B parameters × 2 bytes/param). For the 70B model, this number skyrockets to 140 GB, exceeding the capacity of virtually all consumer-grade GPUs. Even with sufficient VRAM, the bandwidth bottleneck of reading weights severely limits inference speed — for each token generated, the model must read all weight matrices from memory for matrix multiplication, and modern LLM inference is often limited by memory bandwidth rather than compute (memory-bound).
+
+Quantization addresses this problem by reducing the numerical precision of weights. The core idea is to represent weight values with fewer bits: FP16 (16 bits) → INT8 (8 bits) → INT4 (4 bits), or even lower. This yields three benefits: 2-4x reduction in memory footprint, lower memory bandwidth pressure, and faster inference. The trade-off is precision loss — quantized weights cannot perfectly restore the original values, introducing errors. Finding the optimal balance among Precision, Speed, and Memory is the core challenge of quantization techniques.
+
+llama.cpp's quantization methods are optimized specifically for local inference, using post-training quantization that requires no model retraining — only numerical conversion and encoding of weights. Unlike methods such as GPTQ and AWQ that require calibration data, llama.cpp's approach is simpler and more universal, though slightly less accurate at extremely low bit rates (e.g., 2-bit). Its core design philosophy is **per-block quantization** and **mixed-precision**: weight matrices are divided into small blocks, each quantized independently to preserve local distribution characteristics; different precision levels are used for different layers and modules of the model, allocating the limited bit budget to the parts most sensitive to output quality.
+
+## Basic Quantization Q8_0/Q4_0/Q4_1
+
+The earliest quantization types implemented in llama.cpp are **Q8_0**, **Q4_0**, and **Q4_1**, which use per-block symmetric quantization. The basic idea is to divide the weight matrix into fixed-size blocks (block size = 32 for Q4_0/Q4_1 and Q8_0), where weights within each block share a single scale factor, quantized using the following formula:
+
+$$
+q_i = \text{round}\left(\frac{w_i}{\text{scale}}\right), \quad \text{scale} = \frac{\max(|w_i|)}{Q_{\text{max}}}
+$$
+
+Here $q_i$ is the quantized integer value, $w_i$ is the original FP16 weight, and $Q_{\text{max}}$ is the maximum value of the quantization range (INT4 signed: 7, INT8: 127). Dequantization simply multiplies back by the scale: $w'_i = q_i \times \text{scale}$. The advantages of this method are computational simplicity and compact memory layout; the disadvantage is larger errors for asymmetric weight distributions (e.g., skewed toward positive or negative values).
+
+The difference between **Q4_0** and **Q4_1** is whether a zero-point offset is used. Q4_0 uses pure symmetric quantization, assuming the weight distribution is symmetric around zero; Q4_1 stores an additional FP16 min value per block as a zero-point, supporting asymmetric distributions at the cost of 2 extra bytes of storage per block. The dequantization formula for Q4_1 becomes: $w'_i = q_i \times \text{scale} + \text{min}$. In practice, Transformer model weight distributions are typically close to symmetric, so Q4_1's additional precision improvement is limited. Consequently, the later K-quant scheme abandoned zero-point and unified on symmetric quantization.
+
+Below is a complete demonstration of the Q4_0 quantization process, showing every step from FP16 weights to INT4 quantized values, then to dequantization and error analysis:
+
+<QuantizationProcess client:visible locale="en" />
+
+As the demonstration shows, Q4_0 compresses 32 FP16 values (64 bytes) into 32 INT4 values (16 bytes) + 1 FP16 scale (2 bytes) = 18 bytes, a compression ratio of 3.56x. Quantization errors are typically in the range of 0.01-0.1, with limited impact on the final output quality of an 8B model (perplexity increase < 0.2). This block-wise design is key: if the entire weight matrix used only a single global scale, errors would be much larger; a block size of 32 is a trade-off between performance and precision — smaller blocks yield higher precision but increase scale storage overhead, while larger blocks cannot capture local distribution variations in the weights.
+
+## K-quant Mixed Precision
+
+**K-quant** (K-series quantization) is an improved scheme introduced by llama.cpp in May 2023 ([PR #1684](https://github.com/ggerganov/llama.cpp/pull/1684)). The core idea is **sensitivity-aware mixed-precision**: different quantization precisions are used for different layers and sub-modules of the model, allocating higher bit-widths to parts sensitive to output quality (such as Attention Q/K/V projections) and lower bit-widths to more robust parts (such as FFN Gate/Up/Down projections). This strategy is based on the observation that Transformer Attention mechanisms are highly sensitive to weight perturbation — quantization errors can disrupt the relative magnitude relationships of attention scores — while FFN layers' activation functions (SwiGLU/GELU) have a smoothing effect that can partially absorb quantization noise.
+
+K-quant introduces a **super-block** structure: 256 weight values (8 blocks of 32) form a super-block, with hierarchical encoding within — high-precision portions use 6-bit quantization, low-precision portions use 4-bit or even 3-bit, achieving mixed-precision storage through complex bit packing and multi-level scales. For example, in the **Q4_K_M** (Medium) scheme, Q/K/V projections use Q6_K (6.56 bpw), while O projection and FFN Gate/Up/Down use Q4_K (4.5 bpw), with an overall average of about 4.84 bpw — slightly higher than pure Q4_0 (4.5 bpw), but with significantly lower perplexity (approaching Q5_0 levels).
+
+The interactive demonstration below shows the precision allocation strategies of different K-quant schemes (Q4_K_S/M, Q5_K_M, Q6_K) for various sub-modules of a Transformer Block:
+
+<KQuantMixedPrecision client:visible locale="en" />
+
+As the diagram shows, **Q4_K_S** (Small) aggressively uses 4-bit quantization for all modules, pursuing minimal memory usage; **Q4_K_M** (Medium) selectively preserves 6-bit precision for Q/K/V projections, balancing quality and size; **Q5_K_M** further upgrades O projection and FFN to 5-bit, suitable for scenarios with higher output quality requirements; **Q6_K** approaches lossless, using 6-bit or higher precision for all layers, with perplexity nearly equal to FP16. The key to this mixed-precision strategy is **per-layer sensitivity profiling**: by testing perplexity changes after quantizing different layers on a validation set, the most sensitive 10-20% of weights are identified and prioritized for high-precision budget allocation.
+
+K-quant's implementation complexity is significantly higher than Q4_0, involving multi-level scales, non-uniform bit packing, and runtime conditional branching (selecting different dequant kernels based on quantization type). However, this complexity is masked by highly optimized SIMD instruction (AVX2/AVX512/NEON) kernels, and actual inference speed is comparable to Q4_0 — sometimes even slightly faster on certain hardware due to better cache locality. This embodies llama.cpp's design philosophy: trading compile-time and load-time complexity for runtime performance.
+
+### Q4_K_M Memory Layout Deep Dive
+
+Q4_K_M is the best choice in the K-quant series for balancing precision and compression ratio. Its super-block design uses hierarchical scaling for efficient quantization.
+
+**Super-block structure**: Each super-block contains 256 weight values, divided into 8 sub-blocks (32 values each). The quantization formula is:
+
+$$
+w_i = d \cdot s_b \cdot q_i - dmin \cdot m_b
+$$
+
+Where $d$ is the super-block scale (FP16), $dmin$ is the super-block min (FP16), $s_b$ and $m_b$ are sub-block level 6-bit scale and min, and $q_i$ is the quantized value.
+
+**Memory layout** (144 bytes per super-block):
+1. 0-2 bytes: super-scale $d$ (FP16)
+2. 2-4 bytes: super-min $dmin$ (FP16)
+3. 4-10 bytes: 8 sub-block scales (6 bits each, packed)
+4. 10-16 bytes: 8 sub-block mins (6 bits each, packed)
+5. 16-80 bytes: high 2 bits of 256 quantized values (64 bytes)
+6. 80-144 bytes: low 4 bits of 256 quantized values (64 bytes)
+
+**Why separate high and low bits?** Modern CPU SIMD instructions process contiguous memory more efficiently.
+
+<Q4KMBitPacking client:visible locale="en" />
+
+Compared to Q4_0, Q4_K_M improves precision by about 15%, increases file size by only 8%, with virtually no difference in inference speed.
+
+## I-quant Importance Quantization
+
+The **I-quant** (Importance Quantization) series (IQ1_S, IQ2_XXS, IQ2_XS, IQ3_XXS, etc.) is an ultra-low bit-rate scheme introduced by llama.cpp in 2024, targeting an average precision of 2-3 bpw or even lower (IQ1_S at approximately 1.56 bpw). At such extreme compression levels, traditional scalar quantization no longer works — 4-bit can only represent 16 discrete values, unable to capture subtle differences in weight distributions. I-quant employs **vector quantization** and **codebook** techniques: a codebook containing 256 or 512 typical weight patterns is pre-trained, and during quantization each weight block is mapped to the closest pattern (codeword) in the codebook, storing the index rather than the original values.
+
+The core of I-quant is the **importance matrix**: each weight is assigned an importance score based on its contribution to the model output via the Hessian matrix (second-order derivative information). Weights with high importance use more bits or a finer codebook subset, while low-importance weights can be aggressively compressed or even zeroed out. This method requires a small amount of calibration data (typically 128-512 samples) to estimate the Hessian matrix, so it is no longer pure post-training quantization but rather a hybrid approach between PTQ and QAT (quantization-aware training).
+
+In practice, I-quant's perplexity at 2-3 bpw is significantly better than Q2_K at the same bit rate, but the trade-offs include longer quantization time (requires running calibration data forward passes), slower model loading (requires decoding the codebook), and slightly slower inference (vector dequantization is more complex than scalar). Another limitation is codebook generalization: a codebook trained for Llama models may not be suitable for Qwen or Mistral architectures, requiring separate training for different model families. Therefore, I-quant is primarily used in scenarios with extremely constrained VRAM (e.g., running a 70B model on a GPU with 8 GB VRAM), rather than as the first choice for everyday inference.
+
+llama.cpp's I-quant implementation is highly optimized, using SIMD instructions to accelerate codebook lookup and bit unpacking. On AVX-512 hardware, IQ2_XS can achieve 70-80% of Q4_K_M's speed. However, on hardware without advanced SIMD support (such as older CPUs or certain ARM chips), I-quant's speed disadvantage becomes more pronounced. Whether to use I-quant requires a comprehensive evaluation of hardware capabilities, VRAM constraints, and quality requirements.
+
+## Precision-Performance-Memory Triangle
+
+When choosing a quantization scheme, you need to balance three dimensions: **Precision (Perplexity)**, **Speed (Tokens/s)**, and **Memory (VRAM GB)**. There is no absolute best scheme — only the one best suited to a specific scenario. The interactive chart below shows estimated benchmark data for the Qwen3-8B model on an RTX 4090 across different quantization types (estimated values, for reference only):
+
+<QuantizationTradeoff client:visible locale="en" />
+
+Several empirical rules can be derived from the data: **Q4_K_M** is the sweet spot — at 4.5 bpw, perplexity increases by only 0.08, speed improves 2.5x (115 vs 45 tokens/s), and memory decreases 70% (4.9 vs 16 GB), suitable for the vast majority of scenarios. **Q5_K_M** is ideal for production environments with higher quality requirements — perplexity increase < 0.05, nearly lossless, though with slightly less memory and speed advantage. **Q6_K** and **Q8_0** are suitable for scenarios with sufficient VRAM but requiring the highest quality (e.g., long-context inference, code generation), with perplexity nearly equal to FP16. **Q4_K_S** and **Q4_0** are suitable for extremely VRAM-constrained scenarios (e.g., running a 7B model on a 4GB GPU), but the more noticeable perplexity increase (0.10-0.15) may affect output quality on complex tasks.
+
+An often-overlooked factor is the impact of **batch size** and **context length**. With batch size = 1 and context < 2048, inference is memory-bound, and quantization's speed gains come primarily from bandwidth savings. But when batch size increases or context exceeds 4096, computation gradually becomes the bottleneck (compute-bound), and quantization's speed advantage diminishes. In such cases, Q6_K or Q8_0 may be better choices — memory usage is still 50-60% lower than FP16, quality is nearly lossless, and INT8 GEMM kernels have highly optimized implementations on modern GPUs (Tensor Core support).
+
+Another practical recommendation is **mixed deployment**: deploy different quantization versions of the same model for different scenarios — Q4_K_M for latency-sensitive online services, Q5_K_M or Q6_K for offline batch processing, and Q4_K_S for local development and testing. Both llama.cpp and Ollama support dynamically switching model quantization types without re-downloading the complete model — only the corresponding quantized weights file needs to be downloaded. This flexibility means quantization is no longer a one-time irreversible decision but a configuration parameter that can be dynamically adjusted based on runtime requirements.
+
+## KV Cache Quantization
+
+llama.cpp supports KV cache quantization to reduce memory usage during long-context inference:
+
+```bash
+llama-cli --model model.gguf --cache-type-k q4_0 --cache-type-v q4_0
+```
+
+With 100K context, KV INT4 can reduce memory from 32 GB to 8 GB (4× compression), with perplexity increasing by only 0.1. For detailed principles, see [Inference-Time Quantization](./inference-time-quantization).
+
+## How It Differs
+
+llama.cpp's quantization methods differ significantly from quantization approaches commonly used in training frameworks (PyTorch/Transformers). The main comparisons are with **GPTQ**, **AWQ**, and **FP8**:
+
+**GPTQ** (Accurate Post-Training Quantization) is a layer-wise calibration-based quantization method based on the Hessian matrix. The core idea is to model the quantization process as a quadratic optimization problem, using the inverse of the Hessian matrix to compensate for quantization errors — when a weight is quantized, its error is distributed to other weights in the same layer to minimize overall output error. GPTQ requires about 128-512 calibration samples for forward propagation, and quantizing a 7B model takes 5-10 minutes (single GPU). The advantage is higher precision at 3-4 bit than llama.cpp's Q4_K_M, suitable for scenarios requiring extreme compression; the disadvantages are slow quantization, calibration data requirements, longer model loading times (GPTQ format decoding required), and inference speed that is not necessarily faster (kernel optimization less mature than llama.cpp).
+
+**AWQ** (Activation-aware Weight Quantization) goes further by considering not only the Hessian importance of weights but also the distribution of activations — by analyzing the statistical properties (mean, variance, kurtosis) of activations during forward propagation, it identifies the 1-5% of weight channels with the greatest impact on output (salient channels), preserving FP16 precision or using higher bit-widths for these channels while aggressively quantizing the rest. AWQ's perplexity at 3-4 bit is typically lower than GPTQ, but quantization time and calibration data requirements are greater (activation analysis requires more computation). Another limitation is that AWQ's mixed-precision mode places higher demands on the inference engine — requiring per-channel or even per-token dynamic precision switching, which is expensive to implement on CPU and mobile hardware.
+
+**FP8** (8-bit Floating Point) is a new data type introduced by NVIDIA for H100/H200 GPUs (in E4M3 and E5M2 formats), natively supported by hardware with no dequantization overhead. FP8's advantage lies in preserving the dynamic range of floating-point numbers (exponent + mantissa), making it better suited than INT8 for representing non-uniform distributions of weights and activations. Tensor Core has extreme optimizations for FP8 GEMM (throughput is 2x that of FP16). However, FP8 is currently limited to NVIDIA's latest hardware — AMD and Intel GPUs, as well as all CPUs, do not support it. FP8's precision falls between Q8_0 and Q6_K, and it is not as flexible as K-quant's mixed-precision strategy. For scenarios requiring cross-platform deployment, llama.cpp's INT4/INT8 approach remains the more universal choice.
+
+The main reason llama.cpp chose not to support GPTQ/AWQ is **simplicity and universality**: post-training scalar quantization requires no calibration data, the quantization process is fast (seconds to tens of seconds), models are ready to use immediately after loading, and cross-hardware compatibility is excellent (CPU/GPU/Metal/Vulkan all supported). The trade-off is slightly lower precision at very low bit rates (2-3 bit), but for the commonly used 4-6 bit range, K-quant quality is close enough to GPTQ/AWQ, while speed and usability are significantly better. This design choice reflects llama.cpp's target audience — local inference users and edge devices, not large-scale cloud deployments. For the latter, GPTQ/AWQ's advantages on A100/H100 clusters would be more pronounced, but that is the domain of specialized inference engines like vLLM/TensorRT-LLM, not llama.cpp's core scenario.
+
+**Further learning:**
+- Weight quantization in depth → [Post-Training Quantization](./ptq-weight-quantization)
+- Training optimization → [Quantization-Aware Training](./quantization-aware-training)
+- Inference optimization → [Inference-Time Quantization](./inference-time-quantization)
+
+## Further Reading
+
+- [GGML Quantization Types](https://github.com/ggerganov/llama.cpp/blob/master/ggml/include/ggml.h) — Complete definitions and bit-level encoding formats for 30+ quantization types supported by llama.cpp
+- [K-quant Design Document](https://github.com/ggerganov/llama.cpp/pull/1684) — K-quant design motivation, super-block structure, and benchmark results
+- [Quantization Benchmark](https://github.com/ggerganov/llama.cpp/discussions/2094) — Community-maintained perplexity and speed comparisons across different models and quantization types
+- [GPTQ Paper](https://arxiv.org/abs/2210.17323) — Hessian matrix-based layer-wise quantization algorithm
+- [AWQ Paper](https://arxiv.org/abs/2306.00978) — Activation-aware mixed-precision quantization strategy

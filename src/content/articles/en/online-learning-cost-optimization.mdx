@@ -1,0 +1,123 @@
+---
+title: "Online Learning and Cost Optimization: Routers Need to Evolve Too"
+slug: online-learning-cost-optimization
+locale: en
+tags: [model-routing, bandit, reinforcement-learning, pareto, cost-optimization]
+difficulty: advanced
+prerequisites: [model-routing-landscape]
+created: "2026-04-06"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Robust Batch-Level LLM Routing"
+    url: "https://arxiv.org/abs/2603.26796"
+  - type: paper
+    title: "RouteLLM: Learning to Route LLMs with Preference Data"
+    url: "https://arxiv.org/abs/2406.18665"
+---
+
+import BanditExploration from '../../../components/interactive/BanditExploration.tsx';
+import RLRewardSignalViz from '../../../components/interactive/RLRewardSignalViz.tsx';
+import ParetoFrontierViz from '../../../components/interactive/ParetoFrontierViz.tsx';
+import DynamicPriceAdaptation from '../../../components/interactive/DynamicPriceAdaptation.tsx';
+import BatchVsQueryRouting from '../../../components/interactive/BatchVsQueryRouting.tsx';
+
+In static routing strategies, we pre-train a classifier and then use it indefinitely. But the real world is dynamic: model API prices change, user query distributions drift, and new models are constantly released. **Online Learning** enables routers to continuously adapt to these changes in production, balancing Exploration and Exploitation, ultimately achieving Pareto optimality between quality and cost.
+
+## Multi-armed Bandit: Balancing Exploration and Exploitation
+
+Model selection can be framed as a **Multi-armed Bandit (MAB)** problem: each model is an "arm," each routing decision is equivalent to "pulling" an arm, and the reward is defined as:
+
+$$
+R = \text{quality} - \lambda \cdot \text{cost}
+$$
+
+where $\lambda$ controls cost sensitivity. The core challenge is the **exploration-exploitation tradeoff**:
+
+- **Exploitation**: Select the currently known best model to maximize immediate reward
+- **Exploration**: Try other models to gather more information and potentially discover better strategies
+
+Classic algorithms include:
+
+- **ε-greedy**: Explore randomly with probability $\epsilon$, select the current best arm with probability $1-\epsilon$. Simple but exploration-inefficient.
+- **Upper Confidence Bound (UCB)**: Compute an upper confidence bound for each arm and select the one with the highest UCB. Balances expected reward and uncertainty.
+- **Thompson Sampling**: A Bayesian approach that samples from the posterior distribution, naturally balancing exploration and exploitation.
+
+In the routing setting, when each query arrives, the algorithm updates its value estimates for each model based on historical rewards, then selects the current best model. The figure below shows the exploration behavior of the three algorithms under identical settings:
+
+<BanditExploration client:visible locale="en" />
+
+Over time, the algorithms gradually converge to the optimal policy, but at the cost of exploration overhead. Thompson Sampling typically performs best in Bandit problems because it allocates the exploration budget more intelligently.
+
+## RL Routing: Learning Routing Policies from Feedback
+
+**Reinforcement Learning (RL)** models routing as a sequential decision problem:
+
+- **State**: Query features $s$ (embeddings, intent labels, context, etc.)
+- **Action**: Select a model $a \in \{m_1, m_2, \ldots, m_k\}$
+- **Reward**: $R = \text{quality}(s, a) - \lambda \cdot \text{cost}(a)$
+
+The router learns a policy $\pi(a|s)$ that maximizes cumulative reward:
+
+$$
+\max_\pi \mathbb{E}_{s \sim p(s), a \sim \pi(\cdot|s)}[R(s, a)]
+$$
+
+**RouteLLM (2024)** proposes training routers with preference data: given a query $s$ and responses from two models, humans label the better one. Through preference learning, the router learns to select the model most likely to produce a high-quality response for each query, while accounting for cost constraints. The trained router can then be fine-tuned online, continuously learning from new preference feedback.
+
+The figure below shows how the RL routing reward signal evolves over time:
+
+<RLRewardSignalViz client:visible locale="en" />
+
+Reward signal variance is high in the early phase (exploration) and gradually decreases as the policy converges (exploitation). RL methods are more powerful than Bandits because they can capture complex state-action dependencies, but training costs are higher.
+
+## Pareto Frontier and Cost Constraints
+
+In multi-objective optimization, the **Pareto Frontier** defines the set of models in the quality-cost space that cannot be strictly dominated: if model $A$ is no worse than model $B$ in both quality and cost, and strictly better in at least one dimension, then $A$ Pareto-dominates $B$. An ideal routing strategy should only switch among models on the Pareto frontier.
+
+The figure below shows a typical Pareto frontier:
+
+<ParetoFrontierViz client:visible locale="en" />
+
+Click on models in the figure to see their quality-cost tradeoffs. Models on the Pareto frontier (blue) represent different optimal choices; which one to pick depends on the user's cost budget $B$ or quality requirement $Q_{\min}$.
+
+### Dynamic Price Adaptation
+
+In reality, API pricing is not fixed. Providers like OpenAI and Anthropic adjust prices based on demand or offer volume discounts. **Dynamic Price Adaptation** requires the router to monitor price changes in real time, recompute the Pareto frontier, and adjust routing decisions.
+
+<DynamicPriceAdaptation client:visible locale="en" />
+
+The figure above simulates a price fluctuation scenario: when a particular model's price drops, it may move from outside the Pareto frontier to inside it, and the router should immediately increase its usage share. Online learning algorithms (e.g., Bandits) naturally adapt to such changes because they continuously update reward estimates.
+
+## Batch vs. Query-level Routing
+
+Traditional **per-query routing** independently selects a model for each query — simple and efficient, but it ignores global constraints:
+
+- **GPU concurrency limits**: Self-hosted models have maximum concurrency; overload causes latency spikes
+- **Total budget constraints**: Production systems typically have daily or monthly total cost budgets
+- **Volume discounts**: Some APIs offer batch call discounts that per-query routing cannot exploit
+
+**Batch-level routing** treats routing as a global optimization problem: given a batch of queries $\{q_1, \ldots, q_n\}$ and constraints (budget $B$, concurrency limit $C$), find the assignment $\{(q_i, m_j)\}$ that maximizes total quality:
+
+$$
+\max \sum_{i=1}^n \text{quality}(q_i, m_j) \quad \text{s.t.} \quad \sum_{i=1}^n \text{cost}(m_j) \leq B, \, \text{concurrency}(m_j) \leq C
+$$
+
+**Robust Batch-Level LLM Routing (2026)** proposes using integer linear programming (ILP) or heuristic algorithms to solve batch routing, while accounting for model performance uncertainty (modeled with confidence intervals). Experiments show that batch routing improves quality by 8–15% over per-query routing under strict budget constraints.
+
+<BatchVsQueryRouting client:visible locale="en" />
+
+The figure above compares the cost-quality curves of the two routing approaches. Batch routing, through global coordination, achieves higher quality at the same budget, or lower cost at the same quality level. However, batch routing requires buffering queries (adding latency) and has higher computational overhead, making it best suited for offline or semi-online scenarios.
+
+## Summary
+
+Online learning transforms routing from a "train once" system into one that **continuously evolves**:
+
+- **Bandit algorithms** provide a simple exploration-exploitation framework, well-suited for rapid adaptation to environmental changes
+- **RL methods** capture complex state-action dependencies but require more training data
+- **Pareto optimization** clarifies the multi-objective quality-cost tradeoff; dynamic price adaptation ensures the strategy remains optimal
+- **Batch routing** breaks through the limitations of per-query routing via global optimization, significantly improving efficiency under constrained scenarios
+
+The core tradeoff is **exploration cost vs. exploitation efficiency**: exploration can discover better strategies but requires bearing the cost of trial and error. In production systems, conservative exploration strategies (small $\epsilon$ or high confidence thresholds) are typical, with validation in offline environments before deployment.
+
+The next article explores **Mixture of Agents and collaborative routing**: instead of "picking one model," have multiple models work together — through voting, chaining, or parallel generation — to boost overall performance.

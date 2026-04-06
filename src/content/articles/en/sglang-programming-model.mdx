@@ -1,0 +1,134 @@
+---
+title: "SGLang Programming Model and Structured Output"
+slug: sglang-programming-model
+locale: en
+tags: [sglang, structured-output, constrained-decoding, fsm, dsl]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-06"
+prerequisites: [prefix-caching]
+references:
+  - type: paper
+    title: "SGLang: Efficient Execution of Structured Language Model Programs"
+    url: "https://arxiv.org/abs/2312.07104"
+  - type: paper
+    title: "Efficient Guided Generation for Large Language Models"
+    url: "https://arxiv.org/abs/2307.09702"
+  - type: website
+    title: "Fast JSON Decoding for Local LLMs with Compressed Finite State Machine"
+    url: "https://lmsys.org/blog/2024-02-05-compressed-fsm/"
+---
+
+import SGLangExecutionFlow from '../../../components/interactive/SGLangExecutionFlow.tsx';
+import FSMConstrainedDecoding from '../../../components/interactive/FSMConstrainedDecoding.tsx';
+import JumpForwardCompare from '../../../components/interactive/JumpForwardCompare.tsx';
+import TokenMaskGeneration from '../../../components/interactive/TokenMaskGeneration.tsx';
+import StructuredOutputAccuracy from '../../../components/interactive/StructuredOutputAccuracy.tsx';
+
+## Why a Programming Model Is Needed
+
+Real-world LLM applications are rarely as simple as "input a prompt, output text." A typical RAG pipeline might look like:
+
+1. User asks a question → LLM generates a search query
+2. Retrieve documents → concatenate into context
+3. LLM generates an answer based on the context
+4. Self-check the answer (self-consistency: sample the same question 3 times and take the majority)
+
+The traditional approach is to make multiple API calls, manually concatenating context each time. The problems:
+- **Redundant computation**: each call reprocesses the entire prompt (including prefixes already computed)
+- **Sequential waiting**: even if the three samples in step 4 can run in parallel, they can only be called one at a time
+- **Unreliable formatting**: asking the LLM to output JSON, but it frequently produces malformed output
+
+SGLang's core insight: **if the inference engine can understand the application's execution logic, it can optimize the entire pipeline end-to-end**.
+
+## SGLang DSL Core Primitives
+
+SGLang defines a concise set of primitives to describe LLM programs:
+
+| Primitive | Purpose | Example |
+|-----------|---------|---------|
+| `gen` | Generate text | `s = sgl.gen("analysis", max_tokens=100)` |
+| `select` | Choose from options | `s = sgl.select("judgment", ["positive","negative"])` |
+| `fork` | Parallel branching | `s1, s2 = sgl.fork(s, 2)` |
+| `join` | Merge branches | `result = sgl.join([s1, s2])` |
+| `append` | Concatenate context | `s = sgl.append("additional info...")` |
+
+These primitives look simple, but when combined they can express complex inference workflows:
+
+<SGLangExecutionFlow client:visible locale="en" />
+
+The key point is that this is not just syntactic sugar. SGLang's execution engine analyzes the structure of the DSL program and automatically applies optimizations:
+- The two branches of **fork** share a prefix → RadixAttention automatically reuses the KV Cache
+- All candidates of **select** share a prefix → batched processing
+- **append** does not trigger recomputation → directly appends to the existing KV Cache
+
+## The Problem with Constrained Decoding
+
+Getting LLMs to output structured data (such as JSON) is one of the most common requirements. But unconstrained generation has many issues:
+
+```json
+// Expected output
+{"name": "Alice", "age": 30}
+
+// What the LLM might actually generate
+{"name": Alice, "age": "thirty"}   // missing quotes, type error
+{"name": "Alice" "age": 30}         // missing comma
+{"name": "Alice"}                    // missing required field
+```
+
+Prompt engineering can mitigate but never eliminate this problem — the LLM's token sampling process is inherently probabilistic, with no structural constraints.
+
+## FSM-Guided Generation
+
+SGLang's solution is to introduce **Finite State Machine (FSM)** constraints during the token sampling phase:
+
+1. **JSON Schema → Regular Expression**: convert the user-defined output format into a regular expression
+2. **Regex → FSM**: compile into a finite state machine, where each state corresponds to a position in the parser
+3. **FSM-guided sampling**: at each step, compute the set of valid tokens based on the current FSM state, setting the logits of invalid tokens to -∞
+
+<FSMConstrainedDecoding client:visible locale="en" />
+
+The result: **100% format compliance**. No matter how "creative" the LLM gets, the FSM mask ensures every output token conforms to the target schema.
+
+## Token Mask Generation Process
+
+Let's look at how the FSM determines valid tokens at each step:
+
+<TokenMaskGeneration client:visible locale="en" />
+
+The entire process is **pre-compiled**: the FSM is built when the schema is first loaded, and at runtime it only needs an O(1) table lookup to retrieve the set of valid tokens for the current state, adding virtually no inference latency.
+
+## Jump-Forward Optimization
+
+While FSM constraints guarantee correctness, each token still requires a full LLM forward pass — even when the output at certain positions is deterministic (such as JSON structural characters like `{`, `"`, `:`).
+
+SGLang's **Jump-Forward** optimization identifies **deterministic states** in the FSM (states with only one outgoing edge) and skips these positions entirely, bypassing the LLM:
+
+<JumpForwardCompare client:visible locale="en" />
+
+For structured output, deterministic fragments typically account for 40-70% of the total (most JSON structural characters are deterministic), meaning Jump-Forward can skip a large number of forward passes, achieving **2-5x speedup**.
+
+## Performance Comparison
+
+Combining correctness and speed:
+
+<StructuredOutputAccuracy client:visible locale="en" />
+
+Key trade-offs:
+- **Unconstrained** is fastest but unreliable — suitable for scenarios with relaxed formatting requirements
+- **FSM-guided** achieves near-perfect accuracy but is slightly slower — token mask computation and vocabulary scanning have overhead
+- **FSM + Jump-Forward** balances correctness and speed — this is SGLang's recommended default
+
+## Summary
+
+SGLang's programming model addresses two core problems:
+
+1. **Execution efficiency**: through DSL primitives (gen/select/fork/join), the engine understands the application logic and maximizes prefix reuse via RadixAttention
+2. **Output reliability**: through FSM-guided generation + Jump-Forward optimization, it achieves 100% format compliance with faster speed
+
+From a broader perspective, SGLang represents the evolution of LLM inference engines from "general-purpose API services" to "programmable inference platforms" — it is not just about generating text faster, but about enabling the inference engine to understand and optimize the execution flow of entire LLM applications.
+
+## Further Reading
+
+- Want to review the fundamentals of prefix caching? Read [Prefix Caching and RadixAttention](./prefix-caching)
+- Want a panoramic view of inference engines? Read [Inference Engine Landscape](./inference-engine-landscape)

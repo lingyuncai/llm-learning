@@ -1,0 +1,198 @@
+---
+title: "CUDA Programming Model — From Code to Hardware"
+slug: cuda-programming-model
+locale: en
+tags: [gpu, cuda, programming, simt, simd, intel, sycl]
+prerequisites: [gpu-architecture]
+difficulty: intermediate
+created: "2026-04-04"
+updated: "2026-04-06"
+references:
+  - type: website
+    title: "CUDA C++ Programming Guide"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/"
+  - type: website
+    title: "NVIDIA Kernel Profiling Guide — Memory Coalescing"
+    url: "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/"
+  - type: website
+    title: "Intel oneAPI GPU Optimization Guide"
+    url: "https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/"
+  - type: website
+    title: "CUDA Occupancy Calculator"
+    url: "https://docs.nvidia.com/cuda/cuda-occupancy-calculator/"
+  - type: website
+    title: "SYCL 2020 Specification"
+    url: "https://registry.khronos.org/SYCL/specs/sycl-2020/"
+---
+
+import SimdVsSimtAnimation from '../../../components/interactive/SimdVsSimtAnimation.tsx';
+import ExecutionModelCompare from '../../../components/interactive/ExecutionModelCompare.tsx';
+import ThreadBlockGridViz from '../../../components/interactive/ThreadBlockGridViz.tsx';
+import IndexCalculation from '../../../components/interactive/IndexCalculation.tsx';
+import BlockToSmMapping from '../../../components/interactive/BlockToSmMapping.tsx';
+import SharedMemoryBanks from '../../../components/interactive/SharedMemoryBanks.tsx';
+import MemoryCoalescingDemo from '../../../components/interactive/MemoryCoalescingDemo.tsx';
+import BarrierTimeline from '../../../components/interactive/BarrierTimeline.tsx';
+import OccupancyCalculator from '../../../components/interactive/OccupancyCalculator.tsx';
+import CudaSyclCodeCompare from '../../../components/interactive/CudaSyclCodeCompare.tsx';
+
+In the [GPU Architecture](/en/articles/gpu-architecture) article, we learned about the internal structure of an SM — four Processing Blocks, Warp Schedulers, various compute units, and the memory hierarchy. In the [Matrix Acceleration Units](/en/articles/matrix-acceleration) article, we saw warp-level cooperative operations on Tensor Core and XMX.
+
+Now the question is: **how do programmers control this hardware?** This article starts from the CUDA programming model to understand the core abstractions of GPU programming — thread hierarchy, memory model, synchronization mechanisms, and how these abstractions map to physical hardware.
+
+## Section 1: SIMD vs SIMT — Two Parallel Execution Models
+
+GPU parallel computing has two primary models. Understanding the difference between them is the starting point for understanding CUDA programming.
+
+**SIMD (Single Instruction Multiple Data)**: One instruction operates on a vector. The programmer must know the vector width (8/16/32) and use intrinsics or compiler vectorization to leverage the hardware. The EU inside Intel iGPU is SIMD-driven.
+
+**SIMT (Single Instruction Multiple Threads)**: The programmer writes scalar code (looks like single-threaded), and the hardware automatically packs 32 threads into a warp for concurrent execution. The programmer doesn't need to worry about vector width. NVIDIA GPUs use SIMT.
+
+<SimdVsSimtAnimation client:visible locale="en" />
+
+The key difference is in **branch handling**: SIMT is more branch-friendly — warp divergence is only an efficiency loss, not something the programmer needs to manually manage with masks. SIMD branches require explicit mask or blend instructions.
+
+<ExecutionModelCompare />
+
+Intel iGPU is an interesting hybrid: the underlying hardware is SIMD-driven (EU Threads execute 8/16-wide vector operations), but the SYCL/OpenCL programming layer provides a near-SIMT work-item abstraction. Sub-group operations expose the underlying SIMD width and are a critical tool for Intel GPU programming.
+
+---
+
+## Section 2: Thread → Block → Grid
+
+CUDA organizes parallel computation with a three-level thread hierarchy:
+
+- **Thread**: The smallest execution unit. Each thread executes the same kernel code but processes different data
+- **Block**: A group of threads that share Shared Memory and can synchronize via `__syncthreads()`
+- **Grid**: The collection of all Blocks, produced by a single kernel launch
+
+Each thread determines its identity through `threadIdx` (position within the Block) and `blockIdx` (Block position within the Grid), combined with `blockDim` (Block size) to compute its global data position.
+
+<ThreadBlockGridViz client:visible locale="en" />
+
+Blocks and Grids support 1D/2D/3D dimensions — 2D indexing maps more naturally to matrix operations (`threadIdx.x` corresponds to columns, `threadIdx.y` to rows).
+
+### Global Index Calculation
+
+The most fundamental CUDA programming pattern: each thread computes its responsible global data position.
+
+<IndexCalculation client:visible locale="en" />
+
+```c
+// Vector addition kernel — the simplest CUDA program
+__global__ void vecadd(float* a, float* b, float* c, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) c[i] = a[i] + b[i];
+}
+// Launch: vecadd<<<(n+255)/256, 256>>>(d_a, d_b, d_c, n);
+```
+
+---
+
+## Section 3: Logical to Physical Mapping
+
+Thread → Block → Grid is a **logical** structure. The programmer defines it but does not control how it maps to physical hardware.
+
+<BlockToSmMapping client:visible locale="en" />
+
+Key points:
+- **Block-to-SM assignment is decided by the runtime** — the order is non-deterministic, and programs should not assume any execution order
+- **A single SM can host multiple Blocks simultaneously** — limited by register usage, shared memory usage, and warp count
+- **Threads within a Block are packed into Warps by hardware** — threads 0-31 = warp 0, threads 32-63 = warp 1, ...
+- **blockDim should be a multiple of 32** — otherwise the last warp has idle threads, wasting compute resources
+
+---
+
+## Section 4: Shared Memory
+
+Memory declared with `__shared__` is Block-level fast storage (in the SM's L1/SRAM), shared by all threads in the Block, and released when the Block finishes.
+
+Uses:
+- **Inter-thread communication**: One thread writes, other threads read
+- **Data preloading**: Load once from HBM to shared memory, reuse across multiple threads within the block
+
+### Bank Structure
+
+Shared memory is divided into **32 banks**, with consecutive 4-byte words mapped to consecutive banks. When a warp's 32 threads access different banks simultaneously, it completes in one cycle; accessing different addresses in the same bank causes a **bank conflict**, which must be serialized.
+
+<SharedMemoryBanks client:visible locale="en" />
+
+The simplest way to avoid bank conflicts: stride-1 sequential access is naturally conflict-free. When the stride is a power of 2, conflicts are common; you can break the alignment with a padding trick (`tile[32][33]` instead of `tile[32][32]`).
+
+---
+
+## Section 5: Memory Coalescing
+
+Global memory (HBM) access operates in 32-byte or 128-byte transactions. When a warp's 32 threads access contiguous addresses, the hardware can merge them into the minimum number of transactions — this is **memory coalescing**.
+
+<MemoryCoalescingDemo client:visible locale="en" />
+
+Practical impact:
+- **Row-major access to the same row of a matrix**: `M[row][tid]` — contiguous addresses, naturally coalesced
+- **Column-major access to a matrix**: `M[tid][col]` — stride = row width, severely uncoalesced
+- This is why matrix multiplication requires **tiling into shared memory** — first load to shared memory with coalesced access, then access with arbitrary stride in shared memory (bank conflicts in shared memory are much cheaper than uncoalesced HBM access)
+
+---
+
+## Section 6: Synchronization and Barriers
+
+`__syncthreads()` is a Block-level barrier: all threads must reach this point before any can continue execution.
+
+<BarrierTimeline />
+
+Typical usage: write to shared memory → `__syncthreads()` → read from shared memory. Without the barrier, fast warps might read data that slow warps haven't finished writing — a **race condition**.
+
+Important notes:
+- All threads **must reach the same `__syncthreads()` call** — asymmetric calls in if/else branches cause deadlock
+- Threads within a warp execute in lockstep, with implicit synchronization — but explicitly using `__syncwarp()` is safer (future architectures may change the lockstep guarantee)
+- `__syncthreads()` only synchronizes within a Block — **there is no direct synchronization mechanism between Blocks** (this is a core constraint of the GPU programming model)
+
+---
+
+## Section 7: Occupancy
+
+**Occupancy** = active warps in an SM / maximum warps per SM. Higher occupancy means more warps can switch execution during memory latency, better hiding that latency.
+
+Occupancy is limited by three factors:
+
+1. **Warp count**: blockDim / 32 warps per block × blocks per SM
+2. **Register usage**: More registers per thread means fewer blocks the SM can accommodate
+3. **Shared memory usage**: More shared memory per block means fewer blocks the SM can accommodate
+
+<OccupancyCalculator client:visible locale="en" />
+
+Higher occupancy isn't always better — sometimes low occupancy + high data reuse (large tiles filling shared memory and registers) is actually faster. But occupancy is typically a good starting point for optimization.
+
+At compile time, use `--ptxas-options=-v` to check a kernel's register and shared memory usage.
+
+---
+
+## Section 8: Intel iGPU Programming Essentials
+
+CUDA is NVIDIA-proprietary. Intel GPUs use **SYCL / DPC++**, based on standard C++, with concepts that map one-to-one with CUDA:
+
+<CudaSyclCodeCompare />
+
+Core terminology mapping:
+- **work-item** ≈ thread — the smallest execution unit
+- **work-group** ≈ block — a group of threads sharing SLM
+- **sub-group** ≈ warp — but the width can be 8/16/32 (not fixed at 32)
+- **SLM (Shared Local Memory)** ≈ shared memory — similar usage
+
+Sub-group is the key to Intel GPU programming — it directly exposes the underlying SIMD width. `sub_group::shuffle` and `sub_group::reduce` correspond to NVIDIA's warp shuffle operations.
+
+XMX matrix operations are accessed through the SYCL `joint_matrix` API or the low-level ESIMD `dpas` instruction, corresponding to NVIDIA's `wmma` / `mma.sync` (see the [Matrix Acceleration Units](/en/articles/matrix-acceleration) article for details).
+
+---
+
+## Summary
+
+Core abstractions of the CUDA programming model:
+
+1. **SIMT execution model** — Write scalar code, hardware parallelizes. Warp divergence is an efficiency problem, not a correctness problem
+2. **Three-level thread hierarchy** — Thread → Block → Grid, where Block is the fundamental unit of resource allocation and synchronization
+3. **Memory hierarchy** — Register (private) → Shared Memory (Block-shared, fast) → Global/HBM (global, slow)
+4. **Coalescing + Banks** — Global memory needs contiguous access, shared memory needs to avoid bank conflicts
+5. **Occupancy** — warp count × data reuse = performance; the tightest of three resources (warps / registers / shared memory) determines the upper bound
+
+The next article will put these concepts into practice — GEMM optimization, from a naive implementation to Tensor Core GEMM, progressively pushing matrix multiplication performance toward the hardware's theoretical peak.

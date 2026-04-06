@@ -1,0 +1,186 @@
+---
+title: "QKV Data Structures and Intuition"
+slug: qkv-intuition
+locale: en
+tags: [transformer, attention, qkv]
+prerequisites: [transformer-overview]
+difficulty: intermediate
+created: "2026-03-31"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Attention Is All You Need"
+    url: "https://arxiv.org/abs/1706.03762"
+  - type: website
+    title: "The Illustrated Transformer"
+    url: "https://jalammar.github.io/illustrated-transformer/"
+  - type: website
+    title: "LLM Visualization — Brendan Bycroft"
+    url: "https://bbycroft.net/llm"
+  - type: website
+    title: "Transformer Explainer — Georgia Tech / Polo Club"
+    url: "https://poloclub.github.io/transformer-explainer/"
+---
+
+import QKVLinearProjection from '../../../components/interactive/QKVLinearProjection.tsx';
+import QKVSemanticSpaces from '../../../components/interactive/QKVSemanticSpaces.tsx';
+import ReshapeTransposeAnimation from '../../../components/interactive/ReshapeTransposeAnimation.tsx';
+import TensorShape from '../../../components/primitives/TensorShape.tsx';
+
+## Introduction: Why We Need QKV
+
+In the previous article, we saw the core formula of Self-Attention:
+
+$$
+\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{QK^T}{\sqrt{d_k}}\right) V
+$$
+
+Three matrices appear in this formula: **Q** (Query), **K** (Key), and **V** (Value). Where do they come from? Why do we need three different matrices instead of directly using the input itself?
+
+The answer is: **through three separate linear projections, the same input plays different roles in different subspaces**. This allows the model to flexibly learn three fundamentally different functions: "what to ask," "what to match against," and "what information to extract."
+
+## Intuitive Understanding: The Library Search Analogy
+
+Imagine you walk into a library looking for information about "Transformer architecture":
+
+| Role | Analogy | Explanation |
+|------|---------|-------------|
+| **Query** | The question in your mind | "I want to learn about Transformer architecture" — you search with this question |
+| **Key** | Book tags / index cards | Each book has keyword tags: "deep learning," "attention mechanism," "NLP," etc. |
+| **Value** | The actual book content | After the tags match, what you actually read is the text inside the book |
+
+The search process works as follows:
+
+1. **Query compared with Keys**: Your question (Query) is matched against each book's tags (Key) to compute a "relevance score"
+2. **Softmax normalization**: Scores are converted into a probability distribution — the most relevant books get the highest weights
+3. **Weighted extraction of Values**: Based on relevance weights, information is extracted from each book's content (Value)
+
+The key insight is: **the tags (Key) and the content (Value) are different representations of the same book**. Tags are used for quick matching, while the content is the information you actually need. Similarly, in Attention, Keys are used to compute attention weights, and Values are used to aggregate information — they come from the same input but serve different functions through different projections.
+
+> If we skip the projections and directly use the input $X$ as Q, K, and V simultaneously, the model can only compute "self-similarity with itself," resulting in extremely limited expressiveness. Three independent projections give the model much greater flexibility.
+
+## Mathematical Definition: Linear Projection Formulas and Dimensions
+
+### Input
+
+Let the input sequence matrix after Embedding be $X$:
+
+$$
+X \in \mathbb{R}^{S \times H}
+$$
+
+Where:
+- $S$ is the sequence length (number of tokens)
+- $H$ is the hidden dimension (hidden size)
+
+<TensorShape client:visible dims={[{name: "S", size: "seq_len"}, {name: "H", size: "hidden"}]} label="X" />
+
+### Weight Matrices
+
+Three sets of learnable weight matrices:
+
+$$
+W_Q \in \mathbb{R}^{H \times d_k}, \quad W_K \in \mathbb{R}^{H \times d_k}, \quad W_V \in \mathbb{R}^{H \times d_v}
+$$
+
+Where $d_k$ (also commonly written as $d_{\text{head}}$) is the dimension of each attention head. In the standard Transformer, typically $d_k = d_v$.
+
+### Linear Projection
+
+Computing Q, K, V is very straightforward — it is just matrix multiplication:
+
+$$
+Q = X W_Q \in \mathbb{R}^{S \times d_k}
+$$
+
+$$
+K = X W_K \in \mathbb{R}^{S \times d_k}
+$$
+
+$$
+V = X W_V \in \mathbb{R}^{S \times d_v}
+$$
+
+Each token's $H$-dimensional hidden vector is projected (linearly transformed) into a new $d_k$-dimensional space. This is the so-called "linear projection."
+
+**Why is it called "projection"?** From a geometric perspective, multiplying by a weight matrix projects a vector from a high-dimensional space onto a lower-dimensional subspace. Different weight matrices define different subspaces — the Query space, Key space, and Value space.
+
+<QKVSemanticSpaces client:visible locale="en" />
+
+## Step-by-Step Visualization
+
+Below is a small example ($S=4$, $H=6$, $d_k=3$) demonstrating the complete QKV linear projection process:
+
+<QKVLinearProjection client:visible locale="en" />
+
+## Tensor Shape Tracking
+
+The dimension changes at each step from input to Q, K, V:
+
+| Step | Operation | Shape | Description |
+|------|-----------|-------|-------------|
+| 1 | Input $X$ | $(S, H)$ | Each row is a token's hidden vector |
+| 2 | Weight matrix $W_Q$ | $(H, d_k)$ | Learnable parameters |
+| 3 | $Q = X W_Q$ | $(S, d_k)$ | Matrix multiplication: $(S, H) \times (H, d_k) \to (S, d_k)$ |
+| 4 | Weight matrix $W_K$ | $(H, d_k)$ | Another set of learnable parameters |
+| 5 | $K = X W_K$ | $(S, d_k)$ | $(S, H) \times (H, d_k) \to (S, d_k)$ |
+| 6 | Weight matrix $W_V$ | $(H, d_v)$ | A third set of learnable parameters |
+| 7 | $V = X W_V$ | $(S, d_v)$ | $(S, H) \times (H, d_v) \to (S, d_v)$ |
+
+With the batch dimension included, the full tensor shapes are:
+
+<TensorShape client:visible dims={[{name: "B", size: "batch"}, {name: "S", size: "seq_len"}, {name: "H", size: "hidden"}]} label="Input X" />
+
+After projection:
+
+<TensorShape client:visible dims={[{name: "B", size: "batch"}, {name: "S", size: "seq_len"}, {name: "d_k", size: "head_dim"}]} label="Q, K, V" />
+
+Using GPT-2 Small as an example ($H=768$, $h=12$ heads):
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| $H$ | 768 | Hidden dimension |
+| $h$ | 12 | Number of attention heads |
+| $d_k$ | 64 | Per-head dimension = $768 / 12$ |
+
+Before projection, each token is a 768-dimensional vector; after projection, it becomes a 64-dimensional Q/K/V vector (within a single head).
+
+## QKV in the Multi-Head Setting
+
+In Multi-Head Attention, the hidden dimension is split across $h$ heads:
+
+$$
+d_k = \frac{H}{h}
+$$
+
+In practice, the implementation **does not** actually perform separate matrix multiplications for each head. Instead, a single large weight matrix projects all heads' results at once, followed by a reshape:
+
+$$
+W_Q^{\text{all}} \in \mathbb{R}^{H \times H}
+$$
+
+$$
+Q^{\text{all}} = X W_Q^{\text{all}} \in \mathbb{R}^{S \times H}
+$$
+
+Then $Q^{\text{all}}$ is reshaped from $(S, H)$ to $(S, h, d_k)$, and transposed to $(h, S, d_k)$, so each head has its own Query matrix.
+
+$$
+(B, S, H) \xrightarrow{W_Q} (B, S, H) \xrightarrow{\text{reshape}} (B, S, h, d_k) \xrightarrow{\text{transpose}} (B, h, S, d_k)
+$$
+
+<ReshapeTransposeAnimation client:visible locale="en" />
+
+> The full mechanism of Multi-Head Attention will be covered in detail in a subsequent article. For now, the key takeaway is: **QKV projection is the foundational step of Multi-Head Attention**.
+
+## Summary
+
+This article introduced the core concepts of Q, K, V in Transformers:
+
+1. **Intuition**: Query is the "question," Key is the "tag," Value is the "content" — similar to a library search
+2. **Mathematical essence**: Three independent linear projections $Q = XW_Q$, $K = XW_K$, $V = XW_V$
+3. **Dimension changes**: Input $(S, H)$ is projected to $(S, d_k)$
+4. **Why three sets**: Different projections let the same input play different roles in different subspaces, giving the model greater expressiveness
+5. **Multi-head extension**: In practice, a single projection produces QKV for all heads at once, then split via reshape
+
+Next, we will dive into **Attention Computation in Detail**, examining how Q, K, V complete information aggregation through $QK^T$, softmax, and weighted summation.
