@@ -22,7 +22,6 @@ const createData = (locale: 'zh' | 'en'): MethodLatency[] => {
       selfVerification: { detail: '需要生成 + 自评，可能多次调用', category: '级联' },
       llmAsJudge: { detail: '额外一次 LLM 调用评估质量', category: '级联' },
       councilMode: { detail: '并行调用，延迟 = 最慢模型（非额外开销）', category: 'MoA' },
-      tokenLevelHybrid: { detail: '每 token 置信度判断，累积开销', category: '混合' },
     },
     en: {
       semanticRouter: { detail: 'Embedding cosine matching, negligible latency', category: 'Classifier' },
@@ -32,7 +31,6 @@ const createData = (locale: 'zh' | 'en'): MethodLatency[] => {
       selfVerification: { detail: 'Generation + self-evaluation, possibly multiple calls', category: 'Cascade' },
       llmAsJudge: { detail: 'Additional LLM call for quality assessment', category: 'Cascade' },
       councilMode: { detail: 'Parallel calls, latency = slowest model (not additional overhead)', category: 'MoA' },
-      tokenLevelHybrid: { detail: 'Per-token confidence judgment, cumulative overhead', category: 'Hybrid' },
     },
   }[locale];
 
@@ -44,7 +42,6 @@ const createData = (locale: 'zh' | 'en'): MethodLatency[] => {
     { name: 'Self-Verification', overhead_ms: 200, detail: t.selfVerification.detail, category: t.selfVerification.category },
     { name: 'LLM-as-Judge', overhead_ms: 500, detail: t.llmAsJudge.detail, category: t.llmAsJudge.category },
     { name: 'Council Mode', overhead_ms: 0, detail: t.councilMode.detail, category: t.councilMode.category },
-    { name: 'Token-level Hybrid', overhead_ms: 30, detail: t.tokenLevelHybrid.detail, category: t.tokenLevelHybrid.category },
   ];
 };
 

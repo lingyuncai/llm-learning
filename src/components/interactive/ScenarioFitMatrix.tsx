@@ -8,37 +8,37 @@ interface Props {
 const createLabels = (locale: 'zh' | 'en') => ({
   zh: {
     methods: ['分类器路由', '级联/自验证', 'Hybrid LLM', '在线学习', '多模型协作'],
-    scenarios: ['高吞吐', '低延迟', '隐私敏感', '离线场景', '成本受限'],
+    scenarios: ['路由准确性', '高吞吐', '低延迟', '隐私敏感', '离线场景', '成本受限'],
     fitLabels: ['不适合', '一般', '适合', '非常适合'],
     explanations: [
-      ['轻量 router 不影响吞吐', '几ms 延迟极低', '数据仍需发送到模型', '可配合本地模型', '大幅降低 API 调用'],
-      ['多次调用影响吞吐', '可能需多次生成', '数据可能经过多个模型', '需要多个模型可用', '逐步升级节省成本'],
-      ['需要本地+云端协调', '取决于本地硬件', '敏感数据留本地', '本地模型可离线', '本地模型成本低'],
-      ['持续学习需要反馈', 'Bandit 决策快', '需要收集 reward', '需要在线环境', 'Pareto 优化成本'],
-      ['成本线性增长', '并行延迟叠加', '可选择安全模型', '需要多模型可用', '成本最高'],
+      ['依赖训练数据质量和覆盖度', '轻量 router 不影响吞吐', '几ms 延迟极低', '数据仍需发送到模型', '可配合本地模型', '大幅降低 API 调用'],
+      ['自验证天然纠错，准确性高', '多次调用影响吞吐', '可能需多次生成', '数据可能经过多个模型', '需要多个模型可用', '逐步升级节省成本'],
+      ['能力评估难度大，准确性受限', '需要本地+云端协调', '取决于本地硬件', '敏感数据留本地', '本地模型可离线', '本地模型成本低'],
+      ['冷启动差，持续运行后逐步改善', '持续学习需要反馈', 'Bandit 决策快', '需要收集 reward', '需要在线环境', 'Pareto 优化成本'],
+      ['多模型交叉验证最可靠', '成本线性增长', '并行延迟叠加', '可选择安全模型', '需要多模型可用', '成本最高'],
     ],
   },
   en: {
     methods: ['Classifier Routing', 'Cascade/Self-Verification', 'Hybrid LLM', 'Online Learning', 'Multi-Model Collaboration'],
-    scenarios: ['High Throughput', 'Low Latency', 'Privacy Sensitive', 'Offline', 'Cost Constrained'],
+    scenarios: ['Routing Accuracy', 'High Throughput', 'Low Latency', 'Privacy Sensitive', 'Offline', 'Cost Constrained'],
     fitLabels: ['Poor', 'Fair', 'Good', 'Excellent'],
     explanations: [
-      ['Lightweight router does not affect throughput', 'Few ms latency very low', 'Data still sent to model', 'Works with local models', 'Significantly reduces API calls'],
-      ['Multiple calls affect throughput', 'May require multiple generations', 'Data may pass through multiple models', 'Requires multiple models available', 'Progressive upgrade saves cost'],
-      ['Requires local+cloud coordination', 'Depends on local hardware', 'Sensitive data stays local', 'Local model works offline', 'Local model low cost'],
-      ['Continuous learning requires feedback', 'Bandit decision fast', 'Needs to collect reward', 'Requires online environment', 'Pareto optimizes cost'],
-      ['Linear cost growth', 'Parallel latency stacks', 'Can choose secure models', 'Requires multiple models available', 'Highest cost'],
+      ['Depends on training data quality and coverage', 'Lightweight router does not affect throughput', 'Few ms latency very low', 'Data still sent to model', 'Works with local models', 'Significantly reduces API calls'],
+      ['Self-verification naturally catches errors', 'Multiple calls affect throughput', 'May require multiple generations', 'Data may pass through multiple models', 'Requires multiple models available', 'Progressive upgrade saves cost'],
+      ['Capability assessment is difficult', 'Requires local+cloud coordination', 'Depends on local hardware', 'Sensitive data stays local', 'Local model works offline', 'Local model low cost'],
+      ['Poor cold start, improves over time', 'Continuous learning requires feedback', 'Bandit decision fast', 'Needs to collect reward', 'Requires online environment', 'Pareto optimizes cost'],
+      ['Cross-model verification most reliable', 'Linear cost growth', 'Parallel latency stacks', 'Can choose secure models', 'Requires multiple models available', 'Highest cost'],
     ],
   },
 }[locale]);
 
 // Fit scores: 0=poor, 1=fair, 2=good, 3=excellent
 const FIT: number[][] = [
-  [3, 3, 1, 2, 3],
-  [2, 1, 1, 1, 3],
-  [2, 2, 3, 3, 2],
-  [3, 2, 1, 0, 3],
-  [0, 0, 2, 1, 0],
+  [2, 3, 3, 1, 2, 3],
+  [3, 2, 1, 1, 1, 3],
+  [1, 2, 2, 3, 3, 2],
+  [2, 3, 2, 1, 0, 3],
+  [3, 0, 0, 2, 1, 0],
 ];
 
 const FIT_COLORS = ['#fee2e2', '#fef3c7', '#dbeafe', '#bbf7d0'];
@@ -58,9 +58,9 @@ export default function ScenarioFitMatrix({ locale = 'zh' }: Props) {
     },
   }[locale];
 
-  const W = 580, H = 360;
+  const W = 620, H = 360;
   const labelW = 100, labelH = 50;
-  const cellW = 80, cellH = 40;
+  const cellW = 72, cellH = 40;
   const startX = labelW + 20, startY = labelH + 20;
 
   return (

@@ -42,7 +42,7 @@ Single-model solutions face a fundamental multi-dimensional tradeoff dilemma:
 - **Quality**: Small models are noticeably insufficient for complex reasoning, code generation, multi-step logic, and other tasks
 - **Privacy**: Some queries contain sensitive information and are not suitable for sending to third-party APIs
 
-The key insight is: these four dimensions cannot all be optimized simultaneously, but can be **optimized separately per query**. RouteLLM (Ong et al., 2024) proved in experiments that by training a router to intelligently switch between GPT-4 and smaller models, API call costs can be reduced by more than 85% while maintaining approximately 95% of GPT-4's quality. FrugalGPT (Chen et al., 2023) even demonstrated cost reductions of up to 98% through cascade strategies.
+The key insight is: these four dimensions cannot all be optimized simultaneously, but can be **optimized separately per query**. RouteLLM (Ong et al., 2024) proved in experiments that by training a router to intelligently switch between GPT-4 and smaller models, API call costs can be reduced by over 2x while maintaining comparable response quality. FrugalGPT (Chen et al., 2023) demonstrated cost reductions of up to 98% on specific benchmarks through cascade strategies (50-73% on others).
 
 <CostQualityTriangle client:visible locale="en" />
 
@@ -113,6 +113,18 @@ Multi-model collaboration represents a philosophical shift: not "select the best
 **Council Mode** (2026) is the practice of multi-model collaboration in production environments: call multiple LLMs in parallel, synthesize answers through an aggregation mechanism. Experiments show this method can reduce hallucination rate by 35.9%, with the core reason being that different models usually have different hallucination patterns, and cross-validation can effectively filter erroneous information.
 
 ## §4 Multi-Dimensional Comparison
+
+### Training Requirements and Deployment Barriers
+
+Different routing methods vary significantly in their training requirements, directly impacting deployment difficulty:
+
+- **No training needed**: Semantic Router (general-purpose embeddings), AutoMix self-verification (few-shot prompts), multi-model collaboration (direct parallel calls) — plug-and-play, but typically lower routing accuracy
+- **Requires offline training**: MF Router (needs large preference pair datasets like Chatbot Arena), BERT classifier (needs strong/weak labeled data), Causal LM Router (needs GPU fine-tuning) — higher routing accuracy, but may require retraining when candidate models change
+- **Online learning**: Bandit/RL methods continuously optimize at runtime — poor routing quality during cold start, needs sufficient interactions to converge
+
+Core tradeoff: **more training investment means more precise routing, but training-free methods have lower deployment barriers**. A common production practice is to start with training-free methods (like Semantic Router or cascade) for quick deployment, accumulate data, then switch to trained classifiers.
+
+### Performance Comparison
 
 Different routing methods vary greatly in precision, cost, latency, and applicable scenarios. The following three visualizations present these tradeoffs from different perspectives:
 
