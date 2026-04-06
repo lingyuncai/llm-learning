@@ -21,31 +21,7 @@
 
 ## 内容
 
-目前包含 16 篇中文文章、90 个交互式可视化组件，按学习路径组织：
-
-### Transformer Core (Transformer 核心)
-
-1. **Transformer 网络结构总览** — 整体架构与组件介绍
-2. **QKV 的数据结构与直觉** — Query/Key/Value 的几何意义
-3. **Attention 计算详解** — Scaled Dot-Product Attention 的完整推导
-4. **Multi-Head Attention** — 多头注意力的并行计算结构
-5. **MQA 与 GQA** — 多查询/分组查询注意力的优化策略
-6. **KV Cache 原理** — 缓存机制与内存优化
-7. **Prefill vs Decode** — 两阶段推理的计算特性分析
-8. **Flash Attention** — 分块计算与 IO 感知优化
-9. **Positional Encoding** — 位置编码与 RoPE
-10. **Sampling and Decoding** — 采样策略与解码算法
-11. **Speculative Decoding** — 投机解码加速推理
-
-### AI Compute Stack (AI 计算栈)
-
-12. **AI Compute Stack 全景** — 从推理框架到硬件 ISA 的七层结构
-13. **GPU Architecture** — 从晶体管到线程，SM 内部结构详解
-14. **矩阵加速单元** — Tensor Core 与 XMX，Systolic Array 原理
-15. **CUDA 编程模型** — 从代码到硬件，Thread/Block/Grid 映射
-16. **GEMM 优化** — 从 Naive 到极致，Tiling/Thread Tile/Tensor Core
-
-每篇文章包含交互式可视化组件、数学公式推导和参考文献。
+目前包含 59 篇中文文章（2 篇英文）、130+ 个交互式可视化组件，按 9 个学习路径组织。
 
 ## 开发
 
@@ -67,26 +43,20 @@ npm run validate
 
 Push 到 `main` 分支后，GitHub Actions 会自动构建并部署到 GitHub Pages。
 
-如需本地预览构建结果：
-
-```bash
-npm run build
-npm run preview
-```
-
 ## 目录结构
 
 ```
 src/
 ├── content/articles/zh/   # 中文文章 (MDX)
+├── content/articles/en/   # 英文文章 (MDX)
 ├── content/paths/          # 学习路径定义 (YAML)
 ├── content/resources/      # 外部资源 (YAML)
 ├── components/
-│   ├── interactive/        # 交互式可视化组件 (90 个)
+│   ├── interactive/        # 交互式可视化组件
 │   ├── primitives/         # 通用基础组件
 │   ├── layout/             # 布局组件
 │   └── common/             # 通用 UI 组件
-├── plugins/                # 自定义 rehype 插件
-├── pages/zh/               # 中文页面路由
+├── i18n/                   # 国际化翻译
+├── pages/[locale]/         # 多语言页面路由
 └── styles/                 # 全局样式
 ```

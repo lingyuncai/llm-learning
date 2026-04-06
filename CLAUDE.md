@@ -14,13 +14,15 @@
 
 ## 目录结构
 - `src/content/articles/zh/` — 中文文章 (MDX)
+- `src/content/articles/en/` — 英文文章 (MDX)
 - `src/content/paths/` — 学习路径定义 (YAML)
 - `src/content/resources/` — 外部资源定义 (YAML)
 - `src/components/primitives/` — 通用可复用基础组件 (MatrixGrid, StepNavigator, TensorShape)
 - `src/components/interactive/` — 特定主题交互动画组件
 - `src/components/layout/` — Astro 布局组件
 - `src/components/common/` — 通用 UI 组件
-- `src/pages/zh/` — 中文页面路由
+- `src/i18n/` — 国际化翻译系统 (translations.ts, utils.ts)
+- `src/pages/[locale]/` — 多语言页面路由（zh/en）
 - `src/templates/` — 文章模板
 
 ## 新增文章 Checklist

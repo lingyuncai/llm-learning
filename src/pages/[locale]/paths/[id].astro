@@ -18,7 +18,8 @@ export function getStaticPaths() {
 
 const locale = Astro.params.locale as Locale;
 const { learningPath } = Astro.props;
-const allArticles = (await getCollection('articles')).filter(a => a.data.locale === locale);
+const allCollectionArticles = await getCollection('articles');
+const allArticles = allCollectionArticles.filter(a => a.data.locale === locale);
 
 const pathArticles = learningPath.articles
   .map(slug => allArticles.find(a => a.data.slug === slug))
@@ -26,7 +27,7 @@ const pathArticles = learningPath.articles
 
 // For en locale, some articles may not exist yet — show them as "Coming Soon"
 const allZhArticles = locale === 'en'
-  ? (await getCollection('articles')).filter(a => a.data.locale === 'zh')
+  ? allCollectionArticles.filter(a => a.data.locale === 'zh')
   : [];
 ---
 <BaseLayout title={learningPath.title[locale]} locale={locale}>
@@ -58,7 +59,7 @@ const allZhArticles = locale === 'en'
                     {difficultyLabel(locale, difficulty)}
                   </span>
                   {isComingSoon && (
-                    <span class="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-700">Coming Soon</span>
+                    <span class="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-700">{t(locale, 'coming_soon_title')}</span>
                   )}
                 </div>
                 <div class="flex gap-2 flex-wrap">
