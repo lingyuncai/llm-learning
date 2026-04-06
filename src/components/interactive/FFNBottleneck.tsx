@@ -1,7 +1,18 @@
 // src/components/interactive/FFNBottleneck.tsx
 import { COLORS } from './shared/colors';
 
-export default function FFNBottleneck() {
+export default function FFNBottleneck({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      input: '输入',
+      title: '↑ "菱形"结构：先扩维再压缩 ↑',
+    },
+    en: {
+      input: 'Input',
+      title: '↑ "Diamond" Structure: Expand then Compress ↑',
+    },
+  };
+
   const H = 4096;
   const fourH = H * 4;
   const minW = 60;
@@ -10,7 +21,7 @@ export default function FFNBottleneck() {
   const gap = 70;
 
   const stages = [
-    { label: '输入', dim: `(B, S, H)`, w: minW, color: COLORS.bgAlt },
+    { label: t[locale].input, dim: `(B, S, H)`, w: minW, color: COLORS.bgAlt },
     { label: 'Linear₁', dim: `(B, S, 4H)`, w: maxW, color: '#dbeafe' },
     { label: 'GELU', dim: `(B, S, 4H)`, w: maxW, color: '#dbeafe' },
     { label: 'Linear₂', dim: `(B, S, H)`, w: minW, color: COLORS.bgAlt },
@@ -66,7 +77,7 @@ export default function FFNBottleneck() {
 
         <text x={totalW / 2} y={22} textAnchor="middle" fontSize="11" fill={COLORS.orange}
           fontFamily="system-ui" fontWeight="600">
-          ↑ "菱形"结构：先扩维再压缩 ↑
+          {t[locale].title}
         </text>
       </svg>
     </div>

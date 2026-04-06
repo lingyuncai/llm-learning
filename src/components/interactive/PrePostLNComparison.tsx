@@ -53,7 +53,24 @@ function AddNode({ cx, cy }: { cx: number; cy: number }) {
   );
 }
 
-export default function PrePostLNComparison() {
+export default function PrePostLNComparison({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      postLNTitle: 'Post-LN (原始)',
+      preLNTitle: 'Pre-LN (现代)',
+      gradientThroughLN: '梯度必须穿过 LN',
+      gradientHighway: '梯度高速公路',
+      residualShortcut: '(残差直通路径)',
+    },
+    en: {
+      postLNTitle: 'Post-LN (Original)',
+      preLNTitle: 'Pre-LN (Modern)',
+      gradientThroughLN: 'Gradients must pass through LN',
+      gradientHighway: 'Gradient Highway',
+      residualShortcut: '(Residual Shortcut Path)',
+    },
+  };
+
   const W = 800;
   const H = 380;
   const bw = 90; // block width
@@ -70,9 +87,9 @@ export default function PrePostLNComparison() {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-3xl mx-auto">
         {/* Labels */}
         <text x={lx + bw / 2} y={20} textAnchor="middle" fontSize="14" fill={COLORS.dark}
-          fontFamily="system-ui" fontWeight="700">Post-LN (原始)</text>
+          fontFamily="system-ui" fontWeight="700">{t[locale].postLNTitle}</text>
         <text x={rx + bw / 2} y={20} textAnchor="middle" fontSize="14" fill={COLORS.dark}
-          fontFamily="system-ui" fontWeight="700">Pre-LN (现代)</text>
+          fontFamily="system-ui" fontWeight="700">{t[locale].preLNTitle}</text>
 
         {/* === Post-LN (left) === */}
         {/* Input → Attn → Add → LN → FFN → Add → LN */}
@@ -99,7 +116,7 @@ export default function PrePostLNComparison() {
 
         {/* Post-LN annotation */}
         <text x={lx + bw + 10} y={40 + 2.6 * gap + 18} fontSize="9" fill={COLORS.red} fontFamily="system-ui">
-          梯度必须穿过 LN
+          {t[locale].gradientThroughLN}
         </text>
 
         {/* === Pre-LN (right) === */}
@@ -127,10 +144,10 @@ export default function PrePostLNComparison() {
 
         {/* Pre-LN annotation */}
         <text x={rx + bw + 10} y={40 + 3.6 * gap} fontSize="9" fill={COLORS.primary} fontFamily="system-ui" fontWeight="600">
-          梯度高速公路
+          {t[locale].gradientHighway}
         </text>
         <text x={rx + bw + 10} y={40 + 3.6 * gap + 14} fontSize="9" fill={COLORS.primary} fontFamily="system-ui">
-          (残差直通路径)
+          {t[locale].residualShortcut}
         </text>
       </svg>
     </div>

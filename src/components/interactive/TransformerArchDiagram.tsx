@@ -8,7 +8,15 @@
  * Each block is annotated with its tensor shape.
  * Pure component — no state needed.
  */
-export default function TransformerArchDiagram() {
+export default function TransformerArchDiagram({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
+  const t = {
+    zh: {
+      figcaption: 'Pre-LayerNorm Transformer Block 结构（现代 LLM 常用变体）',
+    },
+    en: {
+      figcaption: 'Pre-LayerNorm Transformer Block Architecture (Common Variant in Modern LLMs)',
+    },
+  };
   const blockW = 220;
   const blockH = 54;
   const gap = 16;
@@ -206,7 +214,7 @@ export default function TransformerArchDiagram() {
         </text>
       </svg>
       <figcaption className="text-sm text-gray-500 mt-2">
-        Pre-LayerNorm Transformer Block 结构（现代 LLM 常用变体）
+        {t[locale].figcaption}
       </figcaption>
     </figure>
   );

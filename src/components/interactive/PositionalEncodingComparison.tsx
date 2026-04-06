@@ -65,24 +65,45 @@ function HeatmapColumn({ title, data, note }: {
   );
 }
 
-export default function PositionalEncodingComparison() {
+export default function PositionalEncodingComparison({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const sinPE = useMemo(() => sinusoidalPE(POS, DIM), []);
+
+  const t = {
+    zh: {
+      sinusoidalTitle: '正弦/余弦 (固定)',
+      sinusoidalNote: '每个维度不同频率的波，固定不可学习，支持外推到更长序列',
+      learnedTitle: '可学习绝对位置',
+      learnedNote: '训练时学习每个位置的向量，简单直接但外推能力差',
+      ropeTitle: 'RoPE (旋转)',
+      ropeLabel: '相邻 token 旋转 θ 角度',
+      ropeNote: '在 Attention 计算中通过旋转编码相对位置，兼顾绝对位置和相对距离',
+    },
+    en: {
+      sinusoidalTitle: 'Sinusoidal (Fixed)',
+      sinusoidalNote: 'Different frequency waves per dimension, fixed and non-learnable, supports extrapolation to longer sequences',
+      learnedTitle: 'Learned Absolute Position',
+      learnedNote: 'Learns a vector for each position during training, simple but poor extrapolation',
+      ropeTitle: 'RoPE (Rotary)',
+      ropeLabel: 'Adjacent tokens rotate by θ',
+      ropeNote: 'Encodes relative position through rotation in Attention computation, balancing absolute position and relative distance',
+    },
+  };
 
   return (
     <div className="my-6">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <HeatmapColumn
-          title="正弦/余弦 (固定)"
+          title={t[locale].sinusoidalTitle}
           data={sinPE}
-          note="每个维度不同频率的波，固定不可学习，支持外推到更长序列"
+          note={t[locale].sinusoidalNote}
         />
         <HeatmapColumn
-          title="可学习绝对位置"
+          title={t[locale].learnedTitle}
           data={null}
-          note="训练时学习每个位置的向量，简单直接但外推能力差"
+          note={t[locale].learnedNote}
         />
         <div className="flex flex-col items-center">
-          <div className="text-sm font-semibold text-gray-700 mb-2">RoPE (旋转)</div>
+          <div className="text-sm font-semibold text-gray-700 mb-2">{t[locale].ropeTitle}</div>
           <svg viewBox="0 0 260 180" className="w-full max-w-[260px]">
             {/* Show rotation concept */}
             <circle cx={130} cy={90} r={60} fill="none" stroke={COLORS.light} strokeWidth={1} />
@@ -105,11 +126,11 @@ export default function PositionalEncodingComparison() {
             })}
             {/* Angle arc */}
             <text x={130} y={170} textAnchor="middle" fontSize="10" fill={COLORS.mid} fontFamily="system-ui">
-              相邻 token 旋转 θ 角度
+              {t[locale].ropeLabel}
             </text>
           </svg>
           <div className="text-xs text-gray-500 mt-1 text-center max-w-[260px]">
-            在 Attention 计算中通过旋转编码相对位置，兼顾绝对位置和相对距离
+            {t[locale].ropeNote}
           </div>
         </div>
       </div>

@@ -20,18 +20,40 @@ function getMask(type: MaskType): boolean[][] {
   return Array.from({ length: N }, () => Array(N).fill(true));
 }
 
-const MASK_INFO: Record<MaskType, { title: string; desc: string }> = {
-  bidirectional: {
-    title: '双向 (Encoder)',
-    desc: '所有位置互相可见 — BERT 等 Encoder 模型使用',
+type TranslatedMaskInfo = {
+  bidirectional: { title: string; desc: string };
+  causal: { title: string; desc: string };
+  cross: { title: string; desc: string };
+};
+
+const MASK_INFO: Record<'zh' | 'en', TranslatedMaskInfo> = {
+  zh: {
+    bidirectional: {
+      title: '双向 (Encoder)',
+      desc: '所有位置互相可见 — BERT 等 Encoder 模型使用',
+    },
+    causal: {
+      title: '因果 (Decoder-only)',
+      desc: '每个 token 只能看到自己和之前的位置 — GPT、LLaMA 等使用',
+    },
+    cross: {
+      title: '交叉 (Encoder-Decoder)',
+      desc: 'Decoder 可看到所有 Encoder 位置 — 原始 Transformer、T5 使用',
+    },
   },
-  causal: {
-    title: '因果 (Decoder-only)',
-    desc: '每个 token 只能看到自己和之前的位置 — GPT、LLaMA 等使用',
-  },
-  cross: {
-    title: '交叉 (Encoder-Decoder)',
-    desc: 'Decoder 可看到所有 Encoder 位置 — 原始 Transformer、T5 使用',
+  en: {
+    bidirectional: {
+      title: 'Bidirectional (Encoder)',
+      desc: 'All positions visible to each other — used by BERT and other Encoder models',
+    },
+    causal: {
+      title: 'Causal (Decoder-only)',
+      desc: 'Each token can only see itself and previous positions — used by GPT, LLaMA, etc.',
+    },
+    cross: {
+      title: 'Cross (Encoder-Decoder)',
+      desc: 'Decoder can see all Encoder positions — used by original Transformer, T5',
+    },
   },
 };
 
@@ -39,13 +61,14 @@ const CELL_SIZE = 40;
 const LABEL_WIDTH = 48;
 const LABEL_HEIGHT = 28;
 
-function MaskGrid({ type, hoveredCell, onHover }: {
+function MaskGrid({ type, hoveredCell, onHover, locale }: {
   type: MaskType;
   hoveredCell: [number, number] | null;
   onHover: (cell: [number, number] | null) => void;
+  locale: 'zh' | 'en';
 }) {
   const mask = getMask(type);
-  const info = MASK_INFO[type];
+  const info = MASK_INFO[locale][type];
   const svgW = LABEL_WIDTH + N * CELL_SIZE;
   const svgH = LABEL_HEIGHT + N * CELL_SIZE;
   const rowLabels = type === 'cross' ? TOKENS.map(t => t + '→') : TOKENS;
@@ -102,14 +125,25 @@ function MaskGrid({ type, hoveredCell, onHover }: {
   );
 }
 
-export default function AttentionMaskVisualization() {
+export default function AttentionMaskVisualization({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
   const [hoveredCell, setHoveredCell] = useState<[number, number] | null>(null);
+
+  const t = {
+    zh: {
+      visible: '可见',
+      masked: '遮罩',
+    },
+    en: {
+      visible: 'Visible',
+      masked: 'Masked',
+    },
+  };
 
   return (
     <div className="my-6">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {(['bidirectional', 'causal', 'cross'] as MaskType[]).map(type => (
-          <MaskGrid key={type} type={type} hoveredCell={hoveredCell} onHover={setHoveredCell} />
+          <MaskGrid key={type} type={type} hoveredCell={hoveredCell} onHover={setHoveredCell} locale={locale} />
         ))}
       </div>
       {hoveredCell && (
@@ -119,10 +153,10 @@ export default function AttentionMaskVisualization() {
       )}
       <div className="flex justify-center gap-4 mt-3 text-xs text-gray-500">
         <span className="flex items-center gap-1">
-          <span className="inline-block w-3 h-3 rounded" style={{ backgroundColor: COLORS.valid }} /> 可见
+          <span className="inline-block w-3 h-3 rounded" style={{ backgroundColor: COLORS.valid }} /> {t[locale].visible}
         </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block w-3 h-3 rounded" style={{ backgroundColor: COLORS.masked }} /> 遮罩
+          <span className="inline-block w-3 h-3 rounded" style={{ backgroundColor: COLORS.masked }} /> {t[locale].masked}
         </span>
       </div>
     </div>
