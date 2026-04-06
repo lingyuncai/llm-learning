@@ -64,6 +64,12 @@ references: array   # 至少一个 {type, title, url}
 - 纯展示型组件（无交互状态）可以不加 `client:` 指令
 - 动画用 Motion (`import { motion } from 'motion/react'`)，数据可视化用 D3 或自定义 SVG
 
+## 双语同步规则
+- 修改文章内容时，如果对应语言版本存在，必须同步更新两个版本
+- 修改 UI 组件（layout/common）时，确保使用 `t(locale, key)` 而非硬编码文字
+- 新增 UI 字符串时，必须同时在 `src/i18n/translations.ts` 中添加 zh 和 en 两个 key
+- 如果英文版文章尚未创建，在 commit message 中注明 "zh-only"
+
 ## 常用命令
 - `npm run dev` — 启动开发服务器
 - `npm run build` — 构建静态站点
