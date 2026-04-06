@@ -1,0 +1,119 @@
+---
+title: "多模型协作：从选一个到用多个"
+slug: mixture-of-agents
+locale: zh
+tags: [model-routing, mixture-of-agents, ensemble, council-mode, collaboration]
+difficulty: advanced
+prerequisites: [model-routing-landscape]
+created: "2026-04-06"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Council Mode: Multi-LLM Collaboration for Hallucination Reduction"
+    url: "https://arxiv.org/abs/2604.02923"
+  - type: website
+    title: "Mixture of Agents - Together AI"
+    url: "https://www.together.ai/blog/together-moa"
+---
+
+import SelectVsSynthesize from '../../../components/interactive/SelectVsSynthesize.tsx';
+import CouncilModeFlow from '../../../components/interactive/CouncilModeFlow.tsx';
+import MoAHierarchy from '../../../components/interactive/MoAHierarchy.tsx';
+import EnsembleVotingViz from '../../../components/interactive/EnsembleVotingViz.tsx';
+import CostScalingChart from '../../../components/interactive/CostScalingChart.tsx';
+
+**重要概念区分**：MoE (Mixture of Experts) 是单个模型内部的专家路由机制，而 MoA (Mixture of Agents) 是多个完整 LLM 模型之间的协作——粒度完全不同。
+
+前面几篇文章讨论的都是"如何选择一个最合适的模型"，但还有另一种思路：为什么要选？能不能同时用多个模型，然后综合它们的答案？这就是 Mixture of Agents (MoA) 的核心思想。
+
+## 选择 vs 综合
+
+Model Routing 的传统范式是**选择** (Selection)：给定一个请求，路由器选出一个最合适的模型。这种方式高效，成本可控，但可能错过其他模型的优势。
+
+**综合** (Synthesis) 范式则完全不同：调用多个模型，收集所有答案，然后用某种策略合并它们。这种方式成本更高，但能利用模型之间的互补性 (complementarity)，减少单模型的幻觉 (hallucination) 和偏见 (bias)。
+
+<SelectVsSynthesize client:visible />
+
+选择追求效率，综合追求质量。实际系统往往在两者之间寻找平衡点：对简单请求用选择，对关键请求用综合。
+
+## Council Mode：并行生成，集中综合
+
+Council Mode (2024) 是多模型协作的一种经典架构。它的工作流程分为两个阶段：
+
+1. **并行生成阶段**：多个 LLM（称为 council members）独立生成答案，彼此不知道其他成员的输出。
+2. **综合阶段**：一个 synthesizer 模型收集所有答案，分析它们的共识 (consensus) 和分歧 (divergence)，生成最终答案。
+
+实验表明，Council Mode 可以将幻觉率 (hallucination rate) 降低 **35.9%**。当 council 成员之间答案高度一致时，synthesizer 有更高的置信度 (confidence)；当答案分歧严重时，synthesizer 会标记不确定性 (uncertainty)。
+
+<CouncilModeFlow client:visible />
+
+三种常见的综合策略 (synthesis strategy)：
+
+- **Merge**：提取每个答案的核心信息，构造一个包含所有视角的综合答案。
+- **Majority Vote**：选择出现频率最高的答案，适合分类或选择题。
+- **Best-of-N**：让 synthesizer 评分，选出质量最高的单个答案。
+
+## 层级 MoA：从平行到金字塔
+
+简单的 Council Mode 是平行结构 (flat structure)，所有模型地位平等。更复杂的系统使用**层级结构** (hierarchical structure)，构建决策树 (decision tree) 或金字塔 (pyramid)。
+
+**HieraMAS** (Hierarchical Multi-Agent System) 在每个决策节点 (decision node) 上运行一个 mini-council，每层的输出成为下一层的输入。这样可以处理需要多步推理 (multi-step reasoning) 的复杂任务。
+
+**Pyramid MoA** 是 Together AI 提出的架构，层次逐渐收窄：
+
+- **Layer 1**：5 个通用模型生成初步答案。
+- **Layer 2**：3 个模型综合 Layer 1 的输出。
+- **Layer 3**：1 个最强模型生成最终答案。
+
+这种设计利用了**决策理论路由** (decision-theoretic routing)：早期层快速过滤明显错误的答案，后期层专注于细节打磨 (refinement)。系统可以根据中间层的一致性决定是否提前终止 (early stopping)，节省计算成本。
+
+<MoAHierarchy client:visible />
+
+层级结构的优势在于灵活性：可以在不同层使用不同规模的模型（底层用快速模型，顶层用高质量模型），在成本和质量之间找到最优配置。
+
+## Ensemble 与投票
+
+Ensemble Learning 的核心是**多样性** (diversity)：如果所有模型都犯同样的错误，投票也无济于事。理想的 ensemble 应包含：
+
+- **不同架构**的模型（如 GPT-4、Claude、Gemini）。
+- **不同规模**的模型（大模型擅长推理，小模型擅长速度）。
+- **不同训练数据**的模型（减少共同偏见）。
+
+三种常见的投票机制 (voting mechanism)：
+
+1. **Majority Voting**：每个模型一票，票数最多的答案获胜。简单但忽略模型质量差异。
+2. **Weighted Voting**：根据模型的历史准确率 (historical accuracy) 分配权重 $w_i$，答案得分为 $\sum_{i} w_i \cdot \mathbb{1}[\text{model}_i = \text{answer}]$。
+3. **Best-of-N Selection**：用一个评判模型 (judge model) 对所有答案打分，选择得分最高者。
+
+<EnsembleVotingViz client:visible />
+
+Ensemble 最有效的场景是**模型优势发散** (divergent strengths)：模型 A 擅长数学，模型 B 擅长创意写作，模型 C 擅长事实查询。通过 ensemble，系统可以在不同任务上自动利用各自的强项。
+
+## 成本与收益递减
+
+多模型协作的最大挑战是**收益递减** (diminishing returns)。实验数据显示：
+
+- 从 1 个模型增加到 3 个模型：质量提升约 **+6%**，成本增加 **3×**。
+- 从 3 个模型增加到 10 个模型：质量提升仅 **+2%**，成本再增加 **3.3×**。
+
+边际收益 (marginal benefit) 快速下降，而边际成本 (marginal cost) 线性增长。对于大多数应用，**2-3 个模型**是性价比的甜蜜点 (sweet spot)。
+
+<CostScalingChart client:visible />
+
+另一个隐性成本是**延迟** (latency)。并行调用多个模型时，总延迟取决于最慢的模型 (slowest model)。如果串行调用，延迟会累加。对于实时应用 (real-time application)，这可能是致命的。
+
+实际系统需要根据场景权衡：
+
+- **高价值任务** (high-value tasks)：如医疗诊断、法律咨询，质量优先，可以接受 5-10 个模型的 ensemble。
+- **中等任务**：如内容生成、代码审查，2-3 个模型的 Council Mode。
+- **低价值任务**：如简单问答、格式转换，单模型路由即可。
+
+## 总结
+
+这篇文章完成了 Model Routing 学习路径的最后一站。我们从最简单的**分类器路由**出发，经历了**级联路由**、**混合策略**、**在线学习**，最终抵达**多模型协作**——从"选一个最好的"到"用多个一起干"。
+
+多模型协作的核心优势是**鲁棒性** (robustness) 和**互补性** (complementarity)，代价是成本和复杂度。随着模型能力的提升和成本的下降，这个领域正在从"奢侈品"变成"标准配置"。
+
+未来的趋势是**自适应编排** (adaptive orchestration)：系统根据请求特征、历史表现、预算约束，动态决定是用单模型还是多模型，是并行还是串行，是平行还是层级。Model Routing 不再是静态的配置，而是实时的智能决策。
+
+LLM 应用的下一个十年，不是关于"哪个模型最强"，而是关于"如何把所有模型的优势组合起来"。
