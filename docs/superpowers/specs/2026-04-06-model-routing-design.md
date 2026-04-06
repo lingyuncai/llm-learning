@@ -5,7 +5,7 @@
 **标题**: "LLM Model Routing：智能模型选择与混合推理"
 **难度**: advanced
 **文章数**: 6 篇
-**交互组件数**: 32 个
+**交互组件数**: 33 个
 **定位**: 与 inference-serving（引擎内部机制）互补——inference-serving 讲"一个模型怎么高效服务"，model-routing 讲"怎么选对模型"
 
 ---
@@ -95,7 +95,7 @@ Prerequisite 关系：
 
 ### 第1篇 `model-routing-landscape` — Model Routing 全景：为什么一个模型不够
 
-**难度**: intermediate
+**难度**: advanced
 **目标读者**: 对 LLM 系统架构感兴趣的学习者
 **读完收获**: 对所有路由方法建立完整 mental model，理解各方法的适用场景和 tradeoff
 
@@ -315,11 +315,12 @@ Prerequisite 关系：
 **前置**: model-routing-landscape
 **目标**: 理解动态路由方法——bandit/RL 如何在运行中持续优化路由策略
 
-**组件（4 个）**：
+**组件（5 个）**：
 
 | 组件名 | 类型 | 交互方式 |
 |--------|------|----------|
 | `BanditExploration` | 动画模拟 | Explore vs Exploit：bandit 实时选择模型并更新估计 |
+| `RLRewardSignalViz` | 循环图动画 | RL routing 的 state(query) → action(选模型) → reward(质量-成本) 循环 |
 | `ParetoFrontierViz` | 散点+前沿线 | 成本 vs 质量 Pareto 前沿，添加/移除模型看变化 |
 | `DynamicPriceAdaptation` | 时间序列 | 模拟价格波动，看路由策略动态调整 |
 | `BatchVsQueryRouting` | 对比动画 | 逐 query vs batch-level 路由差异和性能对比 |
@@ -338,6 +339,7 @@ Prerequisite 关系：
 - Agent Q-Mix (2026)：RL 优化多 agent 拓扑选择
 - 状态=query 特征，动作=选模型，reward=质量-成本
 - Reward-Based Online Routing：NeuralUCB 平衡效率和适应性
+- `RLRewardSignalViz` — state-action-reward 循环动画
 
 **§3 Pareto 前沿与成本约束**
 - 多目标优化：质量和成本不可兼得，找最优前沿
@@ -372,7 +374,7 @@ Prerequisite 关系：
 
 **内容骨架**：
 
-**简介**：前面都是"选一个最好的"。Mixture of Agents 的哲学不同——与其选，不如都用，综合出更好的结果。
+**简介**：前面都是"选一个最好的"。Mixture of Agents 的哲学不同——与其选，不如都用，综合出更好的结果。注意区分：MoE (Mixture of Experts) 是单个模型内部的专家路由机制（见 transformer-core 路径的 mixture-of-experts 文章），而 MoA (Mixture of Agents) 是多个完整 LLM 模型之间的协作——粒度完全不同。
 
 **§1 选择 vs 综合**
 - Routing 的假设：存在一个"最佳模型"
@@ -412,9 +414,9 @@ Prerequisite 关系：
 | 2. routing-classifiers | 5 | MatrixFactorizationViz, BertRouterFlow, CausalLMRouter, SemanticRoutingViz, DecisionBoundaryCompare |
 | 3. cascade-self-verification | 5 | CascadeChainFlow, SelfVerificationDemo, ConfidenceThresholdSlider, POMDPDecisionTree, LLMAsJudgeFlow |
 | 4. hybrid-local-cloud | 6 | CapabilityMatchDiagram, LatencyTradeoffAnalysis, PrivacyRoutingFlow, RouterFreeRL, HybridArchCompare, MultiObjectiveRadar |
-| 5. online-learning-cost-optimization | 4 | BanditExploration, ParetoFrontierViz, DynamicPriceAdaptation, BatchVsQueryRouting |
+| 5. online-learning-cost-optimization | 5 | BanditExploration, RLRewardSignalViz, ParetoFrontierViz, DynamicPriceAdaptation, BatchVsQueryRouting |
 | 6. mixture-of-agents | 5 | SelectVsSynthesize, CouncilModeFlow, MoAHierarchy, EnsembleVotingViz, CostScalingChart |
-| **合计** | **32** | |
+| **合计** | **33** | |
 
 ---
 
