@@ -1,0 +1,142 @@
+---
+title: "Model Routing 全景：为什么一个模型不够"
+slug: model-routing-landscape
+locale: zh
+tags: [model-routing, llm, cost-optimization, system-design]
+difficulty: advanced
+created: "2026-04-06"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "RouteLLM: Learning to Route LLMs with Preference Data"
+    url: "https://arxiv.org/abs/2406.18665"
+  - type: paper
+    title: "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance"
+    url: "https://arxiv.org/abs/2305.05176"
+  - type: paper
+    title: "AutoMix: Automatically Mixing Language Models"
+    url: "https://arxiv.org/abs/2310.12963"
+  - type: website
+    title: "RouteLLM GitHub Repository"
+    url: "https://github.com/lm-sys/RouteLLM"
+---
+
+import CostQualityTriangle from '../../../components/interactive/CostQualityTriangle.tsx';
+import RoutingTaxonomyTree from '../../../components/interactive/RoutingTaxonomyTree.tsx';
+import RoutingGranularityCompare from '../../../components/interactive/RoutingGranularityCompare.tsx';
+import AccuracyCostScatter from '../../../components/interactive/AccuracyCostScatter.tsx';
+import LatencyOverheadBar from '../../../components/interactive/LatencyOverheadBar.tsx';
+import ScenarioFitMatrix from '../../../components/interactive/ScenarioFitMatrix.tsx';
+import PaperTimeline from '../../../components/interactive/PaperTimeline.tsx';
+
+GPT-4 级别的模型和 Llama-3-8B 级别的模型之间，能力差距巨大，而价格差距更大 — 可达 **100 倍**。但实际生产流量中，大约 80% 的 query 并不需要最强的模型：问"今天星期几"和"证明黎曼猜想的等价命题"显然不在同一个难度级别。
+
+**Model Routing**（模型路由）的核心命题是：**根据每个 query 的难度和性质，自动选择最合适的模型**，在质量、成本、延迟和隐私之间取得最优平衡。这不是一个新想法 — 从 2023 年 FrugalGPT 提出级联策略，到 2024 年 RouteLLM 开源路由框架，再到 2025-2026 年各方向的集中爆发，model routing 已经从学术概念演变为生产级系统的核心组件。
+
+## §1 为什么需要路由
+
+单一模型方案面临一个根本性的多维权衡困境：
+
+- **成本**：GPT-4 级别的 API 调用价格远高于小模型，大规模应用中成本线性增长
+- **延迟**：更大的模型意味着更长的首 token 时间（TTFT）和生成时间
+- **质量**：小模型在复杂推理、代码生成、多步逻辑等任务上明显不足
+- **隐私**：某些 query 包含敏感信息，不适合发送到第三方 API
+
+关键洞察是：这四个维度不可能同时最优，但可以**按 query 分别优化**。RouteLLM（Ong et al., 2024）在实验中证明，通过训练路由器在 GPT-4 和较小模型之间智能切换，可以在保持约 95% GPT-4 质量的同时，将 API 调用成本降低超过 85%。FrugalGPT（Chen et al., 2023）更是展示了通过级联策略实现高达 98% 的成本削减。
+
+<CostQualityTriangle client:visible />
+
+## §2 路由方法分类框架
+
+Model routing 的方法空间可以从三个正交维度来理解：
+
+**按路由粒度**：
+- **Query-level**：整个请求选择一个模型处理，最简单也最常见
+- **Subtask-level**：将复杂请求拆分为子任务，各自路由到不同模型（如 HybridFlow 的 DAG 路由）
+- **Token-level**：在生成过程中逐 token 判断是否需要切换模型，粒度最细但开销最大
+
+**按决策时机**：
+- **静态路由**：部署前确定规则或训练好分类器，运行时直接查表/推理
+- **动态路由**：运行时持续收集反馈并更新路由策略（bandit、RL）
+
+**按模型使用方式**：
+- **选一个（routing）**：为每个 query 选择单一模型
+- **先试后验（cascade）**：从便宜模型开始，验证不通过则升级
+- **全都用（ensemble / MoA）**：多个模型同时回答，综合结果
+
+在路由器实现层面，主流方法包括：Matrix Factorization（MF，偏好数据学评分函数）、BERT 分类器（微调做 strong/weak 二分类）、Causal LM（小语言模型做路由判断）、Semantic Routing（embedding 匹配，无需训练）、自验证（模型评估自己的输出置信度）、LLM-as-Judge（另一个 LLM 评估）、Bandit/RL（在线学习）、以及基础设施级路由（负载均衡、fallback）。
+
+<RoutingTaxonomyTree client:visible />
+
+<RoutingGranularityCompare client:visible />
+
+## §3 各方法核心原理
+
+### 分类器路由
+
+分类器路由的核心思路是：训练一个轻量模型来预测"这个 query 需要强模型吗？"。
+
+**Matrix Factorization（MF）路由器**利用 Chatbot Arena 的人类偏好数据 — 每条数据记录了一个 query 下两个模型的胜负关系。MF 将 query 和 model 映射到同一低维向量空间，通过向量内积预测偏好得分。直觉上，这等于学习了"query 难度"和"模型能力"两个隐向量的匹配关系。RouteLLM 的实验表明 MF router 在成本-质量权衡上表现最稳定。
+
+**BERT 分类器**走更直接的路线：用强弱模型分别回答同一批 query，标注哪个回答更好，然后微调 BERT 做二分类。优势是训练简单、推理极快（~1ms）；劣势是需要构造高质量标注数据。
+
+**Causal LM 路由器**（如 Small Models as Routers, 2026）用 1-4B 参数的小语言模型做路由判断，利用小模型本身的语义理解能力。这种方法的关键优势是 **zero-marginal-cost** — 如果小模型本身就是候选模型之一（被路由到时直接继续生成），路由判断不产生额外计算开销。
+
+### 级联与自验证
+
+级联（cascade）策略的哲学是"从便宜开始，按需升级"。
+
+**FrugalGPT**（Chen et al., 2023）定义了经典的级联框架：query 首先发送给最便宜的模型，通过一个评分函数（scoring function）评估回答质量，如果置信度不足则逐级升级到更强（也更贵）的模型。实验显示这种策略可以在保持 GPT-4 同等质量的同时降低高达 98% 的成本 — 因为绝大多数简单 query 在第一级就能得到满意的回答。
+
+**AutoMix**（Madaan et al., 2023; NeurIPS 2024）将路由建模为 POMDP（部分可观察马尔可夫决策过程），核心创新是用 **few-shot 自验证** 让模型评估自己的输出。模型生成回答后，用 few-shot prompt 让同一个模型判断"这个回答是否可靠"，如果自评不通过则升级到更强模型。这避免了训练单独的路由分类器。
+
+### Hybrid LLM：本地与云端
+
+Hybrid LLM routing 自动判断 query 应该走本地小模型还是云端大模型，是最贴近实际部署的场景（如 Apple Intelligence 的 on-device + Private Cloud Compute 架构）。
+
+这里有一个常见误解需要澄清：**能力匹配是第一驱动因素**，而非成本或延迟。只有当本地模型有能力处理某个 query 时，成本和隐私优势才有意义。此外，**本地不等于低延迟** — 消费级硬件上的推理速度可能远慢于云端 A100/H100 集群，本地的优势在于零网络延迟和数据不出设备。
+
+隐私维度增加了额外复杂性。PRISM（AAAI 2026）实现了**实体级隐私敏感度检测** — 不是粗暴地将所有包含人名的 query 都留在本地，而是细粒度判断哪些实体真正敏感，从而在隐私保护和模型能力之间取得更精确的平衡。
+
+### 在线学习
+
+静态路由器的局限在于：模型能力和使用场景会随时间变化。在线学习方法通过 **explore/exploit**（探索/利用）权衡来持续优化路由策略。
+
+经典的 **contextual bandit** 方法将每次路由决策视为一个 arm 选择：根据 query 的上下文特征选择模型，观察回答质量作为 reward，更新策略。**ParetoBandit**（2026）将其扩展到多目标优化 — 同时优化质量和成本，在 Pareto 前沿上寻找最优 tradeoff，而非简单地优化单一指标。
+
+### 多模型协作
+
+多模型协作代表了一种哲学转变：不是"选一个最好的"，而是"让多个模型一起给出更好的答案"。
+
+**Mixture-of-Agents（MoA）** 让多个 LLM 分层协作 — 第一层各自独立回答，后续层综合前一层的输出进行迭代优化。需要注意 MoA 和 Mixture-of-Experts（MoE）是完全不同的概念：MoE 是模型内部的架构设计（token-level 的专家路由），而 MoA 是模型间的协作框架（query-level 的多模型综合）。
+
+**Council Mode**（2026）是多模型协作在生产环境中的实践：并行调用多个 LLM，通过综合机制合并回答。实验表明这种方法可以将幻觉率（hallucination rate）降低 35.9%，核心原因是不同模型的幻觉模式通常不同，交叉验证能有效过滤错误信息。
+
+## §4 多维度对比
+
+不同路由方法在精度、成本、延迟和适用场景上的差异很大。以下三个可视化从不同角度呈现这些 tradeoff：
+
+<AccuracyCostScatter client:visible />
+
+<LatencyOverheadBar client:visible />
+
+<ScenarioFitMatrix client:visible />
+
+## §5 论文与系统全景
+
+Model routing 领域从 2023 年的探索期迅速进入 2025-2026 年的爆发期，论文和开源系统密集涌现：
+
+<PaperTimeline client:visible />
+
+在实际系统层面，几个代表性项目值得关注：
+
+- **RouteLLM**（lm-sys/RouteLLM）：开源路由框架，实现了 MF、BERT、Causal LM、SW 四种 router，可直接集成到 OpenAI 兼容的 API 调用中
+- **OpenRouter**：商业 API 网关，聚合数十个 LLM 提供商，支持基于模型能力和价格的自动路由
+- **LiteLLM**：基础设施级路由层，提供统一 API 接口 + fallback + 负载均衡，100+ 模型提供商支持
+- **Martian**：商业路由平台，基于模型能力指纹（capability fingerprinting）的智能路由
+
+## 总结
+
+Model routing 没有银弹。分类器路由训练简单但需要偏好数据；级联方法对简单 query 极其高效但多轮调用增加延迟；Hybrid LLM 最贴近实际部署但需要精确的能力评估；在线学习能自适应但冷启动成本高；多模型协作质量最高但成本和延迟也最高。
+
+选择哪种方法取决于你的场景：高吞吐 API 服务倾向分类器路由，成本敏感场景适合级联，隐私优先选 Hybrid，需要持续优化选在线学习，质量至上选多模型协作。后续文章将逐一深入每种方法的算法细节和实现。
