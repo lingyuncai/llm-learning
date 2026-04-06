@@ -1,0 +1,161 @@
+---
+title: "oneDNN Primitive 体系"
+slug: onednn-primitives
+locale: zh
+tags: [intel, onednn, primitive, memory-format, operator-library]
+difficulty: advanced
+created: "2026-04-05"
+updated: "2026-04-05"
+prerequisites: [spirv-level-zero]
+references:
+  - type: website
+    title: "oneDNN Developer Guide — Intel"
+    url: "https://oneapi-src.github.io/oneDNN/"
+  - type: repo
+    title: "oneAPI Deep Neural Network Library (oneDNN) — GitHub"
+    url: "https://github.com/oneapi-src/oneDNN"
+  - type: website
+    title: "oneDNN Programming Model — Intel"
+    url: "https://oneapi-src.github.io/oneDNN/dev_guide_basic_concepts.html"
+  - type: website
+    title: "Memory Format Propagation — oneDNN"
+    url: "https://oneapi-src.github.io/oneDNN/dev_guide_understanding_memory_formats.html"
+---
+
+import PrimitiveLifecycle from '../../../components/interactive/PrimitiveLifecycle.tsx';
+import MemoryFormatViz from '../../../components/interactive/MemoryFormatViz.tsx';
+import PostOpFusion from '../../../components/interactive/PostOpFusion.tsx';
+import PrimitiveCacheFlow from '../../../components/interactive/PrimitiveCacheFlow.tsx';
+import OpDataTypeMatrix from '../../../components/interactive/OpDataTypeMatrix.tsx';
+
+## oneDNN 的定位与设计目标
+
+oneDNN (oneAPI Deep Neural Network Library) 是 Intel 提供的跨架构深度学习算子库，专为 CPU 和 GPU（特别是 Intel Xe 架构）优化。它的核心设计理念是将底层硬件复杂性抽象为统一的 **Primitive** 接口，让开发者无需手写 SIMD 汇编或 GPU kernel，就能获得接近硬件极限的性能。
+
+与 NVIDIA cuDNN 相比，oneDNN 的独特之处在于其**跨设备统一性**：同一套 API 可在 Intel CPU、GPU、FPGA 上运行，通过 `engine` 抽象选择执行设备。对于 Intel iGPU，oneDNN 底层会生成 SPIR-V 代码，通过 Level Zero 提交到 Xe Cores 执行。它还内置了 **Primitive Cache** 和 **Post-op Fusion** 等企业级优化，这些机制在推理场景中至关重要。
+
+在深度学习框架中，oneDNN 通常作为后端算子库被集成：PyTorch 通过 `MKLDNN` 后端调用它，TensorFlow 通过 `oneDNN` 插件支持。理解 oneDNN 的 Primitive 体系，是掌握 Intel GPU 深度学习加速的必经之路。
+
+## Primitive 生命周期
+
+oneDNN 的 **Primitive** 是一个封装了算子逻辑和编译后 GPU kernel 的可执行对象。它的生命周期分为五个阶段：创建 Engine、描述操作、编译 Primitive、执行、结果复用。这个流程看似简单，但编译阶段的耗时可达数百毫秒，必须通过缓存机制优化。
+
+<PrimitiveLifecycle client:visible />
+
+**关键要点：**
+1. **Primitive Descriptor 阶段**：oneDNN 会枚举所有可用算法实现（如 Convolution 的 Winograd、Direct、Im2col），根据输入形状和硬件特性选择最优实现。这一步是「智能调度」的核心。
+2. **编译瓶颈**：`primitive` 对象的创建涉及 OpenCL C → SPIR-V → GPU ISA 的编译链，延迟通常在 50-200ms。首次执行时会感受到明显延迟，这是 GPU 推理框架的通病。
+3. **异步执行**：`execute()` 调用立即返回，真正的计算在 GPU stream 中异步进行。需通过 `stream.wait()` 同步等待结果。
+
+在实际应用中，推理服务通常会**预热**（warmup）：启动时执行几次 dummy 输入，触发所有 primitive 的编译并缓存，避免首次请求时的冷启动延迟。
+
+## Memory 与 Format Tag
+
+oneDNN 的 **Memory** 对象不仅描述数据的形状和类型，还包含 **Format Tag**，定义数据在内存中的物理布局。正确的 Format Tag 是 GPU 性能优化的关键：它决定了数据访问模式是否匹配 SIMD 单元的执行宽度。
+
+<MemoryFormatViz client:visible />
+
+**为什么需要 Blocked Format？**
+- **NCHW (plain format)**：通道按顺序存储，例如 `[C0, C1, C2, ..., C31]`。当 GPU 执行向量化操作时，需要从不同的内存地址 gather 数据，带宽利用率低。
+- **nChw16c (blocked format)**：16 个通道打包为一组，每个 H×W 位置的 16 个通道在内存中连续。这样，GPU 的 SIMD16 单元可以一次加载一个向量，无需 gather/scatter。
+- **nChw32c**：针对 Xe2 的 SIMD32 和 XMX 单元优化，进一步提升带宽利用率。
+
+oneDNN 的 **Format Propagation** 机制会自动在算子间插入 `Reorder` 操作，将数据从一种格式转换为另一种。例如，输入是 NCHW，Convolution 期望 nChw16c，oneDNN 会自动插入 `Reorder(nchw → nchw16c)`。虽然 Reorder 本身有开销，但它让后续计算的性能提升远超转换成本。
+
+**实践建议：**
+- 推理时尽量使用 `format_tag::any`，让 oneDNN 自动选择最优格式。
+- 训练时需要手动管理格式，因为梯度回传需要格式一致性。
+- 对于 FP16/BF16 的 MatMul 和 Convolution，`nChw16c` 或 `nChw32c` 是最优选择。
+
+## Propagation Kind 与 Fusion
+
+oneDNN 的 **Post-op Fusion** 允许将多个算子融合为一个 GPU kernel，减少内存往返和 kernel 启动开销。这是深度学习推理优化的核心技术之一。
+
+<PostOpFusion client:visible />
+
+**Fusion 的收益来自哪里？**
+1. **带宽节省**：未融合时，Conv 输出需写回 VRAM，ReLU 再读取；融合后，Conv 的输出直接留在寄存器或 L1 cache，ReLU 立即消费。
+2. **启动开销减少**：GPU kernel 启动有数十微秒的延迟（命令提交、调度、上下文切换），融合后只启动一次。
+3. **指令流水线优化**：融合后的 kernel 可以利用指令级并行（ILP），Conv 和 ReLU 的指令交错执行。
+
+oneDNN 支持的 Post-op 类型包括：
+- **Eltwise**：ReLU, GELU, Sigmoid, Tanh 等激活函数
+- **Sum**：残差连接 (residual addition)
+- **Binary**：逐元素加法、乘法（用于 attention mask）
+
+**代码示例：**
+```cpp
+// 创建 Conv + ReLU + Sum 的融合 primitive
+dnnl::post_ops ops;
+ops.append_eltwise(1.0f, dnnl::algorithm::eltwise_relu, 0.0f, 0.0f);
+ops.append_sum(1.0f);  // residual connection
+
+dnnl::primitive_attr attr;
+attr.set_post_ops(ops);
+
+auto conv_pd = dnnl::convolution_forward::primitive_desc(
+    eng, /* ... */, attr);
+```
+
+在实际推理中，Conv + BatchNorm + ReLU 的融合组合最常见。oneDNN 会将 BatchNorm 的缩放和偏移折叠到 Conv 的权重中，整个过程零额外开销。
+
+## Primitive Cache 机制
+
+由于 Primitive 编译耗时高，oneDNN 内置了 **Primitive Cache**，用 (operation_type, shapes, data_types, format_tags) 作为 key，缓存已编译的 primitive 对象。
+
+<PrimitiveCacheFlow client:visible />
+
+**Cache 的设计细节：**
+- **LRU 淘汰策略**：默认缓存 128 个 primitive，超出时淘汰最久未使用的。
+- **线程安全**：多线程推理时，cache 使用读写锁保护，命中路径只需读锁。
+- **命中率优化**：固定 batch size 和输入形状可大幅提升命中率。动态形状会导致每个形状都触发一次编译。
+
+**环境变量配置：**
+```bash
+# 设置 cache 容量（默认 128）
+export ONEDNN_PRIMITIVE_CACHE_CAPACITY=256
+
+# 启用 verbose 日志，观察 cache 行为
+export ONEDNN_VERBOSE=1
+```
+
+在生产环境中，推理服务通常会：
+1. **预编译**：启动时遍历所有可能的输入形状，触发编译并缓存。
+2. **持久化**：将编译后的 SPIR-V 二进制保存到磁盘，下次启动时直接加载（需要自行实现，oneDNN 不提供）。
+3. **形状对齐**：将动态输入 pad 到固定形状（如 batch size 必须是 8 的倍数），减少 cache miss。
+
+## 支持的操作与数据类型
+
+Intel Xe2 iGPU 通过 XMX (Xe Matrix Extensions) 单元支持 INT8、FP16、BF16 的矩阵乘法加速，但不同算子对数据类型的支持程度不同。
+
+<OpDataTypeMatrix />
+
+**数据类型选择建议：**
+1. **MatMul/Convolution**：优先使用 **BF16**，它的动态范围与 FP32 相同（8-bit 指数），避免了 FP16 的溢出问题，同时 XMX 加速效果显著。
+2. **Softmax/LayerNorm**：使用 **FP16** 或 **FP32**。BF16 虽然支持，但 oneDNN 会在内部转换为 FP32 计算，无性能优势。
+3. **INT8 量化**：适合推理，但需要配合量化感知训练（QAT）或训练后量化（PTQ）。oneDNN 支持 INT8 的对称和非对称量化。
+
+**Xe2 的 XMX 性能：**
+- **BF16 MatMul**：理论峰值 ~8 TFLOPS (Arc A770)
+- **INT8 MatMul**：理论峰值 ~16 TOPS
+- **FP32 MatMul**：理论峰值 ~2 TFLOPS（无 XMX 加速，走 EU ALU）
+
+在实际测试中，BF16 的 Transformer 推理相比 FP32 可获得 **2-3 倍**加速，精度损失通常在 0.5% 以内。
+
+## 总结
+
+oneDNN Primitive 体系是 Intel GPU 深度学习加速的软件基石。它通过 **Engine 抽象**屏蔽硬件细节，通过 **Format Propagation** 自动优化内存布局，通过 **Post-op Fusion** 减少带宽浪费，通过 **Primitive Cache** 消除编译瓶颈。
+
+理解 oneDNN 的核心概念后，你可以：
+1. **优化推理延迟**：通过预热、固定形状、BF16 数据类型组合使用，将首次推理延迟从秒级降低到毫秒级。
+2. **提升吞吐量**：使用 blocked memory format（nChw16c）+ Post-op Fusion，GPU 利用率可提升 50% 以上。
+3. **调试性能问题**：通过 `ONEDNN_VERBOSE=1` 日志，观察算子选择、内存格式转换、cache 命中情况，定位瓶颈。
+
+下一步，我们将深入 Intel iGPU 的硬件架构，了解 Xe Cores、XMX、Shared Local Memory 的工作原理，以及如何手写高效的 SPIR-V kernel。
+
+## 延伸阅读
+
+- [oneDNN Performance Profiling Guide](https://oneapi-src.github.io/oneDNN/dev_guide_profiling.html) — 使用 VTune 和 oneDNN verbose 日志分析性能
+- [Memory Format Propagation in oneDNN](https://oneapi-src.github.io/oneDNN/dev_guide_understanding_memory_formats.html) — Format tag 的自动推导机制
+- [Post-ops and Attributes](https://oneapi-src.github.io/oneDNN/dev_guide_attributes.html) — 支持的 fusion 类型和配置方法
+- [Intel Xe Matrix Extensions (XMX) Deep Dive](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-deep-learning-boost-new-instruction-bfloat16.html) — Xe2 矩阵加速单元的硬件细节
