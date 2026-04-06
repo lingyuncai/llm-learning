@@ -1,0 +1,123 @@
+---
+title: "在线学习与成本优化：路由也需要持续进化"
+slug: online-learning-cost-optimization
+locale: zh
+tags: [model-routing, bandit, reinforcement-learning, pareto, cost-optimization]
+difficulty: advanced
+prerequisites: [model-routing-landscape]
+created: "2026-04-06"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Robust Batch-Level LLM Routing"
+    url: "https://arxiv.org/abs/2603.26796"
+  - type: paper
+    title: "RouteLLM: Learning to Route LLMs with Preference Data"
+    url: "https://arxiv.org/abs/2406.18665"
+---
+
+import BanditExploration from '../../../components/interactive/BanditExploration.tsx';
+import RLRewardSignalViz from '../../../components/interactive/RLRewardSignalViz.tsx';
+import ParetoFrontierViz from '../../../components/interactive/ParetoFrontierViz.tsx';
+import DynamicPriceAdaptation from '../../../components/interactive/DynamicPriceAdaptation.tsx';
+import BatchVsQueryRouting from '../../../components/interactive/BatchVsQueryRouting.tsx';
+
+在静态路由策略中，我们预先训练好一个分类器，然后持续使用它。但现实世界是动态的：模型 API 的价格会变化，用户查询的分布会漂移，新模型不断发布。**在线学习 (Online Learning)** 让路由器在生产环境中持续适应这些变化，同时在探索 (Exploration) 和利用 (Exploitation) 之间取得平衡，最终实现质量与成本的帕累托最优。
+
+## Multi-armed Bandit：探索与利用的平衡
+
+将模型选择视为 **Multi-armed Bandit (MAB)** 问题：每个模型是一个"臂" (arm)，每次路由决策相当于"拉动"一个臂，奖励 (reward) 定义为：
+
+$$
+R = \text{quality} - \lambda \cdot \text{cost}
+$$
+
+其中 $\lambda$ 控制成本敏感度。核心挑战是**探索与利用的权衡**：
+
+- **Exploitation (利用)**：选择当前已知最优的模型，最大化即时奖励
+- **Exploration (探索)**：尝试其他模型，收集更多信息，可能发现更好的策略
+
+经典算法包括：
+
+- **ε-greedy**：以概率 $\epsilon$ 随机探索，以概率 $1-\epsilon$ 选择当前最优臂。简单但探索效率低。
+- **Upper Confidence Bound (UCB)**：为每个臂计算置信上界，选择 UCB 最高的臂。平衡了期望奖励和不确定性。
+- **Thompson Sampling**：贝叶斯方法，根据后验分布采样，自然平衡探索与利用。
+
+在路由场景中，每个查询到达时，算法根据历史奖励更新模型的价值估计，然后选择当前最优模型。下图展示了三种算法在相同设置下的探索行为：
+
+<BanditExploration client:visible />
+
+随着时间推移，算法逐渐收敛到最优策略，但需要付出探索成本。Thompson Sampling 通常在 Bandit 问题中表现最佳，因为它能更智能地分配探索预算。
+
+## RL Routing：从反馈中学习路由策略
+
+**强化学习 (Reinforcement Learning)** 将路由建模为序贯决策问题：
+
+- **State (状态)**：查询特征 $s$（嵌入、意图标签、上下文等）
+- **Action (动作)**：选择模型 $a \in \{m_1, m_2, \ldots, m_k\}$
+- **Reward (奖励)**：$R = \text{quality}(s, a) - \lambda \cdot \text{cost}(a)$
+
+路由器学习策略 $\pi(a|s)$，最大化累积奖励：
+
+$$
+\max_\pi \mathbb{E}_{s \sim p(s), a \sim \pi(\cdot|s)}[R(s, a)]
+$$
+
+**RouteLLM (2024)** 提出用偏好数据 (preference data) 训练路由器：给定查询 $s$ 和两个模型的响应，人类标注更优者。通过 preference learning，路由器学会为每个查询选择最可能产生高质量响应的模型，同时考虑成本约束。训练后的路由器可以在线调整，持续从新的偏好反馈中学习。
+
+下图展示了 RL 路由的奖励信号如何随时间演化：
+
+<RLRewardSignalViz client:visible />
+
+奖励信号的方差在早期较大（探索阶段），随着策略收敛逐渐减小（利用阶段）。RL 方法比 Bandit 更强大，因为它能捕捉状态-动作的复杂依赖关系，但训练成本更高。
+
+## Pareto 前沿与成本约束
+
+在多目标优化中，**Pareto 前沿 (Pareto Frontier)** 定义了质量-成本空间中无法被严格支配的模型集合：如果模型 $A$ 在质量和成本上都不差于模型 $B$，且至少一个维度严格更优，则 $A$ 帕累托支配 $B$。理想的路由策略应该只在 Pareto 前沿上的模型之间切换。
+
+下图展示了一个典型的 Pareto 前沿：
+
+<ParetoFrontierViz client:visible />
+
+点击图中的模型可以查看其质量-成本权衡。Pareto 前沿上的模型（蓝色）代表不同的最优选择，具体选哪个取决于用户的成本预算 $B$ 或质量要求 $Q_{\min}$。
+
+### 动态价格适应
+
+现实中，API 定价并非固定。OpenAI、Anthropic 等服务商会根据需求调整价格，或提供批量折扣。**动态价格适应 (Dynamic Price Adaptation)** 要求路由器实时监控价格变化，重新计算 Pareto 前沿，调整路由决策。
+
+<DynamicPriceAdaptation client:visible />
+
+上图模拟了价格波动场景：当某个模型降价时，它可能从 Pareto 前沿外移入前沿内，路由器应立即增加其使用比例。在线学习算法（如 Bandit）天然适应这种变化，因为它们持续更新奖励估计。
+
+## Batch vs Query-level 路由
+
+传统的 **per-query routing** 为每个查询独立选择模型，简单高效，但忽略了全局约束：
+
+- **GPU 并发限制**：自托管模型有最大并发数，超载会导致延迟飙升
+- **总预算约束**：生产系统通常有每日或每月的总成本预算
+- **批量折扣**：某些 API 提供批量调用折扣，单独路由无法利用
+
+**Batch-level routing** 将路由视为全局优化问题：给定一批查询 $\{q_1, \ldots, q_n\}$ 和约束（预算 $B$，并发限制 $C$），找到分配 $\{(q_i, m_j)\}$ 最大化总质量：
+
+$$
+\max \sum_{i=1}^n \text{quality}(q_i, m_j) \quad \text{s.t.} \quad \sum_{i=1}^n \text{cost}(m_j) \leq B, \, \text{concurrency}(m_j) \leq C
+$$
+
+**Robust Batch-Level LLM Routing (2026)** 提出用整数线性规划 (ILP) 或启发式算法求解批量路由，同时考虑模型性能的不确定性（用置信区间建模）。实验表明，批量路由在严格预算约束下比逐查询路由提升质量 8-15%。
+
+<BatchVsQueryRouting client:visible />
+
+上图对比了两种路由方式的成本-质量曲线。批量路由通过全局协调，能在相同预算下达到更高质量，或在相同质量下降低成本。但批量路由需要缓冲查询（增加延迟），且计算开销更大，适合离线或半在线场景。
+
+## 总结
+
+在线学习将路由从"一次性训练"变为"持续进化"的系统：
+
+- **Bandit 算法** 提供简单的探索-利用框架，适合快速适应环境变化
+- **RL 方法** 捕捉复杂的状态-动作依赖，但需要更多训练数据
+- **Pareto 优化** 明确了质量-成本的多目标权衡，动态价格适应确保策略始终最优
+- **批量路由** 通过全局优化突破单查询路由的局限，在约束场景下显著提升效率
+
+核心权衡是**探索成本 vs 利用效率**：探索能发现更好的策略，但需要承担试错的代价。在生产系统中，通常采用保守的探索策略（小 $\epsilon$ 或高置信度阈值），在离线环境中验证后再部署。
+
+下一篇文章将探讨**模型混合与协作路由 (Mixture of Agents)**：不再是"选一个模型"，而是让多个模型协同工作，通过投票、串联或并行生成来提升整体性能。
