@@ -1,0 +1,17 @@
+id: intel-igpu-inference
+title:
+  zh: "Intel iGPU 推理深度解析：Xe2 架构、oneDNN 与 OpenVINO"
+  en: "Intel iGPU Inference Deep Dive: Xe2 Architecture, oneDNN & OpenVINO"
+description:
+  zh: "从 Xe2 微架构到 oneDNN primitive 体系，从 SPIR-V 编译管线到 OpenVINO 图优化，从性能瓶颈诊断到 GPU+NPU 协同推理，系统理解 Intel iGPU 上的 AI 推理优化全栈。"
+  en: "From Xe2 microarchitecture to oneDNN primitives, from SPIR-V compilation to OpenVINO graph optimization, from performance analysis to GPU+NPU co-inference — a systematic deep dive into AI inference on Intel iGPU."
+level: advanced
+articles:
+  - xe2-gpu-architecture
+  - xe2-execution-model
+  - spirv-level-zero
+  - onednn-primitives
+  - onednn-gpu-optimization
+  - openvino-graph-pipeline
+  - igpu-performance-analysis
+  - npu-gpu-co-inference
