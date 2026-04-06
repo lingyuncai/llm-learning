@@ -1,0 +1,142 @@
+---
+title: "Model Routing Landscape: Why One Model Isn't Enough"
+slug: model-routing-landscape
+locale: en
+tags: [model-routing, llm, cost-optimization, system-design]
+difficulty: advanced
+created: "2026-04-06"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "RouteLLM: Learning to Route LLMs with Preference Data"
+    url: "https://arxiv.org/abs/2406.18665"
+  - type: paper
+    title: "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance"
+    url: "https://arxiv.org/abs/2305.05176"
+  - type: paper
+    title: "AutoMix: Automatically Mixing Language Models"
+    url: "https://arxiv.org/abs/2310.12963"
+  - type: website
+    title: "RouteLLM GitHub Repository"
+    url: "https://github.com/lm-sys/RouteLLM"
+---
+
+import CostQualityTriangle from '../../../components/interactive/CostQualityTriangle.tsx';
+import RoutingTaxonomyTree from '../../../components/interactive/RoutingTaxonomyTree.tsx';
+import RoutingGranularityCompare from '../../../components/interactive/RoutingGranularityCompare.tsx';
+import AccuracyCostScatter from '../../../components/interactive/AccuracyCostScatter.tsx';
+import LatencyOverheadBar from '../../../components/interactive/LatencyOverheadBar.tsx';
+import ScenarioFitMatrix from '../../../components/interactive/ScenarioFitMatrix.tsx';
+import PaperTimeline from '../../../components/interactive/PaperTimeline.tsx';
+
+Between GPT-4 level models and Llama-3-8B level models, there is a huge capability gap, and an even larger price gap — up to **100x**. However, in actual production traffic, approximately 80% of queries don't need the strongest model: asking "what day of the week is it today" and "prove an equivalent formulation of the Riemann hypothesis" are clearly not at the same difficulty level.
+
+**Model Routing** is fundamentally about: **automatically selecting the most appropriate model for each query based on its difficulty and nature**, achieving optimal balance between quality, cost, latency, and privacy. This isn't a new idea — from FrugalGPT proposing cascade strategies in 2023, to RouteLLM open-sourcing a routing framework in 2024, to the concentrated explosion of developments across various directions in 2025-2026, model routing has evolved from an academic concept into a core component of production-grade systems.
+
+## §1 Why We Need Routing
+
+Single-model solutions face a fundamental multi-dimensional tradeoff dilemma:
+
+- **Cost**: API calls to GPT-4 level models are far more expensive than smaller models, with costs scaling linearly in large-scale applications
+- **Latency**: Larger models mean longer time-to-first-token (TTFT) and generation time
+- **Quality**: Small models are noticeably insufficient for complex reasoning, code generation, multi-step logic, and other tasks
+- **Privacy**: Some queries contain sensitive information and are not suitable for sending to third-party APIs
+
+The key insight is: these four dimensions cannot all be optimized simultaneously, but can be **optimized separately per query**. RouteLLM (Ong et al., 2024) proved in experiments that by training a router to intelligently switch between GPT-4 and smaller models, API call costs can be reduced by more than 85% while maintaining approximately 95% of GPT-4's quality. FrugalGPT (Chen et al., 2023) even demonstrated cost reductions of up to 98% through cascade strategies.
+
+<CostQualityTriangle client:visible />
+
+## §2 Routing Method Classification Framework
+
+The method space of model routing can be understood from three orthogonal dimensions:
+
+**By Routing Granularity**:
+- **Query-level**: The entire request selects one model for processing, simplest and most common
+- **Subtask-level**: Complex requests are split into subtasks, each routed to different models (like HybridFlow's DAG routing)
+- **Token-level**: During generation, determine token-by-token whether to switch models, finest granularity but highest overhead
+
+**By Decision Timing**:
+- **Static routing**: Rules determined or classifiers trained before deployment, look up table or run inference at runtime
+- **Dynamic routing**: Continuously collect feedback and update routing policy at runtime (bandit, RL)
+
+**By Model Usage Pattern**:
+- **Select one (routing)**: Choose a single model for each query
+- **Try then verify (cascade)**: Start with cheaper model, escalate if verification fails
+- **Use all (ensemble / MoA)**: Multiple models answer simultaneously, synthesize results
+
+At the router implementation level, mainstream methods include: Matrix Factorization (MF, learning scoring functions from preference data), BERT classifiers (fine-tuned for strong/weak binary classification), Causal LMs (small language models for routing decisions), Semantic Routing (embedding matching, no training needed), self-verification (models evaluate their own output confidence), LLM-as-Judge (another LLM evaluates), Bandit/RL (online learning), and infrastructure-level routing (load balancing, fallback).
+
+<RoutingTaxonomyTree client:visible />
+
+<RoutingGranularityCompare client:visible />
+
+## §3 Core Principles of Each Method
+
+### Classifier Routing
+
+The core idea of classifier routing is: train a lightweight model to predict "does this query need a strong model?"
+
+**Matrix Factorization (MF) router** leverages human preference data from Chatbot Arena — each data point records a win/loss relationship between two models for a query. MF maps queries and models to the same low-dimensional vector space, predicting preference scores through vector inner products. Intuitively, this is equivalent to learning a matching relationship between "query difficulty" and "model capability" hidden vectors. RouteLLM experiments show that MF routers have the most stable performance in cost-quality tradeoffs.
+
+**BERT classifiers** take a more direct route: have strong and weak models answer the same batch of queries, label which answer is better, then fine-tune BERT for binary classification. Advantages are simple training and extremely fast inference (~1ms); disadvantages are the need to construct high-quality labeled data.
+
+**Causal LM routers** (such as Small Models as Routers, 2026) use 1-4B parameter small language models for routing decisions, leveraging the semantic understanding capabilities of small models themselves. The key advantage of this method is **zero-marginal-cost** — if the small model itself is one of the candidate models (when routed to, it continues generation directly), the routing decision incurs no additional computational overhead.
+
+### Cascade and Self-Verification
+
+The philosophy of cascade strategies is "start cheap, escalate as needed."
+
+**FrugalGPT** (Chen et al., 2023) defines the classic cascade framework: queries are first sent to the cheapest model, a scoring function evaluates answer quality, and if confidence is insufficient, escalate progressively to stronger (and more expensive) models. Experiments show this strategy can reduce costs by up to 98% while maintaining GPT-4 equivalent quality — because the vast majority of simple queries get satisfactory answers at the first level.
+
+**AutoMix** (Madaan et al., 2023; NeurIPS 2024) models routing as a POMDP (Partially Observable Markov Decision Process), with the core innovation being **few-shot self-verification** where models evaluate their own outputs. After the model generates an answer, use a few-shot prompt to have the same model judge "is this answer reliable," and if self-evaluation fails, escalate to a stronger model. This avoids training a separate routing classifier.
+
+### Hybrid LLM: On-device and Cloud
+
+Hybrid LLM routing automatically determines whether a query should use on-device small models or cloud large models, representing the most deployment-relevant scenario (such as Apple Intelligence's on-device + Private Cloud Compute architecture).
+
+A common misconception needs clarification: **capability matching is the primary driver**, not cost or latency. Privacy and cost advantages only matter when the on-device model has the capability to handle a query. Furthermore, **on-device doesn't equal low latency** — inference speed on consumer hardware may be far slower than cloud A100/H100 clusters; the advantage of on-device is zero network latency and data never leaving the device.
+
+The privacy dimension adds additional complexity. PRISM (AAAI 2026) implements **entity-level privacy sensitivity detection** — rather than crudely keeping all queries containing person names on-device, it makes fine-grained judgments about which entities are truly sensitive, achieving more precise balance between privacy protection and model capability.
+
+### Online Learning
+
+The limitation of static routers is: model capabilities and usage scenarios change over time. Online learning methods continuously optimize routing policies through **explore/exploit** tradeoffs.
+
+The classic **contextual bandit** method treats each routing decision as an arm selection: choose a model based on query context features, observe answer quality as reward, and update policy. **ParetoBandit** (2026) extends this to multi-objective optimization — simultaneously optimizing quality and cost, seeking optimal tradeoffs on the Pareto frontier, rather than simply optimizing a single metric.
+
+### Multi-Model Collaboration
+
+Multi-model collaboration represents a philosophical shift: not "select the best one," but "have multiple models work together to give a better answer."
+
+**Mixture-of-Agents (MoA)** has multiple LLMs collaborate in layers — the first layer answers independently, and subsequent layers synthesize the previous layer's outputs for iterative refinement. Note that MoA and Mixture-of-Experts (MoE) are completely different concepts: MoE is an architectural design within a model (token-level expert routing), while MoA is a collaboration framework between models (query-level multi-model synthesis).
+
+**Council Mode** (2026) is the practice of multi-model collaboration in production environments: call multiple LLMs in parallel, synthesize answers through an aggregation mechanism. Experiments show this method can reduce hallucination rate by 35.9%, with the core reason being that different models usually have different hallucination patterns, and cross-validation can effectively filter erroneous information.
+
+## §4 Multi-Dimensional Comparison
+
+Different routing methods vary greatly in precision, cost, latency, and applicable scenarios. The following three visualizations present these tradeoffs from different perspectives:
+
+<AccuracyCostScatter client:visible />
+
+<LatencyOverheadBar client:visible />
+
+<ScenarioFitMatrix client:visible />
+
+## §5 Papers and Systems Landscape
+
+The model routing field rapidly moved from an exploratory period in 2023 to an explosive period in 2025-2026, with papers and open-source systems emerging intensively:
+
+<PaperTimeline client:visible />
+
+At the system level, several representative projects are worth noting:
+
+- **RouteLLM** (lm-sys/RouteLLM): Open-source routing framework implementing four routers (MF, BERT, Causal LM, SW), can be directly integrated into OpenAI-compatible API calls
+- **OpenRouter**: Commercial API gateway aggregating dozens of LLM providers, supporting automatic routing based on model capabilities and pricing
+- **LiteLLM**: Infrastructure-level routing layer providing unified API interface + fallback + load balancing, supporting 100+ model providers
+- **Martian**: Commercial routing platform with intelligent routing based on capability fingerprinting
+
+## Summary
+
+Model routing has no silver bullet. Classifier routing is simple to train but requires preference data; cascade methods are extremely efficient for simple queries but multi-round calls increase latency; Hybrid LLM is most deployment-relevant but requires precise capability assessment; online learning adapts but has high cold-start cost; multi-model collaboration has highest quality but also highest cost and latency.
+
+Which method to choose depends on your scenario: high-throughput API services favor classifier routing, cost-sensitive scenarios suit cascade, privacy-first chooses Hybrid, need for continuous optimization selects online learning, quality-above-all picks multi-model collaboration. Subsequent articles will dive deeply into the algorithmic details and implementation of each method.

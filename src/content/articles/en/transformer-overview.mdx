@@ -1,0 +1,285 @@
+---
+title: "Transformer Architecture Overview"
+slug: transformer-overview
+locale: en
+tags: [transformer, architecture]
+prerequisites: []
+difficulty: intermediate
+created: "2026-03-31"
+updated: "2026-04-06"
+references:
+  - type: paper
+    title: "Attention Is All You Need"
+    url: "https://arxiv.org/abs/1706.03762"
+  - type: paper
+    title: "Language Models are Unsupervised Multitask Learners (GPT-2)"
+    url: "https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf"
+  - type: website
+    title: "The Illustrated Transformer"
+    url: "https://jalammar.github.io/illustrated-transformer/"
+  - type: website
+    title: "LLM Visualization — Brendan Bycroft"
+    url: "https://bbycroft.net/llm"
+  - type: website
+    title: "Transformer Explainer — Georgia Tech / Polo Club"
+    url: "https://poloclub.github.io/transformer-explainer/"
+---
+
+import TransformerArchDiagram from '../../../components/interactive/TransformerArchDiagram.tsx';
+import TensorShape from '../../../components/primitives/TensorShape.tsx';
+import AttentionMaskVisualization from '../../../components/interactive/AttentionMaskVisualization.tsx';
+import PrePostLNComparison from '../../../components/interactive/PrePostLNComparison.tsx';
+import PositionalEncodingComparison from '../../../components/interactive/PositionalEncodingComparison.tsx';
+import FFNBottleneck from '../../../components/interactive/FFNBottleneck.tsx';
+
+## Introduction
+
+The Transformer is a neural network architecture proposed by Vaswani et al. in 2017 in the paper *"Attention Is All You Need"*. It is **entirely based on the Attention mechanism**, abandoning the previously dominant recurrent (RNN) and convolutional (CNN) structures, and has become the foundation of modern large language models (LLMs).
+
+Well-known models such as GPT, LLaMA, and BERT are all built on the Transformer. Understanding the overall architecture of the Transformer is a prerequisite for diving deeper into advanced topics like Attention, KV Cache, and Flash Attention.
+
+## Intuitive Understanding: From RNN to Transformer
+
+### The Bottleneck of RNNs
+
+RNNs (including LSTMs and GRUs) process sequences in **temporal order**: $t_1 \to t_2 \to \cdots \to t_n$. Each timestep must wait for the previous step to complete, resulting in two core problems:
+
+1. **No parallelism**: For a sequence of length $n$, the computational complexity is $O(n)$ sequential steps, unable to fully utilize GPU parallel capabilities.
+2. **Long-range dependency decay**: Information must be passed step by step, and is prone to loss or decay after multiple steps.
+
+### The Attention Solution
+
+The Transformer replaces the recurrent structure with **Self-Attention**: each position can **directly** attend to any other position in the sequence, completing global information aggregation in one step.
+
+- Parallelism: Attention for all positions can be computed simultaneously
+- Long-range: The path length between any two positions is $O(1)$
+
+This design enables the Transformer to far surpass RNNs in long sequence modeling and training efficiency.
+
+## Architecture Overview
+
+The diagram below shows the internal structure of a **Pre-LayerNorm** variant of a Transformer Block. Modern LLMs (GPT-2, LLaMA, etc.) almost all adopt this variant, rather than the Post-LayerNorm from the original paper.
+
+<TransformerArchDiagram client:visible />
+
+A complete Transformer model consists of $N$ such Blocks stacked together. The input first goes through Embedding and Positional Encoding, then passes through each Block layer by layer, and finally outputs for downstream tasks (such as next-token prediction in language modeling).
+
+## Component Details
+
+### Input Embedding + Positional Encoding
+
+**Token Embedding** maps discrete token IDs to continuous vectors:
+
+$$
+\mathbf{x}_i = \text{Embed}(\text{token}_i) \in \mathbb{R}^{H}
+$$
+
+where $H$ is the hidden size. For the entire sequence, the input tensor shape is:
+
+<TensorShape client:visible dims={[{name: "B", size: "batch"}, {name: "S", size: "seq\_len"}, {name: "H", size: "hidden"}]} label="Input" />
+
+**Positional Encoding** injects positional information for each position. The original Transformer uses fixed sinusoidal/cosine encoding:
+
+$$
+PE_{(pos, 2i)} = \sin\!\left(\frac{pos}{10000^{2i/d_{\text{model}}}}\right), \quad PE_{(pos, 2i+1)} = \cos\!\left(\frac{pos}{10000^{2i/d_{\text{model}}}}\right)
+$$
+
+Modern models have developed various improved approaches:
+
+| Approach | Representative Models | Characteristics |
+|----------|----------------------|-----------------|
+| Sinusoidal/Cosine (fixed) | Original Transformer | Not learnable, supports extrapolation |
+| Learnable Absolute Position Encoding | GPT-2, BERT | Directly learn a vector for each position |
+| RoPE (Rotary Position Embedding) | LLaMA, Qwen | Encodes relative positions via rotation in Attention computation |
+
+<PositionalEncodingComparison client:visible />
+
+### LayerNorm
+
+Layer Normalization normalizes the hidden vector for each token:
+
+$$
+\text{LayerNorm}(\mathbf{x}) = \frac{\mathbf{x} - \mu}{\sigma + \epsilon} \cdot \gamma + \beta
+$$
+
+where $\mu, \sigma$ are the mean and standard deviation computed along the hidden dimension, and $\gamma, \beta$ are learnable scale and shift parameters.
+
+**Pre-LN vs Post-LN:**
+
+| Variant | Formula | Characteristics |
+|---------|---------|-----------------|
+| Post-LN (Original Paper) | $\text{LN}(\mathbf{x} + \text{Attn}(\mathbf{x}))$ | LayerNorm is applied **after** residual addition |
+| Pre-LN (Modern Variant) | $\mathbf{x} + \text{Attn}(\text{LN}(\mathbf{x}))$ | LayerNorm is applied **before** the sublayer |
+
+- **Original Transformer** (2017) uses Post-LN: $\text{LN}(\mathbf{x} + \text{SubLayer}(\mathbf{x}))$
+- Starting with **GPT-2**, most models switched to Pre-LN: $\mathbf{x} + \text{SubLayer}(\text{LN}(\mathbf{x}))$, because it offers more stable training
+- **LLaMA** further replaced LayerNorm with **RMSNorm**, removing mean centering and bias terms for more efficient computation
+
+<PrePostLNComparison client:visible />
+
+### Self-Attention (Overview)
+
+Self-Attention is the core of the Transformer. Each position interacts with all positions in the sequence through three projections: Query, Key, and Value:
+
+$$
+\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{QK^T}{\sqrt{d_k}}\right) V
+$$
+
+where $d_k$ is the dimension of each attention head. Multi-Head Attention splits the hidden dimension into multiple heads for parallel computation, then concatenates the outputs:
+
+$$
+\text{MultiHead}(Q, K, V) = \text{Concat}(\text{head}_1, \ldots, \text{head}_h) W^O
+$$
+
+> The details of Self-Attention (QKV data structures, computation flow, Multi-Head mechanism) will be covered in subsequent articles.
+
+### Feed-Forward Network (MLP)
+
+The FFN in each Transformer Block is a **position-wise** two-layer fully connected network:
+
+$$
+\text{FFN}(\mathbf{x}) = \text{GELU}(\mathbf{x} W_1 + b_1) W_2 + b_2
+$$
+
+- $W_1 \in \mathbb{R}^{H \times 4H}$: expands the dimension from $H$ to $4H$ (intermediate dimension)
+- $W_2 \in \mathbb{R}^{4H \times H}$: compresses the dimension from $4H$ back to $H$
+- Activation function: The original paper uses ReLU, GPT-2 uses GELU, LLaMA uses SwiGLU
+
+**SwiGLU Variant (LLaMA):**
+
+$$
+\text{SwiGLU}(\mathbf{x}) = \text{SiLU}(\mathbf{x} W_{\text{gate}}) \odot (\mathbf{x} W_{\text{up}})
+$$
+
+SwiGLU introduces an additional gate projection, so the FFN intermediate dimension in LLaMA is not simply $4H$, but an adjusted value (e.g., 11008 for LLaMA-7B).
+
+Tensor shape transformation process:
+
+<TensorShape client:visible dims={[{name: "B", size: "batch"}, {name: "S", size: "seq\_len"}, {name: "H", size: "hidden"}]} label="FFN Input" />
+→ Through $W_1$ →
+<TensorShape client:visible dims={[{name: "B", size: "batch"}, {name: "S", size: "seq\_len"}, {name: "4H", size: "intermediate"}]} label="Hidden Layer" />
+→ Through $W_2$ →
+<TensorShape client:visible dims={[{name: "B", size: "batch"}, {name: "S", size: "seq\_len"}, {name: "H", size: "hidden"}]} label="FFN Output" />
+
+<FFNBottleneck client:visible />
+
+### Residual Connection
+
+Each sublayer (Self-Attention and FFN) is wrapped with a residual connection:
+
+$$
+\mathbf{output} = \mathbf{x} + \text{SubLayer}(\mathbf{x})
+$$
+
+The role of residual connections:
+
+1. **Mitigate gradient vanishing**: Gradients can be directly backpropagated through "skip connections", avoiding gradient decay in deep networks
+2. **Preserve information flow**: Even if the sublayer output is zero, the original information is not lost
+3. **Enable deep stacking**: Without residual connections, training 32 or even 126 layers would be nearly impossible
+
+Note: Residual connections require that the **input and output dimensions of the sublayer are the same**, which is why the FFN output dimension must return to $H$.
+
+## Tensor Shape Tracking
+
+Taking GPT-2 Small ($H=768$, sequence length $S=1024$, batch size $B=1$) as an example, track the complete data flow:
+
+| Stage | Tensor Shape | Description |
+|-------|--------------|-------------|
+| Token IDs | $(1, 1024)$ | Integer sequence |
+| Token Embedding | $(1, 1024, 768)$ | Vectors from lookup table |
+| + Positional Encoding | $(1, 1024, 768)$ | Add positional vectors |
+| LayerNorm | $(1, 1024, 768)$ | Shape unchanged |
+| Q, K, V Projections | Each $(1, 1024, 768)$ | Linear transformation |
+| Split into 12 heads | Each $(1, 12, 1024, 64)$ | $768 / 12 = 64$ per head |
+| Attention Output | $(1, 1024, 768)$ | Concatenate all heads |
+| Residual Add | $(1, 1024, 768)$ | Add input |
+| LayerNorm | $(1, 1024, 768)$ | Shape unchanged |
+| FFN Hidden Layer | $(1, 1024, 3072)$ | $768 \times 4 = 3072$ |
+| FFN Output | $(1, 1024, 768)$ | Compress back to original dimension |
+| Residual Add | $(1, 1024, 768)$ | Add input |
+
+This process repeats 12 times (12 layers), and the final output tensor of $(1, 1024, 768)$ is sent to the LM Head for next-token prediction.
+
+## Encoder-Decoder vs Decoder-only
+
+### Original Transformer: Encoder-Decoder
+
+The original Transformer was designed for machine translation, adopting an Encoder-Decoder structure:
+
+- **Encoder** (6 layers): Bidirectional Self-Attention on the source sequence (each position can attend to all positions)
+- **Decoder** (6 layers):
+  - **Masked Self-Attention**: Can only attend to the current position and previous positions (causal mask), preventing information leakage
+  - **Cross-Attention**: Attends to Encoder output to obtain source sequence information
+
+### Decoder-only: The Mainstream for Modern LLMs
+
+The GPT series pioneered the Decoder-only architecture, removing the Encoder and Cross-Attention:
+
+- Only retains **Masked Self-Attention** (causal attention)
+- Each token can only see itself and previous tokens
+- Unifies "understanding" and "generation": uses the same architecture for all tasks
+
+| Structure | Representative Models | Attention Type | Typical Applications |
+|-----------|----------------------|----------------|---------------------|
+| Encoder-Decoder | Original Transformer, T5, BART | Bidirectional + Causal + Cross | Translation, Summarization |
+| Encoder-only | BERT, RoBERTa | Bidirectional | Classification, NLU |
+| Decoder-only | GPT series, LLaMA, Qwen | Causal (Masked) | Text Generation, General LLMs |
+
+<AttentionMaskVisualization client:visible />
+
+Currently, almost all mainstream LLMs (GPT-4, Claude, LLaMA, Qwen, Gemini) adopt the Decoder-only architecture.
+
+## Comparison of Typical Model Hyperparameters
+
+| Parameter | Original Transformer | GPT-2 Small | GPT-2 XL | LLaMA-7B | LLaMA-3.1-8B |
+|-----------|---------------------|-------------|----------|----------|--------------|
+| Hidden Dimension $H$ | 512 | 768 | 1600 | 4096 | 4096 |
+| Number of Layers $L$ | 6 (Enc+Dec) | 12 | 48 | 32 | 32 |
+| Attention Heads $h$ | 8 | 12 | 25 | 32 | 32 |
+| Head Dimension | 64 | 64 | 64 | 128 | 128 |
+| FFN Hidden Dimension | 2048 | 3072 | 6400 | 11008 | 14336 |
+| Vocabulary Size | 37000 | 50257 | 50257 | 32000 | 128256 |
+| Context Length | N/A | 1024 | 1024 | 2048 | 131072 |
+| Total Parameters | 65M | 117M | 1.5B | 6.7B | 8B |
+| LayerNorm | Post-LN | Pre-LN | Pre-LN | Pre-RMSNorm | Pre-RMSNorm |
+| Activation Function | ReLU | GELU | GELU | SwiGLU | SwiGLU |
+| Positional Encoding | Sinusoidal/Cosine | Learnable Absolute | Learnable Absolute | RoPE | RoPE |
+
+> Note: Head Dimension = $H / h$. The LLaMA series uses GQA (Grouped-Query Attention), where LLaMA-3.1-8B has 8 KV heads (rather than 32).
+
+## Recommended Learning Resources
+
+If you want to dive deeper into the Transformer architecture, here are our curated resources:
+
+### Classic Papers
+- **Vaswani et al. "Attention Is All You Need"** — The foundational paper for the Transformer architecture, proposing self-attention and multi-head attention mechanisms, the source of all subsequent work.
+- **Lilian Weng "The Transformer Family Version 2.0"** — A systematic overview of various Transformer variants and improvements, covering long context, efficient attention, adaptive modeling, and other directions, with rich references.
+
+### Video Courses
+- **3Blue1Brown — Attention in Transformers (Neural Networks series)** — Known for beautiful mathematical animations, provides an intuitive explanation of the geometric meaning of the attention mechanism. Chapter 6 focuses on attention, with excellent visual effects.
+- **Andrej Karpathy "Neural Networks: Zero to Hero"** — Build GPT from scratch, the "Let's build GPT" episode (about 2 hours) implements the Transformer from the ground up, the best resource for understanding implementation details. Comes with GitHub code and Jupyter Notebook.
+
+### Blogs and Tutorials (Illustrated)
+- **Jay Alammar "The Illustrated Transformer"** — **An exemplary work of illustrated content**. Through dozens of carefully drawn diagrams, it step-by-step deconstructs the Transformer architecture, including encoder-decoder stacks, Q/K/V computation in self-attention, multi-head attention, positional encoding, etc. Widely recognized as the best illustrated introduction.
+- **Jay Alammar "Visualizing Neural Machine Translation"** — Prerequisite reading for Illustrated Transformer, illustrating how seq2seq + attention mechanism works, helping understand the origin of attention.
+- **Harvard NLP "The Annotated Transformer"** — Line-by-line code annotation implementation of the original paper (PyTorch), matching formulas from the paper with code one-to-one, suitable for readers who want to understand the meaning of every line of code.
+
+### Interactive Experiments
+- **Transformer Explainer (Georgia Tech / Polo Club)** — Run GPT-2 model in browser, observe the attention computation process in real-time. Published at IEEE VIS 2024, with excellent interactive experience. (poloclub.github.io/transformer-explainer/)
+- **Brendan Bycroft "LLM Visualization"** — 3D interactive visualization of GPT inference process, layer-by-layer observation of data flow and matrix operations, with stunning visual effects. (bbycroft.net/llm)
+- **Financial Times "Generative AI Explained"** — Visual narrative created by FT data journalism team, showcasing how LLMs work with beautiful interactive animations. (ig.ft.com/generative-ai/)
+
+## Summary
+
+This article outlines the overall architecture of the Transformer:
+
+1. **Core idea**: Replace recurrent structure with Self-Attention, enabling parallel computation and global information aggregation
+2. **Block composition**: Each Transformer Block contains LayerNorm → Self-Attention → Residual → LayerNorm → FFN → Residual
+3. **Modern evolution**: From Post-LN to Pre-LN, from LayerNorm to RMSNorm, from ReLU to SwiGLU, from fixed positional encoding to RoPE
+4. **Architecture choice**: Modern LLMs almost all adopt the Decoder-only architecture
+
+In subsequent articles, we will dive into the details of each component:
+- **QKV Data Structures and Intuition**: Understanding what Query, Key, and Value really are
+- **Attention Computation Details**: The complete flow of $QK^T$ matrix multiplication
+- **Multi-Head Attention**: The principles and implementation of parallel multi-head computation
+- **KV Cache**: Key technology for inference acceleration
