@@ -29,6 +29,7 @@ const MemoryAccessPattern: React.FC = () => {
             strokeWidth="2"
             rx="4"
             style={{ cursor: 'pointer' }}
+            onClick={() => setPattern('coalesced')}
           />
           <text
             x="50"
@@ -53,6 +54,7 @@ const MemoryAccessPattern: React.FC = () => {
             strokeWidth="2"
             rx="4"
             style={{ cursor: 'pointer' }}
+            onClick={() => setPattern('scattered')}
           />
           <text
             x="170"

@@ -29,6 +29,7 @@ const SlmBankConflict: React.FC = () => {
             strokeWidth="2"
             rx="4"
             style={{ cursor: 'pointer' }}
+            onClick={() => setPattern('no-conflict')}
           />
           <text
             x="50"
@@ -53,6 +54,7 @@ const SlmBankConflict: React.FC = () => {
             strokeWidth="2"
             rx="4"
             style={{ cursor: 'pointer' }}
+            onClick={() => setPattern('conflict')}
           />
           <text
             x="170"

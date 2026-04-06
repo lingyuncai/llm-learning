@@ -74,6 +74,7 @@ const MixedPrecisionCompare: React.FC = () => {
                 strokeWidth="2"
                 rx="4"
                 style={{ cursor: 'pointer' }}
+                onClick={() => setSelected(p)}
               />
               <text
                 x="42.5"
