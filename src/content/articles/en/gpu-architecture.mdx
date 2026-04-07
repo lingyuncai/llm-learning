@@ -167,6 +167,23 @@ GPU programming has many concepts with "block" in the name, which can be confusi
 
 In short: **thread blocks manage cooperation, warps manage execution**.
 
+### How Intel GPUs Differ
+
+The above describes NVIDIA's SIMT model. Intel Xe2 GPUs take a fundamentally different approach — **compiler-driven SIMD**. Here's how the concepts map:
+
+| NVIDIA (SIMT) | Intel Xe2 (SIMD) | Key Difference |
+|----------------|-------------------|----------------|
+| Thread Block | Work-group | Similar: shared local memory, synchronizable |
+| Warp (32 threads) | Sub-group (8/16/32 lanes) | NVIDIA groups at runtime in hardware; Intel vectorizes at compile time |
+| SM | Xe-core | Similar: contains multiple execution units and shared memory |
+| Processing Block | EU (Execution Unit) | NVIDIA has warp scheduler; Intel EU directly executes SIMD instructions |
+| Shared Memory | SLM (Shared Local Memory) | Similar: shared within work-group |
+| Branch handling | Branch handling | NVIDIA: runtime hardware masking; Intel: compile-time predication (compiler converts if/else to predicated instructions — all lanes execute but a mask controls writeback) |
+
+The core difference: NVIDIA programmers write **scalar code**, and hardware automatically groups 32 threads into a warp for lockstep execution, dynamically masking on branches. Intel programmers also write scalar code, but the **compiler is responsible for vectorizing it into SIMD instructions**, with branches converted to predicated execution at compile time. NVIDIA offers more flexibility (hardware handles divergence); Intel's approach relies more on the compiler but keeps hardware simpler.
+
+> For the detailed Intel Xe2 execution model, sub-group operations, and SYCL programming mappings, see [Xe2 Execution Model and Programming Abstractions](/en/articles/xe2-execution-model).
+
 ---
 
 ## Section 5: Memory Hierarchy
