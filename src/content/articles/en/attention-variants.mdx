@@ -148,6 +148,24 @@ $\phi(K)^T V$ is a $d \times d$ matrix ($d$ is the head dimension, typically 64-
 
 <LinearAttentionKernelTrick client:visible locale="en" />
 
+### Why φ Unlocks Associativity
+
+Softmax blocks associativity because it does two things: (1) exp() ensures non-negativity, (2) **row-wise normalization** (dividing by row sum). The normalization couples all elements within the same row — computing $\text{softmax}(q_i^T k_1)$ requires knowing $q_i^T k_2, q_i^T k_3, ..., q_i^T k_n$. You cannot compute a single element independently; you must first compute the full row of $QK^T$ ($n \times n$).
+
+φ's strategy: **replace the coupled normalization with independent element-wise transforms**. Replace the softmax kernel $\text{sim}(q, k) = \exp(q^T k) / Z$ with a kernel function decomposition:
+
+$$\text{sim}(q, k) = \phi(q)^T \phi(k)$$
+
+φ acts independently on each $q$ and $k$ (no need to know other keys' values), and the dot product naturally satisfies associativity. Expanding the $i$-th output (with normalization):
+
+$$o_i = \frac{\phi(q_i)^T \overbrace{\sum_j \phi(k_j) v_j^T}^{d \times d,\ \text{independent of } i}}{\phi(q_i)^T \underbrace{\sum_j \phi(k_j)}_{d \times 1,\ \text{independent of } i}}$$
+
+The sums in both numerator and denominator are **independent of query position $i$** — they can be precomputed once ($O(nd)$), then each query only requires an $O(d)$ vector multiplication.
+
+**Choosing φ** requires two properties: (1) **non-negative output** — ensures attention weights are non-negative, (2) **element-wise independence** — must not couple elements within the same row like softmax does. Common choices include $\phi(x) = \text{elu}(x) + 1$ (Katharopoulos 2020's original choice) and $\phi(x) = \text{ReLU}(x)$. Theoretically, Random Fourier Features can approximate softmax's exp kernel, but are computationally expensive.
+
+> **Why φ is fundamentally weaker than softmax**: softmax's exp + normalization naturally produces a **sharp, sparse attention distribution** (large values are exponentially amplified, small values are suppressed to near-zero), letting the model focus on the most relevant few tokens. Simple φ functions lack this "winner-take-all" effect — all keys contribute roughly equally. This is the fundamental motivation behind subsequent work (RetNet/DeltaNet/GDN) adding decay, delta rule, and gating — compensating for φ's inability to replicate softmax's selectivity.
+
 ### RNN Form: Fixed-Size State
 
 Without softmax, Linear Attention can be written as an RNN recurrence:
