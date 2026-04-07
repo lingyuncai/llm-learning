@@ -292,7 +292,7 @@ $$
 
 ### Prefill 优化
 
-- **Flash Attention**：通过分块计算减少 HBM 访问，提升 Prefill 阶段 Attention 计算的效率
+- **Flash Attention**：虽然 Prefill 整体是 compute-bound，但标准 Attention 实现会将 $n \times n$ 的中间矩阵反复写入/读回 HBM，产生大量不必要的显存访问。Flash Attention 通过分块在 SRAM 中完成 softmax 和矩阵乘，避免中间矩阵落盘，将 Attention 部分的 HBM 访问从 $O(n^2)$ 降至 $O(n)$
 - **Tensor Parallelism**：将矩阵运算分布到多个 GPU，提升 compute-bound 操作的吞吐量
 - **量化（Quantization）**：使用 INT8/FP8 降低精度，在相同硬件上获得更高的有效算力
 

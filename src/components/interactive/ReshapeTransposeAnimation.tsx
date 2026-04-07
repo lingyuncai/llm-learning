@@ -107,12 +107,12 @@ function Step3Transpose({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
     zh: {
       desc: '每个 head 获得自己的 (S, d_k) 矩阵，可以独立计算 Attention。',
       keyPoint: '关键：',
-      explanation: '数据没有被复制，只是重新排列了维度顺序。每个 Head 现在拥有所有 token 的子空间表示，可以独立执行 Scaled Dot-Product Attention。',
+      explanation: 'reshape 和 transpose 本身不复制数据，只修改 shape/stride 元数据。但 transpose 后张量变为 non-contiguous，后续计算（如矩阵乘法）通常需要调用 .contiguous() 触发一次真正的内存拷贝。每个 Head 现在拥有所有 token 的子空间表示，可以独立执行 Scaled Dot-Product Attention。',
     },
     en: {
       desc: 'Each head gets its own (S, d_k) matrix and can compute Attention independently.',
       keyPoint: 'Key point:',
-      explanation: 'Data is not copied, just dimension order is rearranged. Each Head now has the subspace representation of all tokens and can execute Scaled Dot-Product Attention independently.',
+      explanation: 'reshape and transpose do not copy data — they only modify shape/stride metadata. However, transpose makes the tensor non-contiguous, and subsequent operations (e.g., matrix multiplication) typically require a .contiguous() call that triggers an actual memory copy. Each Head now has the subspace representation of all tokens and can execute Scaled Dot-Product Attention independently.',
     },
   }[locale];
 

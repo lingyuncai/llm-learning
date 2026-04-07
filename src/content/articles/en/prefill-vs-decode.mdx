@@ -292,7 +292,7 @@ Given the different computational characteristics of the two phases, the industr
 
 ### Prefill Optimization
 
-- **Flash Attention**: Reduces HBM accesses through tiled computation, improving the efficiency of Attention computation during Prefill
+- **Flash Attention**: Although Prefill is overall compute-bound, standard Attention implementation repeatedly writes/reads the $n \times n$ intermediate matrix to/from HBM, causing unnecessary memory traffic. Flash Attention performs softmax and matrix multiplication in tiled blocks within SRAM, avoiding materializing the intermediate matrix and reducing Attention HBM accesses from $O(n^2)$ to $O(n)$
 - **Tensor Parallelism**: Distributes matrix operations across multiple GPUs, increasing throughput for compute-bound operations
 - **Quantization**: Uses INT8/FP8 lower precision to achieve higher effective compute on the same hardware
 

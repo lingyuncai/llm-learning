@@ -153,6 +153,14 @@ $$
 d_k = \frac{H}{h}
 $$
 
+> **Why set $d_k \times h = H$?** This is not a mathematical necessity but an engineering design choice:
+>
+> - **Parameter conservation**: The combined weight matrix is exactly $\mathbb{R}^{H \times H}$, keeping the parameter count the same as a single linear layer — introducing multiple heads doesn't add parameters
+> - **Implementation efficiency**: A single matmul $(B, S, H) \times (H, H) \to (B, S, H)$ followed by a reshape splits out all heads. If each head had a different $d_k$, reshape wouldn't work — you'd need uneven splits, which are less efficient
+> - **Clean residual connections**: The Attention output must be added back to the input (dimension $H$). Each head outputs $d_v$ dimensions, and $h$ heads concatenate to $h \times d_v$. When $d_v = H/h$, the concatenated dimension is exactly $H$, and the output projection $W_O \in \mathbb{R}^{H \times H}$ stays a square matrix. A different concatenated dimension could still be projected back with a differently-sized $W_O$, but this is less elegant
+>
+> Notably, later architectures like **GQA (Grouped Query Attention)** and **MQA (Multi-Query Attention)** relax the assumption that Q, K, and V must have the same number of heads — MQA shares a single K/V head across all Q heads, while GQA shares K/V within groups. However, the Q projection still satisfies $d_k \times h = H$; what changes is the K/V head count, reducing KV Cache size.
+
 In practice, the implementation **does not** actually perform separate matrix multiplications for each head. Instead, a single large weight matrix projects all heads' results at once, followed by a reshape:
 
 $$
@@ -170,6 +178,17 @@ $$
 $$
 
 <ReshapeTransposeAnimation client:visible locale="en" />
+
+> **PyTorch Deep Dive: How reshape and transpose work under the hood**
+>
+> A PyTorch tensor stores three pieces of metadata: **data_ptr** (starting memory address), **shape** (size of each dimension), and **stride** (number of elements to skip when moving one step along each dimension). Accessing `tensor[i, j, k, l]` computes the offset as `i×stride[0] + j×stride[1] + k×stride[2] + l×stride[3]`.
+>
+> For example, with shape `(1, 4, 2, 3)` stored contiguously, the stride is `(24, 6, 3, 1)`:
+>
+> - **reshape**: Only modifies the shape metadata (stride adjusts accordingly). The underlying memory doesn't move — no data copy
+> - **transpose(1, 2)**: Swaps the size and stride of dim1 and dim2. Shape becomes `(1, 2, 4, 3)`, stride becomes `(24, 3, 6, 1)` — same memory, different traversal order
+>
+> **How is non-contiguity detected?** A contiguous tensor's strides must satisfy `stride[i] = stride[i+1] × size[i+1]` (increasing from right to left). After transpose, stride `(24, 3, 6, 1)` has `6 ≠ 1×3`, violating this condition, so PyTorch marks it as non-contiguous. When subsequent operations like matrix multiplication require contiguous memory, `.contiguous()` must be called first — this rearranges data into a new memory block following the new dimension order, and is where the actual data copy happens.
 
 > The full mechanism of Multi-Head Attention will be covered in detail in a subsequent article. For now, the key takeaway is: **QKV projection is the foundational step of Multi-Head Attention**.
 

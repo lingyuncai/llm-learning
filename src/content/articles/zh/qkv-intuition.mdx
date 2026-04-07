@@ -153,6 +153,14 @@ $$
 d_k = \frac{H}{h}
 $$
 
+> **为什么令 $d_k \times h = H$？** 这不是数学上的必然要求，而是一个工程设计选择：
+>
+> - **参数量守恒**：合并后的权重矩阵恰好为 $\mathbb{R}^{H \times H}$，参数量与单头 Attention 的一个线性层相同，不会因为引入多头而增加参数
+> - **实现高效**：一次矩阵乘 $(B, S, H) \times (H, H) \to (B, S, H)$ 后，只需 reshape 即可拆出所有头。如果每个头的 $d_k$ 不同，就无法使用 reshape，需要按不等长度切分，效率更低
+> - **残差连接整齐**：Attention 输出需要加回输入（维度 $H$）。每个头的输出维度为 $d_v$，$h$ 个头拼接后为 $h \times d_v$。当 $d_v = H/h$ 时，拼接维度恰好为 $H$，输出投影 $W_O \in \mathbb{R}^{H \times H}$ 保持方阵形式。即使拼接维度不等于 $H$，也可以用不同大小的 $W_O$ 投影回去，但不如这样简洁
+>
+> 值得注意的是，后续的 **GQA（Grouped Query Attention）** 和 **MQA（Multi-Query Attention）** 就放松了"Q、K、V 必须有相同头数"这一假设 — MQA 让所有 Q 头共享同一组 K/V，GQA 则按组共享。不过它们的 Q 投影仍然满足 $d_k \times h = H$，改变的是 K/V 的头数以减少 KV Cache 大小。
+
 实际实现中，通常**不会**真的对每个头单独做矩阵乘法。而是用一个大的权重矩阵一次性投影出所有头的结果，然后 reshape：
 
 $$
@@ -170,6 +178,17 @@ $$
 $$
 
 <ReshapeTransposeAnimation client:visible />
+
+> **PyTorch 引申：reshape 与 transpose 的底层机制**
+>
+> PyTorch 张量在底层存储三个元数据：**data_ptr**（内存起始地址）、**shape**（各维度大小）、**stride**（沿各维度移动一步跳过的元素数）。访问 `tensor[i, j, k, l]` 时，实际偏移量为 `i×stride[0] + j×stride[1] + k×stride[2] + l×stride[3]`。
+>
+> 以 shape `(1, 4, 2, 3)` 为例，连续存储时 stride 为 `(24, 6, 3, 1)`：
+>
+> - **reshape**：只修改 shape 元数据，stride 随之调整，底层内存不动，不复制数据
+> - **transpose(1, 2)**：交换 dim1 和 dim2 的 size 和 stride，shape 变为 `(1, 2, 4, 3)`，stride 变为 `(24, 3, 6, 1)` — 同一块内存，不同的遍历顺序
+>
+> **如何判断 non-contiguous？** 连续张量的 stride 必须满足 `stride[i] = stride[i+1] × size[i+1]`（从右到左递增）。transpose 后 stride `(24, 3, 6, 1)` 中 `6 ≠ 1×3`，不满足条件，PyTorch 标记为 non-contiguous。后续若调用矩阵乘法等需要连续内存的操作，需要先调用 `.contiguous()` 按新维度顺序重新排列数据到一块新内存中 — 这时才发生真正的数据拷贝。
 
 > Multi-Head Attention 的完整机制将在后续文章中详细展开。这里只需理解：**QKV 投影是 Multi-Head 的基础步骤**。
 
