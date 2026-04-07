@@ -94,12 +94,17 @@ SM（Streaming Multiprocessor）是 GPU 中**真正执行计算的单元**。理
 
 <SmInternalDiagram />
 
-### 共享资源
+### Processing Block 本地资源
+
+每个 Processing Block 还有自己的 register file：
+
+- **Register File** — 整个 SM 合计 256 KB，物理上分布在各 processing block 中（NVIDIA 架构白皮书的 SM 结构图显示每个 sub-partition 有独立的 register file）。这是 GPU 中最快的存储，每个线程最多使用 255 个 32-bit 寄存器。Warp 的寄存器存储在它所属 processing block 的本地 register file 中，warp 一经分配就不会在 processing block 之间迁移。Register file 很大是因为 GPU 需要同时维持数千个线程的寄存器状态（实现零开销 warp 切换的关键）
+
+### SM 级共享资源
 
 4 个 Processing Block 共享：
 
-- **Register File** — 256 KB，这是 GPU 中最快的存储。每个线程最多使用 255 个 32-bit 寄存器。Register file 很大是因为 GPU 需要同时维持数千个线程的寄存器状态（实现零开销 warp 切换的关键）
-- **Shared Memory / L1 Cache** — 228 KB（Hopper），Block 内线程间共享的高速存储。可以配置 shared memory 和 L1 cache 的分配比例
+- **Shared Memory / L1 Cache** — 256 KB（Hopper）的片上 SRAM，其中最多 228 KB 可配置为 shared memory，其余用作 L1 cache。物理上属于整个 SM，但逻辑上按 **thread block** 分区 — 同一 thread block 内的所有线程（跨所有 warp、跨所有 processing block）可以访问同一块 shared memory，不同 thread block 之间互不可见。可以配置 shared memory 和 L1 cache 的分配比例
 
 ### 代际演进
 
@@ -135,6 +140,33 @@ Warp scheduler 是 SM 的"调度大脑"。它的工作很简单：**在 ready wa
 
 <WarpSchedulerTimeline client:visible />
 
+### 硬件概念 vs 软件抽象：对应关系
+
+GPU 编程中有很多名字带 "block" 的概念，容易混淆。关键在于区分**硬件实体**和**软件抽象**：
+
+| 概念 | 类型 | 说明 |
+|------|------|------|
+| **SM** | 硬件 | GPU 的基本计算单元 |
+| **Processing Block** | 硬件 | SM 内部的子分区（各有 warp scheduler、CUDA cores、Tensor Core） |
+| **Grid** | 软件 | 一次 kernel launch 的所有线程 |
+| **Thread Block** | 软件 | 程序员定义的一组线程（如 256 个），共享 shared memory，可以用 `__syncthreads()` 同步 |
+| **Warp** | 桥梁 | Thread block 内每 32 个连续线程自动编为一组，由硬件锁步调度 |
+
+**映射关系：**
+
+- **Thread Block → SM**：一个 thread block 整体分配到一个 SM，共享该 SM 的 shared memory。一个 SM 可以同时运行多个 thread block（取决于寄存器和 shared memory 资源是否充足，即 **occupancy**）
+- **Warp → Processing Block**：thread block 内的线程按 32 个一组自动分成 warp，各 warp 被分配到 SM 内某个 processing block 的 warp scheduler。**warp 一经分配就固定在该 processing block 上，不会迁移** — 因为 warp 的寄存器状态存储在该 processing block 的本地 register file 中，迁移意味着搬运大量寄存器数据（一个 warp 最多 32 × 255 × 4 = ~32 KB），开销巨大。而同一 processing block 内的 warp 切换是零开销的 — scheduler 只是切换到另一个 warp 的寄存器区域，无需保存/恢复。这与 CPU 不同，CPU 线程可以在核心间迁移（OS 做 load balancing），而 GPU 的 warp 靠静态分布和大量并行来保证负载均衡
+- **寄存器**：每个线程私有，同一 warp 内的线程不能直接访问彼此的寄存器（但可以通过 `__shfl_sync` 等 warp shuffle 指令交换值）
+
+> **注意 "Processing Block" 和 "Thread Block" 完全不同** — 前者是 SM 内部的硬件分区，后者是程序员定义的软件分组。名字相似但没有一一对应关系。
+
+**为什么需要 warp 和 thread block 两层抽象？**
+
+- **Warp（32 线程）解决执行效率**：SIMT 模型下，一个 warp 内 32 个线程共享一套取指/译码逻辑，硬件统一调度发射指令，但每个线程有独立的寄存器和 PC。这样只需 1 份控制逻辑就能驱动 32 个 ALU，大幅节省晶体管面积。一个 256 线程的 thread block 如果不分 warp，就需要 256 套独立的取指/译码单元 — 这是不现实的
+- **Thread Block（如 256 线程）解决协作需求**：很多算法需要超过 32 个线程共享数据（例如 GEMM tiling 需要大量线程一起搬数据到 shared memory）。Thread block 提供了 shared memory 和 `__syncthreads()` 同步机制，让多个 warp 可以协作
+
+简言之：**thread block 管合作，warp 管执行**。
+
 ---
 
 ## Section 5: 内存层次
@@ -144,7 +176,7 @@ GPU 的内存层次是影响性能最大的因素。从快到慢：
 | 层级 | 容量 (H100) | 带宽 | 延迟 | 作用域 |
 |------|------------|------|------|--------|
 | Register File | 256 KB / SM | 极高（片上） | 0 周期 | 线程私有 |
-| Shared Memory / L1 | 228 KB / SM | 极高（片上） | ~20-30 周期 | Block 内共享 |
+| Shared Memory / L1 | 256 KB / SM（最多 228 KB 可配置为 shared memory） | 极高（片上） | ~20-30 周期 | Thread Block 内共享 |
 | L2 Cache | 50 MB | ~12 TB/s（理论计算值） | ~200 周期 | 全局共享 |
 | HBM3 | 80 GB | 3.35 TB/s | ~400-600 周期 | 全局 |
 

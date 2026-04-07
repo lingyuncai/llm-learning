@@ -115,6 +115,8 @@ Even with shared memory + barriers, all threads still perform numerous shared me
 
 **Systolic arrays need none of this** — data passes between adjacent PEs on a fixed hardware-determined schedule. Reuse happens physically and naturally, with no synchronization instructions and no shared memory access.
 
+> For details on the relationship between thread blocks and warps, the scope of shared memory and registers, and how `__syncthreads()` works, see [GPU Architecture — Hardware vs Software Abstractions](/en/articles/gpu-architecture#hardware-concepts-vs-software-abstractions-how-they-map) and [CUDA Programming Model](/en/articles/cuda-programming-model).
+
 **Area and energy efficiency:**
 
 | | CUDA Core | Systolic Array PE |

@@ -94,12 +94,17 @@ Each SM is divided into **4 Processing Blocks** (also called Sub-partitions), ea
 
 <SmInternalDiagram locale="en" />
 
-### Shared Resources
+### Processing Block Local Resources
+
+Each Processing Block also has its own register file:
+
+- **Register File** — 256 KB total per SM, physically distributed across the processing blocks (NVIDIA architecture whitepapers show each sub-partition with its own independent register file in SM diagrams). This is the fastest storage on the GPU; each thread can use up to 255 32-bit registers. A warp's registers are stored in the local register file of its assigned processing block, and warps do not migrate between processing blocks once assigned. The register file is large because the GPU needs to simultaneously maintain the register state of thousands of threads (the key to achieving zero-overhead warp switching)
+
+### SM-Level Shared Resources
 
 The 4 Processing Blocks share:
 
-- **Register File** — 256 KB, the fastest storage on the GPU. Each thread can use up to 255 32-bit registers. The register file is large because the GPU needs to simultaneously maintain the register state of thousands of threads (the key to achieving zero-overhead warp switching)
-- **Shared Memory / L1 Cache** — 228 KB (Hopper), high-speed storage shared among threads within a Block. The allocation ratio between shared memory and L1 cache is configurable
+- **Shared Memory / L1 Cache** — 256 KB (Hopper) of on-chip SRAM, of which up to 228 KB can be configured as shared memory with the remainder used as L1 cache. Physically belongs to the entire SM, but logically partitioned by **thread block** — all threads within the same thread block (across all warps, across all processing blocks) can access the same shared memory region, while different thread blocks cannot see each other's shared memory. The allocation ratio between shared memory and L1 cache is configurable
 
 ### Generational Evolution
 
@@ -135,6 +140,33 @@ When a warp executes a memory load instruction, it needs to wait hundreds of cyc
 
 <WarpSchedulerTimeline client:visible locale="en" />
 
+### Hardware Concepts vs Software Abstractions: How They Map
+
+GPU programming has many concepts with "block" in the name, which can be confusing. The key is distinguishing **hardware entities** from **software abstractions**:
+
+| Concept | Type | Description |
+|---------|------|-------------|
+| **SM** | Hardware | GPU's basic compute unit |
+| **Processing Block** | Hardware | Sub-partition inside an SM (each has its own warp scheduler, CUDA cores, Tensor Core) |
+| **Grid** | Software | All threads in a single kernel launch |
+| **Thread Block** | Software | A programmer-defined group of threads (e.g., 256), sharing shared memory, synchronizable via `__syncthreads()` |
+| **Warp** | Bridge | Every 32 consecutive threads within a thread block are automatically grouped into a warp, scheduled in lockstep by hardware |
+
+**Mapping:**
+
+- **Thread Block → SM**: A thread block is assigned as a whole to one SM, sharing that SM's shared memory. One SM can run multiple thread blocks concurrently (depending on whether register and shared memory resources are sufficient — this is **occupancy**)
+- **Warp → Processing Block**: Threads within a thread block are automatically divided into warps of 32, with each warp assigned to one of the SM's processing block's warp schedulers. **Once assigned, a warp stays on that processing block and does not migrate** — because the warp's register state is stored in that processing block's local register file, and migrating would mean moving up to 32 × 255 × 4 = ~32 KB of register data, which is prohibitively expensive. Switching between warps within the same processing block is zero-overhead — the scheduler simply switches to another warp's register region with no save/restore needed. This contrasts with CPUs, where threads can migrate between cores (OS load balancing); GPU warps rely on static distribution and massive parallelism for load balancing
+- **Registers**: Private to each thread. Threads within the same warp cannot directly access each other's registers (but can exchange values through warp shuffle instructions like `__shfl_sync`)
+
+> **Note: "Processing Block" and "Thread Block" are completely different** — the former is a hardware partition inside an SM, the latter is a programmer-defined software grouping. The names are similar but there is no one-to-one correspondence.
+
+**Why do we need both warp and thread block as two layers of abstraction?**
+
+- **Warp (32 threads) solves execution efficiency**: Under the SIMT model, 32 threads in a warp share a single instruction fetch/decode unit, with hardware dispatching instructions uniformly, while each thread maintains its own independent registers and PC. This way, only 1 set of control logic drives 32 ALUs, dramatically saving transistor area. If a 256-thread thread block didn't split into warps, it would need 256 independent fetch/decode units — which is impractical
+- **Thread Block (e.g., 256 threads) solves cooperation needs**: Many algorithms need more than 32 threads to share data (e.g., GEMM tiling requires many threads to cooperatively load data into shared memory). Thread blocks provide shared memory and `__syncthreads()` synchronization, enabling multiple warps to cooperate
+
+In short: **thread blocks manage cooperation, warps manage execution**.
+
 ---
 
 ## Section 5: Memory Hierarchy
@@ -144,7 +176,7 @@ The GPU's memory hierarchy is the single biggest factor affecting performance. F
 | Level | Capacity (H100) | Bandwidth | Latency | Scope |
 |------|------------|------|------|--------|
 | Register File | 256 KB / SM | Extremely high (on-chip) | 0 cycles | Thread-private |
-| Shared Memory / L1 | 228 KB / SM | Extremely high (on-chip) | ~20-30 cycles | Shared within Block |
+| Shared Memory / L1 | 256 KB / SM (up to 228 KB configurable as shared memory) | Extremely high (on-chip) | ~20-30 cycles | Shared within Thread Block |
 | L2 Cache | 50 MB | ~12 TB/s (theoretical) | ~200 cycles | Globally shared |
 | HBM3 | 80 GB | 3.35 TB/s | ~400-600 cycles | Global |
 

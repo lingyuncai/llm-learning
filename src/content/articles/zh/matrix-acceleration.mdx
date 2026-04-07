@@ -115,6 +115,8 @@ sum += shared_A[ty][k] * shared_B[k][tx];
 
 **Systolic array 完全不需要这些** — 数据按硬件固定的时序在相邻 PE 间传递，复用是物理上天然发生的，没有同步指令、没有 shared memory 访问。
 
+> 关于 thread block 与 warp 的关系、shared memory 和寄存器的作用域、`__syncthreads()` 的工作原理等编程模型细节，参见 [GPU Architecture — 硬件概念 vs 软件抽象](/zh/articles/gpu-architecture#硬件概念-vs-软件抽象对应关系) 和 [CUDA 编程模型](/zh/articles/cuda-programming-model)。
+
 **面积与能效：**
 
 | | CUDA Core | Systolic Array PE |
