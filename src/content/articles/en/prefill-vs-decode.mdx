@@ -56,7 +56,7 @@ $$
 Q = X \cdot W^Q, \quad K = X \cdot W^K, \quad V = X \cdot W^V
 $$
 
-Where $X$ has shape $(n \times d)$ and $W$ has shape $(d \times d)$. This is a classic matrix-matrix multiplication (GEMM), with computational cost:
+Where $X$ has shape $(n \times d)$, and each weight matrix $W^Q, W^K, W^V$ has shape $(d \times d)$. Taking a single projection (e.g., $Q = X \cdot W^Q$) as an example, this is a classic matrix-matrix multiplication (GEMM), with computational cost:
 
 $$
 \text{FLOPs} = 2 \times n \times d \times d = 2nd^2

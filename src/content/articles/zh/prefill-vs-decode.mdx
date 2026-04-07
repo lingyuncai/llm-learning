@@ -56,7 +56,7 @@ $$
 Q = X \cdot W^Q, \quad K = X \cdot W^K, \quad V = X \cdot W^V
 $$
 
-其中 $X$ 的形状为 $(n \times d)$，$W$ 的形状为 $(d \times d)$。这是一个经典的矩阵-矩阵乘法（GEMM），计算量为：
+其中 $X$ 的形状为 $(n \times d)$，每个权重矩阵 $W^Q, W^K, W^V$ 的形状均为 $(d \times d)$。以单个投影（如 $Q = X \cdot W^Q$）为例，这是一个经典的矩阵-矩阵乘法（GEMM），计算量为：
 
 $$
 \text{FLOPs} = 2 \times n \times d \times d = 2nd^2
