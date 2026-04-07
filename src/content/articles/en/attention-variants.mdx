@@ -26,6 +26,18 @@ references:
   - type: paper
     title: "DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model"
     url: "https://arxiv.org/abs/2405.04434"
+  - type: paper
+    title: "Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention"
+    url: "https://arxiv.org/abs/2006.16236"
+  - type: paper
+    title: "Retentive Network: A Successor to Transformer for Large Language Models"
+    url: "https://arxiv.org/abs/2307.08621"
+  - type: paper
+    title: "Parallelizing Linear Transformers with the Delta Rule over Sequence Length"
+    url: "https://arxiv.org/abs/2406.06484"
+  - type: paper
+    title: "Gated Delta Networks: Improving Mamba2 with Delta Rule"
+    url: "https://arxiv.org/abs/2412.06464"
 ---
 
 import SlidingWindowVsFullMask from '../../../components/interactive/SlidingWindowVsFullMask.tsx';
@@ -34,12 +46,15 @@ import CrossVsSelfAttention from '../../../components/interactive/CrossVsSelfAtt
 import MLACompression from '../../../components/interactive/MLACompression.tsx';
 import MLADataFlow from '../../../components/interactive/MLADataFlow.tsx';
 import AttentionVariantComparison from '../../../components/interactive/AttentionVariantComparison.tsx';
+import LinearAttentionKernelTrick from '../../../components/interactive/LinearAttentionKernelTrick.tsx';
+import LinearAttentionFamily from '../../../components/interactive/LinearAttentionFamily.tsx';
 
 Standard Multi-Head Attention faces three major bottlenecks: $O(n^2)$ computational complexity, KV cache memory consumption, and long-context handling. We previously saw how [GQA/MQA](/en/articles/gqa-mqa) reduces cache by sharing KV heads — here we introduce other important attention variants.
 
-Three optimization directions:
+Four optimization directions:
 - **Sparsification**: Reduce the range each token needs to attend to (Sliding Window Attention)
 - **KV compression**: Reduce the amount of information stored at each position (MLA)
+- **Linearization**: Remove softmax, reduce $O(n^2)$ to $O(n)$ (Linear Attention → GDN)
 - **Hybrid architectures**: Use different strategies at different layers, combining their strengths (Hybrid Attention)
 
 ## Sliding Window Attention
@@ -113,6 +128,72 @@ Taking DeepSeek-V2 as an example ($d_{model}=5120$, 128 heads, $d_c=512$): MLA's
 
 **Adopters:** DeepSeek-V2, DeepSeek-V3, DeepSeek-R1
 
+## Linear Attention and Gated Delta Net
+
+The variants above all retain softmax — they just reduce computation range (SWA) or compress the cache (MLA). Linear Attention takes a more radical approach: **remove softmax entirely, fundamentally eliminating $O(n^2)$ complexity**.
+
+### Core Idea: Remove Softmax, Reorder Computation
+
+Standard Attention computes:
+
+$$\text{Attn}(Q,K,V) = \underbrace{\text{softmax}(QK^T / \sqrt{d})}_{n \times n} \cdot V$$
+
+You must compute $QK^T$ (an $n \times n$ matrix) first, then softmax, then multiply by $V$. Softmax is a row-wise normalization — it **blocks matrix multiplication associativity**. You cannot compute $K^TV$ before $Q$, because softmax sits in between.
+
+Linear Attention (Katharopoulos et al., 2020) had a key insight: replace softmax with a feature map $\phi$, enabling:
+
+$$\text{Attn}(Q,K,V) = \phi(Q) \cdot \underbrace{(\phi(K)^T \cdot V)}_{d \times d}$$
+
+$\phi(K)^T V$ is a $d \times d$ matrix ($d$ is the head dimension, typically 64-128), independent of sequence length $n$. When $n \gg d$, this reduces complexity from $O(n^2 d)$ to $O(nd^2)$ — true linear complexity.
+
+<LinearAttentionKernelTrick client:visible locale="en" />
+
+### RNN Form: Fixed-Size State
+
+Without softmax, Linear Attention can be written as an RNN recurrence:
+
+$$S_t = S_{t-1} + \phi(k_t) \phi(v_t)^T, \quad o_t = \phi(q_t) \cdot S_t$$
+
+$S_t$ is a $d \times d$ **state matrix** that compresses all history. During inference, no KV cache (which grows with sequence length) is needed — just this fixed-size state.
+
+This form is strikingly similar to [State Space Models (SSM)](/en/articles/state-space-models):
+
+| | Linear Attention | SSM / Mamba |
+|---|---|---|
+| State update | $S_t = S_{t-1} + k_t v_t^T$ | $h_t = Ah_{t-1} + Bx_t$ |
+| Output | $o_t = q_t S_t$ | $y_t = Ch_t$ |
+| State size | $d \times d$ matrix (fixed) | $N$-dim vector (fixed) |
+| Inference complexity | $O(1)$ per token | $O(1)$ per token |
+
+They are fundamentally the same: **compress history into a fixed-size state, update via linear recurrence**. [Mamba-2's SSD framework](/en/articles/state-space-models#5-mamba-2-state-space-duality) rigorously proved this equivalence — structured SSMs are a form of linear attention with decay.
+
+### The Cost: Softmax Isn't Free to Remove
+
+Softmax provides a **sparse, sharp attention distribution** — it lets the model focus on a few key tokens (e.g., precisely locating a specific name in a long document). Removing softmax makes the distribution "flat," reducing the difference in contribution across tokens.
+
+This causes pure Linear Attention to be far weaker than standard Attention on tasks requiring **precise retrieval** (copying, in-context learning). This is fundamentally the same limitation as SSM/Mamba — a fixed-size state cannot precisely remember specific information from arbitrarily long sequences. See [Hybrid Architectures: Why Pure SSM Isn't Enough](/en/articles/hybrid-architectures#why-pure-ssm-isnt-enough).
+
+### From Accumulation to Error Correction: Evolution of State Updates
+
+Basic Linear Attention only accumulates ($S_t = S_{t-1} + k_t v_t^T$), never forgets. Subsequent work focuses on making state updates smarter:
+
+<LinearAttentionFamily client:visible locale="en" />
+
+**Evolution:**
+
+1. **Basic Linear Attention** (2020): Remove softmax, establish RNN form. But state only accumulates, large performance gap
+2. **RetNet** (2023, MSR): Add exponential decay factor $\gamma$, old information automatically fades each step. But $\gamma$ is a fixed hyperparameter
+3. **DeltaNet** (2024, Yang et al.): Introduce the **delta rule** — instead of blind accumulation, first query what's already in the state ($k_t^T S_{t-1}$), then write only the delta ("what's missing"). This is an online learning rule for associative memory
+4. **Gated Delta Net (GDN)** (2024, ICLR 2025): Combines two complementary mechanisms — **$\alpha_t$ gating** (from Mamba2) for selective forgetting + **delta rule** for targeted writing. Paper shows GDN outperforms Mamba2 on language modeling, in-context retrieval, and long-context tasks
+
+### Relationship to Mamba
+
+Linear Attention and SSM/Mamba are two formulations of the same idea — the former starts from Attention (remove softmax), the latter from control theory (state space recurrence), converging at the same point.
+
+GDN directly embodies this convergence: its paper title reads "Improving Mamba2 with Delta Rule" — combining Mamba2's gating mechanism with linear attention's delta rule. GDN's hybrid architecture (alternating GDN layers + sliding window attention layers) follows exactly the same pattern as [Jamba](/en/articles/hybrid-architectures#jamba-large-scale-interleaved-hybrid) (alternating Mamba layers + attention layers).
+
+> The Linear Attention family and SSM/Mamba family are rapidly converging. Understanding one means understanding the core ideas of the other. For detailed SSM/Mamba principles, see [State Space Models and Mamba](/en/articles/state-space-models). For hybrid architecture design, see [Hybrid Architectures](/en/articles/hybrid-architectures).
+
 ## Comparison Summary
 
 <AttentionVariantComparison client:visible locale="en" />
@@ -121,5 +202,6 @@ Taking DeepSeek-V2 as an example ($d_{model}=5120$, 128 heads, $d_c=512$): MLA's
 - Long context + low latency → Sliding Window (Mistral approach)
 - Maximum KV cache compression → MLA (DeepSeek approach)
 - Cross-modal / Encoder-Decoder → Cross Attention
-- Balanced approach → Hybrid (Gemma 2 approach)
+- Linear complexity + fixed state → Linear Attention / GDN (replaces KV cache entirely)
+- Balanced approach → Hybrid (Gemma 2 approach, or alternating GDN + SWA)
 - General KV savings → GQA (currently the most popular compromise)

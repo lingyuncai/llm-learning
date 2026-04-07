@@ -5,6 +5,9 @@
 - [x] 为各学习路径的第一篇文章添加"推荐学习资源"章节（教材/课程/博客/交互教程汇总） (来源: 2026-04-05) — 完成: 7 个路径全部添加（transformer-overview, ai-compute-stack, prefill-vs-decode, quantization-fundamentals, ollama-architecture, inference-engine-landscape, rl-foundations）
 - [x] C 级全交互参数化动画，按需加入 (来源: 2026-03-31) — 已融入日常组件开发（ArithmeticIntensityCalc、ComputeToLoadRatio 等）
 
+## 未来主题
+- [ ] Op Fusion（算子融合）专题 (来源: 2026-04-07)
+
 ## 未来内容
 - [x] Positional Encoding 专题文章（含 RoPE 旋转向量详细动画）(来源: 2026-04-01) — 完成: positional-encoding (含 RoPEFrequencyBands, RoPEComplexPlane, RoPEExtrapolation)
 - [x] MoE (Mixture of Experts) 专题 (来源: 2026-03-31) — 完成: mixture-of-experts (7 组件)

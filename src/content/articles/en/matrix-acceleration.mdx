@@ -191,6 +191,12 @@ Intel's matrix acceleration unit is called **XMX (Xe Matrix eXtensions)**, a cor
 - Supported precisions: FP16, BF16, TF32, INT8, INT4
 - Programming interfaces: SYCL `joint_matrix` (high-level) / ESIMD `dpas` (low-level)
 
+> **dp4a vs dpas — two easily confused instructions:**
+> - **dp4a** (Dot Product of 4 elements and Accumulate): computes the dot product of 4 INT8 element pairs and accumulates into INT32 (`acc += a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3]`). Runs on the **Vector Engine**, not on XMX. Essentially a vector dot-product instruction, similar to NVIDIA's `__dp4a` intrinsic (available since Pascal/Turing). dp4a predates the Xe architecture
+> - **dpas** (Dot Product Accumulate Systolic): a matrix instruction that drives the **XMX systolic array**, completing a small matrix block multiply-accumulate in a single instruction, analogous to NVIDIA's `mma.sync` (Tensor Core instruction). Much higher throughput than dp4a because the entire 8×8 systolic array works simultaneously
+>
+> In short: dp4a is a scalar dot product (Vector Engine), dpas is matrix multiply-accumulate (XMX systolic array).
+
 ### Architecture Comparison with NVIDIA
 
 | NVIDIA | Intel | Description |
