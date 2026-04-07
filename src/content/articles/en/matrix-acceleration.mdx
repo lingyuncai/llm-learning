@@ -82,6 +82,52 @@ Key observations:
 - **PE(i,j) processes the k-th input pair at cycle i+j+k** — staggered inputs ensure data arrives simultaneously
 - **A 4×4 matrix multiply takes 10 cycles** (not 1), but the hardware can **pipeline** multiple matrix groups
 
+### Why Not Just Use CUDA Cores in Parallel?
+
+Seeing "10 cycles" you might ask: if we launch 16 CUDA Cores, each computing one element of C (4 MACs), wouldn't that finish in just 4 cycles? Lower latency — so why do we need systolic arrays?
+
+The advantage of systolic arrays is not latency, but **memory access volume** and **area/energy efficiency**:
+
+**Memory access comparison (4×4 matrix multiply):**
+
+| Approach | Computation | Memory Reads |
+|----------|-------------|-------------|
+| 16 CUDA Cores in parallel | Each thread reads one row of A (4) + one column of B (4) | 16 × 8 = **128 reads** |
+| 4×4 Systolic Array | Each element of A flows in from the left, passing through 4 PEs for reuse; same for B | 16 + 16 = **32 reads** |
+
+A and B together have only 32 unique elements, but 16 CUDA Cores each read independently, creating 4× redundant access.
+
+You might think: use shared memory to cache tiles of A and B, so threads read from shared memory instead of repeatedly from global memory. This is indeed the standard GEMM optimization approach, but it introduces extra overhead:
+
+```
+// Phase 1: All threads cooperatively load tile into shared memory
+shared_A[ty][tx] = A[row][tx];
+shared_B[ty][tx] = B[ty][col];
+__syncthreads();   // ← barrier synchronization
+
+// Phase 2: Read from shared memory for computation
+sum += shared_A[ty][k] * shared_B[k][tx];
+```
+
+`__syncthreads()` is a **barrier** — all threads in the thread block must reach this line before any can proceed. Why is this needed? Because real GEMM thread blocks have far more than 16 threads — a typical configuration is 256 threads spread across **8 warps**. The 32 threads within the same warp execute in lockstep, but **different warps are independently scheduled by the warp scheduler, and their execution progress can differ entirely**. Threads in Warp 0 may need to read data that Warp 3 wrote to shared memory, while Warp 3 may not have reached the write instruction yet. The barrier ensures all warps complete their writes before any begin reading.
+
+Even with shared memory + barriers, all threads still perform numerous shared memory reads (just moved from global to shared memory), plus the synchronization overhead of barrier waits.
+
+**Systolic arrays need none of this** — data passes between adjacent PEs on a fixed hardware-determined schedule. Reuse happens physically and naturally, with no synchronization instructions and no shared memory access.
+
+**Area and energy efficiency:**
+
+| | CUDA Core | Systolic Array PE |
+|---|---|---|
+| Components | Fetch, decode, register file, ALU, branch unit… | One MAC unit + registers |
+| Capability | General-purpose: can execute any instruction | Specialized: multiply-accumulate only |
+| Unit area | Large | Small (more units fit in same area) |
+| Data movement energy | Shared memory access ~5 pJ | Adjacent PE register pass ~0.5 pJ |
+
+For the same chip area, systolic arrays can pack **more MAC units** and feed them with **less bandwidth and energy**. This is why Tensor Core throughput reaches ~15× that of CUDA Cores — not because a single operation is faster, but because specialized hardware is more efficient in both area and bandwidth.
+
+The 4×4 example makes the gap look small, but at real-world sizes (e.g., 4096×4096 GEMM): the redundant memory accesses in the naive parallel approach grow proportionally with matrix dimensions, and bandwidth bottlenecks become the deciding constraint.
+
 ### Dataflow Variants
 
 Systolic arrays have multiple dataflow modes, differing in **which matrix is "stationary" inside PEs and which "flows"**:
@@ -102,7 +148,9 @@ The specific implementations of Tensor Core and XMX are proprietary, but both ar
 The core operation of a Tensor Core is matrix multiply-accumulate: **D = A × B + C**
 
 - The original conceptual size is 4×4, but from Volta to Blackwell, the actually supported block sizes have grown larger
-- Hopper (4th gen) wmma API commonly uses: `m16n16k16` — i.e., A(16×16) × B(16×16) → D(16×16); at the PTX level there is a smaller `m16n8k16`
+- Size notation follows the BLAS GEMM convention: $D_{(m \times n)} = A_{(m \times k)} \times B_{(k \times n)} + C_{(m \times n)}$, where m is the number of output rows, n is the number of output columns, and k is the inner dimension (columns of A / rows of B). For example, `m16n16k16` means A(16×16) × B(16×16) → D(16×16), and `m16n8k16` means A(16×16) × B(16×8) → D(16×8)
+- Hopper (4th gen) wmma API commonly uses `m16n16k16`; at the PTX level there is a smaller `m16n8k16`
+- These are the **matrix block sizes a single Tensor Core instruction can process**. Larger matrix multiplies require software tiling — splitting the large matrix into these small blocks and invoking them repeatedly
 - Each SM has **4 Tensor Cores** (one per Processing Block)
 
 ### Precision Support Evolution
@@ -172,7 +220,69 @@ The **key differences** are mainly in scale and target scenarios:
 
 ---
 
-## Section 6: Dual-Pipe — Utilizing Both Compute Units Simultaneously
+## Section 6: Cross-Vendor Standards — Subgroup and Cooperative Matrix
+
+The wmma (NVIDIA) and joint_matrix (Intel SYCL) APIs introduced earlier are vendor-specific. Cross-platform standards like Vulkan / SPIR-V / OpenCL define unified abstractions that allow the same code to run on different vendors' hardware.
+
+### Subgroup: The Cross-Vendor Term for Warp / Wave
+
+A subgroup is **a group of threads that execute in lockstep (SIMD/SIMT) on the hardware**. Different vendors use different names for this concept:
+
+| Vendor | Term | Typical Width |
+|--------|------|---------------|
+| NVIDIA | Warp | 32 threads |
+| AMD | Wave / Wavefront | 32 or 64 threads |
+| Intel | Sub-group | 8 / 16 / 32 threads |
+| **Vulkan / SPIR-V** | **Subgroup** | Hardware-dependent |
+
+Threads within a subgroup can **directly exchange register data** without going through shared memory, supporting operations like:
+
+- **Shuffle**: Thread A directly reads thread B's register value
+- **Broadcast**: One thread's value is broadcast to all threads in the subgroup
+- **Reduction**: Direct sum / max within the subgroup
+
+This is much faster than going through shared memory (store → barrier → load), and is a fundamental primitive for high-performance GPU kernels.
+
+### Cooperative Matrix: Cross-Vendor Programming Abstraction for Tensor Core / XMX
+
+Earlier we saw that Tensor Core MMA operations are **warp-level cooperative** — 32 threads jointly hold matrix fragments and issue matrix multiply instructions together. **Cooperative matrix standardizes this pattern of "multiple threads within a subgroup cooperating to hold and compute on a matrix"**:
+
+- No single thread holds the complete matrix; matrix fragments are distributed across registers of threads within the subgroup
+- Hardware executes matrix multiply-accumulate $D = A \times B + C$ at subgroup granularity
+- Maps to underlying hardware: NVIDIA Tensor Core, Intel XMX, AMD Matrix Core
+
+API correspondence across layers:
+
+| Abstraction Level | NVIDIA | Intel | Cross-Vendor Standard |
+|-------------------|--------|-------|----------------------|
+| High-level API | `wmma::mma_sync` | `joint_matrix_mad` | `cooperativeMatrixMulAdd` (Vulkan) |
+| Load | `wmma::load_matrix_sync` | `joint_matrix_load` | `cooperativeMatrixLoad` |
+| Store | `wmma::store_matrix_sync` | `joint_matrix_store` | `cooperativeMatrixStore` |
+| Specification | CUDA wmma API | SYCL `joint_matrix` | `VK_KHR_cooperative_matrix` / `SPV_KHR_cooperative_matrix` |
+
+Typical usage flow (using Vulkan cooperative matrix as example):
+
+```
+1. cooperativeMatrixLoad   — Load matrix fragment from VRAM/shared memory into subgroup registers
+2. cooperativeMatrixMulAdd — Hardware executes D = A × B + C (one instruction for small matrix MMA)
+3. cooperativeMatrixStore  — Write result back to VRAM/shared memory
+```
+
+Available matrix sizes depend on hardware and data types. Programs can query supported size combinations at runtime (e.g., NVIDIA FP16 commonly supports 16×16×16, Intel may support 8×16×32, etc.).
+
+### Why Cross-Vendor Standards Matter
+
+Vendor-specific APIs (wmma, joint_matrix) are typically more mature and deeply optimized. But the value of Vulkan cooperative matrix lies in:
+
+- **Portability**: The same SPIR-V shader can run on NVIDIA, AMD, and Intel GPUs
+- **Ecosystem unification**: Inference frameworks (e.g., llama.cpp / GGML using the Vulkan backend) don't need to maintain separate matrix multiply kernels for each vendor
+- **Broad coverage**: Vulkan supports desktop, mobile, embedded, and other platforms
+
+In practice, the overhead of cross-vendor standards is usually small — the underlying driver maps cooperative matrix operations to hardware-native matrix instructions (Tensor Core HMMA, Intel DPAS, etc.).
+
+---
+
+## Section 7: Dual-Pipe — Utilizing Both Compute Units Simultaneously
 
 Tensor Core and CUDA Core are different functional units within an SM, with independent execution pipelines. The traditional approach is sequential execution: matrix multiply (Tensor Core) completes before element-wise operations (CUDA Core) begin.
 
