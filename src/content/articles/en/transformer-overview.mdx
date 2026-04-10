@@ -6,7 +6,7 @@ tags: [transformer, architecture]
 prerequisites: []
 difficulty: intermediate
 created: "2026-03-31"
-updated: "2026-04-06"
+updated: "2026-04-08"
 references:
   - type: paper
     title: "Attention Is All You Need"
@@ -26,6 +26,7 @@ references:
 ---
 
 import TransformerArchDiagram from '../../../components/interactive/TransformerArchDiagram.tsx';
+import GPTStackDiagram from '../../../components/interactive/GPTStackDiagram.tsx';
 import TensorShape from '../../../components/primitives/TensorShape.tsx';
 import AttentionMaskVisualization from '../../../components/interactive/AttentionMaskVisualization.tsx';
 import PrePostLNComparison from '../../../components/interactive/PrePostLNComparison.tsx';
@@ -63,6 +64,12 @@ The diagram below shows the internal structure of a **Pre-LayerNorm** variant of
 <TransformerArchDiagram client:visible locale="en" />
 
 A complete Transformer model consists of $N$ such Blocks stacked together. The input first goes through Embedding and Positional Encoding, then passes through each Block layer by layer, and finally outputs for downstream tasks (such as next-token prediction in language modeling).
+
+The diagram below shows the complete architecture of a **Decoder-only LLM** like GPT: the full pipeline from input text to next-token prediction. You can switch between different models to see their specific hyperparameter configurations.
+
+<GPTStackDiagram client:visible locale="en" />
+
+> **Does one Transformer Block count as "one layer"?** It depends on context. When the industry refers to "layers" (e.g., LLaMA-7B has 32 layers), it means the number of **Blocks** — each Block internally contains two sub-layers (Self-Attention + FFN), but the entire Block counts as one layer. So "32 layers" = 32 Blocks = 64 sub-layers. The `n_layers` / `num_hidden_layers` parameter in papers and code refers to the number of Blocks.
 
 ## Component Details
 
