@@ -5,7 +5,7 @@ locale: en
 tags: [sglang, structured-output, constrained-decoding, fsm, dsl]
 difficulty: advanced
 created: "2026-04-05"
-updated: "2026-04-06"
+updated: "2026-04-10"
 prerequisites: [prefix-caching]
 references:
   - type: paper
@@ -17,6 +17,9 @@ references:
   - type: website
     title: "Fast JSON Decoding for Local LLMs with Compressed Finite State Machine"
     url: "https://lmsys.org/blog/2024-02-05-compressed-fsm/"
+  - type: website
+    title: "SGLang Documentation — Structured Outputs"
+    url: "https://docs.sglang.io/advanced_features/structured_outputs.html"
 ---
 
 import SGLangExecutionFlow from '../../../components/interactive/SGLangExecutionFlow.tsx';
@@ -118,6 +121,103 @@ Key trade-offs:
 - **Unconstrained** is fastest but unreliable — suitable for scenarios with relaxed formatting requirements
 - **FSM-guided** achieves near-perfect accuracy but is slightly slower — token mask computation and vocabulary scanning have overhead
 - **FSM + Jump-Forward** balances correctness and speed — this is SGLang's recommended default
+
+## How to Use in Practice
+
+The preceding sections explained the principles behind DSL primitives and FSM-constrained decoding. But how do you actually use these capabilities? SGLang uses a **frontend-backend separation architecture**: the server loads a model and handles inference, while clients send requests via HTTP APIs. Constraints are **per-request** — no config files needed; each request specifies its own schema.
+
+### Starting the Server
+
+```bash
+# Launch the SGLang inference server with a specific model
+python -m sglang.launch_server \
+  --model-path meta-llama/Meta-Llama-3.1-8B-Instruct \
+  --port 30000 \
+  --grammar-backend xgrammar   # Grammar backend: xgrammar (default), outlines, or llguidance
+```
+
+Once started, the server exposes OpenAI-compatible endpoints (`/v1/chat/completions`) and SGLang native endpoints (`/generate`). All FSM compilation and Jump-Forward optimizations are applied automatically on the server side.
+
+### Option 1: OpenAI-Compatible API
+
+The most common approach. Use the standard OpenAI SDK, passing structured output constraints via `response_format` or `extra_body`:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:30000/v1", api_key="none")
+
+# JSON Schema constraint — via standard OpenAI response_format field
+response = client.chat.completions.create(
+    model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+    messages=[{"role": "user", "content": "Capital of France in JSON format."}],
+    response_format={
+        "type": "json_schema",
+        "json_schema": {
+            "name": "capital_info",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "population": {"type": "integer"}
+                },
+                "required": ["name", "population"]
+            }
+        }
+    }
+)
+
+# Regex constraint — via extra_body (SGLang extension)
+response = client.chat.completions.create(
+    model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+    messages=[{"role": "user", "content": "What is the capital of France?"}],
+    extra_body={"regex": "(Paris|London|Berlin)"}
+)
+
+# EBNF grammar — via extra_body (SGLang extension)
+response = client.chat.completions.create(
+    model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+    messages=[{"role": "user", "content": "European city info"}],
+    extra_body={"ebnf": """root ::= city " is the capital of " country
+city ::= "Paris" | "London" | "Berlin"
+country ::= "France" | "England" | "Germany" """}
+)
+```
+
+The three constraint types are mutually exclusive — each request can specify only one of `json_schema`, `regex`, or `ebnf`.
+
+### Option 2: Native Offline Engine
+
+No HTTP involved — load the model directly in the same Python process for batch offline inference:
+
+```python
+import sglang as sgl
+import json
+from pydantic import BaseModel, Field
+
+class CapitalInfo(BaseModel):
+    name: str = Field(..., pattern=r"^\w+$")
+    population: int = Field(...)
+
+llm = sgl.Engine(model_path="meta-llama/Meta-Llama-3.1-8B-Instruct")
+
+outputs = llm.generate(
+    ["Tell me about the capital of France in JSON."],
+    {"temperature": 0, "json_schema": json.dumps(CapitalInfo.model_json_schema())}
+)
+```
+
+Constraint parameters (`json_schema`, `regex`, `ebnf`) go directly into the `sampling_params` dictionary, with identical behavior to the API approach.
+
+### Comparison
+
+| Approach | Communication | Best For | How Constraints Are Passed |
+|----------|--------------|----------|---------------------------|
+| OpenAI-Compatible API | HTTP (`/v1/chat/completions`) | Online services, migrating existing OpenAI code | `response_format` / `extra_body` |
+| Native Engine | In-process calls | Batch offline inference | `sampling_params` dict |
+| DSL Frontend (`@sgl.function`) | HTTP + session management | Complex multi-step orchestration (fork/join) | Inline in Python code |
+
+The first two options cover the vast majority of use cases. The DSL Frontend is mainly for complex orchestration requiring fork/join prefix reuse; for everyday structured output, the OpenAI API is sufficient.
 
 ## Summary
 

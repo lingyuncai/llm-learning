@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
-const W = 580;
-const H = 400;
+const SVG_W = 320;
+const SVG_H = 430;
 
 interface CodeLine {
   code: string;
@@ -94,14 +94,14 @@ export default function SGLangExecutionFlow({ locale = 'zh' }: { locale?: 'zh' |
   ];
 
   const FLOW_NODES: FlowNode[] = [
-    { id: 'gen1', label: t.flowNodes.gen1, type: 'gen', x: 320, y: 30, width: 130 },
-    { id: 'sel', label: t.flowNodes.select, type: 'select', x: 320, y: 90, width: 130 },
-    { id: 'fork', label: t.flowNodes.fork, type: 'fork', x: 320, y: 150, width: 80 },
-    { id: 'gen2', label: t.flowNodes.gen2, type: 'gen', x: 270, y: 210, width: 100 },
-    { id: 'gen3', label: t.flowNodes.gen3, type: 'gen', x: 400, y: 210, width: 100 },
-    { id: 'join', label: t.flowNodes.join, type: 'join', x: 340, y: 270, width: 80 },
-    { id: 'app', label: t.flowNodes.append, type: 'append', x: 340, y: 320, width: 140 },
-    { id: 'gen4', label: t.flowNodes.gen4, type: 'gen', x: 340, y: 370, width: 130 },
+    { id: 'gen1', label: t.flowNodes.gen1, type: 'gen', x: 160, y: 35, width: 140 },
+    { id: 'sel', label: t.flowNodes.select, type: 'select', x: 160, y: 95, width: 140 },
+    { id: 'fork', label: t.flowNodes.fork, type: 'fork', x: 160, y: 155, width: 80 },
+    { id: 'gen2', label: t.flowNodes.gen2, type: 'gen', x: 90, y: 215, width: 110 },
+    { id: 'gen3', label: t.flowNodes.gen3, type: 'gen', x: 240, y: 215, width: 110 },
+    { id: 'join', label: t.flowNodes.join, type: 'join', x: 160, y: 275, width: 80 },
+    { id: 'app', label: t.flowNodes.append, type: 'append', x: 160, y: 330, width: 150 },
+    { id: 'gen4', label: t.flowNodes.gen4, type: 'gen', x: 160, y: 385, width: 140 },
   ];
 
 const FLOW_EDGES: [string, string][] = [
@@ -138,7 +138,7 @@ const FLOW_EDGES: [string, string][] = [
   const nodeMap = Object.fromEntries(FLOW_NODES.map(n => [n.id, n]));
 
   return (
-    <div style={{ display: 'flex', gap: 12, fontFamily: FONTS.sans }}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, fontFamily: FONTS.sans }}>
       {/* Left: Code */}
       <div style={{
         width: 240, background: COLORS.dark, borderRadius: 8, padding: '12px 0',
@@ -165,17 +165,15 @@ const FLOW_EDGES: [string, string][] = [
       </div>
 
       {/* Right: Flow visualization */}
-      <svg viewBox={`0 0 ${W - 260} ${H}`} className="w-full" style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
+      <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} style={{ flex: 1, minWidth: 200, border: '1px solid #e5e7eb', borderRadius: 8, background: COLORS.bg }}>
         {/* Edges */}
         {FLOW_EDGES.map(([from, to]) => {
           const f = nodeMap[from];
           const t = nodeMap[to];
           if (!f || !t) return null;
-          const fx = f.x - 280;
-          const tx = t.x - 280;
           return (
             <line key={`${from}-${to}`}
-              x1={fx} y1={f.y + 20} x2={tx} y2={t.y - 5}
+              x1={f.x} y1={f.y + 18} x2={t.x} y2={t.y - 18}
               stroke={COLORS.mid} strokeWidth={1.5} opacity={0.3}
               markerEnd="url(#arrowFlow)"
             />
@@ -185,18 +183,17 @@ const FLOW_EDGES: [string, string][] = [
         {/* Nodes */}
         {FLOW_NODES.map(n => {
           const isActive = activeNodes.includes(n.id);
-          const nx = n.x - 280;
           const nH = 32;
           return (
             <g key={n.id}>
               <rect
-                x={nx - n.width / 2} y={n.y - nH / 2}
+                x={n.x - n.width / 2} y={n.y - nH / 2}
                 width={n.width} height={nH} rx={n.type === 'fork' || n.type === 'join' ? 16 : 6}
                 fill={isActive ? COLORS.highlight : COLORS.bgAlt}
                 stroke={isActive ? TYPE_COLORS[n.type] : COLORS.mid}
                 strokeWidth={isActive ? 2.5 : 1}
               />
-              <text x={nx} y={n.y + 4} fontSize={10} fill={COLORS.dark}
+              <text x={n.x} y={n.y + 4} fontSize={10} fill={COLORS.dark}
                 fontFamily={FONTS.mono} textAnchor="middle">
                 {n.label.split('\n')[0]}
               </text>
@@ -217,7 +214,7 @@ const FLOW_EDGES: [string, string][] = [
           { label: t.legendLabels.forkJoin, color: COLORS.orange },
           { label: t.legendLabels.append, color: COLORS.green },
         ].map((item, i) => (
-          <g key={i} transform={`translate(10, ${H - 30 + 0})`}>
+          <g key={i} transform={`translate(10, ${SVG_H - 20})`}>
             <rect x={i * 75} width={10} height={10} rx={2} fill={item.color} />
             <text x={i * 75 + 14} y={9} fontSize={10} fill={COLORS.mid} fontFamily={FONTS.sans}>
               {item.label}
