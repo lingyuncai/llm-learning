@@ -23,6 +23,9 @@ references:
   - type: website
     title: "Transformer Explainer — Georgia Tech / Polo Club"
     url: "https://poloclub.github.io/transformer-explainer/"
+  - type: paper
+    title: "GLU Variants Improve Transformer"
+    url: "https://arxiv.org/abs/2002.05202"
 ---
 
 import TransformerArchDiagram from '../../../components/interactive/TransformerArchDiagram.tsx';
@@ -32,6 +35,7 @@ import AttentionMaskVisualization from '../../../components/interactive/Attentio
 import PrePostLNComparison from '../../../components/interactive/PrePostLNComparison.tsx';
 import PositionalEncodingComparison from '../../../components/interactive/PositionalEncodingComparison.tsx';
 import FFNBottleneck from '../../../components/interactive/FFNBottleneck.tsx';
+import ActivationFunctions from '../../../components/interactive/ActivationFunctions.tsx';
 
 ## 简介
 
@@ -152,13 +156,21 @@ $$
 - $W_2 \in \mathbb{R}^{4H \times H}$：将维度从 $4H$ 压缩回 $H$
 - 激活函数：原始论文用 ReLU，GPT-2 使用 GELU，LLaMA 使用 SwiGLU
 
-**SwiGLU 变体（LLaMA）：**
+#### 激活函数的演进：ReLU → GELU → SwiGLU
+
+激活函数的选择对 FFN 的表达能力有直接影响。LLM 的演进中经历了三代：
+
+<ActivationFunctions client:visible />
+
+**为什么 SwiGLU 胜出？** 关键在于**门控机制**（Gated Linear Unit）。标准 FFN 用 2 个权重矩阵：$xW_1$ 过激活函数后乘 $W_2$。而 SwiGLU 用 3 个权重矩阵，多出的 $W_{\text{gate}}$ 形成一个**数据相关的门**：
 
 $$
-\text{SwiGLU}(\mathbf{x}) = \text{SiLU}(\mathbf{x} W_{\text{gate}}) \odot (\mathbf{x} W_{\text{up}})
+\text{SwiGLU}(\mathbf{x}) = \underbrace{\text{Swish}(\mathbf{x} W_{\text{gate}})}_{\text{门控：决定"放行多少"}} \odot \underbrace{(\mathbf{x} W_{\text{up}})}_{\text{值：提供"放行什么"}}
 $$
 
-SwiGLU 引入了一个额外的 gate 投影，因此 LLaMA 的 FFN 中间维度不是简单的 $4H$，而是经过调整的值（如 LLaMA-7B 为 11008）。
+这种门控让网络能**选择性地抑制或放大不同维度的信息**，而 ReLU/GELU 只是对每个维度独立做非线性变换。Shazeer (2020, *"GLU Variants Improve Transformer"*) 的实验表明，在相同参数量下 SwiGLU 在 perplexity 上显著优于 GELU 和 ReLU。
+
+**参数量的权衡**：SwiGLU 多了一个 $W_{\text{gate}}$ 矩阵（3 个矩阵 vs 2 个），为保持总参数量不变，FFN 中间维度从 $4H$ 缩小到约 $\frac{8}{3}H$。这就是为什么 LLaMA-7B 的中间维度是 11008（$\approx \frac{8}{3} \times 4096$）而不是 GPT 风格的 $4 \times 4096 = 16384$。
 
 张量形状变化过程：
 

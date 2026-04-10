@@ -23,6 +23,9 @@ references:
   - type: website
     title: "Transformer Explainer — Georgia Tech / Polo Club"
     url: "https://poloclub.github.io/transformer-explainer/"
+  - type: paper
+    title: "GLU Variants Improve Transformer"
+    url: "https://arxiv.org/abs/2002.05202"
 ---
 
 import TransformerArchDiagram from '../../../components/interactive/TransformerArchDiagram.tsx';
@@ -32,6 +35,7 @@ import AttentionMaskVisualization from '../../../components/interactive/Attentio
 import PrePostLNComparison from '../../../components/interactive/PrePostLNComparison.tsx';
 import PositionalEncodingComparison from '../../../components/interactive/PositionalEncodingComparison.tsx';
 import FFNBottleneck from '../../../components/interactive/FFNBottleneck.tsx';
+import ActivationFunctions from '../../../components/interactive/ActivationFunctions.tsx';
 
 ## Introduction
 
@@ -152,13 +156,21 @@ $$
 - $W_2 \in \mathbb{R}^{4H \times H}$: compresses the dimension from $4H$ back to $H$
 - Activation function: The original paper uses ReLU, GPT-2 uses GELU, LLaMA uses SwiGLU
 
-**SwiGLU Variant (LLaMA):**
+#### The Evolution of Activation Functions: ReLU → GELU → SwiGLU
+
+The choice of activation function directly impacts FFN expressiveness. LLMs have gone through three generations:
+
+<ActivationFunctions client:visible locale="en" />
+
+**Why does SwiGLU win?** The key is the **gating mechanism** (Gated Linear Unit). A standard FFN uses 2 weight matrices: $xW_1$ through an activation then multiplied by $W_2$. SwiGLU uses 3 weight matrices, with the additional $W_{\text{gate}}$ forming a **data-dependent gate**:
 
 $$
-\text{SwiGLU}(\mathbf{x}) = \text{SiLU}(\mathbf{x} W_{\text{gate}}) \odot (\mathbf{x} W_{\text{up}})
+\text{SwiGLU}(\mathbf{x}) = \underbrace{\text{Swish}(\mathbf{x} W_{\text{gate}})}_{\text{gate: controls "how much" passes}} \odot \underbrace{(\mathbf{x} W_{\text{up}})}_{\text{value: provides "what" passes}}
 $$
 
-SwiGLU introduces an additional gate projection, so the FFN intermediate dimension in LLaMA is not simply $4H$, but an adjusted value (e.g., 11008 for LLaMA-7B).
+This gating allows the network to **selectively suppress or amplify information across different dimensions**, while ReLU/GELU only apply independent nonlinear transformations per dimension. Shazeer (2020, *"GLU Variants Improve Transformer"*) demonstrated that SwiGLU significantly outperforms GELU and ReLU in perplexity at the same parameter count.
+
+**The parameter trade-off**: SwiGLU adds an extra $W_{\text{gate}}$ matrix (3 matrices vs 2), so to maintain the same total parameter count, the FFN intermediate dimension is reduced from $4H$ to approximately $\frac{8}{3}H$. This is why LLaMA-7B's intermediate dimension is 11008 ($\approx \frac{8}{3} \times 4096$) rather than the GPT-style $4 \times 4096 = 16384$.
 
 Tensor shape transformation process:
 
