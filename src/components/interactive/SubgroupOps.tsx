@@ -54,27 +54,32 @@ const SubgroupOps: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
     { id: 7, value: 'H', color: '#ede7f6' },
   ];
 
+  // Lane center x = 80 + i*65 + 5 = 85 + i*65
+  const laneX = (i: number) => 85 + i * 65;
+  const INPUT_BOTTOM = 165;
+  const OUTPUT_TOP = 235;
+  const MID_Y = 200;
+
   const renderArrows = () => {
     if (selectedOp === 'shuffle') {
-      // Shuffle: cross-exchange between lanes
+      // XOR 4: L0↔L4, L1↔L5, L2↔L6, L3↔L7
+      const pairs: [number, number][] = [[0,4],[1,5],[2,6],[3,7]];
       return (
         <>
-          {/* Lane 0 ↔ Lane 4 */}
-          <path d="M 90 125 Q 160 100 230 125" stroke={COLORS.primary} strokeWidth="2" fill="none" markerEnd="url(#arrow-shuffle)" />
-          <path d="M 230 145 Q 160 170 90 145" stroke={COLORS.orange} strokeWidth="2" fill="none" markerEnd="url(#arrow-shuffle-2)" />
-
-          {/* Lane 1 ↔ Lane 5 */}
-          <path d="M 155 125 Q 195 105 235 125" stroke={COLORS.primary} strokeWidth="1.5" fill="none" opacity="0.6" />
-          <path d="M 235 145 Q 195 165 155 145" stroke={COLORS.orange} strokeWidth="1.5" fill="none" opacity="0.6" />
-
-          {/* Lane 2 ↔ Lane 6 */}
-          <path d="M 220 125 Q 255 105 290 125" stroke={COLORS.primary} strokeWidth="1.5" fill="none" opacity="0.6" />
-          <path d="M 290 145 Q 255 165 220 145" stroke={COLORS.orange} strokeWidth="1.5" fill="none" opacity="0.6" />
-
-          {/* Lane 3 ↔ Lane 7 */}
-          <path d="M 285 125 Q 320 105 355 125" stroke={COLORS.primary} strokeWidth="1.5" fill="none" opacity="0.6" />
-          <path d="M 355 145 Q 320 165 285 145" stroke={COLORS.orange} strokeWidth="1.5" fill="none" opacity="0.6" />
-
+          {pairs.flatMap(([a, b]) => {
+            const ax = laneX(a);
+            const bx = laneX(b);
+            return [
+              <path key={`${a}-${b}`}
+                d={`M ${ax} ${INPUT_BOTTOM} C ${ax} ${MID_Y}, ${bx} ${MID_Y}, ${bx} ${OUTPUT_TOP}`}
+                stroke={COLORS.primary} strokeWidth="1.5" fill="none"
+                markerEnd="url(#arrow-shuffle)" opacity={a === 0 ? 1 : 0.5} />,
+              <path key={`${b}-${a}`}
+                d={`M ${bx} ${INPUT_BOTTOM} C ${bx} ${MID_Y}, ${ax} ${MID_Y}, ${ax} ${OUTPUT_TOP}`}
+                stroke={COLORS.orange} strokeWidth="1.5" fill="none"
+                markerEnd="url(#arrow-shuffle-2)" opacity={a === 0 ? 1 : 0.5} />,
+            ];
+          })}
           <defs>
             <marker id="arrow-shuffle" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
               <polygon points="0 0, 8 3, 0 6" fill={COLORS.primary} />
@@ -86,20 +91,18 @@ const SubgroupOps: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
         </>
       );
     } else if (selectedOp === 'broadcast') {
-      // Broadcast: Lane 0 to all others
+      const srcX = laneX(0);
       return (
         <>
-          {lanes.slice(1).map((lane, i) => {
-            const targetX = 80 + (i + 1) * 65;
+          <line x1={srcX} y1={INPUT_BOTTOM} x2={srcX} y2={OUTPUT_TOP}
+            stroke={COLORS.primary} strokeWidth="2" markerEnd="url(#arrow-broadcast)" />
+          {lanes.slice(1).map((lane) => {
+            const tgtX = laneX(lane.id);
             return (
-              <path
-                key={lane.id}
-                d={`M 90 145 Q ${(90 + targetX) / 2} 200 ${targetX} 145`}
-                stroke={COLORS.primary}
-                strokeWidth="2"
-                fill="none"
-                markerEnd="url(#arrow-broadcast)"
-              />
+              <path key={lane.id}
+                d={`M ${srcX} ${INPUT_BOTTOM} C ${srcX} ${MID_Y}, ${tgtX} ${MID_Y}, ${tgtX} ${OUTPUT_TOP}`}
+                stroke={COLORS.primary} strokeWidth="1.5" fill="none"
+                markerEnd="url(#arrow-broadcast)" opacity={0.6} />
             );
           })}
           <defs>
@@ -110,20 +113,18 @@ const SubgroupOps: React.FC<{ locale?: 'zh' | 'en' }> = ({ locale = 'zh' }) => {
         </>
       );
     } else if (selectedOp === 'reduce') {
-      // Reduce: all lanes to Lane 0
+      const tgtX = laneX(0);
       return (
         <>
-          {lanes.slice(1).map((lane, i) => {
-            const sourceX = 80 + (i + 1) * 65;
+          <line x1={tgtX} y1={INPUT_BOTTOM} x2={tgtX} y2={OUTPUT_TOP}
+            stroke={COLORS.green} strokeWidth="2" markerEnd="url(#arrow-reduce)" />
+          {lanes.slice(1).map((lane) => {
+            const srcX = laneX(lane.id);
             return (
-              <path
-                key={lane.id}
-                d={`M ${sourceX} 125 Q ${(sourceX + 90) / 2} 70 90 125`}
-                stroke={COLORS.green}
-                strokeWidth="2"
-                fill="none"
-                markerEnd="url(#arrow-reduce)"
-              />
+              <path key={lane.id}
+                d={`M ${srcX} ${INPUT_BOTTOM} C ${srcX} ${MID_Y}, ${tgtX} ${MID_Y}, ${tgtX} ${OUTPUT_TOP}`}
+                stroke={COLORS.green} strokeWidth="1.5" fill="none"
+                markerEnd="url(#arrow-reduce)" opacity={0.6} />
             );
           })}
           <defs>
