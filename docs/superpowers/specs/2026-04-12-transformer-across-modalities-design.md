@@ -145,7 +145,7 @@ audio-speech-models (9)
 - Radford et al. 2018 — "Improving Language Understanding by Generative Pre-Training" (GPT-1)
 - Radford et al. 2019 — "Language Models are Unsupervised Multitask Learners" (GPT-2)
 - Brown et al. 2020 — "Language Models are Few-Shot Learners" (GPT-3)
-- Chen & Cao 2019 — "BERT for Joint Intent Classification and Slot Filling"
+- Chen et al. 2019 — "BERT for Joint Intent Classification and Slot Filling" (Qian Chen, Zhu Zhuo, Wen Wang)
 - Kaplan et al. 2020 — "Scaling Laws for Neural Language Models"
 
 ---
@@ -309,7 +309,7 @@ audio-speech-models (9)
 4. **Scaling 特性**：DiT-S/B/L/XL 的 FID 随 compute 下降的曲线，验证 Transformer 的 scaling law 在生成任务上也成立
 5. **实际影响**：
    - Stable Diffusion 3 / Flux 的 MM-DiT（多模态双流 DiT）
-   - DALL-E 3 的骨干
+   - Sora 采用 DiT 架构（OpenAI 技术报告确认）
    - 为什么 DiT 成为图像生成新范式
 
 **交互组件（5 个）**：
@@ -390,7 +390,7 @@ audio-speech-models (9)
    - 68 万小时弱监督数据的力量
 3. **VALL-E：语音合成的 GPT 时刻**
    - 把 TTS 重新定义为"语言模型问题"：给文本 + 3 秒语音 prompt → 生成完整语音
-   - EnCodec 的 8 层 residual vector quantization (RVQ)
+   - EnCodec 的 residual vector quantization (RVQ)，VALL-E 使用 6kbps 配置（8 个 codebook）
    - 两阶段生成：AR 模型生成第 1 层 codec → NAR 模型生成剩余层
    - Zero-shot voice cloning 能力
 4. **Bark 与其他 TTS**：纯 GPT 风格的语音生成，支持笑声、停顿等非语言元素
@@ -453,7 +453,7 @@ audio-speech-models (9)
 - Copet et al. 2023 — "Simple and Controllable Music Generation" (MusicGen)
 - Dhariwal et al. 2020 — "Jukebox: A Generative Model for Music" (Jukebox)
 - Agostinelli et al. 2023 — "MusicLM: Generating Music From Text"
-- Evans et al. 2024 — "Stable Audio: Fast Timing-Conditioned Latent Audio Diffusion"
+- Evans et al. 2024 — "Fast Timing-Conditioned Latent Audio Diffusion" (Stable Audio)
 
 ## 实施计划概要
 
