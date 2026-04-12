@@ -1,0 +1,131 @@
+---
+title: "Multimodal Alignment: CLIP and Cross-Modal Embedding Spaces"
+slug: multimodal-alignment
+locale: en
+tags: [clip, multimodal, contrastive-learning, zero-shot, vision-language]
+prerequisites: [vision-transformer, sentence-embeddings]
+difficulty: intermediate
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Learning Transferable Visual Models From Natural Language Supervision"
+    url: "https://arxiv.org/abs/2103.00020"
+  - type: paper
+    title: "Scaling Up Visual and Vision-Language Representation Learning With Noisy Text Supervision"
+    url: "https://arxiv.org/abs/2102.05918"
+  - type: paper
+    title: "Sigmoid Loss for Language Image Pre-Training"
+    url: "https://arxiv.org/abs/2303.15343"
+  - type: paper
+    title: "Visual Instruction Tuning"
+    url: "https://arxiv.org/abs/2304.08485"
+---
+
+import DualEncoderArchitecture from '../../../components/interactive/DualEncoderArchitecture.tsx';
+import ContrastiveMatrix from '../../../components/interactive/ContrastiveMatrix.tsx';
+import EmbeddingSpaceProjection from '../../../components/interactive/EmbeddingSpaceProjection.tsx';
+import ZeroShotClassification from '../../../components/interactive/ZeroShotClassification.tsx';
+import CLIPDownstream from '../../../components/interactive/CLIPDownstream.tsx';
+
+## Introduction: Making Text and Images Speak the Same Language
+
+A photo of a dog and the text "a photo of a dog" are semantically equivalent. Yet in traditional machine learning, images and text are processed by entirely different models, living in completely separate vector spaces with no way to directly compare them.
+
+**CLIP (Contrastive Language-Image Pre-training)** solves this problem. Radford et al. (OpenAI, 2021) proposed a deceptively simple yet profoundly impactful idea: **train a shared embedding space where matching image-text pairs are close and non-matching pairs are far apart**.
+
+CLIP was trained on **400 million** internet image-text pairs, learning representations with remarkable generalization — achieving competitive performance on new classification tasks without any additional training (zero-shot). This capability makes CLIP a foundational building block for multimodal AI: Stable Diffusion uses it to understand text prompts, LLaVA uses it to convert images into tokens for LLMs, and DALL-E 2 uses it for image retrieval.
+
+## CLIP Architecture: Dual Encoder
+
+CLIP's architecture is highly intuitive: **two independent encoders process images and text separately, mapping both to the same vector space**.
+
+<DualEncoderArchitecture locale="en" client:visible />
+
+Key design choices:
+
+- **Image encoder**: Either ResNet or **ViT** (ViT-L/14 performs best in the CLIP paper). Images are patchified, encoded by a Transformer, and the [CLS] token output is linearly projected to the shared dimension $D$.
+- **Text encoder**: A standard Transformer (12 layers, 8 heads, 512-dim). Text is BPE-tokenized, fed through the Transformer, and the [EOS] token output is projected to $D$ dimensions.
+- **Independence**: The two encoders share no parameters. This allows pre-computing embeddings on one side during inference.
+
+The similarity between an image vector $I_i$ and a text vector $T_j$ is measured by **cosine similarity**:
+
+$$
+\text{sim}(I_i, T_j) = \frac{I_i \cdot T_j}{\|I_i\| \|T_j\|}
+$$
+
+## Contrastive Training: InfoNCE Loss
+
+CLIP's training objective is **contrastive learning**: given $N$ image-text pairs in a batch, each image must find its matching text (and vice versa), while repelling non-matching pairs.
+
+<ContrastiveMatrix locale="en" client:visible />
+
+Specifically, CLIP uses a symmetric InfoNCE loss. The image-to-text direction:
+
+$$
+\mathcal{L}_{i \to t} = -\frac{1}{N}\sum_{i=1}^{N} \log \frac{\exp(\text{sim}(I_i, T_i)/\tau)}{\sum_{j=1}^{N} \exp(\text{sim}(I_i, T_j)/\tau)}
+$$
+
+The text-to-image direction is analogous. The final loss averages both directions:
+
+$$
+\mathcal{L} = \frac{1}{2}(\mathcal{L}_{i \to t} + \mathcal{L}_{t \to i})
+$$
+
+Here $\tau$ is a learnable temperature parameter controlling distribution sharpness. Smaller $\tau$ makes the model more "confident," creating a more extreme distinction between positive and negative pairs.
+
+### Embedding Space During Training
+
+The visualization below shows how the embedding space changes during training. Before training, images and texts form separate clusters; after training, matching pairs are pulled together:
+
+<EmbeddingSpaceProjection locale="en" client:visible />
+
+### Why Batch Size Matters So Much
+
+Contrastive learning effectiveness depends on the number of negatives — every non-matching pair in a batch serves as a negative example. CLIP used a massive batch size of **32,768**, meaning each positive sample had 32,767 negatives. Larger batch = more negatives = stronger contrastive signal.
+
+## Zero-Shot Classification
+
+CLIP's most impressive capability is **zero-shot transfer**: classifying images without any training on the target dataset, using text descriptions directly as the classifier.
+
+<ZeroShotClassification locale="en" client:visible />
+
+The approach: for a set of class labels, construct text prompts `"a photo of a {label}"` and encode them with the text encoder. Then encode the target image and compute cosine similarity against all text vectors — the highest score is the predicted class.
+
+This essentially transforms **discrete class labels** into **continuous semantic vectors**. CLIP achieves 76.2% zero-shot accuracy on ImageNet, matching a ResNet-50 trained from scratch — despite never seeing ImageNet training data.
+
+## CLIP's Downstream Impact
+
+CLIP's trained encoders have become foundational infrastructure for multimodal AI, powering a wide range of downstream tasks:
+
+<CLIPDownstream locale="en" client:visible />
+
+- **Text-to-image generation**: Stable Diffusion uses CLIP's text encoder (later versions switched to OpenCLIP) to encode text prompts as conditioning signals, injected via cross-attention into U-Net/DiT to guide denoising.
+- **Multimodal LLMs**: LLaVA (Liu et al., 2023) freezes CLIP's ViT-L/14 vision encoder, linearly projects its patch token outputs as visual tokens concatenated with LLM input, enabling the LLM to "see" images.
+- **Cross-modal retrieval**: Since images and text share the same vector space, image-to-text and text-to-image search is simply cosine similarity followed by nearest neighbor retrieval.
+
+## Limitations and Evolution
+
+CLIP pioneered the vision-language alignment paradigm, but has notable limitations:
+
+1. **Data quality dependence**: CLIP's training data was scraped from the internet, containing noise, biases, and harmful content. Data quality directly impacts model fairness and bias.
+
+2. **Weak fine-grained understanding**: CLIP excels at global semantic matching but struggles with counting, spatial relations, and other fine-grained distinctions ("two cats on a red table" vs. "one cat under a blue table").
+
+3. **Distributed training bottleneck**: InfoNCE loss requires computing similarities across all pairs in a batch, necessitating all-gather operations across GPUs with high communication cost.
+
+Subsequent works improve along different axes:
+
+- **ALIGN** (Jia et al., 2021): Demonstrated that even noisier but larger-scale data (1.8 billion pairs) can train powerful alignment models, showing that data scale compensates for data quality.
+- **SigLIP** (Zhai et al., 2023): Replaces softmax with **sigmoid loss**, computing independent binary classification loss for each image-text pair. This avoids all-gather operations, dramatically reducing distributed training cost while maintaining comparable performance.
+- **EVA-CLIP**: Pushes zero-shot benchmarks further through improved training strategies and larger-scale ViTs.
+
+## Summary
+
+CLIP's core contribution is establishing a paradigm for **learning visual representations through natural language supervision**. Its success rests on three pillars:
+
+1. **Simple architecture**: Dual encoders + cosine similarity — conceptually minimal
+2. **Scale of training**: 400M image-text pairs + massive batch contrastive learning
+3. **Zero-shot generalization**: Text prompts as classifiers, no task-specific training needed
+
+This approach of "aligning different modalities into a shared space" has transcended the vision-language domain to become a universal paradigm in multimodal AI.

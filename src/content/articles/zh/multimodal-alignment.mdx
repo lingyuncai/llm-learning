@@ -1,0 +1,131 @@
+---
+title: "多模态对齐：CLIP 与跨模态嵌入空间"
+slug: multimodal-alignment
+locale: zh
+tags: [clip, multimodal, contrastive-learning, zero-shot, vision-language]
+prerequisites: [vision-transformer, sentence-embeddings]
+difficulty: intermediate
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Learning Transferable Visual Models From Natural Language Supervision"
+    url: "https://arxiv.org/abs/2103.00020"
+  - type: paper
+    title: "Scaling Up Visual and Vision-Language Representation Learning With Noisy Text Supervision"
+    url: "https://arxiv.org/abs/2102.05918"
+  - type: paper
+    title: "Sigmoid Loss for Language Image Pre-Training"
+    url: "https://arxiv.org/abs/2303.15343"
+  - type: paper
+    title: "Visual Instruction Tuning"
+    url: "https://arxiv.org/abs/2304.08485"
+---
+
+import DualEncoderArchitecture from '../../../components/interactive/DualEncoderArchitecture.tsx';
+import ContrastiveMatrix from '../../../components/interactive/ContrastiveMatrix.tsx';
+import EmbeddingSpaceProjection from '../../../components/interactive/EmbeddingSpaceProjection.tsx';
+import ZeroShotClassification from '../../../components/interactive/ZeroShotClassification.tsx';
+import CLIPDownstream from '../../../components/interactive/CLIPDownstream.tsx';
+
+## 简介：让文本和图像"说同一种语言"
+
+一张狗的照片和"a photo of a dog"这段文字，在语义上是等价的。但在传统机器学习中，图像和文本由完全不同的模型处理，生活在完全不同的向量空间里，无法直接比较。
+
+**CLIP (Contrastive Language-Image Pre-training)** 解决了这个问题。Radford 等人 (OpenAI, 2021) 提出了一个看似简单但影响深远的想法：**训练一个共享的嵌入空间，让匹配的图文对距离近，不匹配的距离远**。
+
+CLIP 在 **4 亿** 互联网图文对上训练，学到的表示具有惊人的泛化能力——不需要任何额外训练，就能在新的分类任务上达到有竞争力的性能（zero-shot）。这种能力使 CLIP 成为了多模态 AI 的基础组件：Stable Diffusion 用它理解文本提示，LLaVA 用它将图像转为 LLM 能理解的 token，DALL-E 2 用它做图像检索。
+
+## CLIP 架构：双塔编码器
+
+CLIP 的架构非常直觉：**两个独立的编码器，分别处理图像和文本，最终映射到同一个向量空间**。
+
+<DualEncoderArchitecture client:visible />
+
+关键设计选择：
+
+- **图像编码器**：可以是 ResNet 或 **ViT**（CLIP 论文中 ViT-L/14 效果最好）。图像经过 patch 化、Transformer 编码后，取 [CLS] token 的输出，再通过一个线性投影层映射到共享维度 $D$。
+- **文本编码器**：标准 Transformer（12 层，8 头，512 维）。文本经过 BPE tokenize 后送入 Transformer，取 [EOS] token 的输出，同样投影到 $D$ 维。
+- **独立性**：两个编码器完全独立，不共享任何参数。这使得推理时可以预计算一侧的嵌入。
+
+最终，图像向量 $I_i$ 和文本向量 $T_j$ 之间的相似度用**余弦相似度**衡量：
+
+$$
+\text{sim}(I_i, T_j) = \frac{I_i \cdot T_j}{\|I_i\| \|T_j\|}
+$$
+
+## 对比训练：InfoNCE 损失
+
+CLIP 的训练目标是**对比学习 (contrastive learning)**：给定一个 batch 中的 $N$ 个图文对，让每个图像找到自己对应的文本（反之亦然），同时排斥不匹配的对。
+
+<ContrastiveMatrix client:visible />
+
+具体而言，CLIP 使用对称的 InfoNCE 损失。图像到文本方向：
+
+$$
+\mathcal{L}_{i \to t} = -\frac{1}{N}\sum_{i=1}^{N} \log \frac{\exp(\text{sim}(I_i, T_i)/\tau)}{\sum_{j=1}^{N} \exp(\text{sim}(I_i, T_j)/\tau)}
+$$
+
+文本到图像方向类似。最终损失是两个方向的平均：
+
+$$
+\mathcal{L} = \frac{1}{2}(\mathcal{L}_{i \to t} + \mathcal{L}_{t \to i})
+$$
+
+其中 $\tau$ 是可学习的温度参数，控制分布的锐度。$\tau$ 越小，模型越"自信"，对正样本和负样本的区分越极端。
+
+### 训练过程中嵌入空间的变化
+
+下面的可视化展示了训练前后嵌入空间的变化。训练前，图像和文本各自聚类；训练后，匹配的图文对被拉近到一起：
+
+<EmbeddingSpaceProjection client:visible />
+
+### 为什么 batch size 如此重要？
+
+对比学习的有效性取决于负样本的数量——batch 中的每个不匹配对都是负样本。CLIP 使用了 **32,768** 的超大 batch size，这意味着每个正样本有 32,767 个负样本。更大的 batch = 更多的负样本 = 更好的对比信号。
+
+## Zero-Shot 分类
+
+CLIP 最令人惊叹的能力是 **zero-shot 迁移**：不需要在目标数据集上做任何训练，直接用文本描述作为分类器。
+
+<ZeroShotClassification client:visible />
+
+具体做法是：对于一组类别标签，构造文本提示 `"a photo of a {label}"`，用文本编码器编码成向量。然后将待分类的图像编码为向量，计算与所有文本向量的余弦相似度，最高的就是预测类别。
+
+这本质上是把**离散的类别标签**转化成了**连续的语义向量**。CLIP 在 ImageNet 上的 zero-shot 准确率达到了 76.2%，与从零开始训练的 ResNet-50 持平——而它从未见过 ImageNet 的训练数据。
+
+## CLIP 的下游影响
+
+CLIP 训练出的编码器成为了多模态 AI 的基础设施，被广泛用于下游任务：
+
+<CLIPDownstream client:visible />
+
+- **文本生成图像**：Stable Diffusion 使用 CLIP 的文本编码器（后续版本切换到 OpenCLIP）将文本提示编码为 conditioning signal，通过 cross-attention 注入 U-Net/DiT 引导去噪。
+- **多模态 LLM**：LLaVA (Liu et al., 2023) 冻结 CLIP 的视觉编码器 ViT-L/14，将其输出的 patch token 经过线性投影后作为 visual tokens 拼接到 LLM 的输入中，使 LLM 能"看到"图像。
+- **跨模态检索**：由于图像和文本在同一向量空间中，可以直接用图像搜文本、文本搜图像，只需计算余弦相似度后做 nearest neighbor 检索。
+
+## 局限与演进
+
+CLIP 开创了视觉-语言对齐的范式，但也存在明显的局限性：
+
+1. **数据质量依赖**：CLIP 的训练数据来自互联网爬取，存在噪声、偏见和有害内容。数据质量直接影响模型的偏见和公平性。
+
+2. **细粒度理解不足**：CLIP 擅长全局语义匹配，但对于计数、空间关系等细粒度理解较弱（"two cats on a red table" vs "one cat under a blue table" 难以区分）。
+
+3. **分布式训练瓶颈**：InfoNCE 损失需要在 batch 内计算所有 pair 的相似度，这要求跨 GPU 做 all-gather 操作，通信成本高。
+
+后续工作在不同方向上改进：
+
+- **ALIGN** (Jia et al., 2021)：证明了用更大规模（18 亿对）但更嘈杂的数据也能训练出强大的对齐模型，说明数据规模可以弥补数据质量。
+- **SigLIP** (Zhai et al., 2023)：用 **sigmoid 损失** 替换 softmax，每个图文对独立计算二分类损失，避免了 all-gather 操作，大幅降低了分布式训练成本，同时保持了相当的性能。
+- **EVA-CLIP**：通过改进的训练策略和更大规模的 ViT，在 zero-shot 评测上持续提升。
+
+## 总结
+
+CLIP 的核心贡献是建立了一种**通过自然语言监督来学习视觉表示**的范式。它的成功取决于三个要素：
+
+1. **简洁的架构**：双塔编码器 + 余弦相似度，概念上极其简单
+2. **规模化训练**：4 亿图文对 + 超大 batch size 的对比学习
+3. **零样本泛化**：文本提示即分类器，无需任务特定的训练
+
+这种"对齐不同模态到共享空间"的思路，已经超越了视觉-语言领域，成为多模态 AI 的通用范式。
