@@ -1,0 +1,116 @@
+---
+title: "Sentence Embeddings: From Token-Level to Semantic Retrieval"
+slug: sentence-embeddings
+locale: en
+tags: [sentence-embeddings, contrastive-learning, rag, retrieval, sbert]
+prerequisites: [bert-and-gpt]
+difficulty: intermediate
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks"
+    url: "https://arxiv.org/abs/1908.10084"
+  - type: paper
+    title: "Text Embeddings by Weakly-Supervised Contrastive Pre-training"
+    url: "https://arxiv.org/abs/2212.03533"
+  - type: paper
+    title: "C-Pack: Packaged Resources To Advance General Chinese Embedding"
+    url: "https://arxiv.org/abs/2309.07597"
+  - type: paper
+    title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    url: "https://arxiv.org/abs/2005.11401"
+---
+
+import SentenceSimilarityDemo from '../../../components/interactive/SentenceSimilarityDemo.tsx';
+import SiameseNetworkFlow from '../../../components/interactive/SiameseNetworkFlow.tsx';
+import ContrastiveLearningViz from '../../../components/interactive/ContrastiveLearningViz.tsx';
+import RAGPipelineFlow from '../../../components/interactive/RAGPipelineFlow.tsx';
+
+## Introduction: From Tokens to Sentences
+
+BERT produces a contextual vector for each token, but many real-world tasks require **sentence-level** representations — semantic search, text clustering, duplicate detection. How do you compress a token sequence into a single fixed-length vector while preserving semantic information? This is the problem **sentence embeddings** aim to solve.
+
+The core objective is intuitive: **semantically similar sentences should have similar vectors**. The standard way to measure "similar" is cosine similarity:
+
+$$
+\text{sim}(\mathbf{u}, \mathbf{v}) = \frac{\mathbf{u} \cdot \mathbf{v}}{\|\mathbf{u}\| \|\mathbf{v}\|}
+$$
+
+## The Problem with Naive Averaging: Anisotropy
+
+The most intuitive approach is to average all token vectors from BERT's output. However, research has shown that BERT's raw embedding space suffers from **anisotropy** — all sentence vectors cluster in a narrow cone-shaped region, causing any two sentences to have high cosine similarity (typically > 0.6), making it impossible to distinguish semantic differences.
+
+The root cause: BERT's MLM training optimizes token-level prediction and never explicitly learns "semantic distance between sentences." Sentence vectors from naive mean pooling actually perform worse than simple averages of GloVe static vectors (Reimers & Gurevych, 2019).
+
+**The path forward**: We need a dedicated training objective that teaches the model to produce discriminative sentence vectors.
+
+## Sentence-BERT: Siamese Network Architecture
+
+**Sentence-BERT (SBERT)** addresses this problem through a Siamese (twin) network architecture. The core idea: pass two sentences through the **same BERT encoder** (weight-tied), apply mean pooling to each to get sentence vectors, then train using cosine similarity with a contrastive loss.
+
+<SiameseNetworkFlow locale="en" client:visible />
+
+SBERT's key advantage is **inference efficiency**: the traditional approach concatenates two sentences into BERT (cross-encoder), requiring $O(N^2)$ forward passes to compute pairwise similarities for N sentences. SBERT can pre-compute all sentence vectors, then pairwise comparison only needs dot products — $O(N)$ encodings + $O(N^2)$ dot products (millisecond-level).
+
+For a clustering task with 10,000 sentences: a cross-encoder takes ~65 hours, while SBERT takes ~5 seconds.
+
+## Contrastive Learning: InfoNCE Loss
+
+Modern sentence embedding models widely use **contrastive learning**. The core idea: within a batch, each sentence has one positive pair (a semantically similar sentence), and all other sentences in the batch serve as negatives.
+
+The InfoNCE loss function:
+
+$$
+\mathcal{L}_i = -\log \frac{\exp(\text{sim}(\mathbf{z}_i, \mathbf{z}_j) / \tau)}{\sum_{k=1}^{2N} \mathbb{1}_{[k \ne i]} \exp(\text{sim}(\mathbf{z}_i, \mathbf{z}_k) / \tau)}
+$$
+
+Here $\tau$ is the temperature parameter (typically 0.05-0.1), and $\mathbf{z}_i$, $\mathbf{z}_j$ form a positive pair. Lower temperature means "sharper" contrast — the model more aggressively separates positives from negatives.
+
+<ContrastiveLearningViz locale="en" client:visible />
+
+A key insight of contrastive learning: **larger batch sizes mean more negatives, leading to better representations**. This is why modern models like E5 and BGE train with massive batches (65,536+).
+
+## Semantic Similarity: Building Intuition
+
+With high-quality sentence embeddings, computing semantic similarity between two sentences becomes simple vector arithmetic. The demo below shows cosine similarity for different sentence pairs — note the difference between paraphrases (high scores) and unrelated sentences (low scores):
+
+<SentenceSimilarityDemo locale="en" client:visible />
+
+Characteristics of high-quality embeddings: paraphrase pairs score > 0.85, semantically related but differently phrased pairs 0.6-0.8, completely unrelated pairs < 0.2.
+
+## Modern Sentence Embedding Models
+
+After SBERT, the sentence embedding field evolved rapidly:
+
+| Model | Year | Key Innovation | Dimensions |
+|-------|------|---------------|------------|
+| **E5** (Microsoft) | 2022 | Weakly-supervised contrastive pre-training + instruction tuning | 1024 |
+| **BGE** (BAAI) | 2023 | Chinese optimization + RetroMAE pre-training | 1024 |
+| **GTE** (Alibaba) | 2023 | Multi-stage training + multi-task learning | 1024 |
+| **text-embedding-3** (OpenAI) | 2024 | Matryoshka representation learning, variable dimensions | 256-3072 |
+
+Common trends: **larger training data** (millions to billions of pairs), **multi-stage training** (pre-train → contrastive learning → instruction tuning), **longer context** (8192 tokens).
+
+**Matryoshka Representation Learning (MRL)**: Models like OpenAI's support "nested" dimensions — the same model can output 256/512/1024/3072-dimensional vectors, where lower dimensions retain most of the semantic information from higher dimensions, letting users flexibly trade off quality and cost.
+
+## Application: Retrieval-Augmented Generation (RAG)
+
+One of the most important applications of sentence embeddings is **RAG (Retrieval-Augmented Generation)**. RAG addresses core LLM limitations: knowledge cutoff dates, hallucinations, and lack of proprietary knowledge.
+
+The core pipeline: pre-encode external documents as vectors stored in a database; when a user asks a question, first retrieve relevant documents, then concatenate retrieved results into the prompt for the LLM to generate an answer.
+
+<RAGPipelineFlow locale="en" client:visible />
+
+RAG effectiveness heavily depends on embedding quality — if the retrieval stage fails to find the right documents, even the most powerful LLM cannot help. This is why high-quality sentence embeddings are critical to the entire RAG system.
+
+## Summary
+
+Sentence embeddings are the bridge between **language understanding** and **information retrieval**. From SBERT's Siamese architecture to modern contrastive learning methods, the core goal remains: **make semantically similar sentences close in vector space**.
+
+Key takeaways:
+- Naive averaging of BERT outputs performs poorly (anisotropy problem)
+- SBERT uses Siamese networks + mean pooling to efficiently produce sentence vectors
+- Contrastive learning (InfoNCE) is the mainstream method for training sentence embeddings
+- Modern models (E5, BGE) achieve high quality through large-scale data and multi-stage training
+- RAG is the most important downstream application of sentence embeddings, combining retrieval with generation

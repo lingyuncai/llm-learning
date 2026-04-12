@@ -1,0 +1,116 @@
+---
+title: "句子嵌入：从 Token 级到语义检索"
+slug: sentence-embeddings
+locale: zh
+tags: [sentence-embeddings, contrastive-learning, rag, retrieval, sbert]
+prerequisites: [bert-and-gpt]
+difficulty: intermediate
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks"
+    url: "https://arxiv.org/abs/1908.10084"
+  - type: paper
+    title: "Text Embeddings by Weakly-Supervised Contrastive Pre-training"
+    url: "https://arxiv.org/abs/2212.03533"
+  - type: paper
+    title: "C-Pack: Packaged Resources To Advance General Chinese Embedding"
+    url: "https://arxiv.org/abs/2309.07597"
+  - type: paper
+    title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    url: "https://arxiv.org/abs/2005.11401"
+---
+
+import SentenceSimilarityDemo from '../../../components/interactive/SentenceSimilarityDemo.tsx';
+import SiameseNetworkFlow from '../../../components/interactive/SiameseNetworkFlow.tsx';
+import ContrastiveLearningViz from '../../../components/interactive/ContrastiveLearningViz.tsx';
+import RAGPipelineFlow from '../../../components/interactive/RAGPipelineFlow.tsx';
+
+## 简介：从 Token 到句子
+
+BERT 为每个 token 产生一个上下文向量，但许多实际任务需要的是**句子级别**的表示——语义搜索、文本聚类、重复检测。如何把一个 token 序列压缩成一个固定长度的向量，同时保留语义信息？这就是**句子嵌入 (Sentence Embedding)** 要解决的问题。
+
+核心目标很直观：**语义相近的句子，其向量也应该接近**。度量"接近"的标准方式是余弦相似度：
+
+$$
+\text{sim}(\mathbf{u}, \mathbf{v}) = \frac{\mathbf{u} \cdot \mathbf{v}}{\|\mathbf{u}\| \|\mathbf{v}\|}
+$$
+
+## 朴素平均的问题：各向异性 (Anisotropy)
+
+最直觉的做法是对 BERT 输出的所有 token 向量取平均。但研究发现，BERT 原始空间存在**各向异性 (anisotropy)** 问题——所有句子向量都聚集在一个狭窄的锥形区域中，导致任意两个句子的余弦相似度都很高（通常 > 0.6），完全无法区分语义差异。
+
+造成各向异性的原因：BERT 在 MLM 训练中优化的是 token 级预测，没有显式地学习"句子间的语义距离"。直接用平均池化得到的句子向量，其性能甚至不如 GloVe 静态向量的简单平均 (Reimers & Gurevych, 2019)。
+
+**解决方向**：需要一个专门的训练目标，让模型学会产生有区分度的句子向量。
+
+## Sentence-BERT：Siamese 网络架构
+
+**Sentence-BERT (SBERT)** 通过 Siamese（孪生）网络结构解决了这一问题。核心思想是：让两个句子通过**同一个 BERT 编码器**（权重共享），各自经过 mean pooling 得到句子向量，然后用余弦相似度 + 对比损失来训练。
+
+<SiameseNetworkFlow client:visible />
+
+SBERT 的关键优势在于**推理效率**：传统做法需要把两个句子拼接起来送入 BERT（cross-encoder），计算 N 个句子的两两相似度需要 $O(N^2)$ 次前向传播。而 SBERT 可以预计算所有句子的向量，两两比较只需向量点积，降到了 $O(N)$ 次编码 + $O(N^2)$ 次点积（毫秒级）。
+
+对于 10,000 个句子的聚类任务：Cross-encoder 约需 65 小时，SBERT 只需约 5 秒。
+
+## 对比学习：InfoNCE 损失
+
+现代句子嵌入模型广泛使用**对比学习 (Contrastive Learning)**。核心思想是：在一个 batch 中，每个句子有一个正例对（语义相似的句子），batch 中其他所有句子都作为负例。
+
+InfoNCE 损失函数：
+
+$$
+\mathcal{L}_i = -\log \frac{\exp(\text{sim}(\mathbf{z}_i, \mathbf{z}_j) / \tau)}{\sum_{k=1}^{2N} \mathbb{1}_{[k \ne i]} \exp(\text{sim}(\mathbf{z}_i, \mathbf{z}_k) / \tau)}
+$$
+
+其中 $\tau$ 是温度参数（通常 0.05-0.1），$\mathbf{z}_i$ 和 $\mathbf{z}_j$ 是一对正例。温度越小，对比越"尖锐"——模型更强烈地区分正负例。
+
+<ContrastiveLearningViz client:visible />
+
+对比学习的关键洞察：**batch size 越大，负例越多，学到的表示越好**。这也是为什么 E5、BGE 等现代模型都使用超大 batch（65,536+）训练。
+
+## 语义相似度：直观理解
+
+有了高质量的句子嵌入，计算两个句子的语义相似度就变成了简单的向量运算。下面的演示展示了不同句对的余弦相似度——注意同义改写（高分）与无关句子（低分）的差异：
+
+<SentenceSimilarityDemo client:visible />
+
+高质量嵌入的特征：同义句对得分 > 0.85，语义相关但表述不同的句对 0.6-0.8，完全无关的句对 < 0.2。
+
+## 现代句子嵌入模型
+
+SBERT 之后，句子嵌入领域经历了快速迭代：
+
+| 模型 | 年份 | 关键创新 | 维度 |
+|------|------|----------|------|
+| **E5** (Microsoft) | 2022 | 弱监督对比预训练 + 指令微调 | 1024 |
+| **BGE** (BAAI) | 2023 | 中文优化 + RetroMAE 预训练 | 1024 |
+| **GTE** (Alibaba) | 2023 | 多阶段训练 + 多任务学习 | 1024 |
+| **text-embedding-3** (OpenAI) | 2024 | Matryoshka 表示学习，可变维度 | 256-3072 |
+
+共同趋势：**更大的训练数据**（百万到十亿级别）、**多阶段训练**（预训练→对比学习→指令微调）、**更长上下文**（8192 tokens）。
+
+**Matryoshka Representation Learning (MRL)**：OpenAI 等模型支持"嵌套"维度——同一模型可以输出 256/512/1024/3072 维向量，低维保留了高维的大部分语义信息，让用户在质量和成本之间灵活选择。
+
+## 应用：检索增强生成 (RAG)
+
+句子嵌入最重要的应用场景之一是 **RAG (Retrieval-Augmented Generation)**。RAG 解决了 LLM 的核心痛点：知识截止日期、幻觉、缺乏专有知识。
+
+核心流程是：把外部文档预先编码为向量存入数据库，用户提问时先检索相关文档，再将检索结果拼接到 prompt 中让 LLM 生成回答。
+
+<RAGPipelineFlow client:visible />
+
+RAG 的效果高度依赖嵌入质量——如果检索阶段找不到正确的文档，后续的 LLM 再强也无能为力。这就是为什么高质量句子嵌入对整个 RAG 系统至关重要。
+
+## 总结
+
+句子嵌入是连接**语言理解**和**信息检索**的桥梁。从 SBERT 的 Siamese 架构到现代对比学习方法，核心目标始终是：**让语义相近的句子在向量空间中也彼此接近**。
+
+关键要点：
+- 直接对 BERT 输出取平均效果很差（各向异性问题）
+- SBERT 用 Siamese 网络 + mean pooling 高效产生句子向量
+- 对比学习（InfoNCE）是训练句子嵌入的主流方法
+- 现代模型（E5、BGE）通过大规模数据和多阶段训练达到了很高的质量
+- RAG 是句子嵌入最重要的下游应用，把检索和生成结合在一起
