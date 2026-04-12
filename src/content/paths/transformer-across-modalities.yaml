@@ -1,0 +1,19 @@
+id: transformer-across-modalities
+title:
+  zh: "Transformer 跨模态应用"
+  en: "Transformer Across Modalities"
+description:
+  zh: "从文本表征到多模态生成，理解 Transformer 如何适配文本、图像、音频和视频等不同模态的输入与输出。建议先完成「Transformer 核心机制」路径。"
+  en: "From text representation to multimodal generation — understand how Transformers adapt to text, image, audio, and video modalities. Recommended: complete the Transformer Core Mechanisms path first."
+level: intermediate
+articles:
+  - text-representation
+  - bert-and-gpt
+  - sentence-embeddings
+  - vision-transformer
+  - multimodal-alignment
+  - diffusion-fundamentals
+  - diffusion-transformer
+  - video-generation
+  - audio-speech-models
+  - audio-music-generation
