@@ -1,0 +1,134 @@
+---
+title: "音乐生成：当 Transformer 学会作曲"
+slug: audio-music-generation
+locale: zh
+tags: [music-generation, musicgen, jukebox, transformer, audio]
+prerequisites: [audio-speech-models]
+difficulty: advanced
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Simple and Controllable Music Generation"
+    url: "https://arxiv.org/abs/2306.05284"
+  - type: paper
+    title: "Jukebox: A Generative Model for Music"
+    url: "https://arxiv.org/abs/2005.00341"
+  - type: paper
+    title: "MusicLM: Generating Music From Text"
+    url: "https://arxiv.org/abs/2301.11325"
+  - type: paper
+    title: "Fast Timing-Conditioned Latent Audio Diffusion"
+    url: "https://arxiv.org/abs/2402.04825"
+---
+
+import MusicVsSpeechComparison from '../../../components/interactive/MusicVsSpeechComparison.tsx';
+import CodebookInterleaving from '../../../components/interactive/CodebookInterleaving.tsx';
+import MusicGenPipeline from '../../../components/interactive/MusicGenPipeline.tsx';
+import MusicGenTimeline from '../../../components/interactive/MusicGenTimeline.tsx';
+
+## 简介：音乐生成的独特挑战
+
+在上一篇文章中，我们看到 Whisper 和 VALL-E 如何用 Transformer 处理语音。但**音乐生成是一个截然不同的挑战**：
+
+- 音乐的频率范围远比语音宽广（20Hz-20kHz vs 85Hz-8kHz）
+- 一首歌曲通常有 3-5 分钟，远长于语音片段
+- 音乐同时包含多个乐器声部，而非单一人声
+- 音乐的结构（节拍、和弦进行、段落）与语言结构完全不同
+
+这些特性使得直接将语音模型的方法迁移到音乐生成并不可行。本文将探讨 MusicGen、Jukebox、MusicLM 等模型如何应对这些挑战。
+
+## 音乐 vs 语音：信号特征对比
+
+<MusicVsSpeechComparison client:visible />
+
+音乐信号的复杂性直接影响了建模策略：频率范围更宽意味着需要更精细的频谱表示；时长更长意味着序列长度显著增加；多声源意味着模型需要捕获乐器间的和声关系。这些约束推动了专门的架构设计。
+
+## MusicGen：单阶段高效生成
+
+**MusicGen**（Meta, 2023）是目前最具影响力的开源音乐生成模型。它的核心创新是：用**单个 Transformer** 和一种巧妙的 **Delay Pattern** 解决多码本并行生成问题。
+
+### Delay Pattern：多码本交错
+
+音乐通过 EnCodec 编码后产生多层码本（通常 4 层）。传统做法（"扁平模式"）需要在每个时间步依次生成所有层的 token，需要 $K$ 个独立模型或 $K$ 次前向传播。
+
+MusicGen 的 Delay Pattern 将每层码本偏移一个时间步：第 1 层从 $t=0$ 开始，第 2 层从 $t=1$ 开始，以此类推。这样所有层可以在同一个 Transformer 中交错处理，形成对角线填充模式。
+
+<CodebookInterleaving client:visible />
+
+Delay Pattern 的精髓在于：在任意时间步 $t$，模型需要预测的不同码本 token 来自**不同的原始时间位置**，这避免了层间的因果依赖冲突，使单个自回归模型能同时处理所有码本层。
+
+### MusicGen 生成管线
+
+MusicGen 的完整管线包含四个阶段：文本/旋律条件输入、T5 编码器处理文本、Transformer 解码器生成交错的 codec tokens、EnCodec 解码器将 tokens 还原为波形。
+
+<MusicGenPipeline client:visible />
+
+MusicGen 支持三种条件输入模式：
+- **纯文本**：通过 T5 编码器将文本描述（如"节奏明快的电子舞曲"）转化为 cross-attention 条件
+- **文本 + 旋律**：除文本外，还可提供一段参考旋律音频，模型会保持旋律结构同时匹配文本描述的风格
+- **无条件**：无任何条件的自由生成
+
+## Jukebox：VQ-VAE 多尺度方法
+
+**Jukebox**（OpenAI, 2020）是音乐生成的先驱工作。它采用了完全不同的方法：
+
+1. **多尺度 VQ-VAE**：将原始音频编码为三个不同压缩率的离散表示层（top/middle/bottom），压缩比分别为 128x、32x、8x
+2. **层级 Transformer**：从最粗糙的 top level 开始自回归生成，然后逐层上采样到更精细的 level
+3. **直接建模原始音频**：不使用 Mel 频谱图或预训练的 codec，直接在 44.1kHz 波形上工作
+
+Jukebox 能生成带歌词的完整歌曲，质量令人印象深刻。但它有致命弱点：**生成极慢**——生成一分钟音频需要约 9 小时的计算。这是因为原始音频的序列长度巨大（44100 × 60 ≈ 2.6M samples/分钟），即使经过 VQ-VAE 压缩后仍然很长。
+
+## MusicLM 与 Stable Audio
+
+### MusicLM（Google, 2023）
+
+MusicLM 引入了 **MuLan**——一个音乐-文本联合嵌入模型（类似 CLIP 之于图像-文本）。它的层级生成策略：
+
+1. 从文本描述生成 MuLan 语义 token（高层语义）
+2. 从语义 token 生成 SoundStream 声学 token（低层细节）
+3. SoundStream 解码器重建波形
+
+MusicLM 展示了**文本到音乐对齐**的潜力，但因训练数据版权问题未开源。
+
+### Stable Audio（Stability AI, 2024）
+
+Stable Audio 走了一条截然不同的路线——**潜在扩散模型**（Latent Diffusion）：
+
+- 用 VAE 将音频压缩到潜在空间，在潜在空间中做扩散过程
+- 引入**时长条件**：模型可以精确控制生成音频的长度
+- 采用 DiT（Diffusion Transformer）架构替代 U-Net
+- 通过 CLAP 文本编码器实现文本条件控制
+
+这代表了音乐生成从自回归模型向扩散模型的范式迁移——与图像生成领域的趋势一致。
+
+## 发展历程
+
+<MusicGenTimeline client:visible />
+
+从 Jukebox 的暴力建模到 MusicGen 的优雅设计，再到 Stable Audio 的扩散范式，音乐生成领域经历了快速演进。两条技术路线（自回归 vs 扩散）各有优势：自回归模型擅长保持时间连贯性，扩散模型在音质和多样性上表现更好。
+
+## 前沿与挑战
+
+尽管进展迅速，音乐生成仍面临关键挑战：
+
+1. **长程结构**：当前模型在 30 秒内表现良好，但生成 3-5 分钟完整曲目时，往段落间的连贯性和发展仍不理想
+2. **多轨控制**：用户希望独立控制鼓、贝斯、旋律等各轨道，而非只生成混合音频
+3. **版权问题**：训练数据的版权归属是商业化的核心障碍
+4. **评估指标**：音乐质量的评估仍高度依赖主观听感，缺乏可靠的自动化指标
+5. **实时生成**：交互式音乐创作需要低延迟生成，当前模型尚难实现
+
+## 总结
+
+| 模型 | 方法 | 核心技术 | 优势 | 局限 |
+|------|------|---------|------|------|
+| **Jukebox** | VQ-VAE + AR | 多尺度量化 | 直接建模原始音频 | 生成极慢 |
+| **MusicLM** | 层级 AR | MuLan 对齐 | 语义理解强 | 未开源 |
+| **MusicGen** | 单阶段 AR | Delay Pattern | 高效、可控、开源 | 30s 限制 |
+| **Stable Audio** | Latent Diffusion | DiT + 时长条件 | 音质好、灵活 | 计算成本高 |
+
+核心启示：
+1. **音乐建模比语音难一个量级**：更宽频率、更长时长、多声源叠加，要求模型处理远更复杂的信号
+2. **Delay Pattern 是优雅的工程创新**：将多码本问题转化为单模型可解的交错序列，大幅提升效率
+3. **AR 与 Diffusion 各有所长**：自回归保时间连贯，扩散出音质多样——未来可能融合两者
+4. **从 9 小时到实时**：Jukebox 到 MusicGen 的效率提升展示了架构设计的巨大影响
