@@ -1,0 +1,144 @@
+---
+title: "Diffusion Transformer: Image Generation with Transformers"
+slug: diffusion-transformer
+locale: en
+tags: [dit, diffusion, transformer, image-generation, stable-diffusion]
+prerequisites: [diffusion-fundamentals, transformer-overview]
+difficulty: advanced
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Scalable Diffusion Models with Transformers"
+    url: "https://arxiv.org/abs/2212.09748"
+  - type: paper
+    title: "Scaling Rectified Flow Transformers for High-Resolution Image Synthesis"
+    url: "https://arxiv.org/abs/2403.03206"
+---
+
+import UNetVsDiTArchitecture from '../../../components/interactive/UNetVsDiTArchitecture.tsx';
+import DiTPatchifyProcess from '../../../components/interactive/DiTPatchifyProcess.tsx';
+import AdaLNZeroMechanism from '../../../components/interactive/AdaLNZeroMechanism.tsx';
+import DiTScalingChart from '../../../components/interactive/DiTScalingChart.tsx';
+import MMDiTFlow from '../../../components/interactive/MMDiTFlow.tsx';
+
+## Introduction: From U-Net to Transformer
+
+The backbone of diffusion models has long been the **U-Net** — a CNN encoder-decoder with skip connections. From DDPM to Stable Diffusion v1/v2, U-Net was the standard denoising network.
+
+But experience from NLP tells us: **Transformer scaling far surpasses CNN**. In 2023, Peebles and Xie proposed the **Diffusion Transformer (DiT)** in their paper *"Scalable Diffusion Models with Transformers"*, replacing U-Net with a standard Transformer as the diffusion backbone. This seemingly simple substitution revealed an important finding: **diffusion model quality scales continuously with Transformer compute**, following scaling laws similar to LLMs.
+
+DiT's impact is far-reaching: OpenAI's Sora video generation model adopts the DiT architecture (explicitly mentioned in OpenAI's technical report), and Stability AI's Stable Diffusion 3 uses MM-DiT, a DiT variant. Transformers are unifying generation across text, image, and video modalities.
+
+## U-Net Bottlenecks
+
+U-Net achieved great success in diffusion models, but has inherent limitations:
+
+1. **Resolution-bound**: U-Net's downsampling/upsampling paths are tightly coupled to input resolution. Changing generation resolution typically requires architecture modifications.
+
+2. **Limited scaling**: Increasing U-Net capacity mainly involves adding channels or ResNet blocks, but this scaling approach has diminishing returns beyond a certain scale.
+
+3. **Insufficient global modeling**: While U-Net includes Self-Attention layers (on low-resolution feature maps), CNN's local inductive bias makes it less effective at long-range dependency modeling than Transformer.
+
+4. **Inflexible conditioning**: U-Net primarily injects text conditioning through cross-attention, with injection points scattered across different resolution levels.
+
+These limitations prompted researchers to ask: **can we directly replace U-Net with a Transformer?**
+
+## DiT Architecture
+
+DiT's core idea is remarkably simple: **treat the noisy latent as a token sequence and process it with a standard Transformer**. This mirrors how ViT handles images — patchify first, then apply Transformer.
+
+<UNetVsDiTArchitecture locale="en" client:visible />
+
+### Patchify, Process, Unpatchify
+
+The complete DiT pipeline has four steps:
+
+1. **Noisy latent**: The input is a latent space representation $z_t$ from a VAE encoder (32×32×4), with noise added per the diffusion schedule
+2. **Patchify**: Split the latent into $p \times p$ patches ($p=2$ in the paper), yielding $\frac{32}{2} \times \frac{32}{2} = 256$ tokens, each linearly projected to dimension $D$
+3. **Transformer processing**: $N$ DiT Blocks process the token sequence, with timestep $t$ and class label $c$ conditioning injected via adaLN-Zero
+4. **Unpatchify**: Rearrange processed tokens back to spatial dimensions, producing predicted noise $\hat{\epsilon}$
+
+<DiTPatchifyProcess locale="en" client:visible />
+
+Note that DiT operates in **latent space**, not pixel space. This is consistent with Latent Diffusion Models (LDM, the foundation of Stable Diffusion): a VAE first compresses images to a low-dimensional latent space, then diffusion happens in that latent space.
+
+## adaLN-Zero: Optimal Conditioning
+
+The DiT paper explored four methods for injecting conditioning (timestep $t$ + class label $c$) into the Transformer, finding **adaLN-Zero** to be the best.
+
+### What is adaLN-Zero?
+
+Standard LayerNorm has learnable but fixed parameters $\gamma$ and $\beta$. **Adaptive LayerNorm (adaLN)** makes these parameters functions of the conditioning:
+
+$$\text{adaLN}(h, y) = \gamma(y) \odot \text{LayerNorm}(h) + \beta(y)$$
+
+where $y$ is the conditioning embedding (timestep + class label processed by an MLP).
+
+**adaLN-Zero** adds a **gating mechanism**: each Transformer block's attention and FFN outputs have a learnable scaling parameter $\alpha$, **initialized to zero**:
+
+$$h \leftarrow h + \alpha(y) \odot \text{Attention}(\text{adaLN}(h, y))$$
+
+Initializing $\alpha$ to zero means: **at the start of training, every DiT block is an identity function** (input equals output). This simple initialization trick significantly stabilizes training and is a key factor in DiT's performance.
+
+A single MLP regresses 6 parameters from the conditioning embedding $y$: $(\gamma_1, \beta_1, \alpha_1, \gamma_2, \beta_2, \alpha_2)$, used for adaLN and gating in both the attention and FFN sub-layers.
+
+<AdaLNZeroMechanism locale="en" client:visible />
+
+## Scaling Properties
+
+DiT's most important finding is that **diffusion models follow Transformer scaling laws**. The authors tested four model sizes on ImageNet 256×256 class-conditional generation:
+
+| Model | Params | Layers | Hidden Dim | Attn Heads | FID↓ |
+|-------|--------|--------|-----------|------------|------|
+| DiT-S/2 | 33M | 12 | 384 | 6 | 68.4 |
+| DiT-B/2 | 130M | 12 | 768 | 12 | 43.5 |
+| DiT-L/2 | 458M | 24 | 1024 | 16 | 23.3 |
+| DiT-XL/2 | 675M | 28 | 1152 | 16 | 9.62 (w/ CFG) |
+
+Two key observations:
+
+1. **Larger models yield lower FID**: Performance improves monotonically with compute, showing no saturation
+2. **More compute-efficient than U-Net**: DiT-XL/2 achieves FID 9.62 at ~119 GFLOPs, while the U-Net baseline ADM requires 1120+ GFLOPs
+
+<DiTScalingChart locale="en" client:visible />
+
+The significance of this scaling property: **more compute consistently yields better generation quality**. This mirrors the scaling behavior of the GPT series in language modeling, providing a clear path to building larger, more capable generative models.
+
+## MM-DiT: Stable Diffusion 3's Dual-Stream Architecture
+
+In 2024, Esser et al. proposed **MM-DiT (Multimodal DiT)** in the Stable Diffusion 3 paper *"Scaling Rectified Flow Transformers for High-Resolution Image Synthesis"*, extending DiT into a dual-stream architecture for multimodal processing.
+
+### Core Design
+
+MM-DiT's key innovation is **dual streams + joint attention**:
+
+- **Two independent streams**: Text tokens (from T5 and CLIP encoders) and image latent tokens (from VAE) each have independent embedding layers and MLPs
+- **Joint attention**: Within each MM-DiT block, tokens from both streams are concatenated for shared Self-Attention — text and image tokens interact in the same attention space
+- **Separate MLPs**: Attention is shared, but FFNs remain independent — preserving modality-specific feature transformation capabilities
+
+This design is more powerful than simple cross-attention: **text and image interact bidirectionally on equal footing**, rather than only having images attend to text as in traditional approaches.
+
+<MMDiTFlow locale="en" client:visible />
+
+### Additional Improvements
+
+SD3/MM-DiT also introduces several important technical advances:
+
+- **Rectified Flow**: Uses straight-line trajectories instead of traditional diffusion paths, enabling faster sampling
+- **QK-Normalization**: Normalizes attention Q and K vectors for improved training stability
+- **Multiple text encoders**: Simultaneously uses CLIP-L, CLIP-G, and T5-XXL as text encoders
+
+## Summary
+
+The Diffusion Transformer story can be summarized in one sentence: **replace U-Net with Transformer, and diffusion models gain scaling laws**.
+
+Key takeaways:
+
+1. **DiT replaces U-Net with Transformer** as the denoising network: patchify → Transformer → unpatchify
+2. **adaLN-Zero** is the optimal conditioning method — adaptive LayerNorm with zero-initialized gating injects timestep and class conditions
+3. **Scaling laws hold**: Larger models and more compute yield continuously lower FID with no saturation
+4. **MM-DiT** extends DiT into a multimodal dual-stream architecture supporting deep text-image interaction
+5. DiT architecture has been adopted by Sora, SD3, and other frontier models, becoming the new standard backbone for generative models
+
+From CNN to Transformer, diffusion models have embarked on the same scaling journey as LLMs. This means that in image and video generation, "bigger is better" applies just as well — Transformer once again proves its status as a universal compute engine.

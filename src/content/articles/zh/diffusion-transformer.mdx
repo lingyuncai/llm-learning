@@ -1,0 +1,144 @@
+---
+title: "Diffusion Transformer：用 Transformer 做图像生成"
+slug: diffusion-transformer
+locale: zh
+tags: [dit, diffusion, transformer, image-generation, stable-diffusion]
+prerequisites: [diffusion-fundamentals, transformer-overview]
+difficulty: advanced
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Scalable Diffusion Models with Transformers"
+    url: "https://arxiv.org/abs/2212.09748"
+  - type: paper
+    title: "Scaling Rectified Flow Transformers for High-Resolution Image Synthesis"
+    url: "https://arxiv.org/abs/2403.03206"
+---
+
+import UNetVsDiTArchitecture from '../../../components/interactive/UNetVsDiTArchitecture.tsx';
+import DiTPatchifyProcess from '../../../components/interactive/DiTPatchifyProcess.tsx';
+import AdaLNZeroMechanism from '../../../components/interactive/AdaLNZeroMechanism.tsx';
+import DiTScalingChart from '../../../components/interactive/DiTScalingChart.tsx';
+import MMDiTFlow from '../../../components/interactive/MMDiTFlow.tsx';
+
+## 简介：从 U-Net 到 Transformer
+
+扩散模型的骨干网络长期以来是 **U-Net** — 一种带有 skip connection 的 CNN 编码器-解码器结构。从 DDPM 到 Stable Diffusion v1/v2，U-Net 一直是去噪网络的标准选择。
+
+但 NLP 领域的经验告诉我们：**Transformer 的 scaling 能力远超 CNN**。2023 年，Peebles 和 Xie 在论文 *"Scalable Diffusion Models with Transformers"* 中提出了 **Diffusion Transformer (DiT)**，用标准 Transformer 替换 U-Net 作为扩散模型的骨干网络。这个看似简单的替换带来了一个重要发现：**扩散模型的生成质量随 Transformer 的计算量持续提升**，遵循类似 LLM 的 scaling law。
+
+DiT 的影响是深远的：OpenAI 的 Sora 视频生成模型采用了 DiT 架构（OpenAI 技术报告明确提及），Stability AI 的 Stable Diffusion 3 采用了 DiT 的变体 MM-DiT。Transformer 正在统一文本、图像、视频等各种模态的生成。
+
+## U-Net 的瓶颈
+
+U-Net 在扩散模型中取得了巨大成功，但也有其固有限制：
+
+1. **分辨率绑定**：U-Net 的下采样/上采样路径与输入分辨率紧密耦合。改变生成分辨率通常需要修改网络架构。
+
+2. **Scaling 受限**：增加 U-Net 的容量主要靠增加通道数或添加更多 ResNet block，但这种 scaling 方式效率较低。达到一定规模后，性能提升趋于平缓。
+
+3. **全局建模能力不足**：虽然 U-Net 中加入了 Self-Attention 层（在低分辨率特征图上），但 CNN 的局部归纳偏置使其在长距离依赖建模上不如 Transformer。
+
+4. **条件注入不够灵活**：U-Net 主要通过 cross-attention 注入文本条件，且条件注入点分散在不同分辨率层级。
+
+这些限制促使研究者思考：**是否可以用 Transformer 直接替换 U-Net？**
+
+## DiT 架构
+
+DiT 的核心思路非常简洁：**把噪声潜变量当作 token 序列，用标准 Transformer 处理**。这与 ViT 处理图像的方式一脉相承 — 先 patchify，再走 Transformer。
+
+<UNetVsDiTArchitecture client:visible />
+
+### Patchify → Transformer → Unpatchify
+
+DiT 的完整流程分为四步：
+
+1. **噪声潜变量**：输入来自 VAE 编码器的潜空间表示 $z_t$（32×32×4），已按扩散过程加入噪声
+2. **Patchify**：将潜变量切分为 $p \times p$ 的 patch（论文中 $p=2$），得到 $\frac{32}{2} \times \frac{32}{2} = 256$ 个 token，每个通过线性投影映射到维度 $D$
+3. **Transformer 处理**：$N$ 层 DiT Block 处理 token 序列，通过 adaLN-Zero 注入时间步 $t$ 和类别标签 $c$ 的条件信息
+4. **Unpatchify**：将处理后的 token 序列重排回空间维度，得到预测噪声 $\hat{\epsilon}$
+
+<DiTPatchifyProcess client:visible />
+
+注意 DiT 工作在 **潜空间**（latent space）中，而非像素空间。这与 Latent Diffusion Model（LDM，即 Stable Diffusion 的基础）一致：先用 VAE 将图像压缩到低维潜空间，再在潜空间做扩散过程。
+
+## adaLN-Zero：条件注入的最优方案
+
+DiT 论文探索了四种将条件信息（时间步 $t$ + 类别标签 $c$）注入 Transformer 的方式，发现 **adaLN-Zero** 效果最好。
+
+### 什么是 adaLN-Zero？
+
+标准 LayerNorm 的参数 $\gamma$、$\beta$ 是可学习的固定参数。**Adaptive LayerNorm (adaLN)** 将这些参数变为条件的函数：
+
+$$\text{adaLN}(h, y) = \gamma(y) \odot \text{LayerNorm}(h) + \beta(y)$$
+
+其中 $y$ 是条件嵌入（时间步 + 类别标签经过 MLP 后的向量）。
+
+**adaLN-Zero** 在此基础上增加了**门控机制**：每个 Transformer block 的 attention 和 FFN 输出各有一个可学习的 scaling 参数 $\alpha$，**初始化为 0**：
+
+$$h \leftarrow h + \alpha(y) \odot \text{Attention}(\text{adaLN}(h, y))$$
+
+$\alpha$ 初始化为 0 意味着：**训练开始时，每个 DiT block 都是恒等函数**（输入直接等于输出）。这个简单的初始化技巧显著稳定了训练过程，是 DiT 性能的关键因素之一。
+
+一个 MLP 从条件嵌入 $y$ 回归出 6 个参数：$(\gamma_1, \beta_1, \alpha_1, \gamma_2, \beta_2, \alpha_2)$，分别用于 attention 和 FFN 的 adaLN 以及门控。
+
+<AdaLNZeroMechanism client:visible />
+
+## Scaling 特性
+
+DiT 论文最重要的发现是 **扩散模型遵循 Transformer 的 scaling law**。作者在 ImageNet 256×256 类别条件生成上测试了四种模型尺寸：
+
+| 模型 | 参数量 | 层数 | 隐藏维度 | 注意力头 | FID↓ |
+|------|--------|------|----------|----------|------|
+| DiT-S/2 | 33M | 12 | 384 | 6 | 68.4 |
+| DiT-B/2 | 130M | 12 | 768 | 12 | 43.5 |
+| DiT-L/2 | 458M | 24 | 1024 | 16 | 23.3 |
+| DiT-XL/2 | 675M | 28 | 1152 | 16 | 9.62 (w/ CFG) |
+
+两个关键观察：
+
+1. **模型越大，FID 越低**：性能随计算量单调提升，没有饱和迹象
+2. **计算效率高于 U-Net**：DiT-XL/2 在约 119 GFLOPs 下达到 FID 9.62，而 U-Net 基线 ADM 需要 1120+ GFLOPs
+
+<DiTScalingChart client:visible />
+
+这个 scaling 特性的意义在于：**只要增加计算量，就能持续提升生成质量**。这与 GPT 系列在语言建模中的 scaling behavior 完全一致，为构建更大、更强的生成模型提供了清晰的路径。
+
+## MM-DiT：Stable Diffusion 3 的双流架构
+
+2024 年，Esser 等人在 Stable Diffusion 3 的论文 *"Scaling Rectified Flow Transformers for High-Resolution Image Synthesis"* 中提出了 **MM-DiT (Multimodal DiT)**，将 DiT 扩展为处理多模态的双流架构。
+
+### 核心设计
+
+MM-DiT 的关键创新是 **双流 + 联合注意力**：
+
+- **双独立流**：文本 token（来自 T5 和 CLIP 编码器）和图像 latent token（来自 VAE）各有独立的嵌入层和 MLP
+- **联合注意力**：在每个 MM-DiT block 中，两条流的 token 拼接后共享 Self-Attention 计算 — 文本 token 和图像 token 在同一个注意力空间中交互
+- **分离的 MLP**：注意力计算共享，但 FFN 各自独立 — 这让每种模态保留了自己的特征变换能力
+
+这种设计比简单的 cross-attention 更强大：**文本和图像在完全对等的位置上进行双向交互**，而非像传统方式那样只有图像 attend to 文本。
+
+<MMDiTFlow client:visible />
+
+### 其他改进
+
+SD3/MM-DiT 还引入了一些重要的技术改进：
+
+- **Rectified Flow**：使用直线轨迹替代传统扩散路径，采样更快速
+- **QK-Normalization**：对注意力的 Q 和 K 进行归一化，提升训练稳定性
+- **多种文本编码器**：同时使用 CLIP-L、CLIP-G 和 T5-XXL 三个文本编码器
+
+## 总结
+
+Diffusion Transformer 的故事可以用一句话概括：**把 U-Net 换成 Transformer，扩散模型就获得了 scaling law**。
+
+关键要点：
+
+1. **DiT 用 Transformer 替换 U-Net** 作为扩散模型的去噪网络，流程为 patchify → Transformer → unpatchify
+2. **adaLN-Zero** 是最优的条件注入方式 — 通过自适应 LayerNorm + 零初始化门控注入时间步和类别条件
+3. **Scaling law 成立**：模型越大、计算量越多，FID 持续降低，没有饱和迹象
+4. **MM-DiT** 将 DiT 扩展为多模态双流架构，支持文本-图像的深度交互
+5. DiT 架构已被 Sora、SD3 等前沿模型采用，成为生成模型的新标准骨干
+
+从 CNN 到 Transformer，扩散模型走上了与 LLM 相同的 scaling 之路。这意味着在图像和视频生成领域，"bigger is better" 的规律同样适用 — Transformer 再次证明了其作为通用计算引擎的地位。
