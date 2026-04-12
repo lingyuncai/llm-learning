@@ -1,0 +1,196 @@
+---
+title: "从文本到向量：Tokenization 与词嵌入"
+slug: text-representation
+locale: zh
+tags: [tokenization, embedding, word2vec, nlp]
+prerequisites: []
+difficulty: beginner
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Efficient Estimation of Word Representations in Vector Space"
+    url: "https://arxiv.org/abs/1301.3781"
+  - type: paper
+    title: "Neural Machine Translation of Rare Words with Subword Units"
+    url: "https://arxiv.org/abs/1508.07909"
+  - type: paper
+    title: "GloVe: Global Vectors for Word Representation"
+    url: "https://nlp.stanford.edu/pubs/glove.pdf"
+  - type: paper
+    title: "SentencePiece: A simple and language independent subword tokenizer"
+    url: "https://arxiv.org/abs/1808.06226"
+  - type: website
+    title: "The Illustrated Word2Vec"
+    url: "https://jalammar.github.io/illustrated-word2vec/"
+  - type: website
+    title: "Hugging Face Tokenizer Summary"
+    url: "https://huggingface.co/docs/transformers/tokenizer_summary"
+---
+
+import BPEMergeVisualization from '../../../components/interactive/BPEMergeVisualization.tsx';
+import TokenizerComparison from '../../../components/interactive/TokenizerComparison.tsx';
+import WordEmbeddingSpace from '../../../components/interactive/WordEmbeddingSpace.tsx';
+import SkipgramTraining from '../../../components/interactive/SkipgramTraining.tsx';
+import StaticVsContextual from '../../../components/interactive/StaticVsContextual.tsx';
+
+## 简介
+
+NLP 的第一个问题：**计算机无法直接处理文本**。神经网络需要数值输入——矩阵乘法、梯度下降，这些运算都作用于浮点数，而不是字符串。因此，任何 NLP 系统都必须先解决一个基础问题：**如何把文本转换成数字？**
+
+这个问题有两个层次：
+1. **Tokenization（分词）**：把一串文本切分成离散的基本单元（token）
+2. **Embedding（嵌入）**：把每个 token 映射为一个稠密的数值向量
+
+这两步构成了所有语言模型（从 Word2Vec 到 GPT-4）的输入管线。本文将从直觉出发，逐步深入这两个核心技术。
+
+## 直觉理解：字符 vs 词 vs 子词
+
+假设我们要处理一句话 `"unbelievably fast"`，有三种切分方式：
+
+| 粒度 | 切分结果 | Token 数 | 问题 |
+|------|----------|----------|------|
+| 字符级 | `u, n, b, e, l, i, e, v, a, b, l, y, , f, a, s, t` | 17 | 序列太长，每个字符缺乏语义 |
+| 词级 | `unbelievably, fast` | 2 | 词表巨大（英语 100 万+），罕见词无法覆盖 |
+| **子词级** | `un, believ, ably, fast` | 4 | 在序列长度和语义之间取得平衡 |
+
+现代 NLP 几乎全部使用**子词分词**（subword tokenization）。其核心思想是：常见词保留为整体（如 `fast`），罕见词拆分为有意义的子片段（如 `un` + `believ` + `ably`）。
+
+### BPE：最流行的子词分词算法
+
+Byte Pair Encoding（BPE）是 Sennrich et al. (2016, *"Neural Machine Translation of Rare Words with Subword Units"*) 引入 NLP 的。其核心逻辑极为简洁：
+
+1. 从字符级别开始，每个字符是一个 token
+2. 统计所有相邻 token 对的出现频率
+3. 将最高频的对合并为新 token
+4. 重复步骤 2-3，直到达到目标词表大小
+
+下面的可视化展示了 BPE 的逐步合并过程：
+
+<BPEMergeVisualization client:visible />
+
+## Tokenizer 家族
+
+基于子词的分词算法并不只有 BPE。以下是四种主流方案：
+
+| 算法 | 代表模型 | 核心思路 | 特殊标记 |
+|------|----------|----------|----------|
+| BPE | GPT-2, GPT-4 (tiktoken) | 自底向上合并最高频对 | 无特殊前缀 |
+| WordPiece | BERT, DistilBERT | 自底向上合并，最大化似然 | `##` 标记子词续接 |
+| Unigram (SentencePiece) | T5, LLaMA, Qwen | 自顶向下剪枝，概率模型选最优分割 | `▁` 标记词首 |
+| Tiktoken | GPT-3.5, GPT-4 | BPE 变体，字节级别 | 直接操作 UTF-8 字节 |
+
+**关键差异**：
+- **BPE** 通过贪心频率合并构建词表。GPT 系列使用的 tiktoken 是其高效字节级实现。
+- **WordPiece** 也做合并，但选择合并对的标准是"合并后能最大化训练数据的似然"，而非简单频率。
+- **SentencePiece/Unigram** 反其道行之：从一个大词表开始，逐步删除低概率的子词，直到词表缩小到目标大小。它是**语言无关的**——不需要预分词，直接处理原始字符串，对中文、日文等无空格语言尤其友好。
+
+对同一句话，不同 Tokenizer 产生的结果可能截然不同：
+
+<TokenizerComparison client:visible />
+
+> **为什么词表大小很重要？** 词表越大，常见词被完整保留的概率越高（token 数更少），但 Embedding 层的参数量也越大（$V \times d$，$V$ 为词表大小，$d$ 为嵌入维度）。LLaMA 的词表从 32,000 扩大到 LLaMA-3 的 128,256，就是为了更好地覆盖多语言文本。
+
+## 从 Token 到向量
+
+有了 Token 之后，我们需要把每个 Token 映射为一个数值向量。最朴素的方式是 **one-hot 编码**：词表大小为 $V$，每个 token 用一个长度为 $V$ 的向量表示，只有对应位置为 1，其余为 0。
+
+$$
+\text{one-hot}(\text{"cat"}) = [0, 0, \ldots, 1, \ldots, 0] \in \mathbb{R}^V
+$$
+
+这有两个致命问题：
+1. **维度灾难**：GPT-4 的词表约 10 万，每个 token 就是一个 10 万维的稀疏向量
+2. **语义缺失**：`cat` 和 `dog` 的 one-hot 向量是正交的——余弦相似度为 0，完全看不出它们都是动物
+
+**分布式假说**（Distributional Hypothesis, Harris 1954）提供了更好的思路："**一个词的含义由它的上下文决定**"（*"You shall know a word by the company it keeps"*）。如果 `cat` 和 `dog` 经常出现在相似的上下文中（"The ___ is sleeping"、"I fed my ___"），那么它们的向量表示应该相近。
+
+这就是**词嵌入**（word embedding）的核心思想：将每个 token 映射到一个低维稠密向量空间（通常 100-300 维），使得语义相似的词在向量空间中距离接近。
+
+## Word2Vec
+
+Word2Vec 是 Mikolov et al. (2013, *"Efficient Estimation of Word Representations in Vector Space"*) 提出的开创性方法。它有两种架构：
+
+### Skip-gram
+
+给定一个中心词（center word），预测它的上下文词（context words）。训练目标是最大化：
+
+$$
+\max \frac{1}{T}\sum_{t=1}^{T} \sum_{-c \le j \le c, \, j \ne 0} \log p(w_{t+j} \mid w_t)
+$$
+
+其中 $T$ 是语料库中的总词数，$c$ 是上下文窗口大小。概率通过 softmax 计算：
+
+$$
+p(w_O \mid w_I) = \frac{\exp(\mathbf{v}_{w_O}' \cdot \mathbf{v}_{w_I})}{\sum_{w=1}^{W} \exp(\mathbf{v}_w' \cdot \mathbf{v}_{w_I})}
+$$
+
+其中 $\mathbf{v}_{w_I}$ 是输入词（中心词）的向量，$\mathbf{v}_{w_O}'$ 是输出词（上下文词）的向量。
+
+下面的可视化展示了 Skip-gram 的滑动窗口和训练过程：
+
+<SkipgramTraining client:visible />
+
+### CBOW (Continuous Bag of Words)
+
+与 Skip-gram 相反：给定上下文词，预测中心词。CBOW 将上下文词的向量取平均作为输入，训练更快但对罕见词效果略差。
+
+### 实际优化技巧
+
+原始 softmax 的分母需要遍历整个词表（$W$ 可达数万到十万），计算量巨大。两种常用的加速方法：
+
+- **Negative Sampling**：不计算完整 softmax，而是只区分"真正的上下文词"和"随机采样的负例"
+- **Hierarchical Softmax**：将词表组织为 Huffman 树，把 $O(W)$ 的计算降为 $O(\log W)$
+
+训练完成后，隐藏层的权重矩阵就是我们要的词向量。在这个向量空间中，语义关系被编码为向量运算：
+
+<WordEmbeddingSpace client:visible />
+
+经典的类比关系 $\text{king} - \text{man} + \text{woman} \approx \text{queen}$ 表明，Word2Vec 学到了性别、国家-首都等语义维度的线性结构。
+
+## GloVe
+
+GloVe（Global Vectors, Pennington et al. 2014）从另一个角度出发：直接利用全局词-词共现统计。
+
+核心思想是：如果两个词 $i, j$ 在语料中的共现次数为 $X_{ij}$，那么它们的词向量内积应该近似等于共现频率的对数。目标函数为：
+
+$$
+J = \sum_{i,j=1}^{V} f(X_{ij})\left(\mathbf{w}_i^T \tilde{\mathbf{w}}_j + b_i + \tilde{b}_j - \log X_{ij}\right)^2
+$$
+
+其中 $f(X_{ij})$ 是权重函数——高频共现对不应主导训练，低频对也不应被忽略。
+
+**GloVe vs Word2Vec**：
+- Word2Vec 是**局部**方法：通过滑动窗口逐次训练
+- GloVe 是**全局**方法：先构建完整的共现矩阵，再做矩阵分解
+- 实践中两者效果相当，但 GloVe 的训练更容易并行化
+
+## 静态嵌入的局限
+
+Word2Vec 和 GloVe 都是**静态嵌入**（static embedding）：每个词只有一个固定的向量表示，无论上下文如何。这导致一个根本问题——**一词多义**（polysemy）。
+
+考虑 "bank" 这个词：在 "river bank" 中是河岸，在 "bank account" 中是银行。但在 Word2Vec 中，它们被压缩成同一个向量，丢失了歧义信息。
+
+<StaticVsContextual client:visible />
+
+这一局限直接推动了**上下文嵌入**（contextual embedding）的发展。ELMo (2018) 首先用双向 LSTM 为每个词生成上下文相关的向量，BERT (2018) 则用 Transformer 的 Self-Attention 将这一思路推向了新高度——每一层的每个 token 向量都融合了整个序列的信息。
+
+| 特性 | 静态嵌入 (Word2Vec/GloVe) | 上下文嵌入 (BERT/GPT) |
+|------|---------------------------|------------------------|
+| 同一词的向量 | 固定不变 | 随上下文变化 |
+| 多义词处理 | 所有含义混合为一个向量 | 不同含义映射到不同位置 |
+| 训练数据利用 | 局部窗口或共现矩阵 | 完整序列上下文 |
+| 向量维度 | 100-300 | 768-4096 |
+| 参数量 | 数百万 | 数亿到数千亿 |
+
+## 总结
+
+本文覆盖了 NLP 输入管线的两个核心步骤：
+
+1. **Tokenization**：子词分词（BPE/WordPiece/SentencePiece）在词表大小和语义粒度之间取得平衡。BPE 通过贪心合并构建词表，已成为 GPT 系列的标准方案。
+
+2. **Word Embedding**：从 one-hot 的维度灾难到分布式假说的稠密向量。Word2Vec 用浅层神经网络从局部上下文学习词向量，GloVe 从全局共现矩阵出发。两者都产生了令人惊叹的线性类比结构。
+
+3. **从静态到上下文**：静态嵌入无法处理一词多义，推动了 ELMo → BERT → GPT 的上下文嵌入革命。
+
+在后续文章中，我们将深入 BERT 和 GPT 的架构设计——理解它们如何生成上下文相关的 token 表示，以及为什么 Decoder-only 架构最终胜出。

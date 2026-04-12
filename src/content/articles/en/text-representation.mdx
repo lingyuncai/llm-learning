@@ -1,0 +1,196 @@
+---
+title: "From Text to Vectors: Tokenization and Word Embeddings"
+slug: text-representation
+locale: en
+tags: [tokenization, embedding, word2vec, nlp]
+prerequisites: []
+difficulty: beginner
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Efficient Estimation of Word Representations in Vector Space"
+    url: "https://arxiv.org/abs/1301.3781"
+  - type: paper
+    title: "Neural Machine Translation of Rare Words with Subword Units"
+    url: "https://arxiv.org/abs/1508.07909"
+  - type: paper
+    title: "GloVe: Global Vectors for Word Representation"
+    url: "https://nlp.stanford.edu/pubs/glove.pdf"
+  - type: paper
+    title: "SentencePiece: A simple and language independent subword tokenizer"
+    url: "https://arxiv.org/abs/1808.06226"
+  - type: website
+    title: "The Illustrated Word2Vec"
+    url: "https://jalammar.github.io/illustrated-word2vec/"
+  - type: website
+    title: "Hugging Face Tokenizer Summary"
+    url: "https://huggingface.co/docs/transformers/tokenizer_summary"
+---
+
+import BPEMergeVisualization from '../../../components/interactive/BPEMergeVisualization.tsx';
+import TokenizerComparison from '../../../components/interactive/TokenizerComparison.tsx';
+import WordEmbeddingSpace from '../../../components/interactive/WordEmbeddingSpace.tsx';
+import SkipgramTraining from '../../../components/interactive/SkipgramTraining.tsx';
+import StaticVsContextual from '../../../components/interactive/StaticVsContextual.tsx';
+
+## Introduction
+
+The first problem in NLP: **computers cannot directly process text**. Neural networks require numerical input — matrix multiplication, gradient descent, these operations act on floating-point numbers, not strings. Therefore, any NLP system must first solve a fundamental problem: **how to convert text into numbers?**
+
+This problem has two layers:
+1. **Tokenization**: splitting a text string into discrete basic units (tokens)
+2. **Embedding**: mapping each token to a dense numerical vector
+
+These two steps form the input pipeline of all language models, from Word2Vec to GPT-4. This article starts from intuition and progressively dives into both core techniques.
+
+## Intuitive Understanding: Characters vs Words vs Subwords
+
+Suppose we want to process the phrase `"unbelievably fast"`. There are three ways to split it:
+
+| Granularity | Segmentation Result | Token Count | Problem |
+|-------------|-------------------|-------------|---------|
+| Character-level | `u, n, b, e, l, i, e, v, a, b, l, y, , f, a, s, t` | 17 | Sequence too long, each character lacks semantics |
+| Word-level | `unbelievably, fast` | 2 | Huge vocabulary (1M+ for English), cannot cover rare words |
+| **Subword-level** | `un, believ, ably, fast` | 4 | Balances sequence length and semantics |
+
+Modern NLP almost universally uses **subword tokenization**. The core idea: keep common words intact (e.g., `fast`), split rare words into meaningful sub-segments (e.g., `un` + `believ` + `ably`).
+
+### BPE: The Most Popular Subword Algorithm
+
+Byte Pair Encoding (BPE) was introduced to NLP by Sennrich et al. (2016, *"Neural Machine Translation of Rare Words with Subword Units"*). Its core logic is remarkably simple:
+
+1. Start at the character level — each character is a token
+2. Count the frequency of all adjacent token pairs
+3. Merge the most frequent pair into a new token
+4. Repeat steps 2-3 until reaching the target vocabulary size
+
+The visualization below shows the step-by-step BPE merge process:
+
+<BPEMergeVisualization client:visible locale="en" />
+
+## The Tokenizer Family
+
+BPE is not the only subword tokenization algorithm. Here are four mainstream approaches:
+
+| Algorithm | Representative Models | Core Idea | Special Markers |
+|-----------|----------------------|-----------|-----------------|
+| BPE | GPT-2, GPT-4 (tiktoken) | Bottom-up merging of most frequent pairs | No special prefix |
+| WordPiece | BERT, DistilBERT | Bottom-up merge, maximize likelihood | `##` marks subword continuation |
+| Unigram (SentencePiece) | T5, LLaMA, Qwen | Top-down pruning, probabilistic model selects optimal split | `▁` marks word boundary |
+| Tiktoken | GPT-3.5, GPT-4 | BPE variant, byte-level | Operates directly on UTF-8 bytes |
+
+**Key differences**:
+- **BPE** builds vocabulary through greedy frequency-based merging. Tiktoken, used by the GPT series, is its efficient byte-level implementation.
+- **WordPiece** also merges, but selects pairs that "maximize the likelihood of the training data" rather than simple frequency.
+- **SentencePiece/Unigram** takes the opposite approach: starts from a large vocabulary and progressively removes low-probability subwords until the vocabulary shrinks to the target size. It is **language-independent** — no pre-tokenization needed, directly processing raw strings, making it especially friendly for Chinese, Japanese, and other languages without spaces.
+
+Different tokenizers can produce dramatically different results for the same sentence:
+
+<TokenizerComparison client:visible locale="en" />
+
+> **Why does vocabulary size matter?** A larger vocabulary means common words are more likely to be preserved as whole tokens (fewer tokens), but the Embedding layer parameters also grow ($V \times d$, where $V$ is vocabulary size and $d$ is embedding dimension). LLaMA's vocabulary grew from 32,000 to 128,256 in LLaMA-3, specifically to better cover multilingual text.
+
+## From Tokens to Vectors
+
+With tokens in hand, we need to map each token to a numerical vector. The most naive approach is **one-hot encoding**: with a vocabulary of size $V$, each token is represented by a vector of length $V$ with a 1 at the corresponding position and 0s elsewhere.
+
+$$
+\text{one-hot}(\text{"cat"}) = [0, 0, \ldots, 1, \ldots, 0] \in \mathbb{R}^V
+$$
+
+This has two fatal problems:
+1. **Curse of dimensionality**: GPT-4's vocabulary is roughly 100,000 — each token becomes a 100,000-dimensional sparse vector
+2. **No semantics**: The one-hot vectors for `cat` and `dog` are orthogonal — cosine similarity is 0, completely masking the fact that both are animals
+
+The **Distributional Hypothesis** (Harris, 1954) offers a better approach: "*You shall know a word by the company it keeps.*" If `cat` and `dog` frequently appear in similar contexts ("The ___ is sleeping", "I fed my ___"), their vector representations should be similar.
+
+This is the core idea of **word embeddings**: map each token to a low-dimensional dense vector space (typically 100-300 dimensions), so that semantically similar words are close in vector space.
+
+## Word2Vec
+
+Word2Vec was proposed by Mikolov et al. (2013, *"Efficient Estimation of Word Representations in Vector Space"*) as a groundbreaking method. It has two architectures:
+
+### Skip-gram
+
+Given a center word, predict its context words. The training objective maximizes:
+
+$$
+\max \frac{1}{T}\sum_{t=1}^{T} \sum_{-c \le j \le c, \, j \ne 0} \log p(w_{t+j} \mid w_t)
+$$
+
+where $T$ is the total number of words in the corpus and $c$ is the context window size. The probability is computed via softmax:
+
+$$
+p(w_O \mid w_I) = \frac{\exp(\mathbf{v}_{w_O}' \cdot \mathbf{v}_{w_I})}{\sum_{w=1}^{W} \exp(\mathbf{v}_w' \cdot \mathbf{v}_{w_I})}
+$$
+
+where $\mathbf{v}_{w_I}$ is the input (center word) vector and $\mathbf{v}_{w_O}'$ is the output (context word) vector.
+
+The visualization below shows Skip-gram's sliding window and training process:
+
+<SkipgramTraining client:visible locale="en" />
+
+### CBOW (Continuous Bag of Words)
+
+The reverse of Skip-gram: given context words, predict the center word. CBOW averages the context word vectors as input — it trains faster but performs slightly worse on rare words.
+
+### Practical Optimization Tricks
+
+The original softmax denominator requires summing over the entire vocabulary ($W$ can be tens to hundreds of thousands), which is computationally expensive. Two common acceleration methods:
+
+- **Negative Sampling**: Instead of computing the full softmax, only distinguish between "true context words" and "randomly sampled negatives"
+- **Hierarchical Softmax**: Organizes the vocabulary as a Huffman tree, reducing $O(W)$ computation to $O(\log W)$
+
+After training, the hidden layer weight matrix is the word embedding we want. In this vector space, semantic relationships are encoded as vector arithmetic:
+
+<WordEmbeddingSpace client:visible locale="en" />
+
+The classic analogy $\text{king} - \text{man} + \text{woman} \approx \text{queen}$ demonstrates that Word2Vec learns linear structure for semantic dimensions like gender and country-capital relations.
+
+## GloVe
+
+GloVe (Global Vectors, Pennington et al. 2014) takes a different approach: directly leveraging global word-word co-occurrence statistics.
+
+The core idea: if two words $i, j$ co-occur $X_{ij}$ times in the corpus, their word vector dot product should approximately equal the log of the co-occurrence frequency. The objective function is:
+
+$$
+J = \sum_{i,j=1}^{V} f(X_{ij})\left(\mathbf{w}_i^T \tilde{\mathbf{w}}_j + b_i + \tilde{b}_j - \log X_{ij}\right)^2
+$$
+
+where $f(X_{ij})$ is a weighting function — high-frequency co-occurrences should not dominate training, and low-frequency ones should not be ignored.
+
+**GloVe vs Word2Vec**:
+- Word2Vec is a **local** method: trains via sliding windows one at a time
+- GloVe is a **global** method: first builds the complete co-occurrence matrix, then performs matrix factorization
+- In practice, both produce comparable results, but GloVe training is easier to parallelize
+
+## The Limitations of Static Embeddings
+
+Word2Vec and GloVe are both **static embeddings**: each word has only one fixed vector representation, regardless of context. This leads to a fundamental problem — **polysemy**.
+
+Consider the word "bank": in "river bank" it means a riverside, in "bank account" it means a financial institution. But in Word2Vec, both meanings are compressed into a single vector, losing disambiguating information.
+
+<StaticVsContextual client:visible locale="en" />
+
+This limitation directly drove the development of **contextual embeddings**. ELMo (2018) first used bidirectional LSTMs to generate context-dependent vectors for each word. BERT (2018) then took this idea further with Transformer Self-Attention — every token vector at every layer incorporates information from the entire sequence.
+
+| Feature | Static Embeddings (Word2Vec/GloVe) | Contextual Embeddings (BERT/GPT) |
+|---------|-------------------------------------|-----------------------------------|
+| Same word's vector | Fixed, identical | Varies with context |
+| Polysemy handling | All meanings blended into one vector | Different meanings map to different positions |
+| Training data usage | Local windows or co-occurrence matrix | Full sequence context |
+| Vector dimensions | 100-300 | 768-4096 |
+| Parameter count | Millions | Hundreds of millions to trillions |
+
+## Summary
+
+This article covered the two core steps of the NLP input pipeline:
+
+1. **Tokenization**: Subword tokenization (BPE/WordPiece/SentencePiece) balances vocabulary size and semantic granularity. BPE builds vocabulary through greedy merging and has become the standard for the GPT series.
+
+2. **Word Embedding**: From one-hot's curse of dimensionality to the distributional hypothesis's dense vectors. Word2Vec learns word vectors from local context using shallow neural networks; GloVe works from global co-occurrence matrices. Both produce striking linear analogy structures.
+
+3. **From Static to Contextual**: Static embeddings cannot handle polysemy, driving the contextual embedding revolution from ELMo to BERT to GPT.
+
+In subsequent articles, we will dive into BERT and GPT's architecture design — understanding how they generate context-dependent token representations, and why the Decoder-only architecture ultimately won.
