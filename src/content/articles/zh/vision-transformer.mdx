@@ -1,0 +1,158 @@
+---
+title: "Vision Transformer：当图像变成 Token 序列"
+slug: vision-transformer
+locale: zh
+tags: [vision-transformer, vit, image-recognition, computer-vision]
+prerequisites: [transformer-overview]
+difficulty: intermediate
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale"
+    url: "https://arxiv.org/abs/2010.11929"
+  - type: paper
+    title: "Training data-efficient image transformers & distillation through attention"
+    url: "https://arxiv.org/abs/2012.12877"
+  - type: paper
+    title: "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows"
+    url: "https://arxiv.org/abs/2103.14030"
+---
+
+import PatchEmbeddingDemo from '../../../components/interactive/PatchEmbeddingDemo.tsx';
+import PatchPositionEncoding from '../../../components/interactive/PatchPositionEncoding.tsx';
+import ViTForwardFlow from '../../../components/interactive/ViTForwardFlow.tsx';
+import CNNvsViTComparison from '../../../components/interactive/CNNvsViTComparison.tsx';
+import ViTScalingChart from '../../../components/interactive/ViTScalingChart.tsx';
+
+## 简介
+
+Transformer 不只能处理文本。2020 年，Dosovitskiy 等人在论文 *"An Image is Worth 16x16 Words"* 中提出了 **Vision Transformer (ViT)**，证明了一个直觉上很大胆的想法：**把图像切成小块（patch），排成序列，直接喂给标准 Transformer**，就能在图像分类任务上达到甚至超越 CNN 的性能。
+
+这个发现的重要性在于：它表明 Transformer 的 Self-Attention 机制本身具有足够的表达能力来理解视觉信息，不需要卷积这一"视觉专属"的归纳偏置。当数据量足够大时，ViT 的性能随模型和数据规模持续提升，展现出比 CNN 更好的 scaling 特性。
+
+ViT 是 Transformer 从 NLP 走向多模态的第一步。理解 ViT 如何将图像转化为 token 序列，是后续理解 CLIP、Stable Diffusion、GPT-4V 等多模态模型的基础。
+
+## 直觉理解：图像的"词"
+
+### 为什么不用像素作为 token？
+
+最直接的想法是把每个像素当成一个 token。但一张 224×224 的图像有 **50,176 个像素**，Self-Attention 的复杂度是 $O(n^2)$，这意味着需要计算约 25 亿次 attention score — 完全不可行。
+
+ViT 的解法非常优雅：**把图像切成 16×16 的 patch，每个 patch 作为一个 token**。这样 224×224 的图像只产生 $14 \times 14 = 196$ 个 token，与典型 NLP 序列长度相当。
+
+### Patch = Token
+
+这个类比是 ViT 的核心直觉：
+
+| NLP | ViT |
+|-----|-----|
+| 词/子词 (token) | 图像 patch (16×16 像素块) |
+| Tokenizer | Patch 切分 |
+| Token Embedding (查表) | Linear Projection (展平 + 矩阵乘) |
+| 序列长度 ~512 | 序列长度 196 |
+| [CLS] token | [CLS] token（完全相同） |
+
+每个 patch 被展平为一个 $P^2 \cdot C$ 维的向量（$P=16$，$C=3$ 表示 RGB），然后通过一个可学习的线性投影矩阵 $E \in \mathbb{R}^{(P^2 \cdot C) \times D}$ 映射到 $D$ 维嵌入空间。
+
+<PatchEmbeddingDemo client:visible />
+
+## 位置编码：从 2D 到 1D
+
+将 2D 图像拉成 1D 序列后，空间位置信息就丢失了 — patch (0,0) 和 patch (13,13) 在序列中看起来没有区别。ViT 通过**可学习的位置编码** $\mathbf{E}_{\text{pos}} \in \mathbb{R}^{(N+1) \times D}$ 来恢复位置信息。
+
+完整的 ViT 输入序列构造公式：
+
+$$\mathbf{z}_0 = [\mathbf{x}_{\text{class}};\; \mathbf{x}_p^1 E;\; \mathbf{x}_p^2 E;\; \cdots;\; \mathbf{x}_p^N E] + \mathbf{E}_{\text{pos}}$$
+
+其中 $E \in \mathbb{R}^{(P^2 \cdot C) \times D}$，$N = HW/P^2$。
+
+### 位置编码学到了什么？
+
+一个有趣的发现：虽然位置编码是 1D 的（每个 patch 只有一个序号），但训练后它们的**余弦相似度展现出清晰的 2D 空间结构** — 空间上相邻的 patch 的位置编码更相似。这说明 ViT 能从数据中自动学习到 2D 的空间关系。
+
+论文还发现，使用 2D-aware 位置编码（显式编码行列信息）相比 1D 编码只有极微小的提升，说明 1D 可学习编码已经足够好。
+
+<PatchPositionEncoding client:visible />
+
+## 完整前向流程
+
+ViT 的前向传播可以分为 5 个清晰的步骤。注意它使用的是**标准 Transformer Encoder**，没有任何视觉特化的修改 — 这正是 ViT 设计哲学的核心。
+
+<ViTForwardFlow client:visible />
+
+### 关键细节
+
+1. **[CLS] Token**：与 BERT 相同，在序列开头添加一个可学习的特殊 token。最终这个 token 的输出被用于分类。为什么不用所有 patch 的平均？原始论文发现两者效果相当，但 [CLS] 更符合 Transformer 的标准用法。
+
+2. **Transformer Encoder**：每一层包含 Multi-Head Self-Attention 和 MLP（与文本 Transformer 完全一致），使用 Pre-LayerNorm 结构。ViT-Base 有 12 层，ViT-Large 有 24 层，ViT-Huge 有 32 层。
+
+3. **分类头**：训练时用一个隐藏层的 MLP；微调时替换为单层线性层。
+
+## 与 CNN 的对比
+
+ViT 和 CNN 在处理视觉信息时有根本性的差异：
+
+**CNN 的归纳偏置：**
+- **局部性（Locality）**：卷积核只看局部区域（如 3×3），感受野逐层扩大
+- **平移等变性（Translation Equivariance）**：同一个卷积核在所有位置共享，天然具有平移不变性
+- 这些先验知识在小数据时是优势，但在大数据时可能限制模型表达能力
+
+**ViT 的特点：**
+- **全局注意力**：从第一层开始，每个 patch 就能关注所有其他 patch
+- **最少的归纳偏置**：几乎不引入视觉先验，完全依靠数据学习
+- 需要更多数据来弥补缺少的先验知识，但上限更高
+
+<CNNvsViTComparison client:visible />
+
+## Scaling 特性
+
+ViT 论文最重要的发现之一是关于**数据规模与模型性能的关系**：
+
+- 在小数据集（ImageNet-1k，约 130 万张图）上，**CNN 明显优于 ViT**。ViT 缺少卷积的归纳偏置，在有限数据下容易过拟合。
+- 在中等数据集（ImageNet-21k，约 1400 万张图）上，**差距缩小**，大模型 ViT 开始超越 CNN。
+- 在大数据集（JFT-300M，3 亿张图）上，**ViT 全面超越 CNN**，而且模型越大优势越明显。ViT-H/14 达到 88.55% 的 ImageNet top-1 准确率。
+
+这个现象的解释：CNN 的归纳偏置相当于"内置知识"，在数据不足时有帮助，但也限制了从更多数据中学习的能力。ViT 几乎没有这种限制，因此在充足数据下展现出更好的 scaling behavior。
+
+<ViTScalingChart client:visible />
+
+## 后续变体
+
+ViT 之后，视觉 Transformer 领域快速发展，出现了多个重要变体：
+
+### DeiT (Data-efficient Image Transformers)
+
+Facebook AI 在 2021 年提出的 DeiT 解决了 ViT 需要大量数据预训练的问题。核心贡献：
+
+- **知识蒸馏 Token**：除了 [CLS] token，还引入一个 distillation token，用于从 CNN teacher 模型学习
+- **仅用 ImageNet-1k** 就能训练出媲美大数据预训练 ViT 的模型
+- 证明了合适的训练策略可以弥补数据量的不足
+
+### Swin Transformer
+
+微软在 2021 年提出的 Swin Transformer 引入了**层级结构**和**移位窗口注意力**：
+
+- **层级特征图**：类似 CNN 的金字塔结构，逐层降低分辨率、增加通道数
+- **窗口注意力（Window Attention）**：不计算全局 attention，而是在固定大小的局部窗口内计算，复杂度从 $O(n^2)$ 降为 $O(n)$
+- **移位窗口（Shifted Window）**：通过交替移位窗口位置实现跨窗口信息交换
+- 适用于检测、分割等密集预测任务，成为视觉 Transformer 的通用骨干网络
+
+### 其他值得关注的方向
+
+- **BEiT / MAE**：借鉴 BERT 的 Masked Language Modeling 思想，通过遮盖 patch 进行自监督预训练
+- **DINO / DINOv2**：自蒸馏方法，无需标签即可学习强大的视觉特征
+- **FlexiViT**：支持可变 patch 大小，提高部署灵活性
+
+## 总结
+
+Vision Transformer 的核心思想可以用一句话概括：**图像是一组 16×16 的词（patch），标准 Transformer 就能读懂它**。
+
+关键要点：
+1. **Patch Embedding** 将图像从像素空间转化为 token 序列，使 Transformer 能直接处理视觉信息
+2. **可学习的 1D 位置编码** 自动捕获 2D 空间结构
+3. **标准 Transformer Encoder** 无需任何视觉特化修改
+4. **Scaling 是关键**：ViT 在大数据上超越 CNN，体现了 Transformer 架构的通用性
+5. ViT 开启了 Transformer 统一不同模态的道路，是理解现代多模态模型的基础
+
+从 NLP 到 CV，Transformer 证明了自己不仅仅是一个"语言模型架构"，而是一个**通用的序列处理引擎**。只要能把输入表示为 token 序列，Transformer 就能处理它 — 无论是文本、图像、音频还是视频。

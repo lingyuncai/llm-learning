@@ -1,0 +1,158 @@
+---
+title: "Vision Transformer: When Images Become Token Sequences"
+slug: vision-transformer
+locale: en
+tags: [vision-transformer, vit, image-recognition, computer-vision]
+prerequisites: [transformer-overview]
+difficulty: intermediate
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale"
+    url: "https://arxiv.org/abs/2010.11929"
+  - type: paper
+    title: "Training data-efficient image transformers & distillation through attention"
+    url: "https://arxiv.org/abs/2012.12877"
+  - type: paper
+    title: "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows"
+    url: "https://arxiv.org/abs/2103.14030"
+---
+
+import PatchEmbeddingDemo from '../../../components/interactive/PatchEmbeddingDemo.tsx';
+import PatchPositionEncoding from '../../../components/interactive/PatchPositionEncoding.tsx';
+import ViTForwardFlow from '../../../components/interactive/ViTForwardFlow.tsx';
+import CNNvsViTComparison from '../../../components/interactive/CNNvsViTComparison.tsx';
+import ViTScalingChart from '../../../components/interactive/ViTScalingChart.tsx';
+
+## Introduction
+
+Transformers are not limited to text. In 2020, Dosovitskiy et al. proposed the **Vision Transformer (ViT)** in their paper *"An Image is Worth 16x16 Words"*, demonstrating a surprisingly bold idea: **split an image into small patches, arrange them as a sequence, and feed them directly into a standard Transformer**. This approach matches or even surpasses CNN performance on image classification tasks.
+
+The significance of this finding is profound: it shows that the Self-Attention mechanism alone has sufficient expressive power to understand visual information, without requiring convolution — the "vision-specific" inductive bias. When given enough data, ViT performance scales continuously with model and dataset size, exhibiting better scaling properties than CNNs.
+
+ViT represents the first step of Transformers moving from NLP into the multimodal domain. Understanding how ViT converts images into token sequences is foundational for understanding subsequent multimodal models like CLIP, Stable Diffusion, and GPT-4V.
+
+## Intuition: The "Words" of an Image
+
+### Why Not Use Pixels as Tokens?
+
+The most straightforward approach would be to treat each pixel as a token. However, a 224×224 image contains **50,176 pixels**, and Self-Attention has $O(n^2)$ complexity — that would mean computing approximately 2.5 billion attention scores. Completely infeasible.
+
+ViT's solution is elegant: **split the image into 16×16 patches, where each patch becomes a token**. This reduces a 224×224 image to just $14 \times 14 = 196$ tokens, comparable to typical NLP sequence lengths.
+
+### Patch = Token
+
+This analogy is the core intuition behind ViT:
+
+| NLP | ViT |
+|-----|-----|
+| Word/subword (token) | Image patch (16×16 pixel block) |
+| Tokenizer | Patch splitting |
+| Token Embedding (lookup table) | Linear Projection (flatten + matrix multiply) |
+| Sequence length ~512 | Sequence length 196 |
+| [CLS] token | [CLS] token (identical) |
+
+Each patch is flattened into a $P^2 \cdot C$ dimensional vector ($P=16$, $C=3$ for RGB), then mapped to a $D$-dimensional embedding space through a learnable linear projection matrix $E \in \mathbb{R}^{(P^2 \cdot C) \times D}$.
+
+<PatchEmbeddingDemo client:visible locale="en" />
+
+## Position Encoding: From 2D to 1D
+
+After flattening a 2D image into a 1D sequence, spatial position information is lost — patch (0,0) and patch (13,13) look indistinguishable in the sequence. ViT recovers position information through **learnable position embeddings** $\mathbf{E}_{\text{pos}} \in \mathbb{R}^{(N+1) \times D}$.
+
+The complete ViT input sequence construction formula:
+
+$$\mathbf{z}_0 = [\mathbf{x}_{\text{class}};\; \mathbf{x}_p^1 E;\; \mathbf{x}_p^2 E;\; \cdots;\; \mathbf{x}_p^N E] + \mathbf{E}_{\text{pos}}$$
+
+where $E \in \mathbb{R}^{(P^2 \cdot C) \times D}$ and $N = HW/P^2$.
+
+### What Do Position Embeddings Learn?
+
+An interesting finding: although position embeddings are 1D (each patch only has an index), after training their **cosine similarities reveal a clear 2D spatial structure** — spatially adjacent patches have more similar position embeddings. This demonstrates that ViT can automatically learn 2D spatial relationships from data.
+
+The paper also found that using 2D-aware position encodings (explicitly encoding row and column information) provides only marginal improvement over 1D encodings, suggesting that 1D learnable encodings are already sufficient.
+
+<PatchPositionEncoding client:visible locale="en" />
+
+## Complete Forward Pass
+
+ViT's forward pass can be broken down into 5 clear steps. Note that it uses a **standard Transformer Encoder** without any vision-specific modifications — this is the core of ViT's design philosophy.
+
+<ViTForwardFlow client:visible locale="en" />
+
+### Key Details
+
+1. **[CLS] Token**: Identical to BERT, a learnable special token is prepended to the sequence. Its final output is used for classification. Why not average all patch outputs? The original paper found both approaches perform comparably, but [CLS] aligns with standard Transformer usage.
+
+2. **Transformer Encoder**: Each layer contains Multi-Head Self-Attention and MLP (identical to the text Transformer), using Pre-LayerNorm. ViT-Base has 12 layers, ViT-Large has 24 layers, and ViT-Huge has 32 layers.
+
+3. **Classification Head**: A single hidden-layer MLP during pre-training; replaced with a single linear layer during fine-tuning.
+
+## Comparison with CNNs
+
+ViT and CNNs have fundamental differences in how they process visual information:
+
+**CNN's Inductive Biases:**
+- **Locality**: Convolution kernels only see local regions (e.g., 3×3), with receptive fields growing layer by layer
+- **Translation Equivariance**: The same kernel is shared across all positions, providing built-in translation invariance
+- These priors are advantageous with small data but may limit model expressiveness with large data
+
+**ViT's Characteristics:**
+- **Global Attention**: From the first layer, every patch can attend to every other patch
+- **Minimal Inductive Bias**: Almost no visual priors are introduced; the model relies entirely on data to learn
+- Requires more data to compensate for missing priors, but has a higher ceiling
+
+<CNNvsViTComparison client:visible locale="en" />
+
+## Scaling Properties
+
+One of the most important findings from the ViT paper concerns the **relationship between data scale and model performance**:
+
+- On small datasets (ImageNet-1k, ~1.3M images), **CNNs clearly outperform ViT**. Without convolution's inductive biases, ViT is prone to overfitting with limited data.
+- On medium datasets (ImageNet-21k, ~14M images), **the gap narrows**, and larger ViT models begin to surpass CNNs.
+- On large datasets (JFT-300M, 300M images), **ViT comprehensively outperforms CNNs**, with the advantage growing as models get larger. ViT-H/14 achieves 88.55% ImageNet top-1 accuracy.
+
+The explanation: CNN's inductive biases serve as "built-in knowledge" that helps when data is scarce but also constrains the ability to learn from more data. ViT has almost no such constraints, thus exhibiting better scaling behavior with sufficient data.
+
+<ViTScalingChart client:visible locale="en" />
+
+## Subsequent Variants
+
+After ViT, the vision Transformer field evolved rapidly with several important variants:
+
+### DeiT (Data-efficient Image Transformers)
+
+Facebook AI's DeiT (2021) addressed ViT's need for massive pre-training data. Key contributions:
+
+- **Distillation Token**: In addition to the [CLS] token, a distillation token is introduced to learn from a CNN teacher model
+- **ImageNet-1k only** training achieves results comparable to large-data pre-trained ViT
+- Demonstrates that proper training strategies can compensate for limited data
+
+### Swin Transformer
+
+Microsoft's Swin Transformer (2021) introduced **hierarchical structure** and **shifted window attention**:
+
+- **Hierarchical Feature Maps**: A pyramid structure similar to CNNs, progressively reducing resolution and increasing channels
+- **Window Attention**: Instead of computing global attention, it operates within fixed-size local windows, reducing complexity from $O(n^2)$ to $O(n)$
+- **Shifted Windows**: Cross-window information exchange through alternating window positions
+- Suitable for detection, segmentation, and other dense prediction tasks, becoming a general-purpose vision Transformer backbone
+
+### Other Notable Directions
+
+- **BEiT / MAE**: Inspired by BERT's Masked Language Modeling, these approaches perform self-supervised pre-training by masking image patches
+- **DINO / DINOv2**: Self-distillation methods that learn powerful visual features without labels
+- **FlexiViT**: Supports variable patch sizes for improved deployment flexibility
+
+## Summary
+
+The core idea of Vision Transformer can be summarized in one sentence: **an image is a collection of 16×16 words (patches), and a standard Transformer can read it**.
+
+Key takeaways:
+1. **Patch Embedding** transforms images from pixel space into token sequences, enabling Transformers to directly process visual information
+2. **Learnable 1D position encodings** automatically capture 2D spatial structure
+3. **Standard Transformer Encoder** requires no vision-specific modifications
+4. **Scaling is key**: ViT surpasses CNNs on large data, demonstrating the Transformer architecture's universality
+5. ViT opened the path for Transformers to unify different modalities, forming the foundation for understanding modern multimodal models
+
+From NLP to CV, Transformers have proven they are not merely a "language model architecture" but a **general-purpose sequence processing engine**. As long as input can be represented as a token sequence, Transformers can process it — whether it is text, images, audio, or video.
