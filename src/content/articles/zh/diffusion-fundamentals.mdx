@@ -1,0 +1,172 @@
+---
+title: "扩散模型基础：从噪声中生成"
+slug: diffusion-fundamentals
+locale: zh
+tags: [diffusion, ddpm, generative-model, image-generation]
+prerequisites: []
+difficulty: intermediate
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Denoising Diffusion Probabilistic Models"
+    url: "https://arxiv.org/abs/2006.11239"
+  - type: paper
+    title: "Denoising Diffusion Implicit Models"
+    url: "https://arxiv.org/abs/2010.02502"
+  - type: paper
+    title: "High-Resolution Image Synthesis with Latent Diffusion Models"
+    url: "https://arxiv.org/abs/2112.10752"
+  - type: paper
+    title: "Classifier-Free Diffusion Guidance"
+    url: "https://arxiv.org/abs/2207.12598"
+---
+
+import ForwardDiffusionProcess from '../../../components/interactive/ForwardDiffusionProcess.tsx';
+import ReverseDenoisingSteps from '../../../components/interactive/ReverseDenoisingSteps.tsx';
+import NoiseScheduleComparison from '../../../components/interactive/NoiseScheduleComparison.tsx';
+import UNetArchitecture from '../../../components/interactive/UNetArchitecture.tsx';
+import GuidanceScaleDemo from '../../../components/interactive/GuidanceScaleDemo.tsx';
+
+## 简介：生成模型的新范式
+
+2020 年，Ho 等人在 *Denoising Diffusion Probabilistic Models (DDPM)* 中提出了一个看似违反直觉的生成方法：**先把数据逐步破坏成纯噪声，然后训练神经网络学会逆转这个过程**。这个简单的想法催生了 Stable Diffusion、DALL-E、Midjourney 等一系列改变创作方式的产品。
+
+扩散模型的核心思想可以用一句话概括：**如果你知道如何把一张图片变成噪声，你就能学会如何从噪声中恢复图片**。这种"破坏-修复"框架赋予了扩散模型稳定的训练过程和出色的生成质量，使其迅速超越了 GAN 成为图像生成的主流方法。
+
+## 生成模型家族
+
+在深入扩散模型之前，先回顾主要的生成模型范式：
+
+| 模型 | 核心思想 | 优势 | 劣势 |
+|------|---------|------|------|
+| **GAN** | 生成器与判别器对抗训练 | 生成速度快、质量高 | 训练不稳定、模式坍塌 |
+| **VAE** | 编码到潜空间，再解码 | 训练稳定、有概率解释 | 生成模糊 |
+| **Flow** | 可逆变换，精确似然 | 精确概率密度 | 架构受限、计算昂贵 |
+| **Diffusion** | 逐步去噪 | 训练稳定、质量最高 | 采样速度慢 |
+
+扩散模型的训练目标简洁（预测噪声），不需要对抗训练，也不需要可逆架构约束。这种简洁性是其成功的关键之一。
+
+## 前向扩散：逐步加噪
+
+前向过程（forward process）是一个固定的马尔可夫链，在每一步向数据添加少量高斯噪声。经过 $T$ 步后，任何数据分布都会变成标准高斯分布。
+
+数学上，每一步的加噪定义为：
+
+$$q(x_t | x_{t-1}) = \mathcal{N}(x_t; \sqrt{1 - \beta_t} \, x_{t-1}, \beta_t I)$$
+
+其中 $\beta_t$ 是噪声调度参数。关键的性质是，我们可以**一步到位**从 $x_0$ 直接采样任意时间步的 $x_t$：
+
+$$q(x_t | x_0) = \mathcal{N}(x_t; \sqrt{\bar{\alpha}_t} \, x_0, (1 - \bar{\alpha}_t) I)$$
+
+其中 $\bar{\alpha}_t = \prod_{s=1}^{t} (1 - \beta_s)$。这意味着训练时不需要逐步加噪，只需随机选一个时间步 $t$，直接计算 $x_t = \sqrt{\bar{\alpha}_t} \, x_0 + \sqrt{1 - \bar{\alpha}_t} \, \epsilon$，其中 $\epsilon \sim \mathcal{N}(0, I)$。
+
+<ForwardDiffusionProcess client:visible />
+
+拖动滑块观察：当 $t=0$ 时图像完好无损（$\bar{\alpha}_0 \approx 1$）；当 $t$ 增大，信号逐渐被噪声淹没；当 $t=T$ 时图像变成纯噪声（$\bar{\alpha}_T \approx 0$）。
+
+## 反向去噪：从噪声恢复
+
+扩散模型的生成过程就是**前向过程的逆过程**：从纯噪声 $x_T \sim \mathcal{N}(0, I)$ 出发，逐步去噪直到得到干净的图像 $x_0$。
+
+反向过程的每一步可以参数化为：
+
+$$p_\theta(x_{t-1} | x_t) = \mathcal{N}(x_{t-1}; \mu_\theta(x_t, t), \sigma_t^2 I)$$
+
+DDPM 的关键洞察是：**与其让模型直接预测去噪后的图像，不如让它预测当前时间步的噪声**。训练损失极其简洁：
+
+$$\mathcal{L} = \mathbb{E}_{t, x_0, \epsilon}\left[\| \epsilon - \epsilon_\theta(x_t, t) \|^2\right]$$
+
+就是一个简单的 MSE：模型预测的噪声 $\epsilon_\theta$ 与实际添加的噪声 $\epsilon$ 之间的差异。
+
+<ReverseDenoisingSteps client:visible />
+
+点击"下一步"按钮观察：每一步中模型预测出噪声分量（中间网格），然后从当前图像中减去这些噪声，得到更清晰的结果。经过所有步骤后，纯噪声被还原为连贯的图像。
+
+## 噪声调度策略
+
+$\beta_t$ 的调度方式对生成质量影响显著。DDPM 原文使用线性调度（$\beta_t$ 从 0.0001 线性增长到 0.02），但后续研究（Nichol & Dhariwal, 2021）发现这种调度存在问题。
+
+**线性调度的缺陷**：$\bar{\alpha}_t$ 在早期时间步下降得太快，意味着大量采样步骤被"浪费"在噪声已经很多、信号变化不大的区域。
+
+**余弦调度**（cosine schedule）通过调整 $\bar{\alpha}_t$ 的下降曲线，使信噪比在整个时间轴上更均匀地变化，让每一步都有意义：
+
+$$\bar{\alpha}_t = \frac{f(t)}{f(0)}, \quad f(t) = \cos\left(\frac{t/T + s}{1 + s} \cdot \frac{\pi}{2}\right)^2$$
+
+<NoiseScheduleComparison client:visible />
+
+悬停曲线查看具体数值。线性调度（蓝色）在前几百步就让 $\bar{\alpha}_t$ 快速衰减到接近零，而余弦调度（绿色）则更平缓，充分利用了每一个采样步骤。
+
+## U-Net 骨干网络
+
+扩散模型中的去噪网络 $\epsilon_\theta$ 通常采用 **U-Net** 架构。这种编码器-解码器结构通过 skip connection 在不同分辨率之间传递信息，非常适合"从噪声图像中提取信号"的任务。
+
+U-Net 的核心设计要素：
+
+- **编码器**：逐步下采样（64→32→16→8），增加通道数，提取高层语义特征
+- **解码器**：逐步上采样，通过 skip connection 融合编码器的细节信息
+- **时间步嵌入**：$t$ 通过正弦位置编码转化为向量，注入每个 ResBlock（类似 Transformer 的位置编码）
+- **Attention 层**：在低分辨率层（16×16、8×8）使用 Self-Attention 捕获全局依赖
+
+<UNetArchitecture client:visible />
+
+悬停各个模块查看详细说明。注意 skip connection（橙色虚线）如何将编码器和解码器的同层连接 — 这些连接让解码器在重建细节时可以直接访问编码器保留的高分辨率特征。
+
+## 条件生成与 Classifier-Free Guidance
+
+无条件扩散模型只能随机生成图像。要实现文本引导的生成（如"一只在月球上的猫"），需要**条件生成**。
+
+**Classifier-Free Guidance (CFG)** 是目前最主流的条件引导方法（Ho & Salimans, 2022）。其核心思想是同时训练条件和无条件去噪：训练时随机将条件 $c$ 替换为空条件 $\varnothing$（如 10% 的概率）。推理时，通过放大条件和无条件预测之间的差异来强化引导：
+
+$$\tilde{\epsilon}_\theta = \epsilon_\theta(x_t, \varnothing) + s \cdot (\epsilon_\theta(x_t, c) - \epsilon_\theta(x_t, \varnothing))$$
+
+其中 $s$ 是引导强度（guidance scale）：
+- $s = 1$：等同于标准条件生成，多样性高但可能偏离提示
+- $s = 7 \sim 8$：Stable Diffusion 的常用设置，质量与多样性平衡
+- $s > 10$：高度贴合提示，但生成结果趋于重复、过饱和
+
+<GuidanceScaleDemo client:visible />
+
+拖动滑块感受不同引导强度的效果。低引导下形状多样但不清晰；适中引导下质量最佳；高引导下结果趋于一致且过度锐化。
+
+## 加速采样：DDIM
+
+DDPM 的主要缺点是采样速度慢 — 需要 1000 步逐步去噪。**DDIM**（Song et al., 2020）通过将去噪过程重新定义为**非马尔可夫**确定性映射，实现了采样步数的大幅压缩。
+
+DDIM 的核心修改是使用确定性更新规则：
+
+$$x_{t-1} = \sqrt{\bar{\alpha}_{t-1}} \left(\frac{x_t - \sqrt{1 - \bar{\alpha}_t} \, \epsilon_\theta(x_t, t)}{\sqrt{\bar{\alpha}_t}}\right) + \sqrt{1 - \bar{\alpha}_{t-1}} \, \epsilon_\theta(x_t, t)$$
+
+由于去噪过程变成确定性的，DDIM 可以使用任意子序列的时间步（如只取 50 步或 20 步），而不需要遍历所有 1000 步。实践中，DDIM 50 步的质量接近 DDPM 1000 步的结果，速度提升 20 倍。
+
+后续的 DPM-Solver、DPM-Solver++ 等 ODE 求解器进一步将步数压缩到 10-25 步，使扩散模型的实用性大幅提升。
+
+## Latent Diffusion：Stable Diffusion 的核心
+
+直接在像素空间（如 512×512×3）运行扩散模型计算代价极高。**Latent Diffusion Model (LDM)**（Rombach et al., 2022）的创新在于：**在低维潜空间中运行扩散过程**。
+
+LDM 的两阶段设计：
+
+1. **第一阶段**：训练一个 VAE（变分自编码器），将图像压缩为低维潜表示。例如 512×512×3 的图像编码为 64×64×4 的 latent code，空间维度缩小 64 倍
+2. **第二阶段**：在这个 64×64×4 的潜空间中训练扩散模型。所有的加噪、去噪都在 latent 空间进行
+
+这种设计的优势显著：
+- **计算效率**：64×64 比 512×512 小 64 倍，attention 计算从 $O(512^4)$ 降至 $O(64^4)$
+- **语义质量**：VAE 的潜空间已经编码了语义信息，扩散模型专注于语义级别的生成
+- **模块化**：VAE 和扩散模型可以独立训练、升级
+
+Stable Diffusion 就是 LDM 架构的代表实现：用 CLIP text encoder 编码文本提示，通过 cross-attention 注入 U-Net 的去噪过程，最后由 VAE decoder 将 latent 解码为最终图像。
+
+## 总结
+
+扩散模型通过"逐步加噪 → 学习去噪"的框架，将复杂的生成问题分解为一系列简单的去噪步骤。关键要点：
+
+- **前向过程**：固定的加噪马尔可夫链，可一步到位采样任意时间步
+- **训练目标**：预测噪声（简单的 MSE 损失），不需要对抗训练
+- **噪声调度**：余弦调度比线性调度更高效，均匀分配信噪比变化
+- **U-Net 架构**：编码器-解码器 + skip connection + 时间步注入
+- **CFG**：通过放大条件/无条件差异实现可控生成
+- **DDIM**：确定性采样，将步数从 1000 压缩到 20-50
+- **Latent Diffusion**：在潜空间运行扩散，大幅提升计算效率
+
+这些基础知识是理解后续进阶主题的前提 — 包括用 Transformer 替代 U-Net 的 **Diffusion Transformer (DiT)**，以及扩展到视频生成的相关技术。

@@ -1,0 +1,172 @@
+---
+title: "Diffusion Model Fundamentals: Generating from Noise"
+slug: diffusion-fundamentals
+locale: en
+tags: [diffusion, ddpm, generative-model, image-generation]
+prerequisites: []
+difficulty: intermediate
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Denoising Diffusion Probabilistic Models"
+    url: "https://arxiv.org/abs/2006.11239"
+  - type: paper
+    title: "Denoising Diffusion Implicit Models"
+    url: "https://arxiv.org/abs/2010.02502"
+  - type: paper
+    title: "High-Resolution Image Synthesis with Latent Diffusion Models"
+    url: "https://arxiv.org/abs/2112.10752"
+  - type: paper
+    title: "Classifier-Free Diffusion Guidance"
+    url: "https://arxiv.org/abs/2207.12598"
+---
+
+import ForwardDiffusionProcess from '../../../components/interactive/ForwardDiffusionProcess.tsx';
+import ReverseDenoisingSteps from '../../../components/interactive/ReverseDenoisingSteps.tsx';
+import NoiseScheduleComparison from '../../../components/interactive/NoiseScheduleComparison.tsx';
+import UNetArchitecture from '../../../components/interactive/UNetArchitecture.tsx';
+import GuidanceScaleDemo from '../../../components/interactive/GuidanceScaleDemo.tsx';
+
+## Introduction: A New Paradigm in Generative Modeling
+
+In 2020, Ho et al. proposed a counterintuitive generation method in *Denoising Diffusion Probabilistic Models (DDPM)*: **gradually corrupt data into pure noise, then train a neural network to reverse this process**. This simple idea gave rise to Stable Diffusion, DALL-E, Midjourney, and a wave of products that transformed creative workflows.
+
+The core insight of diffusion models can be stated in one sentence: **if you know how to turn an image into noise, you can learn how to recover an image from noise**. This "destroy-then-restore" framework gives diffusion models stable training and excellent generation quality, allowing them to rapidly surpass GANs as the dominant approach for image generation.
+
+## The Generative Model Family
+
+Before diving into diffusion models, let's review the major generative paradigms:
+
+| Model | Core Idea | Strengths | Weaknesses |
+|-------|-----------|-----------|------------|
+| **GAN** | Generator vs. discriminator adversarial training | Fast generation, high quality | Unstable training, mode collapse |
+| **VAE** | Encode to latent space, then decode | Stable training, probabilistic | Blurry outputs |
+| **Flow** | Invertible transforms, exact likelihood | Exact density estimation | Architectural constraints, expensive |
+| **Diffusion** | Iterative denoising | Stable training, highest quality | Slow sampling |
+
+Diffusion models have a clean training objective (predict the noise), require no adversarial training, and impose no invertibility constraints on the architecture. This simplicity is a key factor in their success.
+
+## Forward Diffusion: Gradual Noise Addition
+
+The forward process is a fixed Markov chain that adds small amounts of Gaussian noise at each step. After $T$ steps, any data distribution converges to a standard Gaussian distribution.
+
+Mathematically, each step is defined as:
+
+$$q(x_t | x_{t-1}) = \mathcal{N}(x_t; \sqrt{1 - \beta_t} \, x_{t-1}, \beta_t I)$$
+
+where $\beta_t$ is the noise schedule parameter. The crucial property is that we can **jump directly** from $x_0$ to any timestep $x_t$:
+
+$$q(x_t | x_0) = \mathcal{N}(x_t; \sqrt{\bar{\alpha}_t} \, x_0, (1 - \bar{\alpha}_t) I)$$
+
+where $\bar{\alpha}_t = \prod_{s=1}^{t} (1 - \beta_s)$. This means training doesn't require sequential noising — just randomly sample a timestep $t$ and directly compute $x_t = \sqrt{\bar{\alpha}_t} \, x_0 + \sqrt{1 - \bar{\alpha}_t} \, \epsilon$, where $\epsilon \sim \mathcal{N}(0, I)$.
+
+<ForwardDiffusionProcess client:visible locale="en" />
+
+Drag the slider to observe: at $t=0$ the image is intact ($\bar{\alpha}_0 \approx 1$); as $t$ increases, the signal is progressively drowned by noise; at $t=T$ the image becomes pure noise ($\bar{\alpha}_T \approx 0$).
+
+## Reverse Denoising: Recovering from Noise
+
+Generation in diffusion models is simply the **reverse of the forward process**: starting from pure noise $x_T \sim \mathcal{N}(0, I)$, iteratively denoise until a clean image $x_0$ is recovered.
+
+Each reverse step is parameterized as:
+
+$$p_\theta(x_{t-1} | x_t) = \mathcal{N}(x_{t-1}; \mu_\theta(x_t, t), \sigma_t^2 I)$$
+
+DDPM's key insight: **instead of predicting the denoised image directly, have the model predict the noise at the current timestep**. The training loss is remarkably simple:
+
+$$\mathcal{L} = \mathbb{E}_{t, x_0, \epsilon}\left[\| \epsilon - \epsilon_\theta(x_t, t) \|^2\right]$$
+
+A straightforward MSE between the model's predicted noise $\epsilon_\theta$ and the actual noise $\epsilon$ that was added.
+
+<ReverseDenoisingSteps client:visible locale="en" />
+
+Click "Next Step" to observe: at each step the model predicts the noise component (middle grid), then subtracts it from the current image to produce a cleaner result. After all steps, pure noise is restored into a coherent image.
+
+## Noise Schedules
+
+The schedule of $\beta_t$ significantly impacts generation quality. The original DDPM used a linear schedule ($\beta_t$ increasing linearly from 0.0001 to 0.02), but subsequent work (Nichol & Dhariwal, 2021) identified problems with this approach.
+
+**The linear schedule flaw**: $\bar{\alpha}_t$ drops too quickly in early timesteps, meaning many sampling steps are "wasted" in regions where noise is already dominant and signal changes are minimal.
+
+The **cosine schedule** adjusts the decay curve of $\bar{\alpha}_t$ to distribute signal-to-noise ratio changes more uniformly across the timeline, making every step count:
+
+$$\bar{\alpha}_t = \frac{f(t)}{f(0)}, \quad f(t) = \cos\left(\frac{t/T + s}{1 + s} \cdot \frac{\pi}{2}\right)^2$$
+
+<NoiseScheduleComparison client:visible locale="en" />
+
+Hover over the curves to see exact values. The linear schedule (blue) causes $\bar{\alpha}_t$ to decay to near-zero within the first few hundred steps, while the cosine schedule (green) decays more gradually, utilizing every sampling step effectively.
+
+## U-Net Backbone
+
+The denoising network $\epsilon_\theta$ in diffusion models typically uses a **U-Net** architecture. This encoder-decoder structure passes information across resolutions via skip connections, making it well-suited for extracting signal from noisy images.
+
+Key design elements of the U-Net:
+
+- **Encoder**: Progressive downsampling (64 to 32 to 16 to 8), increasing channel count, extracting high-level semantic features
+- **Decoder**: Progressive upsampling, fusing encoder detail via skip connections
+- **Timestep embedding**: $t$ is converted to a vector via sinusoidal positional encoding, injected into each ResBlock (analogous to Transformer positional encoding)
+- **Attention layers**: Self-Attention at low-resolution layers (16x16, 8x8) captures global dependencies
+
+<UNetArchitecture client:visible locale="en" />
+
+Hover over each block for details. Notice how skip connections (orange dashed lines) link encoder and decoder at matching resolutions — these connections allow the decoder to directly access high-resolution features preserved by the encoder during reconstruction.
+
+## Conditional Generation and Classifier-Free Guidance
+
+An unconditional diffusion model can only generate random images. To achieve text-guided generation (e.g., "a cat on the moon"), we need **conditional generation**.
+
+**Classifier-Free Guidance (CFG)** is the dominant conditioning method today (Ho & Salimans, 2022). The key idea is to jointly train conditional and unconditional denoising: during training, the condition $c$ is randomly replaced with a null condition $\varnothing$ (e.g., 10% of the time). At inference, the difference between conditional and unconditional predictions is amplified to strengthen guidance:
+
+$$\tilde{\epsilon}_\theta = \epsilon_\theta(x_t, \varnothing) + s \cdot (\epsilon_\theta(x_t, c) - \epsilon_\theta(x_t, \varnothing))$$
+
+where $s$ is the guidance scale:
+- $s = 1$: equivalent to standard conditional generation — high diversity but may drift from the prompt
+- $s = 7 \sim 8$: Stable Diffusion's typical setting — balanced quality and diversity
+- $s > 10$: closely follows the prompt but outputs become repetitive and oversaturated
+
+<GuidanceScaleDemo client:visible locale="en" />
+
+Drag the slider to feel the effect of different guidance scales. At low guidance, shapes are diverse but unclear; at moderate guidance, quality peaks; at high guidance, results converge and become over-sharpened.
+
+## Accelerated Sampling: DDIM
+
+DDPM's main drawback is slow sampling — requiring 1000 sequential denoising steps. **DDIM** (Song et al., 2020) addresses this by reformulating the denoising process as a **non-Markovian** deterministic mapping, enabling dramatic reduction in sampling steps.
+
+DDIM's core modification uses a deterministic update rule:
+
+$$x_{t-1} = \sqrt{\bar{\alpha}_{t-1}} \left(\frac{x_t - \sqrt{1 - \bar{\alpha}_t} \, \epsilon_\theta(x_t, t)}{\sqrt{\bar{\alpha}_t}}\right) + \sqrt{1 - \bar{\alpha}_{t-1}} \, \epsilon_\theta(x_t, t)$$
+
+Because the denoising process becomes deterministic, DDIM can use arbitrary subsequences of timesteps (e.g., only 50 or 20 steps) instead of traversing all 1000 steps. In practice, DDIM with 50 steps approaches DDPM 1000-step quality with a 20x speedup.
+
+Subsequent ODE solvers like DPM-Solver and DPM-Solver++ further compress the step count to 10-25, dramatically improving diffusion model practicality.
+
+## Latent Diffusion: The Core of Stable Diffusion
+
+Running diffusion directly in pixel space (e.g., 512x512x3) is computationally prohibitive. **Latent Diffusion Models (LDM)** (Rombach et al., 2022) innovate by **running the diffusion process in a low-dimensional latent space**.
+
+LDM's two-stage design:
+
+1. **Stage one**: Train a VAE (Variational Autoencoder) to compress images into low-dimensional latent representations. For example, a 512x512x3 image is encoded to a 64x64x4 latent code — a 64x spatial reduction
+2. **Stage two**: Train the diffusion model in this 64x64x4 latent space. All noising and denoising occurs in the latent space
+
+The advantages are significant:
+- **Computational efficiency**: 64x64 is 64x smaller than 512x512; attention computation drops from $O(512^4)$ to $O(64^4)$
+- **Semantic quality**: The VAE latent space already encodes semantic information, letting the diffusion model focus on semantic-level generation
+- **Modularity**: The VAE and diffusion model can be trained and upgraded independently
+
+Stable Diffusion is the canonical LDM implementation: a CLIP text encoder encodes text prompts, which are injected into the U-Net denoising process via cross-attention, and a VAE decoder converts the final latent back into an image.
+
+## Summary
+
+Diffusion models decompose complex generation into a series of simple denoising steps through a "gradual noising then learning to denoise" framework. Key takeaways:
+
+- **Forward process**: Fixed noising Markov chain; any timestep can be sampled in one step
+- **Training objective**: Predict noise (simple MSE loss); no adversarial training needed
+- **Noise schedules**: Cosine schedule is more efficient than linear, distributing SNR changes uniformly
+- **U-Net architecture**: Encoder-decoder + skip connections + timestep injection
+- **CFG**: Amplify conditional/unconditional difference for controllable generation
+- **DDIM**: Deterministic sampling, compressing steps from 1000 down to 20-50
+- **Latent Diffusion**: Run diffusion in latent space for dramatically improved efficiency
+
+These fundamentals are prerequisites for understanding advanced topics — including the **Diffusion Transformer (DiT)** that replaces U-Net with Transformers, and extensions to video generation.
