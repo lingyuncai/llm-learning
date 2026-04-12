@@ -243,7 +243,7 @@ export default function WordEmbeddingSpace({ locale = 'zh' }: Props) {
             >
               <motion.circle
                 cx={wp.x} cy={wp.y} r={r}
-                fill={isAnalogy ? color : color}
+                fill={color}
                 stroke={isAnalogy ? COLORS.dark : 'none'}
                 strokeWidth={isAnalogy ? 2 : 0}
                 initial={false}

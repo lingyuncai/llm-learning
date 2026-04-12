@@ -133,9 +133,9 @@ export default function SkipgramTraining({ locale = 'zh' }: Props) {
           const isContext = i !== position && i >= contextStart && i <= contextEnd;
           const isOutside = !isCenter && !isContext;
 
-          let fill = COLORS.bgAlt;
-          let stroke = COLORS.light;
-          let textColor = COLORS.mid;
+          let fill: string = COLORS.bgAlt;
+          let stroke: string = COLORS.light;
+          let textColor: string = COLORS.mid;
           let strokeW = 1;
 
           if (isCenter) {
