@@ -1,0 +1,121 @@
+---
+title: "Video Generation: Spatiotemporal Attention and the Sora Architecture"
+slug: video-generation
+locale: en
+tags: [video-generation, sora, spatiotemporal-attention, dit, diffusion]
+prerequisites: [diffusion-transformer]
+difficulty: advanced
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Video generation models as world simulators"
+    url: "https://openai.com/index/video-generation-models-as-world-simulators/"
+  - type: paper
+    title: "Make-A-Video: Text-to-Video Generation without Text-Video Data"
+    url: "https://arxiv.org/abs/2209.14792"
+  - type: paper
+    title: "Align your Latents: High-Resolution Video Synthesis with Latent Diffusion Models"
+    url: "https://arxiv.org/abs/2304.08818"
+---
+
+import SpatiotemporalPatchDemo from '../../../components/interactive/SpatiotemporalPatchDemo.tsx';
+import SpatialVsTemporalAttention from '../../../components/interactive/SpatialVsTemporalAttention.tsx';
+import VideoConsistencyChallenge from '../../../components/interactive/VideoConsistencyChallenge.tsx';
+import VariableResolutionDemo from '../../../components/interactive/VariableResolutionDemo.tsx';
+import VideoGenTimeline from '../../../components/interactive/VideoGenTimeline.tsx';
+
+## Introduction: From Images to Video
+
+Image generation has been pushed to new heights by the Diffusion Transformer (DiT), but video generation introduces a fundamentally new challenge: **the temporal dimension**. Videos demand not only high quality in each frame, but also consistency in color, shape, and motion across frames — this is known as **temporal consistency**.
+
+In February 2024, OpenAI released the Sora technical report *"Video generation models as world simulators"*, demonstrating the enormous potential of DiT architecture for video generation: **minute-long duration, variable resolution and aspect ratio, highly consistent motion**. Sora's core idea is to treat video as a **sequence of spatiotemporal patches**, using a Transformer to jointly process spatial and temporal information.
+
+This article covers video tokenization, spatiotemporal attention design, temporal consistency challenges, and Sora's key innovations.
+
+## Video Tokenization: 3D Patches
+
+In image generation, DiT splits 2D latents into $(p_h \times p_w)$ patches. The natural extension for video is adding the temporal dimension, splitting video into **3D spatiotemporal patches**: each patch covers $(p_h \times p_w \times p_t)$ — that is, $p_h \times p_w$ pixels spatially and $p_t$ frames temporally.
+
+Key advantages of 3D patchification:
+- **Unified representation**: Spatial and temporal information are encoded into a single token
+- **Flexible control**: Adjusting $p_t$ balances token count against temporal granularity
+- **Direct DiT reuse**: Once patches become tokens, downstream processing is identical to image DiT
+
+<SpatiotemporalPatchDemo locale="en" client:visible />
+
+The choice of $p_t$ is crucial: $p_t = 1$ means each frame is encoded independently, maximizing tokens but requiring attention to learn all temporal relationships; $p_t = 4$ compresses 4 frames into one token, greatly reducing token count but potentially losing fine inter-frame variations.
+
+## Spatiotemporal Attention
+
+Given a sequence of spatiotemporal patch tokens, the core question is: **how should tokens attend to each other?** There are three main strategies:
+
+**Spatial Attention**: Within each frame, all spatial position tokens attend to each other. This is identical to image DiT attention, with complexity $O(N_s^2)$ where $N_s$ is the number of spatial tokens per frame.
+
+**Temporal Attention**: At the same spatial position, tokens from different frames attend to each other. Complexity $O(T^2)$ where $T$ is the number of frames. This is the key mechanism for establishing temporal consistency.
+
+**Full 3D Attention**: All spatiotemporal tokens attend to all tokens, with complexity $O((N_s \cdot T)^2)$. Theoretically most powerful, but computationally prohibitive for long videos.
+
+<SpatialVsTemporalAttention locale="en" client:visible />
+
+In practice, most video generation models use **factorized attention**: within each Transformer block, spatial attention is performed first, followed by temporal attention (or alternating). This reduces complexity from $O((N_s \cdot T)^2)$ to $O(N_s^2 + T^2)$, providing a practical balance between quality and efficiency.
+
+Sora's technical report suggests it uses some form of full spatiotemporal attention (possibly combined with efficient attention techniques like Flash Attention), but specific details remain undisclosed.
+
+## Temporal Consistency Challenges
+
+One of the hardest problems in video generation is maintaining **temporal consistency**. If the model's per-frame generation decisions lack cross-frame coordination, various visual artifacts emerge:
+
+<VideoConsistencyChallenge locale="en" client:visible />
+
+Key techniques for addressing temporal consistency include:
+
+1. **Temporal attention layers**: Let each spatial position "see" its own state in other frames, maintaining color and texture coherence
+2. **3D convolution / spatiotemporal patches**: Capture local inter-frame relationships at the encoding stage
+3. **Motion modeling**: Use optical flow or motion vectors as additional conditioning to constrain inter-frame motion continuity
+4. **Long-range dependencies**: Transformer's global attention naturally supports information flow between distant frames
+
+## Sora Architecture: Variable Resolution and Aspect Ratio
+
+One of Sora's most striking capabilities is **native support for variable resolution and aspect ratio**. Traditional video generation models typically require fixed-resolution input (e.g., 256x256 or 512x512), meaning original videos must be cropped or padded.
+
+Sora's solution stems from a simple insight: **patch-based tokenization naturally supports variable input sizes**. Videos of different resolutions and aspect ratios simply produce different numbers of tokens — and handling variable-length sequences is a core strength of Transformers.
+
+<VariableResolutionDemo locale="en" client:visible />
+
+Benefits of this design:
+- **Preserves original composition**: No cropping needed to maintain the video's native aspect ratio
+- **Flexible generation**: A single model can generate landscape, portrait, square, and other formats
+- **Training efficiency**: Can train on mixed-resolution data, fully utilizing videos from different sources
+
+OpenAI's technical report notes that training at native aspect ratios significantly improves composition quality and structural coherence of generated frames.
+
+## Other Video Generation Approaches
+
+Beyond Sora's DiT approach, several important video generation methods exist:
+
+**Make-A-Video (Meta, 2022)**: Singer et al. proposed an elegant approach — learn visual representations from abundant image-text pairs, then learn temporal dynamics from unlabeled video data. The core idea is to **extend a pretrained image generation model to video** by inserting temporal attention layers and temporal convolutions into the U-Net, then fine-tuning on video data. This avoids dependence on large-scale text-video paired datasets.
+
+**VideoLDM / Align your Latents (Blattmann et al., 2023)**: Extended Latent Diffusion Models (the foundation of Stable Diffusion) to the video domain. The key innovation is inserting **temporal alignment layers** into a pretrained 2D LDM, allowing existing image generation capabilities to naturally extend to video. This "images first, then video" paradigm became the foundation for much subsequent work.
+
+These early works share a common trait: they all use **U-Net backbones**. Sora's breakthrough was switching to DiT, gaining superior scaling properties and stronger long-range modeling capability.
+
+## Development Timeline
+
+The video generation field experienced rapid development from 2022 to 2024, gradually transitioning from U-Net backbones to DiT architecture:
+
+<VideoGenTimeline locale="en" client:visible />
+
+A notable trend: after 2024, virtually all frontier video generation models shifted to DiT architecture, with U-Net's dominance in video generation yielding to the Transformer.
+
+## Summary
+
+Video generation extends diffusion models from 2D to the 3D spatiotemporal domain. The core challenges and solutions can be summarized as follows:
+
+1. **3D Patch Tokenization**: Split video into $(p_h \times p_w \times p_t)$ spatiotemporal patches, with each patch becoming a token that unifies spatial and temporal representation
+2. **Factorized Spatiotemporal Attention**: Decompose computationally infeasible full 3D attention into spatial attention + temporal attention, balancing efficiency and quality
+3. **Temporal Consistency**: Address color flickering, shape morphing, and object vanishing through temporal attention, 3D encoding, and motion constraints
+4. **Variable Resolution**: Sora leverages patch-based tokenization to natively support different resolutions and aspect ratios without cropping
+5. **DiT Backbone Advantages**: The transition from U-Net to DiT brings superior scaling properties, enabling minute-long high-quality video generation
+
+From Make-A-Video to Sora, the evolution of video generation once again validates the universality of Transformers — the same DiT architecture, from images to video, requiring only extensions to tokenization and attention patterns.

@@ -1,0 +1,121 @@
+---
+title: "视频生成：时空注意力与 Sora 架构"
+slug: video-generation
+locale: zh
+tags: [video-generation, sora, spatiotemporal-attention, dit, diffusion]
+prerequisites: [diffusion-transformer]
+difficulty: advanced
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Video generation models as world simulators"
+    url: "https://openai.com/index/video-generation-models-as-world-simulators/"
+  - type: paper
+    title: "Make-A-Video: Text-to-Video Generation without Text-Video Data"
+    url: "https://arxiv.org/abs/2209.14792"
+  - type: paper
+    title: "Align your Latents: High-Resolution Video Synthesis with Latent Diffusion Models"
+    url: "https://arxiv.org/abs/2304.08818"
+---
+
+import SpatiotemporalPatchDemo from '../../../components/interactive/SpatiotemporalPatchDemo.tsx';
+import SpatialVsTemporalAttention from '../../../components/interactive/SpatialVsTemporalAttention.tsx';
+import VideoConsistencyChallenge from '../../../components/interactive/VideoConsistencyChallenge.tsx';
+import VariableResolutionDemo from '../../../components/interactive/VariableResolutionDemo.tsx';
+import VideoGenTimeline from '../../../components/interactive/VideoGenTimeline.tsx';
+
+## 简介：从图像到视频
+
+图像生成已经被 Diffusion Transformer（DiT）推向新高度，但视频生成面临一个根本性的新挑战：**时间维度**。视频不仅要求每一帧画质优秀，还要求帧与帧之间在颜色、形状、运动上保持一致 — 这就是所谓的 **时间一致性（temporal consistency）**。
+
+2024 年 2 月，OpenAI 发布了 Sora 技术报告 *"Video generation models as world simulators"*，展示了 DiT 架构在视频生成领域的巨大潜力：**分钟级长度、可变分辨率和宽高比、高度一致的运动**。Sora 的核心思路是将视频视为 **时空 patch 序列**，用 Transformer 统一处理空间和时间信息。
+
+本文将从视频 tokenization 出发，讲解时空注意力的设计、时间一致性的挑战，以及 Sora 的关键创新。
+
+## 视频 Tokenization：3D Patch
+
+图像生成中，DiT 将 2D 潜变量切分为 $(p_h \times p_w)$ 的 patch。视频生成的自然扩展是加入时间维度，将视频切分为 **3D 时空 patch**：每个 patch 覆盖 $(p_h \times p_w \times p_t)$ — 即空间上 $p_h \times p_w$ 像素、时间上 $p_t$ 帧。
+
+这种 3D patchify 的关键优势：
+- **统一表征**：空间和时间信息被编码到同一个 token 中
+- **灵活控制**：通过调整 $p_t$ 可以平衡 token 数量和时间粒度
+- **直接复用 DiT 架构**：patch 变成 token 后，后续处理与图像 DiT 完全一致
+
+<SpatiotemporalPatchDemo client:visible />
+
+注意 $p_t$ 的选择至关重要：$p_t = 1$ 意味着每帧独立编码，token 数量最多但时间信息需要完全靠注意力学习；$p_t = 4$ 则将 4 帧压缩为一个 token，token 数大幅减少但可能丢失精细的帧间变化。
+
+## 时空注意力
+
+有了时空 patch token 序列后，核心问题是：**token 之间如何做注意力？** 有三种主要策略：
+
+**空间注意力（Spatial Attention）**：在每帧内部，所有空间位置的 token 相互注意。这和图像 DiT 的注意力完全相同，复杂度 $O(N_s^2)$，其中 $N_s$ 是每帧的空间 token 数。
+
+**时间注意力（Temporal Attention）**：在同一空间位置上，不同帧的 token 相互注意。复杂度 $O(T^2)$，其中 $T$ 是帧数。这是建立时间一致性的关键机制。
+
+**完整 3D 注意力（Full 3D Attention）**：所有时空 token 对所有 token 做注意力，复杂度 $O((N_s \cdot T)^2)$。这在理论上最强大，但对于长视频来说计算量不可承受。
+
+<SpatialVsTemporalAttention client:visible />
+
+实践中，大多数视频生成模型采用 **分解注意力（factorized attention）**：在每个 Transformer block 中，先做空间注意力再做时间注意力（或交替进行）。这将复杂度从 $O((N_s \cdot T)^2)$ 降为 $O(N_s^2 + T^2)$，是质量与效率的实用平衡点。
+
+Sora 的技术报告暗示其使用了某种形式的完整时空注意力（可能结合了高效注意力技术如 Flash Attention），但具体细节未公开。
+
+## 时间一致性挑战
+
+视频生成中最困难的问题之一是保持 **时间一致性**。如果模型对每一帧的生成决策缺乏跨帧协调，就会出现各种视觉瑕疵：
+
+<VideoConsistencyChallenge client:visible />
+
+解决时间一致性的关键技术包括：
+
+1. **时间注意力层**：让每个空间位置"看到"自己在其他帧的状态，从而保持颜色和纹理的连贯
+2. **3D 卷积 / 时空 patch**：在编码阶段就捕获局部的帧间关系
+3. **运动建模**：通过光流（optical flow）或运动向量作为额外条件，约束帧间的运动连续性
+4. **长程依赖**：Transformer 的全局注意力天然支持远距离帧之间的信息传递
+
+## Sora 架构：可变分辨率与宽高比
+
+Sora 最引人注目的能力之一是 **原生支持可变分辨率和宽高比**。传统视频生成模型通常要求固定分辨率输入（如 256×256 或 512×512），这意味着必须裁剪或填充原始视频。
+
+Sora 的解决方案来自一个简单的洞察：**patch-based tokenization 天然支持可变输入尺寸**。不同分辨率和宽高比的视频只是产生不同数量的 token — Transformer 处理变长序列本就是其强项。
+
+<VariableResolutionDemo client:visible />
+
+这种设计带来的好处：
+- **保留原始构图**：无需裁剪即可保持视频的原始宽高比
+- **灵活生成**：同一模型可以生成横屏、竖屏、方形等不同格式
+- **训练效率**：可以在混合分辨率的数据上训练，充分利用不同来源的视频
+
+OpenAI 在技术报告中指出，在原始宽高比上训练能显著提升构图质量和画面的结构合理性。
+
+## 其他视频生成方案
+
+除了 Sora 的 DiT 方案外，还有一些重要的视频生成方法：
+
+**Make-A-Video（Meta, 2022）**：Singer 等人提出了一种巧妙的方法 — 利用大量的图像-文本对学习视觉表征，再用无标签视频数据学习时间动态。核心思想是**将预训练的图像生成模型扩展到视频**，在 U-Net 中插入时间注意力层和时间卷积层，然后在视频数据上微调。这种方法避免了对大规模文本-视频配对数据的依赖。
+
+**VideoLDM / Align your Latents（Blattmann 等人, 2023）**：将 Latent Diffusion Model（Stable Diffusion 的基础）扩展到视频领域。关键创新是在预训练的 2D LDM 中插入 **时间对齐层**，使已有的图像生成能力自然延伸到视频。这种"先图像后视频"的范式成为后续许多工作的基础。
+
+这些早期工作有一个共同特点：都基于 **U-Net 骨干网络**。Sora 的突破在于将骨干切换到 DiT，获得了更好的 scaling 特性和更强的长程建模能力。
+
+## 发展历程
+
+视频生成领域在 2022-2024 年经历了快速发展，从 U-Net 骨干逐步过渡到 DiT 架构：
+
+<VideoGenTimeline client:visible />
+
+值得注意的趋势：2024 年后几乎所有前沿视频生成模型都转向了 DiT 架构，U-Net 在视频生成领域的主导地位已经让位于 Transformer。
+
+## 总结
+
+视频生成将扩散模型从 2D 扩展到了 3D 时空域，其核心挑战和解决方案可以总结如下：
+
+1. **3D Patch Tokenization**：将视频切分为 $(p_h \times p_w \times p_t)$ 的时空 patch，每个 patch 变成一个 token，统一空间和时间表征
+2. **分解时空注意力**：将计算不可行的完整 3D 注意力分解为空间注意力 + 时间注意力，在效率和质量之间取得平衡
+3. **时间一致性**：通过时间注意力、3D 编码和运动约束解决颜色闪烁、形态变化、物体消失等问题
+4. **可变分辨率**：Sora 利用 patch-based tokenization 原生支持不同分辨率和宽高比，无需裁剪
+5. **DiT 骨干的优势**：从 U-Net 过渡到 DiT 带来了更好的 scaling 特性，使分钟级高质量视频生成成为可能
+
+从 Make-A-Video 到 Sora，视频生成领域的演进再次印证了 Transformer 的通用性 — 同样的 DiT 架构，从图像到视频，只需扩展 tokenization 和注意力模式即可。
