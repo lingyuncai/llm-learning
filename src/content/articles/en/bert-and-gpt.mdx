@@ -1,0 +1,182 @@
+---
+title: "BERT and GPT: Two Paths — Understanding vs Generation"
+slug: bert-and-gpt
+locale: en
+tags: [bert, gpt, pretraining, nlp, nlu, classification, generation]
+prerequisites: [text-representation]
+difficulty: intermediate
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding"
+    url: "https://arxiv.org/abs/1810.04805"
+  - type: paper
+    title: "Improving Language Understanding by Generative Pre-Training"
+    url: "https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf"
+  - type: paper
+    title: "Language Models are Unsupervised Multitask Learners"
+    url: "https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf"
+  - type: paper
+    title: "Language Models are Few-Shot Learners"
+    url: "https://arxiv.org/abs/2005.14165"
+  - type: paper
+    title: "BERT for Joint Intent Classification and Slot Filling"
+    url: "https://arxiv.org/abs/1902.10909"
+  - type: paper
+    title: "Scaling Laws for Neural Language Models"
+    url: "https://arxiv.org/abs/2001.08361"
+---
+
+import MLMDemo from '../../../components/interactive/MLMDemo.tsx';
+import BERTNLUPipeline from '../../../components/interactive/BERTNLUPipeline.tsx';
+import AutoregressiveGeneration from '../../../components/interactive/AutoregressiveGeneration.tsx';
+import ClassificationVsGeneration from '../../../components/interactive/ClassificationVsGeneration.tsx';
+import ScalingLawChart from '../../../components/interactive/ScalingLawChart.tsx';
+
+## Introduction: Two Ways to Use the Same Transformer
+
+After the Transformer was introduced in 2017, the NLP community faced a pivotal design choice: **how should we use this powerful architecture for pre-training?** Two approaches emerged almost simultaneously:
+
+- **BERT (2018)**: Mask some words in a sentence and have the model **predict the masked words from context** — learn to understand (encoder)
+- **GPT (2018)**: Give the model a prefix and have it **predict the next word** — learn to generate (decoder)
+
+These two paths dominated two distinct directions in NLP: **Natural Language Understanding** (NLU) and **Natural Language Generation** (NLG). Understanding their differences is foundational to modern NLP.
+
+## From Static to Contextual: The Motivation for Pre-training
+
+Before BERT and GPT, the standard NLP pipeline was: obtain static word vectors from Word2Vec or GloVe, then attach a task-specific model. The problem: **static word vectors cannot distinguish polysemous words** — "bank" (financial institution) and "bank" (river bank) share the same vector.
+
+In 2018, ELMo pioneered contextual word representations using bidirectional LSTMs, demonstrating the enormous potential of the **pre-train + fine-tune** paradigm. Both BERT and GPT continued down this path, but chose the Transformer as their backbone — superior parallelism, longer context windows, and stronger expressiveness.
+
+## BERT: The Understanding Path
+
+### Core Idea: Masked Language Model (MLM)
+
+BERT's training approach is highly intuitive: randomly mask **15%** of input tokens, then have the model predict the masked words from **bidirectional context**.
+
+$$
+\mathcal{L}_{\text{MLM}} = -\mathbb{E}\left[\sum_{i \in \mathcal{M}} \log p(x_i \mid x_{\backslash\mathcal{M}})\right]
+$$
+
+Here $\mathcal{M}$ is the set of masked positions and $x_{\backslash\mathcal{M}}$ represents all unmasked tokens. The key insight is that $x_i$ can see **both left and right** context — this is what "bidirectional" means.
+
+Try the interactive demo below to experience BERT's training procedure firsthand:
+
+<MLMDemo client:visible locale="en" />
+
+### Why Bidirectional Matters
+
+Consider "I went to the **bank** to deposit money" versus "I sat on the river **bank**". Looking only at the left context "I went to the", you cannot distinguish the two meanings; but seeing "deposit money" on the right makes the meaning unambiguous. **BERT's bidirectional attention gives every token access to the full context.**
+
+### NSP: Next Sentence Prediction
+
+The original BERT paper also introduced NSP (Next Sentence Prediction): given two sentences, predict whether the second follows the first. However, later work (RoBERTa, 2019) showed NSP provides little benefit; modern BERT variants typically omit it.
+
+### The Role of [CLS] Token
+
+BERT inserts a special `[CLS]` token at the beginning of the input. After multiple Transformer layers, the `[CLS]` vector aggregates information from the entire sentence and serves as a **sentence-level classification** representation. The `[SEP]` token marks sentence boundaries.
+
+## BERT in Practice: Joint NLU Model
+
+One of BERT's landmark applications in NLU is **Joint Intent Classification and Slot Filling** (Chen et al., 2019).
+
+### What is Intent + Slot?
+
+In dialog systems, NLU must accomplish two things simultaneously:
+- **Intent classification**: What does the user want? → "BookFlight", "SetAlarm"
+- **Slot filling**: What are the key parameters? → departure city, destination, time
+
+### BIO Tagging Scheme
+
+Slot filling uses BIO sequence labeling:
+- **B-xxx**: Beginning of a slot value
+- **I-xxx**: Inside a slot value
+- **O**: Outside any slot (not a slot token)
+
+Example: "from **Beijing** to **Shanghai** **tomorrow**" → "O **B-depart** O **B-arrive** **B-date**"
+
+### Joint Training
+
+BERT's joint model is elegant: **share a single encoder**, with two different heads on top:
+
+$$
+\mathcal{L} = \alpha \mathcal{L}_{\text{intent}} + (1-\alpha) \mathcal{L}_{\text{slot}}
+$$
+
+- `[CLS]` vector → Intent classification head
+- Each token vector → Slot sequence tagging head
+
+The interactive demo below shows the complete BERT NLU pipeline:
+
+<BERTNLUPipeline client:visible locale="en" />
+
+## GPT: The Generation Path
+
+### Core Idea: Autoregressive Language Modeling
+
+GPT's training approach is equally intuitive: given preceding words, predict the next one. Formally, it maximizes the left-to-right conditional probability:
+
+$$
+\mathcal{L}_{\text{AR}} = -\sum_{t=1}^{T} \log p(x_t \mid x_1, x_2, \ldots, x_{t-1})
+$$
+
+The crucial difference: **GPT can only see left context** (causal attention) — it cannot peek at future tokens. This limits understanding but enables generation.
+
+<AutoregressiveGeneration client:visible locale="en" />
+
+### GPT's Three Evolutionary Leaps
+
+The GPT family demonstrates a clear scaling trajectory:
+
+| Version | Parameters | Year | Key Capability |
+|---------|-----------|------|----------------|
+| GPT-1 | 117M | 2018 | Pre-train + fine-tune (still needs labeled data) |
+| GPT-2 | 1.5B | 2019 | Zero-shot capability emerges |
+| GPT-3 | 175B | 2020 | In-context learning: provide a few examples to solve new tasks |
+
+Kaplan et al. (2020) discovered **Scaling Laws**: model loss decreases as a power law with parameter count:
+
+$$
+L(N) = \left(\frac{N_c}{N}\right)^{\alpha_N}, \quad \alpha_N \approx 0.076
+$$
+
+<ScalingLawChart client:visible locale="en" />
+
+## Classification vs Generation: Two Solutions to the Same Task
+
+BERT and GPT represent two fundamentally different paradigms for solving tasks:
+
+- **BERT (Classification)**: Train a specialized head for each task, output structured results. Fast, accurate, deterministic — but requires labeled data and per-task fine-tuning.
+- **GPT (Generation)**: Frame every task as "text generation". Flexible, zero-shot capable, unified interface — but slower and non-deterministic.
+
+<ClassificationVsGeneration client:visible locale="en" />
+
+## Convergence: Why Decoder-Only Won
+
+Looking back, the GPT approach ultimately became dominant. The reasons are multifaceted:
+
+1. **Unification**: The generation paradigm can unify all NLP tasks — classification, translation, summarization, and QA can all be framed as "given context, continue text"
+2. **Scaling advantage**: Scaling laws work best on decoder-only architectures; bigger models = stronger capabilities
+3. **Emergent abilities**: When models are large enough, zero-shot and few-shot abilities emerge naturally, eliminating the need for task-specific fine-tuning
+4. **Data efficiency**: The autoregressive objective requires only unlabeled text, and the internet provides virtually unlimited training data
+
+### BERT's Legacy
+
+Though the GPT paradigm dominates, BERT's contributions endure:
+
+- **Embedding models**: BERT-style bidirectional encoders remain the dominant architecture for text embeddings (sentence embeddings)
+- **Small model scenarios**: In latency-sensitive, resource-constrained settings (mobile, edge devices), BERT-scale models with classification heads remain optimal
+- **Encoder philosophy**: Modern models like T5 combine the strengths of both encoder and decoder
+
+## Summary
+
+| Dimension | BERT | GPT |
+|-----------|------|-----|
+| Architecture | Encoder (bidirectional) | Decoder (causal/unidirectional) |
+| Pre-training | MLM (cloze task) | Autoregressive (next-token prediction) |
+| Core strength | Understanding, classification, matching | Generation, reasoning, dialog |
+| Fine-tuning | Required (one head per task) | Optional (in-context learning) |
+| Key applications | NLU, search ranking, embeddings | Dialog, translation, code generation |
+
+BERT and GPT are not opposites but rather two branches of the same Transformer tree. Understanding their design choices helps you select the right model architecture for each scenario.

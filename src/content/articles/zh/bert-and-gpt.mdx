@@ -1,0 +1,182 @@
+---
+title: "BERT 与 GPT：理解与生成的两条路线"
+slug: bert-and-gpt
+locale: zh
+tags: [bert, gpt, pretraining, nlp, nlu, classification, generation]
+prerequisites: [text-representation]
+difficulty: intermediate
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding"
+    url: "https://arxiv.org/abs/1810.04805"
+  - type: paper
+    title: "Improving Language Understanding by Generative Pre-Training"
+    url: "https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf"
+  - type: paper
+    title: "Language Models are Unsupervised Multitask Learners"
+    url: "https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf"
+  - type: paper
+    title: "Language Models are Few-Shot Learners"
+    url: "https://arxiv.org/abs/2005.14165"
+  - type: paper
+    title: "BERT for Joint Intent Classification and Slot Filling"
+    url: "https://arxiv.org/abs/1902.10909"
+  - type: paper
+    title: "Scaling Laws for Neural Language Models"
+    url: "https://arxiv.org/abs/2001.08361"
+---
+
+import MLMDemo from '../../../components/interactive/MLMDemo.tsx';
+import BERTNLUPipeline from '../../../components/interactive/BERTNLUPipeline.tsx';
+import AutoregressiveGeneration from '../../../components/interactive/AutoregressiveGeneration.tsx';
+import ClassificationVsGeneration from '../../../components/interactive/ClassificationVsGeneration.tsx';
+import ScalingLawChart from '../../../components/interactive/ScalingLawChart.tsx';
+
+## 简介：同一个 Transformer 的两种用法
+
+2017 年 Transformer 问世后，NLP 社区面临一个关键选择：**如何用这个强大的架构来做预训练？** 两条路线几乎同时诞生：
+
+- **BERT (2018)**：遮住句子中的一些词，让模型**从上下文预测被遮盖的词**——学会理解（encoder）
+- **GPT (2018)**：给模型一段前文，让它**预测下一个词**——学会生成（decoder）
+
+这两条路线分别主导了 NLP 的两个方向：**自然语言理解**（NLU）和**自然语言生成**（NLG）。理解它们的区别，是掌握现代 NLP 的基础。
+
+## 从静态到上下文：预训练的动机
+
+在 BERT/GPT 之前，NLP 的标准流程是：用 Word2Vec 或 GloVe 得到静态词向量，再接上任务特定的模型。问题在于，**静态词向量无法区分多义词**——"bank"（银行）和 "bank"（河岸）有相同的向量。
+
+2018 年 ELMo 率先使用双向 LSTM 产生上下文相关的词向量，证明了**预训练 + 微调**范式的巨大潜力。BERT 和 GPT 都沿着这条路走下去，但选择了 Transformer 作为骨干网络——更好的并行能力、更长的上下文窗口、更强的表达力。
+
+## BERT：理解派
+
+### 核心思想：Masked Language Model (MLM)
+
+BERT 的训练方式非常直觉：随机遮盖（mask）输入中 **15%** 的 token，让模型从**双向上下文**预测被遮盖的词。
+
+$$
+\mathcal{L}_{\text{MLM}} = -\mathbb{E}\left[\sum_{i \in \mathcal{M}} \log p(x_i \mid x_{\backslash\mathcal{M}})\right]
+$$
+
+其中 $\mathcal{M}$ 是被遮盖位置的集合，$x_{\backslash\mathcal{M}}$ 是所有未被遮盖的 token。关键在于 $x_i$ 可以同时看到**左边和右边**的上下文——这就是"双向"的含义。
+
+试试下面的交互演示，亲身体验 BERT 的训练方式：
+
+<MLMDemo client:visible locale="zh" />
+
+### 为什么双向重要？
+
+考虑 "I went to the **bank** to deposit money" 和 "I sat on the river **bank**"。如果只看左边的 "I went to the"，无法区分两个含义；但如果同时看到右边的 "deposit money"，意思就很明确了。**BERT 的双向 attention 让每个 token 都能获取全局信息**。
+
+### NSP：Next Sentence Prediction
+
+BERT 原始论文还引入了 NSP（Next Sentence Prediction）任务：给两个句子，判断第二个是否是第一个的后续。不过后来的研究（RoBERTa, 2019）发现 NSP 对性能帮助不大，现代 BERT 变体通常不再使用它。
+
+### [CLS] Token 的角色
+
+BERT 在输入开头插入一个特殊的 `[CLS]` token。经过多层 Transformer 编码后，`[CLS]` 位置的向量汇聚了整个句子的信息，可以作为**句子级分类**的表示。结尾的 `[SEP]` 标记句子边界。
+
+## BERT 实战：联合 NLU 模型
+
+BERT 在自然语言理解领域的一个经典应用是**联合意图识别与槽位填充**（Joint Intent Classification and Slot Filling, Chen et al., 2019）。
+
+### 什么是 Intent + Slot？
+
+在对话系统中，NLU 需要同时完成两件事：
+- **Intent（意图识别）**：用户想干什么？→ "BookFlight"、"SetAlarm"
+- **Slot（槽位填充）**：关键信息是什么？→ 出发地、目的地、时间
+
+### BIO 标注体系
+
+槽位填充使用 BIO 序列标注：
+- **B-xxx**：某个槽位的开始（Begin）
+- **I-xxx**：某个槽位的内部（Inside）
+- **O**：不属于任何槽位（Outside）
+
+例如："从 **北京** 到 **上海** **明天**" → "O **B-depart** O **B-arrive** **B-date**"
+
+### 联合训练
+
+BERT 的联合模型非常优雅：**共享同一个 encoder**，在顶部接两个不同的 head：
+
+$$
+\mathcal{L} = \alpha \mathcal{L}_{\text{intent}} + (1-\alpha) \mathcal{L}_{\text{slot}}
+$$
+
+- `[CLS]` 向量 → Intent 分类头
+- 每个 token 向量 → Slot 序列标注头
+
+下面的交互演示展示了完整的 BERT NLU 流水线：
+
+<BERTNLUPipeline client:visible locale="zh" />
+
+## GPT：生成派
+
+### 核心思想：自回归语言建模
+
+GPT 的训练方式同样直觉：给前面的词，预测下一个词。数学上，这是最大化从左到右的条件概率：
+
+$$
+\mathcal{L}_{\text{AR}} = -\sum_{t=1}^{T} \log p(x_t \mid x_1, x_2, \ldots, x_{t-1})
+$$
+
+关键区别在于：**GPT 只能看到左边的上下文**（因果/causal attention），不能看到未来的 token。这限制了理解能力，但赋予了生成能力。
+
+<AutoregressiveGeneration client:visible locale="zh" />
+
+### GPT 的三次进化
+
+GPT 家族展现了一条清晰的规模化路线：
+
+| 版本 | 参数量 | 年份 | 关键能力 |
+|------|--------|------|----------|
+| GPT-1 | 117M | 2018 | 预训练 + 微调（仍需标注数据） |
+| GPT-2 | 1.5B | 2019 | 零样本（zero-shot）能力涌现 |
+| GPT-3 | 175B | 2020 | In-context learning：给几个例子就能做新任务 |
+
+Kaplan et al. (2020) 发现了**缩放定律**（Scaling Laws）：模型损失随参数量呈幂律下降：
+
+$$
+L(N) = \left(\frac{N_c}{N}\right)^{\alpha_N}, \quad \alpha_N \approx 0.076
+$$
+
+<ScalingLawChart client:visible locale="zh" />
+
+## 分类 vs 生成：同一任务的两种解法
+
+BERT 和 GPT 代表了两种截然不同的任务解决范式：
+
+- **BERT（分类）**：为每个任务训练一个特化的 head，输出结构化结果。快速、准确、确定性强，但需要标注数据和逐任务微调。
+- **GPT（生成）**：把一切任务都转化为"文本生成"。灵活、零样本、统一接口，但速度慢、输出不确定性高。
+
+<ClassificationVsGeneration client:visible locale="zh" />
+
+## 殊途同归：为什么 Decoder-only 最终胜出
+
+回看历史，GPT 路线最终成为主流。原因是多方面的：
+
+1. **统一性**：生成范式可以统一所有 NLP 任务——分类、翻译、摘要、问答都可以表达为"给上文，续下文"
+2. **规模优势**：缩放定律在 decoder-only 架构上表现最佳；更大的模型 = 更强的能力
+3. **涌现能力**：当模型足够大时，零样本和少样本能力自然涌现，不再需要任务特定的微调
+4. **数据效率**：自回归目标只需要无标注文本，互联网提供了近乎无限的训练数据
+
+### BERT 的遗产
+
+虽然 GPT 范式成为主流，BERT 并未消亡。它的遗产体现在：
+
+- **嵌入模型**：BERT 风格的双向编码器仍然是文本嵌入（sentence embedding）的主流架构
+- **小模型场景**：在延迟敏感、资源受限的场景（移动端、边缘设备），BERT 级别的小模型 + 分类头仍然是最佳选择
+- **编码器思想**：现代模型（如 T5）融合了编码器和解码器的优势
+
+## 总结
+
+| 维度 | BERT | GPT |
+|------|------|-----|
+| 架构 | Encoder (双向) | Decoder (因果/单向) |
+| 预训练 | MLM (完形填空) | 自回归 (预测下一词) |
+| 核心能力 | 理解、分类、匹配 | 生成、推理、对话 |
+| 微调需求 | 必须（每任务一个 head） | 可选（in-context learning） |
+| 代表应用 | NLU、搜索排序、嵌入 | 对话、翻译、代码生成 |
+
+BERT 和 GPT 并非对立，而是 Transformer 这棵树上的两根分支。理解它们的设计选择，能帮助你更好地选择适合特定场景的模型架构。
