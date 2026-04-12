@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { COLORS, FONTS } from './shared/colors';
 
@@ -178,10 +178,7 @@ export default function PatchEmbeddingDemo({ locale = 'zh' }: Props) {
         {Array.from({ length: gridSize }, (_, row) =>
           Array.from({ length: gridSize }, (_, col) => {
             const idx = row * gridSize + col;
-            const displayRow = Math.floor((idx + 1) / cols); // +1 for CLS offset in first row
-            const displayCol = (idx + 1) % cols;
-            // Adjust: CLS takes first position
-            const actualRow = Math.floor((idx + (gridSize === 14 ? 1 : 1)) / cols);
+            const actualRow = Math.floor((idx + 1) / cols);
             const actualCol = (idx + 1) % cols;
             const px = seqX + actualCol * (patchDisplaySize + patchGap);
             const py = seqY + actualRow * (patchDisplaySize + patchGap) + (actualRow === 0 ? 0 : patchGap);

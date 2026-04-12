@@ -129,13 +129,6 @@ export default function MLMDemo({ locale = 'zh' }: Props) {
   const tokenPad = 6;
 
   // Compute token positions
-  const tokenWidths = sentence.tokens.map(tok => {
-    const isMasked = maskedIndices.has(sentence.tokens.indexOf(tok));
-    const display = isMasked && !revealed.has(sentence.tokens.indexOf(tok)) ? '[MASK]' : tok;
-    return Math.max(display.length * 10 + 16, 50);
-  });
-
-  // Recompute with actual indices
   const tokenPositions = useMemo(() => {
     const positions: { x: number; w: number }[] = [];
     let cx = 30;
