@@ -1,0 +1,147 @@
+---
+title: "Speech and Transformers: From Whisper to VALL-E"
+slug: audio-speech-models
+locale: en
+tags: [audio, speech, whisper, vall-e, tts, transformer]
+prerequisites: [transformer-overview]
+difficulty: advanced
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Robust Speech Recognition via Large-Scale Weak Supervision"
+    url: "https://arxiv.org/abs/2212.04356"
+  - type: paper
+    title: "Neural Codec Language Models are Zero-Shot Text to Speech Synthesizers"
+    url: "https://arxiv.org/abs/2301.02111"
+  - type: paper
+    title: "High Fidelity Neural Audio Compression"
+    url: "https://arxiv.org/abs/2210.13438"
+---
+
+import AudioTokenizationComparison from '../../../components/interactive/AudioTokenizationComparison.tsx';
+import MelSpectrogramVisualization from '../../../components/interactive/MelSpectrogramVisualization.tsx';
+import WhisperArchitecture from '../../../components/interactive/WhisperArchitecture.tsx';
+import VALLEPipeline from '../../../components/interactive/VALLEPipeline.tsx';
+import RVQLayerVisualization from '../../../components/interactive/RVQLayerVisualization.tsx';
+
+## Introduction: Audio as Another "Sequence"
+
+The success of Transformers in NLP raised a natural question: **can speech and audio also be treated as token sequences?** The answer is a resounding yes, and this perspective gave rise to two landmark models:
+
+- **Whisper** (OpenAI, 2022): An encoder-decoder Transformer for speech recognition (ASR), trained on **680,000 hours** of weakly supervised data, achieving near-human multilingual speech-to-text capability.
+- **VALL-E** (Microsoft, 2023): Redefines text-to-speech (TTS) as a **language modeling problem** — given a 3-second audio prompt, it generates speaker-consistent speech using discrete tokens from a neural codec.
+
+Both models share a fundamental technical choice: **how to convert continuous audio signals into "tokens" that Transformers can process**.
+
+## Audio Tokenization: Two Paths
+
+There are two mainstream approaches for converting continuous audio into Transformer-compatible representations:
+
+**Spectrogram path**: Through Short-Time Fourier Transform (STFT) and Mel filterbanks, waveforms are converted into 2D spectrograms — a continuous floating-point representation. Whisper uses this approach.
+
+**Neural codec path**: Neural network encoders like EnCodec compress waveforms into discrete codebook indices via Residual Vector Quantization (RVQ). VALL-E uses this approach.
+
+<AudioTokenizationComparison client:visible locale="en" />
+
+Each path has distinct advantages: spectrograms preserve complete frequency information, making them ideal for understanding tasks (ASR); discrete tokens achieve extreme compression ratios (~300x at 6kbps), enabling generation tasks to reuse the language modeling framework.
+
+## Mel Spectrogram in Detail
+
+The Mel spectrogram is the most classic feature representation in audio processing. Its construction:
+
+1. **STFT**: Slice the waveform into short frames (typically 25ms window, 10ms hop), apply Fourier transform to each frame to obtain frequency distribution
+2. **Mel filterbank**: Apply 80 triangular filters along the frequency axis, simulating the human ear's nonlinear frequency perception — higher resolution at low frequencies, lower at high frequencies
+3. **Log compression**: Take the logarithm to compress dynamic range
+
+The result is a 2D matrix of shape $(T, 80)$, where $T$ is the number of time frames. For Whisper's 30-second input window, $T = 3000$, giving an input shape of $(3000, 80)$.
+
+<MelSpectrogramVisualization client:visible locale="en" />
+
+Spectrogram intuition: **the x-axis is time, y-axis is frequency, and color intensity represents energy**. Typical speech features include: fundamental frequency (pitch) in the low-frequency region, formant structures from vocal tract resonances, and silence intervals between words.
+
+## Whisper: Large-Scale Weakly Supervised Speech Recognition
+
+Whisper's core innovation lies not in its architecture (it uses a standard encoder-decoder Transformer), but in its **training strategy**: using 680,000 hours of weakly supervised audio-text pairs from the internet to train a universal speech model.
+
+### Architecture
+
+<WhisperArchitecture client:visible locale="en" />
+
+Whisper's processing pipeline:
+
+1. **Audio preprocessing**: Split long audio into 30-second segments, compute 80-dimensional Log-Mel spectrogram → $(3000, 80)$
+2. **CNN Stem**: Two 1D convolution layers (kernel size = 3, stride = 2), downsampling the time dimension from 3000 to 1500 → $(1500, d_{model})$
+3. **Transformer Encoder**: Standard multi-head Self-Attention + FFN, extracting global audio feature representations
+4. **Transformer Decoder**: Attends to encoder output via Cross-Attention, autoregressively generating the target token sequence
+
+### Multitask Design
+
+One elegant aspect of Whisper is controlling task type through **special tokens**:
+
+| Token | Function |
+|-------|----------|
+| `<\|startoftranscript\|>` | Sequence start |
+| `<\|zh\|>`, `<\|en\|>`, ... | Language tag (99 languages) |
+| `<\|transcribe\|>` | ASR transcription task |
+| `<\|translate\|>` | Translate to English task |
+| `<\|notimestamps\|>` | Whether to output timestamps |
+
+This means a single model can perform speech recognition, language detection, and speech translation — simply by changing the prompt tokens.
+
+### Why Weak Supervision Works
+
+Whisper's training data is not carefully annotated — it comes from naturally occurring audio-caption pairs on the internet. These data contain significant noise and errors, yet Whisper demonstrates that **data diversity and scale matter more than annotation quality**. The 680,000 hours span 99 languages, diverse accents, background noise levels, and recording conditions, endowing the model with remarkable robustness.
+
+## VALL-E: TTS as Language Modeling
+
+VALL-E introduces a fundamental paradigm shift: **treating speech synthesis as conditional language modeling**. Instead of the traditional TTS pipeline (text analysis → acoustic model → vocoder), it directly generates discrete audio tokens from text and an audio prompt.
+
+### EnCodec and RVQ
+
+VALL-E is built on Meta's **EnCodec** neural audio codec. EnCodec uses Residual Vector Quantization (RVQ) to compress audio into multi-layer discrete tokens:
+
+- The **encoder** compresses waveforms into continuous latent representations
+- **RVQ** quantizes with 8 codebooks: Layer 1 captures the main structure, subsequent layers progressively encode residual details
+- The **decoder** reconstructs waveforms from the quantized discrete representation
+
+At the 6kbps configuration, EnCodec uses 8 codebooks, each containing 1024 entries, at a frame rate of 75Hz. This means 1 second of audio is represented as $8 \times 75 = 600$ discrete tokens.
+
+<RVQLayerVisualization client:visible locale="en" />
+
+### Two-Stage Generation
+
+<VALLEPipeline client:visible locale="en" />
+
+VALL-E generates speech in two stages:
+
+**AR stage (autoregressive)**: Given the text phoneme sequence and the Layer 1 codec tokens of the 3-second audio prompt, the model autoregressively predicts the target speech's Layer 1 tokens from left to right. This layer contains fundamental speech structure information (phoneme duration, prosody).
+
+**NAR stage (non-autoregressive)**: Conditioned on Layer 1 tokens, the model predicts Layers 2-8 tokens in parallel. These layers progressively add speaker timbre, acoustic environment, and other fine details.
+
+The elegance of this layered strategy: Layer 1 determines "what to say" and "how to say it," while subsequent layers determine "whose voice it sounds like." The 3-second prompt provides speaker identity information, enabling VALL-E to achieve zero-shot voice cloning on unseen speakers.
+
+## Bark and Other TTS Approaches
+
+Following VALL-E, the discrete audio token paradigm for TTS rapidly evolved:
+
+- **Bark** (Suno, 2023): An open-source GPT-style TTS model using EnCodec tokens, supporting multilingual and non-speech sounds (laughter, sighs). Fully autoregressive without separate AR/NAR stages.
+- **SoundStorm** (Google, 2023): Uses MaskGIT-style parallel decoding to replace VALL-E's NAR stage, significantly accelerating generation.
+- **VoiceBox** (Meta, 2023): A Flow Matching-based non-autoregressive TTS working on continuous representations, avoiding information loss from discretization.
+
+Together, these works demonstrate that **treating audio as discrete token sequences of "another language"** is a powerful and general framework.
+
+## Summary
+
+| Model | Task | Audio Repr. | Architecture | Key Innovation |
+|-------|------|------------|--------------|----------------|
+| **Whisper** | ASR / Translation | Mel spectrogram (continuous) | Encoder-Decoder | 680K hrs weak supervision |
+| **VALL-E** | TTS | EnCodec RVQ (discrete) | AR + NAR | TTS as language modeling |
+| **EnCodec** | Audio compression | RVQ tokens | CNN + RVQ | Residual vector quantization |
+
+Key takeaways:
+
+1. **Audio can be tokens**: Whether continuous spectrograms or discrete codec tokens, Transformers can effectively process audio sequences
+2. **Scale and diversity beat precise annotation**: Whisper achieves superior performance with weakly supervised data, surpassing carefully annotated models
+3. **Generation = language modeling**: VALL-E demonstrates that TTS can be reframed as next-token prediction, opening the door to leveraging LLM techniques for speech generation
+4. **RVQ enables hierarchical representation**: Coarse-to-fine progressive quantization naturally corresponds to different levels of speech information

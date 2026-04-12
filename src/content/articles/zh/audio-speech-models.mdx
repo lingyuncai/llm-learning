@@ -1,0 +1,147 @@
+---
+title: "语音与 Transformer：从 Whisper 到 VALL-E"
+slug: audio-speech-models
+locale: zh
+tags: [audio, speech, whisper, vall-e, tts, transformer]
+prerequisites: [transformer-overview]
+difficulty: advanced
+created: "2026-04-12"
+updated: "2026-04-12"
+references:
+  - type: paper
+    title: "Robust Speech Recognition via Large-Scale Weak Supervision"
+    url: "https://arxiv.org/abs/2212.04356"
+  - type: paper
+    title: "Neural Codec Language Models are Zero-Shot Text to Speech Synthesizers"
+    url: "https://arxiv.org/abs/2301.02111"
+  - type: paper
+    title: "High Fidelity Neural Audio Compression"
+    url: "https://arxiv.org/abs/2210.13438"
+---
+
+import AudioTokenizationComparison from '../../../components/interactive/AudioTokenizationComparison.tsx';
+import MelSpectrogramVisualization from '../../../components/interactive/MelSpectrogramVisualization.tsx';
+import WhisperArchitecture from '../../../components/interactive/WhisperArchitecture.tsx';
+import VALLEPipeline from '../../../components/interactive/VALLEPipeline.tsx';
+import RVQLayerVisualization from '../../../components/interactive/RVQLayerVisualization.tsx';
+
+## 简介：音频是另一种"序列"
+
+Transformer 在 NLP 中的成功引发了一个自然的问题：**语音和音频能否也被当作 token 序列来处理？** 答案是肯定的，而且这个视角催生了两个里程碑式的模型：
+
+- **Whisper**（OpenAI, 2022）：用 encoder-decoder Transformer 做语音识别（ASR），在 **680,000 小时**弱监督数据上训练，实现了接近人类水平的多语言语音转文字能力。
+- **VALL-E**（Microsoft, 2023）：将文本转语音（TTS）重新定义为**语言建模问题**——给定 3 秒语音提示，用神经编解码器的离散 token 生成与说话人一致的语音。
+
+两者的共同基础是一个关键技术选择：**如何把连续的音频信号变成 Transformer 能处理的"token"**。
+
+## 音频 Tokenization：两条路
+
+将连续音频转化为 Transformer 可处理的表示，有两种主流方法：
+
+**频谱图路线**：通过短时傅里叶变换（STFT）和 Mel 滤波器组，将波形转化为二维频谱图——一种连续的浮点表示。Whisper 采用这种方法。
+
+**神经编解码路线**：用 EnCodec 等神经网络编码器将波形压缩为离散码本索引，再通过 Residual Vector Quantization（RVQ）量化。VALL-E 采用这种方法。
+
+<AudioTokenizationComparison client:visible />
+
+两种路线各有优势：频谱图保留了完整的频率信息，适合理解任务（ASR）；离散 token 实现了极高的压缩比（~300x at 6kbps），使得生成任务可以复用语言模型的框架。
+
+## Mel 频谱图详解
+
+Mel 频谱图是音频处理最经典的特征表示。它的构造过程：
+
+1. **STFT**：将波形切成短帧（通常 25ms，10ms 步长），对每帧做傅里叶变换，得到频率分布
+2. **Mel 滤波器组**：在频率轴上应用 80 个三角滤波器，模拟人耳的非线性频率感知——低频分辨率高，高频分辨率低
+3. **对数压缩**：取对数，压缩动态范围
+
+最终得到一个形状为 $(T, 80)$ 的二维矩阵，其中 $T$ 是时间帧数。对于 Whisper 的 30 秒输入窗口，$T = 3000$，即输入形状为 $(3000, 80)$。
+
+<MelSpectrogramVisualization client:visible />
+
+频谱图的直觉：**横轴是时间，纵轴是频率，颜色深浅表示能量强度**。语音的典型特征包括：低频区域的基频（pitch）、由声道共振产生的 formant（共振峰）结构，以及词间的静音间隔。
+
+## Whisper：大规模弱监督语音识别
+
+Whisper 的核心创新不在架构（它使用标准的 encoder-decoder Transformer），而在于**训练策略**：用互联网上的 680,000 小时弱监督音频-文本对来训练一个通用的语音模型。
+
+### 架构
+
+<WhisperArchitecture client:visible />
+
+Whisper 的处理流程：
+
+1. **音频预处理**：将长音频切分为 30 秒片段，计算 80 维 Log-Mel 频谱图 → $(3000, 80)$
+2. **CNN Stem**：两层一维卷积（kernel size = 3，stride = 2），将时间维度从 3000 下采样到 1500 → $(1500, d_{model})$
+3. **Transformer Encoder**：标准多头 Self-Attention + FFN，提取音频的全局特征表示
+4. **Transformer Decoder**：通过 Cross-Attention 关注编码器输出，自回归生成目标 token 序列
+
+### 多任务设计
+
+Whisper 的一个精妙设计是通过**特殊 token** 控制任务类型：
+
+| Token | 功能 |
+|-------|------|
+| `<\|startoftranscript\|>` | 序列开始 |
+| `<\|zh\|>`, `<\|en\|>`, ... | 语言标签（99 种语言） |
+| `<\|transcribe\|>` | ASR 转录任务 |
+| `<\|translate\|>` | 翻译为英文任务 |
+| `<\|notimestamps\|>` | 是否输出时间戳 |
+
+这意味着同一个模型可以做语音识别、语言检测和语音翻译，只需改变提示 token。
+
+### 为什么弱监督有效？
+
+Whisper 的训练数据不是精心标注的——而是来自互联网上自然存在的音频-字幕对。这些数据包含大量噪声和错误，但 Whisper 表明：**数据的多样性和规模比标注质量更重要**。680,000 小时涵盖了 99 种语言、各种口音、背景噪声和录音条件，使模型具备了惊人的鲁棒性。
+
+## VALL-E：TTS 即语言建模
+
+VALL-E 提出了一个根本性的范式转换：**把语音合成看作条件语言建模问题**。不再需要传统 TTS 的复杂管线（文本分析 → 声学模型 → 声码器），而是直接从文本和语音提示生成离散 audio token。
+
+### EnCodec 与 RVQ
+
+VALL-E 的基础是 Meta 的 **EnCodec** 神经音频编解码器。EnCodec 使用 Residual Vector Quantization（残差向量量化）将音频压缩为多层离散 token：
+
+- **编码器**将波形压缩为连续的隐表示
+- **RVQ** 用 8 个码本（codebook）逐层量化：第 1 层捕获主要结构，后续层逐步编码残差细节
+- **解码器**从量化后的离散表示重建波形
+
+在 6kbps 配置下，EnCodec 使用 8 个码本，每个码本包含 1024 个条目，帧率 75Hz。这意味着 1 秒音频被表示为 $8 \times 75 = 600$ 个离散 token。
+
+<RVQLayerVisualization client:visible />
+
+### 两阶段生成
+
+<VALLEPipeline client:visible />
+
+VALL-E 的生成分两步：
+
+**AR 阶段（自回归）**：给定文本音素序列和 3 秒语音提示的第 1 层 codec token，自回归地从左到右预测目标语音的第 1 层 token。这一层包含了语音的基本结构信息（音素时长、韵律）。
+
+**NAR 阶段（非自回归）**：以第 1 层 token 为条件，并行预测第 2-8 层 token。这些层逐步添加说话人音色、声学环境等细节信息。
+
+这种分层策略的妙处在于：第 1 层决定"说什么"和"怎么说"，后续层决定"声音听起来像谁"。3 秒提示提供了说话人的身份信息，使 VALL-E 能在未见过的说话人上实现 zero-shot 语音克隆。
+
+## Bark 与其他 TTS 方法
+
+VALL-E 之后，基于离散 audio token 的 TTS 范式迅速发展：
+
+- **Bark**（Suno, 2023）：开源的 GPT 风格 TTS 模型，使用 EnCodec token，支持多语言和非语音声音（笑声、叹息等）。完全自回归，不区分 AR/NAR 阶段。
+- **SoundStorm**（Google, 2023）：使用 MaskGIT 风格的并行解码替代 VALL-E 的 NAR 阶段，显著加速生成。
+- **VoiceBox**（Meta, 2023）：基于 Flow Matching 的非自回归 TTS，在连续表示上工作，避免了离散化的信息损失。
+
+这些工作共同表明：**将音频视为"另一种语言"的离散 token 序列**是一个强大且通用的框架。
+
+## 总结
+
+| 模型 | 任务 | 音频表示 | 架构 | 关键创新 |
+|------|------|---------|------|---------|
+| **Whisper** | ASR / 翻译 | Mel 频谱图 (连续) | Encoder-Decoder | 680K 小时弱监督 |
+| **VALL-E** | TTS | EnCodec RVQ (离散) | AR + NAR | TTS 即语言建模 |
+| **EnCodec** | 音频压缩 | RVQ token | CNN + RVQ | 残差向量量化 |
+
+核心启示：
+
+1. **音频可以是 token**：无论是连续的频谱图还是离散的 codec token，Transformer 都能有效处理音频序列
+2. **规模和多样性胜过精确标注**：Whisper 用弱监督数据达到了超越精心标注模型的性能
+3. **生成 = 语言建模**：VALL-E 证明了 TTS 可以被重构为 next-token prediction，打开了用 LLM 技术做语音生成的大门
+4. **RVQ 实现了分层表示**：粗粒度 → 细粒度的渐进式量化，自然对应了语音的不同层级信息
