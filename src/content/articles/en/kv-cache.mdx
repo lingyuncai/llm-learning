@@ -6,7 +6,7 @@ tags: [inference, kv-cache, memory, optimization]
 prerequisites: [prefill-vs-decode, attention-computation]
 difficulty: advanced
 created: "2026-03-31"
-updated: "2026-04-06"
+updated: "2026-04-13"
 references:
   - type: paper
     title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
@@ -112,6 +112,98 @@ $$
 | Cost | No extra memory | Must cache K, V |
 
 KV Cache **trades memory for computation**, reducing the total linear projection computation from $O(N^2)$ to $O(N)$.
+
+## Deep Dive: Why Only Cache K and V?
+
+We've explained how KV Cache works, but a natural question arises: Attention involves Q, K, and V — **why only cache K and V, not Q?** Furthermore, **why not cache the $QK^T$ attention scores directly?**
+
+### Why Not Cache Q?
+
+The key insight is that **Q is "fire-and-forget," while K and V are "persistently needed."**
+
+At decode step $t$, the new token's query $q_t$ has exactly one purpose: compute dot products with all cached Keys to produce attention scores. Once the current step's attention is complete, $q_t$ is never used by any subsequent step.
+
+In contrast, look at how K and V are used:
+
+- **$k_t$ is needed by all future steps**: the new query at steps $t+1, t+2, ..., N$ all need to compute dot products with $k_t$
+- **$v_t$ is needed by all future steps**: every future step's attention weighted sum must include $v_t$
+
+| Object | Cacheable? | Reason |
+|--------|:---:|--------|
+| **K** | Yes | Every future step's new Q needs dot products with all historical Keys |
+| **V** | Yes | Every future step's attention weighted sum needs all historical Values |
+| **Q** | No | Each step only uses the current token's Q; fire-and-forget, no cross-step reuse |
+
+An analogy: **K and V are notes on a blackboard** — every new student (new token) who enters must read the entire board. **Q is each student's own question** — once asked, it's done; future students don't need to see your question.
+
+### Why Not Cache $QK^T$ Attention Scores?
+
+Another intuition might be: since step $t$ already computed the dot product scores between $q_t$ and $k_1, ..., k_t$, can we store these scores for later use?
+
+The answer is **no**, because the query is different at every step:
+
+- Step $t$: $\text{scores} = [q_t \cdot k_1,\ q_t \cdot k_2,\ ...,\ q_t \cdot k_t]$
+- Step $t+1$: $\text{scores} = [q_{t+1} \cdot k_1,\ q_{t+1} \cdot k_2,\ ...,\ q_{t+1} \cdot k_{t+1}]$
+
+Although $k_1, ..., k_t$ haven't changed, $q_{t+1} \neq q_t$, so **every score must be recomputed with the new query**. The attention score is a bivariate function of Q and K — the K side is constant (hence we cache K), but the Q side is entirely new each step, making the function values (scores) completely non-reusable.
+
+### The Recursive Structure of Decode: A Dynamic Programming Perspective
+
+Having understood "why only cache K and V," we can appreciate KV Cache at a higher level — it is essentially **memoization** for autoregressive inference.
+
+In a multi-layer Transformer, the complete data flow at decode step $t$ is:
+
+```
+New token x_t (embedding)
+  │
+  ▼
+┌─ Layer 1 ──────────────────────────────────────────────────┐
+│  q_t, k_t, v_t = x_t · W_Q, W_K, W_V                     │
+│  KV Cache[1] ← append(k_t, v_t)                           │
+│  attn_out = softmax(q_t · K_cache^T / √d_k) · V_cache     │
+│  h_t^(1) = FFN(out_proj(attn_out) + x_t)                  │
+└────────────────────────────────────────────────────────────┘
+  │ h_t^(1)
+  ▼
+┌─ Layer 2 ──────────────────────────────────────────────────┐
+│  q_t, k_t, v_t = h_t^(1) · W_Q, W_K, W_V                 │
+│  KV Cache[2] ← append(k_t, v_t)                           │
+│  attn_out = softmax(q_t · K_cache^T / √d_k) · V_cache     │
+│  h_t^(2) = FFN(out_proj(attn_out) + h_t^(1))              │
+└────────────────────────────────────────────────────────────┘
+  │ ... layer by layer ...
+  ▼
+┌─ Layer L → h_t^(L) ───────────────────────────────────────┐
+└────────────────────────────────────────────────────────────┘
+  │
+  ▼
+lm_head(h_t^(L)) → logits → predict next token
+```
+
+Note the **recursive dependency**: layer $\ell$'s K/V come from the previous layer's output:
+
+$$
+k_t^{(\ell)} = h_t^{(\ell-1)} \cdot W_K^{(\ell)}, \quad v_t^{(\ell)} = h_t^{(\ell-1)} \cdot W_V^{(\ell)}
+$$
+
+And $h_t^{(\ell-1)}$ itself requires the attention computation at layer $\ell-1$. This means:
+
+- Layer 1's K/V can be computed directly from token embeddings
+- But layer 2 and beyond depend on the previous layer's attention output — this is a **layer-by-layer recurrence**
+
+This is also why the Prefill stage cannot skip attention: even if our goal is to "fill the KV Cache," deeper layers' K/V can only be obtained through complete attention computation at shallower layers. Prefill is fundamentally a full forward pass, and the KV Cache is a **byproduct** of this process.
+
+This recursive structure naturally maps to a **Dynamic Programming (DP)** framework:
+
+| DP Concept | KV Cache Equivalent |
+|------------|-------------------|
+| **Subproblem** | K/V vectors at each (layer, position) |
+| **Recurrence** | $k_t^{(\ell)} = f(h_t^{(\ell-1)})$; deeper layers depend on shallower attention outputs |
+| **No aftereffect** | Causal mask guarantees: position $i$'s K/V depends only on $1, ..., i$, unaffected by future tokens |
+| **Memoization** | Store computed K/V in cache; subsequent steps look up directly |
+| **Complexity optimization** | Total linear projections reduced from $O(N^2 d^2)$ to $O(N d^2)$ |
+
+The **no-aftereffect property** is the critical prerequisite that makes KV Cache valid: the causal mask ensures that any historical position's K/V, once computed, **never changes** — regardless of what new tokens are generated in the future. This is exactly analogous to DP's property that "solved subproblems are unaffected by subsequent decisions."
 
 ## Interactive Demo
 

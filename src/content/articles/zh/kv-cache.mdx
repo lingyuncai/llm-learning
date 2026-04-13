@@ -6,7 +6,7 @@ tags: [inference, kv-cache, memory, optimization]
 prerequisites: [prefill-vs-decode, attention-computation]
 difficulty: advanced
 created: "2026-03-31"
-updated: "2026-03-31"
+updated: "2026-04-13"
 references:
   - type: paper
     title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
@@ -112,6 +112,98 @@ $$
 | 代价 | 无额外内存 | 需要缓存 K, V |
 
 KV Cache 用**内存换时间**，将线性投影的总计算量从 $O(N^2)$ 降到 $O(N)$。
+
+## 深入理解：为什么只缓存 K 和 V？
+
+上面介绍了 KV Cache 的机制，但一个自然的问题是：Attention 计算涉及 Q、K、V 三个矩阵，**为什么只缓存 K 和 V，不缓存 Q？** 进一步地，**为什么不直接缓存 $QK^T$ 的注意力分数？**
+
+### 为什么不缓存 Q？
+
+关键在于 **Q 是"用完即弃"的，而 K、V 是"持续被需要"的**。
+
+在 decode 的第 $t$ 步，新 token 的 query $q_t$ 只有一个用途：与所有已缓存的 K 做点积，计算 attention score。一旦当前步的 attention 计算完成，$q_t$ 就不再被任何后续步骤使用。
+
+反过来看 K 和 V 的使用模式：
+
+- **$k_t$ 被未来所有步骤需要**：第 $t+1, t+2, ..., N$ 步的新 query 都需要与 $k_t$ 做点积
+- **$v_t$ 被未来所有步骤需要**：每一步的 attention 加权求和都要包含 $v_t$
+
+| 对象 | 可缓存？ | 原因 |
+|------|:---:|------|
+| **K** | 是 | 未来每步的新 Q 都需要和所有历史 K 做点积 |
+| **V** | 是 | 未来每步的 attention 加权求和都需要所有历史 V |
+| **Q** | 否 | 每步只用当前 token 的 Q，用完即弃，无跨步复用价值 |
+
+用一个比喻来说：**K 和 V 是黑板上的笔记** — 每个新同学（新 token）进来都要翻阅整块黑板；**Q 是每个同学自己提的问题** — 问完就结束了，后面的同学不需要看你的问题。
+
+### 为什么不缓存 $QK^T$ 注意力分数？
+
+另一个直觉是：既然第 $t$ 步已经计算了 $q_t$ 与 $k_1, ..., k_t$ 的点积分数，能否把这些分数存下来供后面使用？
+
+答案是**不能**，因为每一步的 query 都不同：
+
+- 第 $t$ 步：$\text{scores} = [q_t \cdot k_1,\ q_t \cdot k_2,\ ...,\ q_t \cdot k_t]$
+- 第 $t+1$ 步：$\text{scores} = [q_{t+1} \cdot k_1,\ q_{t+1} \cdot k_2,\ ...,\ q_{t+1} \cdot k_{t+1}]$
+
+虽然 $k_1, ..., k_t$ 没有变化，但 $q_{t+1} \neq q_t$，所以**每一项分数都必须用新的 query 重新计算**。Attention score 是 Q 和 K 的二元函数 — K 端不变（所以缓存 K），但 Q 端每步都是全新的，因此函数值（score）没有任何一项可以复用。
+
+### Decode 的递推结构：动态规划视角
+
+理解了"只缓存 K 和 V"之后，可以从更高的层面理解 KV Cache 的本质 — 它实际上是自回归推理的 **memoization（记忆化）**。
+
+在多层 Transformer 中，decode 第 $t$ 步的完整数据流如下：
+
+```
+新 token x_t（embedding）
+  │
+  ▼
+┌─ Layer 1 ──────────────────────────────────────────────────┐
+│  q_t, k_t, v_t = x_t · W_Q, W_K, W_V                     │
+│  KV Cache[1] ← append(k_t, v_t)                           │
+│  attn_out = softmax(q_t · K_cache^T / √d_k) · V_cache     │
+│  h_t^(1) = FFN(out_proj(attn_out) + x_t)                  │
+└────────────────────────────────────────────────────────────┘
+  │ h_t^(1)
+  ▼
+┌─ Layer 2 ──────────────────────────────────────────────────┐
+│  q_t, k_t, v_t = h_t^(1) · W_Q, W_K, W_V                 │
+│  KV Cache[2] ← append(k_t, v_t)                           │
+│  attn_out = softmax(q_t · K_cache^T / √d_k) · V_cache     │
+│  h_t^(2) = FFN(out_proj(attn_out) + h_t^(1))              │
+└────────────────────────────────────────────────────────────┘
+  │ ... 逐层向上 ...
+  ▼
+┌─ Layer L → h_t^(L) ───────────────────────────────────────┐
+└────────────────────────────────────────────────────────────┘
+  │
+  ▼
+lm_head(h_t^(L)) → logits → 预测下一个 token
+```
+
+注意其中的**递推依赖**：第 $\ell$ 层的 K/V 来自上一层的输出：
+
+$$
+k_t^{(\ell)} = h_t^{(\ell-1)} \cdot W_K^{(\ell)}, \quad v_t^{(\ell)} = h_t^{(\ell-1)} \cdot W_V^{(\ell)}
+$$
+
+而 $h_t^{(\ell-1)}$ 本身需要第 $\ell-1$ 层的 attention 计算才能得到。这意味着：
+
+- 第 1 层的 K/V 可以直接从 token embedding 计算
+- 但第 2 层及以后的 K/V 都依赖前一层的 attention 输出 — 这是一个**逐层递推**的过程
+
+Prefill 阶段不能跳过 attention 也是同样的原因：即使我们的目标是"填充 KV Cache"，深层的 K/V 也必须通过浅层的完整 attention 计算才能得到。Prefill 本质上是一次完整的前向传播，KV Cache 是这个过程的**副产品**。
+
+这个递推结构天然适合用**动态规划（Dynamic Programming）**的框架来理解：
+
+| DP 概念 | KV Cache 对应 |
+|---------|-------------|
+| **子问题** | 每个 (layer, position) 处的 K/V 向量 |
+| **递推关系** | $k_t^{(\ell)} = f(h_t^{(\ell-1)})$，深层依赖浅层 attention 输出 |
+| **无后效性** | 因果 mask 保证：位置 $i$ 的 K/V 只取决于 $1, ..., i$，不受未来 token 影响 |
+| **Memoization** | 将算过的 K/V 存入 cache，后续步骤直接查表复用 |
+| **复杂度优化** | 线性投影总量从 $O(N^2 d^2)$ 降至 $O(N d^2)$ |
+
+其中**无后效性**是 KV Cache 能够成立的关键前提：因果 mask 确保了任何历史位置的 K/V 一旦算出就**永远不会改变** — 无论未来生成什么新 token。这和 DP 中"已求解的子问题不受后续决策影响"的性质完全一致。
 
 ## 交互演示
 
