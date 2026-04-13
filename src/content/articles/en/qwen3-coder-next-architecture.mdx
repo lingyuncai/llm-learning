@@ -1,0 +1,394 @@
+---
+title: "Qwen3-Coder-Next Architecture: When SSM, Attention, and MoE Converge"
+slug: qwen3-coder-next-architecture
+locale: en
+tags: [hybrid, moe, ssm, deltanet, qwen, architecture]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+prerequisites: [mixture-of-experts, state-space-models, hybrid-architectures]
+references:
+  - type: paper
+    title: "Qwen3 Technical Report"
+    url: "https://arxiv.org/abs/2505.09388"
+  - type: paper
+    title: "Gated Delta Networks: Improving Mamba2 with Delta Rule"
+    url: "https://arxiv.org/abs/2412.06464"
+  - type: paper
+    title: "Parallelizing Linear Transformers with the Delta Rule over Sequence Length"
+    url: "https://arxiv.org/abs/2406.06484"
+  - type: repo
+    title: "Ollama - Qwen3-Next Model Implementation"
+    url: "https://github.com/ollama/ollama"
+---
+
+The previous three articles introduced [MoE](./mixture-of-experts), [SSM](./state-space-models), and [Hybrid architectures](./hybrid-architectures) as separate concepts. This article uses a real production model — **Qwen3-Coder-Next 80B** — to show how all three work together in a single architecture.
+
+Qwen3-Coder-Next is a **79.7B parameter Hybrid MoE model** that activates only ~3B parameters per token (3.8% utilization). It fuses GatedDeltaNet (a delta-rule-based linear attention), standard full attention, and 512-expert MoE across 48 layers — one of the most complex hybrid architectures to date.
+
+---
+
+## 1. Architecture Overview
+
+### 1.1 Key Parameters
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Total layers | 48 | `block_count=48` |
+| Layer types | 36 recurrent + 12 full attention | 3:1 alternating |
+| Hidden dim | 2048 | Much smaller than typical LLMs (LLaMA-70B uses 8192) |
+| Total params | 79.7B | |
+| Active params/token | ~3B | Only 3.8% activated |
+| MoE config | 512 experts, top-10 | + 1 shared expert |
+| Expert FFN dim | 512 | Small but numerous |
+| Context length | 262,144 | 256K tokens |
+
+### 1.2 The 3:1 Hybrid Layer Pattern
+
+The 48 layers follow a fixed alternating pattern — every 4 layers form a cycle with 3 **GatedDeltaNet** (linear attention) layers followed by 1 **full attention** layer:
+
+```
+Layer  0: GatedDeltaNet    ← recurrent
+Layer  1: GatedDeltaNet
+Layer  2: GatedDeltaNet
+Layer  3: Full Attention    ← every 4th layer
+Layer  4: GatedDeltaNet
+...
+Layer 47: Full Attention    ← last layer is also full attention
+```
+
+Compared to Jamba's 7:1 (Mamba:Attention) ratio, Qwen3-Coder-Next gives full attention a higher share (25% vs 12.5%), likely optimized for coding tasks that require precise token retrieval.
+
+**Key design**: All 48 layers share the same **MoE FFN** structure regardless of attention type. The layer type difference is only in the attention component.
+
+---
+
+## 2. GatedDeltaNet: Linear Attention Layers
+
+The 36 recurrent layers use **GatedDeltaNet** rather than standard Mamba — a linear attention mechanism based on the delta rule, with a matrix state instead of a vector.
+
+### 2.1 From Mamba to Delta Rule
+
+Recall Mamba's state update from the [SSM article](./state-space-models):
+
+$$
+h_t = \bar{A}_t \cdot h_{t-1} + \bar{B}_t \cdot x_t
+$$
+
+The state $h_t$ is a **vector** ($\mathbb{R}^N$) with additive updates.
+
+**DeltaNet** (Yang et al., 2024) promotes the state to a **matrix** $H_t \in \mathbb{R}^{d_k \times d_v}$ with delta rule updates:
+
+$$
+H_t = (I - \beta_t k_t k_t^\top) H_{t-1} + \beta_t v_t k_t^\top
+$$
+
+The term $\beta_t k_t k_t^\top H_{t-1}$ first "erases" old memory associated with the current key, then $\beta_t v_t k_t^\top$ writes a new key-value association — implementing **associative memory** that can precisely overwrite old values rather than simply accumulating.
+
+**Gated DeltaNet** (Yang, Kautz & Hatamizadeh, 2024) adds element-wise decay gating:
+
+$$
+H_t = \exp(\alpha_t) \odot H_{t-1} + \beta_t \cdot k_t v_t^\top
+$$
+
+where $\alpha_t$ is an input-dependent decay gate with per-element granularity.
+
+### 2.2 Input Projections and Conv1d
+
+Each layer projects the input through two linear layers:
+
+| Projection | Dimensions | Quantization | Output split |
+|------------|-----------|--------------|--------------|
+| attn_qkv | $2048 \to 8192$ | Q4_K | Q $[128 \times 16]$ + K $[128 \times 16]$ + V $[128 \times 32]$ |
+| attn_gate | $2048 \to 4096$ | Q4_K | Gate vector $z$ $[128 \times 32]$ |
+
+Note the **asymmetric head structure**: K heads = 16, V heads = 32 (2:1 ratio), both with head_dim = 128.
+
+The concatenated QKV passes through a **1D causal convolution** (kernel=4) with SiLU activation before splitting:
+
+$$
+\text{qkv}' = \text{SiLU}(\text{Conv1d}(\text{qkv}, \text{kernel}=4))
+$$
+
+### 2.3 Decay Gating
+
+The gate computation involves three learnable SSM parameters:
+
+| Parameter | Shape | Meaning |
+|-----------|-------|---------|
+| ssm_alpha | $2048 \to 32$ | Per-V-head decay factor (input-dependent) |
+| ssm_dt | $[32]$ | Time-step bias (learnable) |
+| ssm_a | $[32]$ | State decay coefficient, stored as $-\exp(A_{\log})$ |
+
+$$
+\text{gate}_t = \text{softplus}(\alpha_t + \text{dt\_bias}) \times (-A)
+$$
+
+This ensures $\exp(\text{gate}_t) < 1$ for exponential decay, similar to Mamba's $\Delta$ parameter.
+
+### 2.4 Chunked Parallel Computation
+
+**Autoregressive mode** (decode, 1 token at a time) directly updates the state:
+
+$$
+H_t = \exp(\text{gate}_t) \odot H_{t-1} + \beta_t \cdot k_t v_t^\top, \quad \text{out}_t = H_t \cdot q_t
+$$
+
+**Chunked parallel mode** (prefill) splits the sequence into chunks of 64 tokens with decayed causal attention within each chunk:
+
+$$
+M_{ij} = \exp\!\left(\sum_{l=j+1}^{i} \text{gate}_l\right), \quad \text{intra\_chunk} = (M \odot Q K^\top) \cdot V
+$$
+
+State propagates across chunks, similar to [Mamba-2's SSD algorithm](./state-space-models).
+
+### 2.5 Output Gating
+
+SSM output goes through RMSNorm then element-wise multiplication with the SiLU-activated gate:
+
+$$
+\text{output} = \text{RMSNorm}(\text{attn\_out}) \odot \text{SiLU}(z)
+$$
+
+Finally projected back to hidden dimension via `ssm_out` ($4096 \to 2048$).
+
+### 2.6 Cache
+
+Each layer maintains two fixed-size states:
+
+| Cache type | Shape | Size (f32) | Purpose |
+|------------|-------|------------|---------|
+| delta_state | $[128, 4096, \text{batch}]$ | ~2 MB/seq | Recurrent state matrix $H_t$ |
+| conv_state | $[3, 8192, \text{batch}]$ | ~96 KB/seq | Conv1d history (last 3 tokens) |
+
+Unlike full attention's KV cache (grows linearly with sequence length), delta_state is **fixed size** — the core SSM advantage.
+
+---
+
+## 3. Gated Full Attention Layers
+
+The full attention layers (every 4th layer) use **sigmoid-gated GQA** with several key differences from standard Transformer attention.
+
+### 3.1 Gated Q Projection
+
+The Q projection outputs 2× the head_dim — half for query, half for gate:
+
+$$
+\text{attn\_q}(x) \in \mathbb{R}^{8192} \to \underbrace{Q \in \mathbb{R}^{256 \times 16}}_{\text{query}} + \underbrace{G \in \mathbb{R}^{256 \times 16}}_{\text{gate}}
+$$
+
+After attention computation, the output is multiplied by sigmoid of the gate:
+
+$$
+\text{attn\_out} = \text{Attention}(Q, K, V) \odot \sigma(G)
+$$
+
+### 3.2 GQA: 16 Q Heads, 2 KV Heads
+
+| Projection | Dimensions | Quantization | Head config |
+|------------|-----------|--------------|-------------|
+| attn_k | $2048 \to 512$ | Q4_K | 2 heads × 256 head_dim |
+| attn_v | $2048 \to 512$ | Q6_K | 2 heads × 256 head_dim |
+
+This is **8:1 GQA** ([Grouped-Query Attention](./gqa-mqa)) — 16 Q heads share 2 KV groups.
+
+### 3.3 Partial RoPE
+
+Positional encoding applies to only the first 64 of 256 head dimensions:
+
+$$
+\text{partial\_rotary\_factor} = \frac{64}{256} = 0.25
+$$
+
+75% of head dimensions remain position-agnostic, focusing on semantic content. RoPE uses NeoX layout with $\theta = 5 \times 10^6$.
+
+### 3.4 QK Norm
+
+Both Q and K pass through RMSNorm before RoPE:
+
+$$
+Q' = \text{RoPE}(\text{RMSNorm}(Q)), \quad K' = \text{RoPE}(\text{RMSNorm}(K))
+$$
+
+Essential for stabilizing attention scores at head_dim = 256.
+
+---
+
+## 4. MoE: 512 Expert Top-10 Routing
+
+All 48 layers use the same [MoE](./mixture-of-experts) FFN structure.
+
+### 4.1 Router
+
+A full-precision (F32) linear projection maps hidden states to 512-dimensional expert space:
+
+$$
+\text{logits} = W_{\text{router}} \cdot x, \quad \text{weights} = \text{softmax}(\text{logits}), \quad \text{selected} = \text{TopK}(\text{weights}, k=10)
+$$
+
+Selected routing weights are renormalized (`norm_top_k_prob=true`):
+
+$$
+w_i' = \frac{w_i}{\sum_{j \in \text{TopK}} w_j}
+$$
+
+### 4.2 Expert FFN
+
+Each expert is a small SiLU-gated FFN:
+
+$$
+\text{expert}_i(x) = W_{\text{down}}^{(i)} \left[ \text{SiLU}\!\left(W_{\text{gate}}^{(i)} x\right) \odot W_{\text{up}}^{(i)} x \right]
+$$
+
+| Projection | Dimensions | Quant | Per-layer size (×512) |
+|------------|-----------|-------|----------------------|
+| ffn_gate_exps | $2048 \to 512$ | Q4_K | 288 MB |
+| ffn_up_exps | $2048 \to 512$ | Q4_K | 288 MB |
+| ffn_down_exps | $512 \to 2048$ | Q6_K | 420 MB |
+| **Total** | | | **996 MB** |
+
+### 4.3 Shared Expert
+
+A [DeepSeek-style](./mixture-of-experts) shared expert that all tokens pass through, with sigmoid gating:
+
+$$
+\text{shared\_out} = \sigma(W_{\text{gate}} \cdot x) \cdot \text{FFN}_{\text{shared}}(x)
+$$
+
+Final MoE output = weighted sum of routed experts + shared expert output.
+
+### 4.4 Sparsity Analysis
+
+| Metric | Qwen3-CN | DeepSeek-V3 | Mixtral |
+|--------|----------|-------------|---------|
+| Expert count | 512 | 256 | 8 |
+| Top-K | 10 | 8 | 2 |
+| Activation ratio | 1.95% | 3.1% | 25% |
+| Total params | 79.7B | 671B | 47B |
+| Active params | ~3B | ~37B | ~13B |
+
+---
+
+## 5. Layer Structure and Data Flow
+
+### 5.1 Full Forward Pass
+
+Each layer follows a **Pre-Norm dual-residual** structure:
+
+$$
+\begin{aligned}
+h_1 &= x + \text{Attention}(\text{RMSNorm}_{\text{attn}}(x)) \\
+h_2 &= h_1 + \text{MoE}(\text{RMSNorm}_{\text{post}}(h_1))
+\end{aligned}
+$$
+
+```
+Input x [2048]
+  │
+  ├─ RMSNorm (attn_norm)
+  │    ├─ QKV Projection → Conv1d(k=4) + SiLU → Q, K, V
+  │    ├─ Gate Projection → z
+  │    ├─ Beta/Alpha → β, gate
+  │    ├─ State Update: H = exp(gate) ⊙ H_prev + β·k·vᵀ
+  │    ├─ Output: out = H · q
+  │    ├─ Gated: RMSNorm(out) ⊙ SiLU(z)
+  │    └─ SSM Out Projection [4096 → 2048]
+  │
+  ├─ Residual: h₁ = x + attn_out
+  │
+  ├─ RMSNorm (post_attention_norm)
+  │    ├─ Router [2048 → 512] → Softmax → TopK(10)
+  │    ├─ 10× Expert FFN: SiLU(gate·x) ⊙ up·x → down
+  │    ├─ Weighted Sum (normalized weights)
+  │    ├─ Shared Expert FFN + Sigmoid Gate
+  │    └─ moe_out = routed + shared
+  │
+  └─ Residual: h₂ = h₁ + moe_out → Output [2048]
+```
+
+### 5.2 Zero-Centered RMSNorm
+
+All RMSNorm layers (except internal `ssm_norm`) use the zero-centered variant:
+
+$$
+\text{RMSNorm}(x) = \frac{x}{\text{RMS}(x)} \cdot (1 + w)
+$$
+
+Weights are stored with +1 offset. When $w_{\text{original}} = 0$, normalization becomes the identity — aiding training stability.
+
+### 5.3 Embedding and Output
+
+| Component | Dimensions | Quantization |
+|-----------|-----------|--------------|
+| token_embd | $151936 \to 2048$ | Q4_K |
+| output_norm | $[2048]$ | F32 |
+| output | $2048 \to 151936$ | Q6_K |
+
+---
+
+## 6. Quantization and Weight Distribution
+
+### 6.1 Q4_K_M Mixed Quantization
+
+| Component | Quantization | Reason |
+|-----------|-------------|--------|
+| Expert gate/up | Q4_K | Most numerous, aggressive compression |
+| Expert down, attn_v | Q6_K | Directly affects residual precision |
+| Router, Norms | F32 | Precision-critical |
+| SSM params (A, dt, conv1d) | F32 | Decay rates need high precision |
+
+### 6.2 Weight Distribution: 97% is MoE Expert
+
+Per-layer breakdown:
+
+| Component | Per-layer size | Share |
+|-----------|---------------|-------|
+| MoE Experts (512) | ~996 MB | **97%** |
+| Dense (Attention/SSM + Shared Expert + Norms) | ~25 MB | 3% |
+
+Full model:
+
+| Component | Size | Share |
+|-----------|------|-------|
+| 48 layers MoE experts | ~47.8 GB | 96% |
+| 48 layers dense | ~1.2 GB | 2.4% |
+| Embedding + Output | ~0.4 GB | 0.8% |
+| **Total** | **~49.4 GB** | |
+
+Dense weights are only 1.2 GB — easily fits in any GPU. MoE experts dominate and are the primary target for GPU/CPU offloading strategies.
+
+---
+
+## 7. Comparison with Other Hybrid Models
+
+| Feature | Jamba 52B | Zamba2 2.7B | Hymba 1.5B | **Qwen3-CN 80B** |
+|---------|-----------|-------------|------------|-------------------|
+| SSM type | Mamba | Mamba2 | Mamba2 | **GatedDeltaNet** |
+| Fusion | Interleaved 7:1 | Shared Attn | Parallel heads | **Interleaved 3:1** |
+| MoE | 16E, top-2 | None | None | **512E, top-10** |
+| Total params | 52B | 2.7B | 1.5B | **79.7B** |
+| Active params | 12B | 2.7B | 1.5B | **~3B** |
+| Attn layer share | 12.5% | ~15% | 50% | **25%** |
+| State type | Vector | Vector | Vector+KV | **Matrix** |
+
+---
+
+## Summary
+
+Qwen3-Coder-Next 80B deeply fuses SSM, Attention, and MoE:
+
+| Component | Technical choice | Role |
+|-----------|-----------------|------|
+| 36 GatedDeltaNet layers | Matrix state + delta rule + exp decay gating | Linear-complexity long-sequence modeling |
+| 12 Full Attention layers | Sigmoid gating + 8:1 GQA + Partial RoPE | Precise token retrieval and ICL |
+| 48 MoE layers | 512 experts top-10 + shared expert | Parameter efficiency: 80B params, 3B compute |
+
+This design reflects the current trend: **combining complementary mechanisms rather than pushing a single one to its extreme**. Linear attention provides efficiency, full attention provides precision, MoE provides parameter-compute decoupling — each compensating for the others' weaknesses.
+
+## Further Reading
+
+- [Mixture of Experts](./mixture-of-experts) — MoE routing, load balancing, DeepSeek innovations
+- [State Space Models and Mamba](./state-space-models) — SSM basics, selective mechanism, SSD duality
+- [Hybrid Architectures](./hybrid-architectures) — Jamba, Zamba2, Hymba design comparison
+- [GQA and MQA](./gqa-mqa) — Grouped-Query Attention principles
+- [KV Cache](./kv-cache) — Caching mechanisms and optimization

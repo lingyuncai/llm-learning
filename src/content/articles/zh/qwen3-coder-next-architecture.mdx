@@ -1,0 +1,449 @@
+---
+title: "Qwen3-Coder-Next 架构解析：当 SSM、Attention 与 MoE 三合一"
+slug: qwen3-coder-next-architecture
+locale: zh
+tags: [hybrid, moe, ssm, deltanet, qwen, architecture]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+prerequisites: [mixture-of-experts, state-space-models, hybrid-architectures]
+references:
+  - type: paper
+    title: "Qwen3 Technical Report"
+    url: "https://arxiv.org/abs/2505.09388"
+  - type: paper
+    title: "Gated Delta Networks: Improving Mamba2 with Delta Rule"
+    url: "https://arxiv.org/abs/2412.06464"
+  - type: paper
+    title: "Parallelizing Linear Transformers with the Delta Rule over Sequence Length"
+    url: "https://arxiv.org/abs/2406.06484"
+  - type: repo
+    title: "Ollama - Qwen3-Next 模型实现"
+    url: "https://github.com/ollama/ollama"
+---
+
+前三篇文章分别介绍了 [MoE](./mixture-of-experts)、[SSM](./state-space-models) 和 [Hybrid 架构](./hybrid-architectures) 的基本原理。本文以一个真实的生产模型 **Qwen3-Coder-Next 80B** 为案例，展示这三种技术如何在同一个模型中协同工作。
+
+Qwen3-Coder-Next 是一个 **79.7B 参数的 Hybrid MoE 模型**，每个 token 仅激活约 3B 参数——参数利用率仅 3.8%。它将 GatedDeltaNet（一种基于 delta rule 的线性注意力）、标准全注意力和 512-expert MoE 融合在 48 层中，是当前最复杂的混合架构之一。
+
+---
+
+## 1. 架构全景
+
+### 1.1 核心参数
+
+| 参数 | 值 | 备注 |
+|------|-----|------|
+| 总层数 | 48 | `block_count=48` |
+| 层类型 | 36 recurrent + 12 full attention | 3:1 交替 |
+| 隐藏维度 | 2048 | 远小于典型 LLM（LLaMA-70B 为 8192） |
+| 总参数 | 79.7B | |
+| 活跃参数/token | ~3B | 仅 3.8% 被激活 |
+| MoE 配置 | 512 experts, top-10 | + 1 shared expert |
+| Expert FFN 维度 | 512 | 小但多 |
+| 上下文长度 | 262,144 | 256K tokens |
+
+### 1.2 3:1 混合层模式
+
+48 层按固定模式交替——每 4 层为一个循环，前 3 层用 **GatedDeltaNet**（线性注意力），第 4 层用**全注意力**：
+
+```
+Layer  0: GatedDeltaNet    ← recurrent
+Layer  1: GatedDeltaNet
+Layer  2: GatedDeltaNet
+Layer  3: Full Attention    ← 每 4 层插入 1 层
+Layer  4: GatedDeltaNet
+...
+Layer 47: Full Attention    ← 最后一层也是全注意力
+```
+
+这种 3:1 比例是 [Hybrid 架构](./hybrid-architectures) 中交替式范式的变体。对比 Jamba 的 7:1（Mamba:Attention），Qwen3-Coder-Next 给予全注意力更高的权重（25% vs 12.5%），这可能有助于 coding 任务中频繁需要的精确 token 检索。
+
+**关键设计**：所有 48 层无论注意力类型如何，都共享相同的 **MoE FFN** 结构。层类型的差异仅在注意力部分。
+
+---
+
+## 2. GatedDeltaNet：线性注意力层
+
+36 层 recurrent 层使用的不是标准 Mamba，而是 **GatedDeltaNet**——一种基于 delta rule 的线性注意力机制，状态是矩阵而非向量。
+
+### 2.1 从 Mamba 到 Delta Rule
+
+回顾 [SSM 文章](./state-space-models) 中 Mamba 的状态更新：
+
+$$
+h_t = \bar{A}_t \cdot h_{t-1} + \bar{B}_t \cdot x_t
+$$
+
+状态 $h_t$ 是一个 **向量**（$\mathbb{R}^N$），新信息通过加法叠加到衰减后的旧状态上——这是 "additive update"。
+
+**DeltaNet** (Yang et al., 2024) 将状态提升为 **矩阵** $H_t \in \mathbb{R}^{d_k \times d_v}$，使用 delta rule 更新：
+
+$$
+H_t = (I - \beta_t k_t k_t^\top) H_{t-1} + \beta_t v_t k_t^\top
+$$
+
+直觉：$\beta_t k_t k_t^\top H_{t-1}$ 先"擦除"与当前 key 相关的旧记忆，然后 $\beta_t v_t k_t^\top$ 写入新的 key-value 关联。相比 Mamba 的 additive update，delta rule 实现了一种 **联想记忆**（associative memory）——能精确覆盖旧值，而非简单叠加。
+
+**Gated DeltaNet** (Yang, Kautz & Hatamizadeh, 2024) 进一步增加逐元素衰减门控：
+
+$$
+H_t = \exp(\alpha_t) \odot H_{t-1} + \beta_t \cdot k_t v_t^\top
+$$
+
+$\alpha_t$ 是依赖输入的衰减门控，$\odot$ 是逐元素乘法。每个状态元素有独立的衰减速率，模型可以学会对不同信息施加不同的遗忘速度。
+
+### 2.2 输入投影与 Conv1d
+
+每层的输入经过两个线性投影：
+
+| 投影 | 维度 | 量化 | 输出拆分 |
+|------|------|------|----------|
+| attn_qkv | $2048 \to 8192$ | Q4_K | Q $[128 \times 16]$ + K $[128 \times 16]$ + V $[128 \times 32]$ |
+| attn_gate | $2048 \to 4096$ | Q4_K | 门控向量 $z$ $[128 \times 32]$ |
+
+注意 **非对称头结构**：
+
+- K heads = 16, head_dim = 128（对应 `ssm.group_count`）
+- V heads = 32, head_dim = 128（对应 `ssm.time_step_rank`）
+- V heads 是 K heads 的 2 倍
+
+QKV 拼接后经过 **1D 因果卷积**（kernel=4），为每个位置引入短程时序上下文：
+
+$$
+\text{qkv}' = \text{SiLU}(\text{Conv1d}(\text{qkv}, \text{kernel}=4))
+$$
+
+这个 Conv1d 继承自 Mamba 的设计——在状态更新之前提供局部时序融合。卷积后再拆分为 Q、K、V 三组向量。
+
+### 2.3 衰减门控
+
+门控 $\alpha_t$ 的计算涉及三个可学习 SSM 参数：
+
+| 参数 | 形状 | 含义 |
+|------|------|------|
+| ssm_alpha | $2048 \to 32$ | 每个 V head 一个衰减因子（输入依赖） |
+| ssm_dt | $[32]$ | 时间步偏置（可学习 bias） |
+| ssm_a | $[32]$ | 状态衰减系数，存储为 $-\exp(A_{\log})$ |
+
+$$
+\text{gate}_t = \text{softplus}(\alpha_t + \text{dt\_bias}) \times (-A)
+$$
+
+其中 $\text{softplus}(x) = \ln(1 + e^x)$。$-A$ 确保门控值为负，使 $\exp(\text{gate}_t) < 1$ 实现指数衰减。这类似于 Mamba 中 $\Delta$ 参数的作用——控制每步的信息保留程度。
+
+Beta ($\beta_t$) 控制 delta rule 的写入强度：
+
+| 参数 | 形状 | 含义 |
+|------|------|------|
+| ssm_beta | $2048 \to 32$ | 每个 V head 一个写入强度 |
+
+### 2.4 分块并行计算
+
+**自回归模式**（decode，每次 1 token）直接递推状态：
+
+$$
+H_t = \exp(\text{gate}_t) \odot H_{t-1} + \beta_t \cdot k_t v_t^\top, \quad \text{out}_t = H_t \cdot q_t
+$$
+
+**分块并行模式**（prefill，多 token）将序列分为长度 64 的 chunk。chunk 内构建带衰减的因果注意力矩阵：
+
+$$
+M_{ij} = \exp\!\left(\sum_{l=j+1}^{i} \text{gate}_l\right), \quad i \geq j
+$$
+
+$$
+\text{intra\_chunk} = (M \odot Q K^\top) \cdot V
+$$
+
+chunk 之间通过状态矩阵累积传播。这种策略类似 [Mamba-2 的 SSD 算法](./state-space-models)——在保持线性递推语义的同时利用 GPU 并行性。
+
+### 2.5 输出门控
+
+SSM 输出先经过 RMSNorm，再与 SiLU 激活的门控向量 $z$ 逐元素相乘：
+
+$$
+\text{output} = \text{RMSNorm}(\text{attn\_out}) \odot \text{SiLU}(z)
+$$
+
+最后通过输出投影 `ssm_out` ($4096 \to 2048$) 回到隐藏维度。
+
+### 2.6 缓存
+
+每层维护两种固定大小的状态：
+
+| 缓存类型 | 形状 | 大小（f32） | 用途 |
+|----------|------|------------|------|
+| delta_state | $[128, 4096, \text{batch}]$ | ~2 MB/序列 | 递推状态矩阵 $H_t$ |
+| conv_state | $[3, 8192, \text{batch}]$ | ~96 KB/序列 | Conv1d 历史（最近 3 token） |
+
+与全注意力的 KV cache（随序列长度线性增长）不同，delta_state 是 **固定大小** 的——这正是 SSM 的核心优势。代价是矩阵状态比 Mamba 的向量状态占用更多空间，但换来了更强的联想记忆能力。
+
+---
+
+## 3. 门控全注意力层
+
+每 4 层出现一次的全注意力层使用 **sigmoid 门控的 GQA**，与标准 Transformer attention 有几个关键差异。
+
+### 3.1 Gated Q 投影
+
+Q 投影的输出维度是 head_dim 的 **2 倍**：
+
+$$
+\text{attn\_q}(x) \in \mathbb{R}^{8192} \to \underbrace{Q \in \mathbb{R}^{256 \times 16}}_{\text{query}} + \underbrace{G \in \mathbb{R}^{256 \times 16}}_{\text{gate}}
+$$
+
+query 和 gate 各自独立经过 RMSNorm，query 再经过 RoPE。注意力计算完成后，输出乘以 gate 的 sigmoid：
+
+$$
+\text{attn\_out} = \text{Attention}(Q, K, V) \odot \sigma(G)
+$$
+
+这种 **sigmoid 门控** 让每个 attention head 可以学习性地"关闭"某些输出维度——比固定的注意力输出更灵活。
+
+### 3.2 GQA：16 Q Heads, 2 KV Heads
+
+| 投影 | 维度 | 量化 | Head 配置 |
+|------|------|------|-----------|
+| attn_k | $2048 \to 512$ | Q4_K | 2 heads × 256 head_dim |
+| attn_v | $2048 \to 512$ | Q6_K | 2 heads × 256 head_dim |
+
+这是 **8:1 的 GQA**（[Grouped-Query Attention](./gqa-mqa)）——16 个 Q heads 共享 2 组 KV。极端的 GQA 比例大幅减少 KV cache，但由于全注意力层仅占 25%，且 recurrent 层不需要 KV cache，整体 cache 已经很小。
+
+### 3.3 Partial RoPE
+
+位置编码仅应用于 head_dim 的前 64 维（`rope.dimension_count=64`）：
+
+$$
+\text{partial\_rotary\_factor} = \frac{64}{256} = 0.25
+$$
+
+75% 的 head dimensions 不参与位置编码，保持位置无关——这些维度专注于语义内容表征。RoPE 使用 NeoX 布局，$\theta = 5 \times 10^6$（高 base frequency 支持长上下文外推）。
+
+### 3.4 QK Norm
+
+Q 和 K 在 RoPE 之前都经过 RMSNorm：
+
+$$
+Q' = \text{RoPE}(\text{RMSNorm}(Q)), \quad K' = \text{RoPE}(\text{RMSNorm}(K))
+$$
+
+在 head_dim = 256 这种大维度下，QK Norm 对稳定 attention score 至关重要——防止 $Q \cdot K^\top$ 的方差随维度增长而过大。
+
+---
+
+## 4. MoE：512 Expert Top-10 路由
+
+所有 48 层（不论注意力类型）都使用相同的 [MoE](./mixture-of-experts) FFN 结构。
+
+### 4.1 Router 机制
+
+Router 是一个全精度（F32）线性投影，将隐藏状态映射到 512 维的 expert 空间：
+
+$$
+\text{logits} = W_{\text{router}} \cdot x, \quad W_{\text{router}} \in \mathbb{R}^{512 \times 2048}
+$$
+
+$$
+\text{weights} = \text{softmax}(\text{logits}), \quad \text{selected} = \text{TopK}(\text{weights}, k=10)
+$$
+
+选中的 10 个 expert 的 routing weight 重新归一化（`norm_top_k_prob=true`）：
+
+$$
+w_i' = \frac{w_i}{\sum_{j \in \text{TopK}} w_j}
+$$
+
+Router 使用 F32 精度是有意为之——routing 决策的微小误差会被 expert 选择放大，导致完全不同的计算路径。
+
+### 4.2 Expert FFN
+
+每个 expert 是标准的 SiLU-gated FFN，但维度极小：
+
+$$
+\text{expert}_i(x) = W_{\text{down}}^{(i)} \left[ \text{SiLU}\!\left(W_{\text{gate}}^{(i)} x\right) \odot W_{\text{up}}^{(i)} x \right]
+$$
+
+| 投影 | 维度变换 | 量化 | 每层大小（×512 experts） |
+|------|----------|------|--------------------------|
+| ffn_gate_exps | $2048 \to 512$ | Q4_K | 288 MB |
+| ffn_up_exps | $2048 \to 512$ | Q4_K | 288 MB |
+| ffn_down_exps | $512 \to 2048$ | Q6_K | 420 MB |
+| **合计** | | | **996 MB** |
+
+`ffn_down_exps` 使用更高精度的 Q6_K——因为 down projection 直接影响残差连接的数值精度。
+
+### 4.3 Shared Expert
+
+除 10 个 routed experts 外，每层还有一个 **shared expert**（[DeepSeek 风格](./mixture-of-experts)），所有 token 必经：
+
+| 投影 | 维度 | 量化 |
+|------|------|------|
+| ffn_gate_shexp | $2048 \to 512$ | Q4_K |
+| ffn_up_shexp | $2048 \to 512$ | Q4_K |
+| ffn_down_shexp | $512 \to 2048$ | Q6_K |
+
+Shared expert 的输出还经过 sigmoid gate（`ffn_gate_inp_shexp`）控制贡献：
+
+$$
+\text{shared\_out} = \sigma(W_{\text{gate}} \cdot x) \cdot \text{FFN}_{\text{shared}}(x)
+$$
+
+最终 MoE 输出 = routed experts 加权和 + shared expert 输出。Shared expert 保证基础能力（通用知识、语法）不因 routing 分散而丢失。
+
+### 4.4 稀疏度分析
+
+| 指标 | Qwen3-Coder-Next | DeepSeek-V3 | Mixtral |
+|------|-------------------|-------------|---------|
+| Expert 数量 | 512 | 256 | 8 |
+| Top-K | 10 | 8 | 2 |
+| 激活比例 | 1.95% | 3.1% | 25% |
+| Shared expert | 1 | 1 | 无 |
+| 总参数 | 79.7B | 671B | 47B |
+| 活跃参数 | ~3B | ~37B | ~13B |
+
+512 expert top-10 提供了极细粒度的 expert 专业化——每个 expert 的 FFN 仅 512 维，可以高度专精于特定的 token pattern。
+
+---
+
+## 5. 层结构与数据流
+
+### 5.1 单层完整前向传播
+
+每层遵循 **Pre-Norm 双残差** 结构：
+
+$$
+\begin{aligned}
+h_1 &= x + \text{Attention}(\text{RMSNorm}_{\text{attn}}(x)) \\
+h_2 &= h_1 + \text{MoE}(\text{RMSNorm}_{\text{post}}(h_1))
+\end{aligned}
+$$
+
+Attention 根据层类型切换为 GatedDeltaNet 或 Full Attention，MoE 在所有层中保持一致。
+
+以 recurrent 层为例的完整数据流：
+
+```
+Input x [2048]
+  │
+  ├─ RMSNorm (attn_norm)
+  │    ├─ QKV Projection → Conv1d(k=4) + SiLU → Q, K, V
+  │    ├─ Gate Projection → z
+  │    ├─ Beta/Alpha → β, gate
+  │    ├─ State Update: H = exp(gate) ⊙ H_prev + β·k·vᵀ
+  │    ├─ Output: out = H · q
+  │    ├─ Gated: RMSNorm(out) ⊙ SiLU(z)
+  │    └─ SSM Out Projection [4096 → 2048]
+  │
+  ├─ Residual: h₁ = x + attn_out
+  │
+  ├─ RMSNorm (post_attention_norm)
+  │    ├─ Router [2048 → 512] → Softmax → TopK(10)
+  │    ├─ 10× Expert FFN: SiLU(gate·x) ⊙ up·x → down
+  │    ├─ Weighted Sum (normalized weights)
+  │    ├─ Shared Expert FFN + Sigmoid Gate
+  │    └─ moe_out = routed + shared
+  │
+  └─ Residual: h₂ = h₁ + moe_out → Output [2048]
+```
+
+### 5.2 Zero-Centered RMSNorm
+
+所有 RMSNorm 层（SSM 内部的 `ssm_norm` 除外）使用 **zero-centered** 变体：
+
+$$
+\text{RMSNorm}(x) = \frac{x}{\text{RMS}(x)} \cdot (1 + w)
+$$
+
+权重存储时已加 1（GGUF 中 $w_{\text{stored}} = w_{\text{original}} + 1$）。当 $w_{\text{original}} = 0$ 时，归一化退化为恒等映射——使初始化时信号直接穿透，有助于训练稳定性。
+
+### 5.3 Embedding 与 Output
+
+| 组件 | 维度 | 量化 |
+|------|------|------|
+| token_embd | $151936 \to 2048$ | Q4_K |
+| output_norm | $[2048]$ | F32 |
+| output | $2048 \to 151936$ | Q6_K |
+
+词汇表大小 151,936。输出投影使用 Q6_K 高精度量化——logits 精度直接影响 token 采样质量。
+
+---
+
+## 6. 量化与权重分布
+
+### 6.1 Q4_K_M 混合量化策略
+
+Q4_K_M 并非统一量化，而是根据组件敏感度选择不同级别：
+
+| 组件 | 量化 | 原因 |
+|------|------|------|
+| Expert gate/up | Q4_K | 数量最多（512×48），积极压缩 |
+| Expert down, attn_v | Q6_K | 直接影响残差/输出精度 |
+| Dense attention/SSM | Q4_K | 参数量小 |
+| Router, Norms | F32 | 精度关键（routing 决策、归一化） |
+| SSM 参数 (A, dt, conv1d) | F32 | 衰减率和卷积需要高精度 |
+| Shared expert gate | F16 | 标量门控，折中精度 |
+
+### 6.2 权重分布：97% 是 MoE Expert
+
+每层权重构成极度不对称：
+
+| 组件 | 每层大小 | 占比 |
+|------|----------|------|
+| MoE Experts (512个) | ~996 MB | **97%** |
+| Dense (Attention/SSM + Shared Expert + Norms) | ~25 MB | 3% |
+
+全模型级别：
+
+| 组件 | 大小 | 占比 |
+|------|------|------|
+| 48 层 MoE experts | ~47.8 GB | 96% |
+| 48 层 dense | ~1.2 GB | 2.4% |
+| Embedding + Output | ~0.4 GB | 0.8% |
+| **总计** | **~49.4 GB** | |
+
+这种极端分布意味着：**dense 权重仅 1.2 GB，可以轻松全部放入任何 GPU**。MoE expert 占绝对主体，是 GPU/CPU offloading 策略的核心优化目标。
+
+---
+
+## 7. 与其他 Hybrid 模型的对比
+
+| 特征 | Jamba 52B | Zamba2 2.7B | Hymba 1.5B | **Qwen3-CN 80B** |
+|------|-----------|-------------|------------|-------------------|
+| SSM 类型 | Mamba | Mamba2 | Mamba2 | **GatedDeltaNet** |
+| 融合方式 | 交替 7:1 | 共享 Attn | 并行 heads | **交替 3:1** |
+| MoE | 16E, top-2 | 无 | 无 | **512E, top-10** |
+| 总参数 | 52B | 2.7B | 1.5B | **79.7B** |
+| 活跃参数 | 12B | 2.7B | 1.5B | **~3B** |
+| Attn 层占比 | 12.5% | ~15% | 50% | **25%** |
+| 状态类型 | 向量 | 向量 | 向量+KV | **矩阵** |
+| KV cache 层数 | 10/80 | 2 shared | 全部 | **12/48** |
+
+Qwen3-Coder-Next 的独特之处：
+
+1. **GatedDeltaNet 替代 Mamba**：矩阵状态 + delta rule 提供更强的联想记忆
+2. **极端 MoE 稀疏度**：512 experts 是公开模型中最多的之一，配合极小的 expert FFN 维度（512）
+3. **3:1 非 7:1**：更高的全注意力比例，可能为 coding 场景的精确检索优化
+4. **隐藏维度极小**（2048）：通过超大 expert 数量而非宽隐藏维度来扩展容量
+
+---
+
+## 总结
+
+Qwen3-Coder-Next 80B 将 SSM、Attention 和 MoE 三种范式深度融合：
+
+| 组件 | 技术选择 | 作用 |
+|------|----------|------|
+| 36 层 GatedDeltaNet | 矩阵状态 + delta rule + 指数衰减门控 | 线性复杂度的长序列建模 |
+| 12 层 Full Attention | Sigmoid 门控 + 8:1 GQA + Partial RoPE | 精确 token 检索与 ICL |
+| 48 层 MoE | 512 experts top-10 + shared expert | 参数效率：80B 参数, 3B 计算 |
+
+这种设计反映了当前大模型架构的趋势：**不再追求单一机制的极致，而是组合多种互补机制**。线性注意力提供效率，全注意力提供精度，MoE 提供参数-计算解耦——每种技术补偿其他技术的弱点。
+
+## 延伸阅读
+
+- [Mixture of Experts](./mixture-of-experts) — MoE routing、load balancing、DeepSeek 创新
+- [状态空间模型与 Mamba](./state-space-models) — SSM 基础、选择性机制、SSD 对偶性
+- [Hybrid 架构](./hybrid-architectures) — Jamba、Zamba2、Hymba 设计比较
+- [GQA 与 MQA](./gqa-mqa) — Grouped-Query Attention 原理
+- [KV Cache](./kv-cache) — 缓存机制与优化
