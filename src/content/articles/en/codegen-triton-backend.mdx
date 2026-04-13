@@ -1,0 +1,394 @@
+---
+title: "Code Generation (Part II): Triton Pipeline, Compiler Backends & Numerical Correctness"
+slug: codegen-triton-backend
+locale: en
+tags: [compiler, codegen, triton, llvm, ptx, numerical-accuracy, backends]
+prerequisites: [codegen-instruction-selection]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations"
+    url: "https://www.eecs.harvard.edu/~htk/publication/2019-mapl-tillet-kung-cox.pdf"
+  - type: website
+    title: "Triton Language Documentation"
+    url: "https://triton-lang.org/main/index.html"
+  - type: website
+    title: "MLIR GPU Dialect"
+    url: "https://mlir.llvm.org/docs/Dialects/GPU/"
+  - type: website
+    title: "IREE Compiler and Runtime"
+    url: "https://iree.dev/"
+  - type: website
+    title: "TensorRT Developer Guide"
+    url: "https://docs.nvidia.com/deeplearning/tensorrt/developer-guide/index.html"
+  - type: website
+    title: "What Every Computer Scientist Should Know About Floating-Point Arithmetic"
+    url: "https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import TritonCompilationPipeline from '../../../components/interactive/TritonCompilationPipeline.tsx';
+import CodegenExplorer from '../../../components/interactive/CodegenExplorer.tsx';
+import BackendComparison from '../../../components/interactive/BackendComparison.tsx';
+import NumericalAccuracyDemo from '../../../components/interactive/NumericalAccuracyDemo.tsx';
+
+<CompilerStackMap currentArticle="codegen-triton-backend" mode="compact" locale="en" client:visible />
+
+## Introduction
+
+In the [previous article](/en/articles/codegen-instruction-selection), we covered the first half of code generation -- instruction selection and vectorization, understanding how compilers transform high-level IR into low-level hardware operations. This article completes the code generation story: the full compilation pipeline **from Triton DSL to executable binary**.
+
+We cover three core topics:
+
+1. **Triton Compilation Pipeline**: From Python DSL through Triton IR, GPU IR, LLVM IR, PTX, to the final GPU-executable cubin binary -- a complete 6-stage journey
+2. **Compiler Backend Comparison**: TorchInductor+Triton, XLA, TensorRT, IREE -- the positioning, trade-offs, and best-fit scenarios of four major compiler backends
+3. **Numerical Correctness**: How floating-point non-associativity creates precision issues during compiler optimizations, and how to systematically verify numerical correctness
+
+Triton serves as a critical bridge connecting the PyTorch ecosystem to MLIR compiler infrastructure. Understanding its compilation flow not only helps in writing high-performance GPU kernels but also enables developers to precisely locate the correct compilation stage when encountering performance or correctness issues.
+
+## Deep Dive into Triton
+
+### Triton's Position
+
+Triton occupies a unique niche in the GPU programming model landscape: it doesn't require developers to manually manage every detail of threads, warps, and shared memory like CUDA C, nor does it completely hide the hardware like PyTorch. Triton provides a **block-level programming model** -- users think at the thread block granularity while the compiler handles thread-level mapping.
+
+This design choice brings fundamental advantages:
+
+- **Reduced programming complexity**: No need to manually handle bank conflicts, coalescing, shared memory padding, and other low-level details
+- **Preserved optimization space**: The compiler can freely choose thread mapping, data layout, and memory hierarchy utilization strategies
+- **Near hand-written performance**: For most ML workloads, Triton-generated code achieves 90%+ of hand-written CUDA performance
+
+Triton's core abstractions include:
+- `tl.load(ptr, mask)` / `tl.store(ptr, value, mask)` -- explicit memory access at block granularity
+- `tl.dot(a, b)` -- matrix multiply, directly maps to Tensor Core MMA instructions
+- `tl.program_id(axis)` -- block index, analogous to CUDA's `blockIdx`
+- `tl.arange(start, end)` -- creates index range, similar to vectorized iota operation
+- `tl.constexpr` -- compile-time constants for parameters like BLOCK_SIZE
+
+### Programming Model
+
+Triton kernels are marked with the `@triton.jit` decorator, which triggers Triton's just-in-time compilation pipeline. Let's understand Triton's programming model through a vector addition example:
+
+```python
+@triton.jit
+def add_kernel(x_ptr, y_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
+    # Each program (similar to a CUDA thread block) processes one BLOCK_SIZE chunk
+    pid = tl.program_id(axis=0)
+    block_start = pid * BLOCK_SIZE
+    offsets = block_start + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+
+    # Block-level load: entire block of data loaded at once
+    x = tl.load(x_ptr + offsets, mask=mask)
+    y = tl.load(y_ptr + offsets, mask=mask)
+
+    output = x + y
+    tl.store(output_ptr + offsets, output, mask=mask)
+```
+
+Key observations:
+- **No threadIdx**: Users don't need to know the thread organization within a block
+- **Explicit mask**: Boundary handling is the user's responsibility (similar to CUDA bounds checking)
+- **BLOCK_SIZE is constexpr**: Determined at compile time; different BLOCK_SIZE values generate different kernels
+- **Operations on tensors, not scalars**: `tl.load` returns a tensor (vector), and all operations implicitly execute in parallel across all elements in the block
+
+### Triton Compilation Pipeline
+
+Triton's compilation process is divided into 6 stages, each lowering the code from one representation to something closer to hardware. The interactive component below shows the code transformation at each stage:
+
+<TritonCompilationPipeline locale="en" client:visible />
+
+Let's analyze the key transformations at each stage:
+
+**Stage 1: Python DSL to Triton IR**
+
+Triton first parses the Python AST (Abstract Syntax Tree), extracts the function body decorated with `@triton.jit`, performs type inference, and generates SSA (Static Single Assignment) form Triton IR. This IR uses the `tt.*` namespace (e.g., `tt.func`, `tt.get_program_id`) and preserves block-level semantics -- all operations are still expressed at block granularity.
+
+**Stage 2: Triton IR to Triton GPU IR**
+
+This is one of the most critical transformations. The GPU IR adds **hardware mapping information** on top of Triton IR:
+
+- **Layout attributes**: Each tensor is annotated with layout descriptors like `#ttg.blocked<{sizePerThread, threadsPerWarp, warpsPerCTA}>`, precisely specifying data distribution across the thread/warp/block hierarchy
+- **Warp mapping**: Determines which data elements each warp is responsible for
+- **Shared memory insertion**: Automatically inserts shared memory load/store operations when data needs to be shared across warps (e.g., for the K-dimension loop in matmul)
+
+Note: Functions and operations in GPU IR still use the `tt.*` namespace (e.g., `tt.func`, `tt.get_program_id`, `tt.load`). The `ttg` namespace is only used for **layout attributes** (e.g., `#ttg.blocked<...>`), not for operations themselves.
+
+**Stage 3: Triton GPU IR to LLVM IR**
+
+Through MLIR's lowering mechanism, the Triton Dialect is lowered to the LLVM Dialect. This step involves a fundamental transformation:
+- Block-level operations are expanded into scalar/vector operations
+- `tt.get_program_id` becomes `@llvm.nvvm.read.ptx.sreg.ctaid.x()`
+- `tt.load` (block load) becomes `load <4 x float>` and similar vectorized memory accesses
+- Control flow is lowered from structured (scf.for) to LLVM branches
+
+**Stage 4: LLVM IR to PTX**
+
+LLVM's NVPTX backend compiles LLVM IR to PTX (Parallel Thread Execution) assembly. PTX is NVIDIA's virtual ISA and the last portable representation -- GPUs of different generations (compute capabilities) can generate different machine code from the same PTX.
+
+**Stage 5: PTX to cubin**
+
+The `ptxas` assembler converts PTX to SASS (the GPU's actual machine instruction set) and packages it into a cubin (CUDA binary). The cubin contains all metadata: register usage, shared memory requirements, maximum thread count, etc.
+
+**Significance of MLIR Migration**
+
+Triton 2.0+ rewrote its entire compilation stack on MLIR. This enables multi-backend support: by replacing the Stage 4-5 backend, the same Triton IR can be compiled to AMD GPU (via ROCDL Dialect and GCN ISA) or Intel GPU (via SPIR-V Dialect).
+
+## TorchInductor Code Generation
+
+### From FX Graph to Triton Kernel
+
+TorchInductor is the default backend compiler for `torch.compile()`. It receives the FX Graph captured by TorchDynamo, applies a series of optimizations (fusion, layout optimization, etc.), and ultimately **generates Triton kernel Python source code**.
+
+The full code generation flow:
+
+1. **FX Graph reception**: Receives the forward/backward graph traced by AOTAutograd
+2. **Lowering**: Lowers high-level PyTorch operations into finer-grained operations (pointwise, reduction, matmul, etc.)
+3. **Fusion decisions**: Based on the scheduler's fusion rules, decides which operations to merge into a single kernel
+4. **Code template filling**: For each fused kernel, generates corresponding Triton kernel source code using code templates
+5. **Wrapper code**: Generates Python wrapper for calling kernels (memory allocation, kernel launch, synchronization, etc.)
+
+The component below shows three typical examples of FX Graph to Triton kernel code generation:
+
+<CodegenExplorer locale="en" client:visible />
+
+**Three typical codegen patterns**:
+
+- **Element-wise fusion**: Multiple element-wise operations (relu, mul, add) fused into a single kernel. This is the simplest and most common fusion pattern, since all operations share exactly the same index space. The key advantage is a single HBM read/write, with all intermediate results computed in registers.
+
+- **Reduction (LayerNorm)**: Fusion involving reduction operations. Inductor fuses mean, variance computation, and subsequent normalize, scale, shift operations all into one kernel. The key is that entire row data is loaded into registers/shared memory, and reduction happens on-chip.
+
+- **MatMul + Epilogue**: Matrix multiplication (using `tl.dot` mapped to Tensor Core) plus subsequent bias add and activation. This is a classic **epilogue fusion** case -- appending subsequent operations while the matmul result is still in registers.
+
+### Generated Code Readability and Debugging
+
+TorchInductor's generated Triton code is **human-readable**, which is a significant advantage over compilers like XLA. Developers can inspect and debug generated code through several mechanisms:
+
+**TORCH_COMPILE_DEBUG=1**
+
+Setting this environment variable causes `torch.compile()` to dump all intermediate artifacts (FX Graph, generated Triton source code, wrapper code) to disk. The output directory structure typically contains:
+
+```
+torch_compile_debug/
+├── fx_graph_readable.py       # Human-readable FX graph
+├── fx_graph_runnable.py       # Runnable FX graph (for reproduction)
+├── output_code.py             # Generated Triton kernels + wrapper
+└── ...
+```
+
+**TRITON_INTERPRET=1**
+
+This mode executes Triton kernels in the Python interpreter (without compiling to GPU code), allowing the use of `print()` and standard Python debugging tools. Though extremely slow, it's invaluable for debugging correctness issues.
+
+**NSight Compute Profiling**
+
+For performance optimization, NVIDIA's NSight Compute tool can analyze generated kernels: register utilization, shared memory throughput, warp efficiency, memory bandwidth utilization, and more. NSight can directly correlate PTX/SASS instructions with performance metrics.
+
+Typical debugging workflow:
+1. Inspect generated code: `TORCH_COMPILE_DEBUG=1` to view Triton source
+2. Compare with reference: `torch.testing.assert_close()` between compiled and eager mode output
+3. Profile performance: NSight Compute for kernel-level performance bottleneck analysis
+
+## MLIR to LLVM Lowering
+
+### LLVM Dialect as MLIR's Exit
+
+The MLIR LLVM Dialect serves as the bridge connecting the MLIR world to the LLVM world. It **1:1 mirrors** LLVM IR's type system and operations, expressed within MLIR's unified framework. Key conversions include:
+
+- **memref to llvm.ptr**: MLIR's `memref` type (buffer descriptor with dimensions, strides, etc.) is converted to LLVM's bare pointer + metadata (base pointer, offset, sizes, strides)
+- **Control flow lowering**: `scf.for`, `scf.if`, and other structured control flow are converted to LLVM basic blocks + branch instructions
+- **Type conversion**: `tensor<...>` to `memref<...>` to `llvm.ptr` + metadata in a two-step conversion chain
+
+### Multi-Backend Code Generation
+
+MLIR's layered design enables the same high-level IR to compile to different hardware backends:
+
+$$
+\text{High-level IR} \rightarrow \text{GPU Dialect} \rightarrow \begin{cases}
+\text{NVVM Dialect} \rightarrow \text{PTX} & \text{(NVIDIA)} \\
+\text{ROCDL Dialect} \rightarrow \text{GCN ISA} & \text{(AMD)} \\
+\text{SPIR-V Dialect} \rightarrow \text{SPIR-V binary} & \text{(Intel / Vulkan)}
+\end{cases}
+$$
+
+The key insight: **all high-level optimizations (fusion, tiling, vectorization) are backend-agnostic** -- they are performed at the GPU Dialect or higher levels. Only the final lowering steps are backend-specific. This separation dramatically reduces the effort required to support new hardware.
+
+For Triton specifically:
+- Stages 1-3 (Python to Triton IR to Triton GPU IR) are backend-agnostic
+- Stages 4-5 (LLVM IR to PTX to cubin) are NVIDIA-specific
+- By replacing Stages 4-5, Triton already supports AMD GPU (via HIP/ROCDL) and is experimenting with Intel GPU support
+
+## Compiler Backend Comparison
+
+Understanding the positioning of different compiler backends is crucial for choosing the right tool. The component below compares four major compiler backends:
+
+<BackendComparison locale="en" client:visible />
+
+### TorchInductor + Triton
+
+TorchInductor is the default compiler backend introduced in PyTorch 2.0, deeply integrated with Triton. Its core advantage is **JIT compilation speed** -- per-kernel compilation takes less than 100ms, and full model compilation typically completes within seconds. This makes it ideal for R&D iteration: developers can use `torch.compile()` in a Jupyter Notebook and get acceleration with virtually no perceptible delay.
+
+Inductor's fusion strategy uses a greedy algorithm, preferring to merge all operations that can be merged. While this isn't globally optimal (it may miss some better plans that require "not fusing" certain ops), the trade-off is extremely fast compilation.
+
+**Best for**: R&D iteration, prototyping, dynamic shape models (e.g., NLP models with variable-length sequences), deep PyTorch ecosystem users.
+
+### XLA
+
+XLA (Accelerated Linear Algebra) is Google's compiler and the core compilation backend for TensorFlow and JAX. XLA's unique advantage is **globally optimal fusion** -- it uses a graph coloring algorithm to find the optimal fusion plan across the entire computation graph.
+
+XLA's other killer feature is **native TPU support**. As the companion compiler for Google's custom hardware, XLA is currently the only compiler with first-class TPU support. JAX's `jit()` directly invokes XLA for compilation under the hood.
+
+**Drawbacks**: Longer compilation time (typically > 1s), limited dynamic shape support (requires additional padding or bucketing), PyTorch integration requires the `torch_xla` bridge layer.
+
+**Best for**: TPU training, large-scale training tasks with static shapes, JAX ecosystem users.
+
+### TensorRT
+
+TensorRT is NVIDIA's inference optimization toolkit, designed specifically for **production deployment**. It uses AOT compilation, and compilation time can be long (minutes), but the generated code achieves the best possible performance on NVIDIA GPUs -- TensorRT includes a large library of hand-optimized kernels and uses cost models to select optimal implementations.
+
+TensorRT's quantization support (INT8/FP8) is the most comprehensive in the industry, supporting both calibration-based and QAT quantization approaches. For production scenarios requiring ultra-low inference latency, TensorRT is often the first choice.
+
+**Drawbacks**: NVIDIA GPU only, long compilation time, limited dynamic shape support, no training support.
+
+**Best for**: Production inference deployment, real-time inference (autonomous driving, recommendation systems), quantized deployment.
+
+### IREE
+
+IREE (Intermediate Representation Execution Environment) is an **MLIR-native** end-to-end compiler and runtime. Unlike other backends, IREE was designed from the ground up for **cross-platform** deployment: through Vulkan, CUDA, ROCm, CPU, and other backends, the same model can run on different hardware.
+
+IREE's runtime is extremely lightweight (compared to PyTorch's hundreds of MB), making it suitable for embedded and mobile deployment. As the flagship project of the MLIR ecosystem, it also serves as an important experimentation platform for MLIR compiler research.
+
+**Drawbacks**: Performance on NVIDIA GPUs doesn't match TensorRT/Triton (lacking NVIDIA-specific deep optimizations), smaller ecosystem, documentation and community still growing.
+
+**Best for**: Cross-platform deployment, edge device inference, MLIR compiler research, embedded scenarios requiring a lightweight runtime.
+
+## Numerical Correctness and Verification
+
+### Floating-Point Non-Associativity
+
+One of the most subtle issues introduced by compiler optimizations is **numerical correctness**. IEEE 754 floating-point arithmetic is **not associative**:
+
+$$
+(a + b) + c \neq a + (b + c)
+$$
+
+This isn't a theoretical possibility but a practical certainty. When the compiler performs fusion, tiling, reduction tree restructuring, and other optimizations, it changes the execution order of operations, thereby changing the numerical results.
+
+Let's understand with a concrete example: summing `[1.0, 1e-8, 1e-8, 1e-8, 1e-8, 1e-8, 1e-8, 1e-8]`. The key mathematical fact: **the FP32 ULP (Unit in the Last Place) near 1.0 is approximately $1.19 \times 10^{-7}$**. Since $10^{-8}$ is well below this ULP, when we compute $1.0 + 10^{-8}$, the $10^{-8}$ is completely **absorbed** -- the result remains 1.0.
+
+This means the summation order **deterministically** affects the result:
+
+<NumericalAccuracyDemo locale="en" client:visible />
+
+Comparing results across three summation orders:
+
+- **Sequential sum (left-to-right)**: Starting from 1.0, adding 1e-8 one at a time. Since 1e-8 is absorbed by the ULP of 1.0 at every step, the final result remains 1.0 -- **all small values are completely lost**.
+- **Pairwise sum**: Small values are first paired (1e-8 + 1e-8 = 2e-8), progressively combined, then added to the large value. Addition between small values incurs no precision loss, preserving more information.
+- **Reversed sum (small-first)**: All small values are accumulated first (7e-8), then the large value is added last. Since additions between small values are exact, this achieves the best precision.
+
+### Impact of Fusion and Tiling on Numerical Results
+
+Compiler optimizations change numerical behavior in multiple ways:
+
+**Fusion Changes Intermediate Precision**
+
+When multiple operations are fused into a single kernel, the precision of intermediate results may change. For example:
+- Without fusion: FP16 input -> FP16 intermediate result (written back to HBM) -> FP16 final result
+- With fusion: FP16 input -> FP32 intermediate result (kept in registers) -> FP16 final result
+
+Fusion may actually **improve** precision (because intermediate results use higher precision), but it can also cause results to differ from eager mode.
+
+**Tiling Changes Reduction Order**
+
+Tiling splits large reductions into tile-internal partial sums + inter-tile final reduction. This changes the reduction tree structure:
+
+- Without tiling: Global sequential sum (one deterministic order)
+- With tiling: Sum within each tile -> combine across tiles (different reduction tree)
+
+Due to floating-point non-associativity, these two approaches may produce different results.
+
+**The Critical Role of FP32 Accumulators in Mixed Precision**
+
+When using Tensor Cores for matrix multiplication, inputs are typically FP16/BF16, but the **accumulator must be FP32**. With FP16 accumulation, precision loss in large-scale reductions can be severe. For example: summing 512 FP16 values, an FP16 accumulator might produce 512.0 (losing all fractional parts), while an FP32 accumulator yields 512.0625.
+
+Triton's `tl.dot(a, b)` uses FP32 accumulation by default -- precisely to ensure numerical correctness.
+
+### Testing Strategies
+
+Systematic numerical verification is key to ensuring compiler correctness. PyTorch provides standardized tools and thresholds:
+
+**torch.testing.assert_close()**
+
+This is the recommended numerical comparison API:
+
+```python
+# Compare eager mode and compiled mode outputs
+eager_output = model(x)
+compiled_output = compiled_model(x)
+torch.testing.assert_close(compiled_output, eager_output, atol=1e-5, rtol=1.3e-6)
+```
+
+Two key parameters:
+- **atol (absolute tolerance)**: Absolute error threshold, $|a - b| \leq \text{atol}$
+- **rtol (relative tolerance)**: Relative error threshold, $|a - b| \leq \text{rtol} \times \max(|a|, |b|)$
+
+Common tolerance reference values:
+- **FP32**: `atol=1e-5, rtol=1.3e-6` (corresponding to FP32 machine epsilon ~1.19e-7, with margin)
+- **FP16**: `atol=1e-5, rtol=1e-3` (FP16 machine epsilon ~9.77e-4, rtol needs to be more lenient)
+- **BF16**: `atol=1e-3, rtol=1.6e-2` (BF16 has large exponent range but low mantissa precision)
+
+**TORCH_COMPILE_DEBUG**
+
+When numerical verification fails, `TORCH_COMPILE_DEBUG=1` enables you to:
+1. View the generated Triton source code to confirm whether the fusion strategy introduced precision changes
+2. Compare FX Graph and generated code structure to locate the problematic kernel
+3. Incrementally disable optimizations (`torch._inductor.config.xxx = False`) to narrow down the issue
+
+### Common Numerical Pitfalls
+
+**Softmax Overflow**
+
+$$
+\text{softmax}(x_i) = \frac{e^{x_i}}{\sum_j e^{x_j}}
+$$
+
+When $x_i$ is large, $e^{x_i}$ overflows to inf. **Standard fix**: subtract the maximum:
+
+$$
+\text{softmax}(x_i) = \frac{e^{x_i - \max(x)}}{\sum_j e^{x_j - \max(x)}}
+$$
+
+The compiler must ensure this numerical stability trick is correctly preserved when fusing softmax.
+
+**LayerNorm Negative Variance**
+
+When computing variance using $\text{Var}(x) = E[x^2] - (E[x])^2$, catastrophic cancellation can produce a negative result when $E[x^2]$ and $(E[x])^2$ are very close. **Standard fix**: Use Welford's online algorithm, or the form $\text{Var}(x) = E[(x - E[x])^2]$.
+
+**Mixed Precision Loss Scaling**
+
+In mixed precision training, FP16 gradients may underflow (too small, becoming 0) or overflow (too large, becoming inf). **Standard fix**: Dynamic loss scaling -- multiply the loss by a scale factor and divide by it after backpropagation. When inf/nan is detected, automatically reduce the scale factor.
+
+## Summary
+
+This article completes the code generation story -- from Triton Python DSL to GPU-executable binary. Key takeaways:
+
+1. **Triton's 6-stage compilation pipeline** (Python DSL -> Triton IR -> GPU IR -> LLVM IR -> PTX -> cubin) progressively lowers high-level block-level abstractions to hardware instructions, with MLIR enabling multi-backend support
+
+2. **TorchInductor code generation** transforms FX Graphs into readable Triton kernel source code, supporting three typical patterns (element-wise fusion, reduction fusion, epilogue fusion), with generated code inspectable via TORCH_COMPILE_DEBUG
+
+3. **Four major compiler backends** each have their positioning: TorchInductor+Triton (fast JIT, R&D-friendly), XLA (globally optimal, TPU-native), TensorRT (ultimate inference performance), IREE (cross-platform, lightweight)
+
+4. **Numerical correctness** is a first-class concern in compiler optimization: floating-point non-associativity means fusion/tiling can change results, and systematic testing strategies (assert_close + appropriate tolerances) and debugging tools (TORCH_COMPILE_DEBUG) are essential for ensuring correctness
+
+This completes all code generation content in the graph compilation optimization learning path. The next phase will cover advanced topics including quantization, distributed compilation, scheduling, and autotuning.
+
+## Further Reading
+
+- **Triton paper** (Tillet et al., 2019) -- Triton's design philosophy and original implementation
+- **Triton documentation** -- Tutorials, API reference, and programming guide
+- **MLIR GPU Dialect documentation** -- Technical details of multi-backend lowering
+- **IREE documentation** -- MLIR-native compiler and runtime architecture
+- **TensorRT Developer Guide** -- The authoritative reference for NVIDIA inference optimization
+- **Goldberg's floating-point paper** -- Essential floating-point arithmetic knowledge for every programmer

@@ -1,0 +1,545 @@
+---
+title: "Tiling 策略与内存层次优化"
+slug: tiling-memory-hierarchy
+locale: zh
+tags: [compiler, tiling, memory-hierarchy, gpu, shared-memory, optimization]
+prerequisites: [operator-fusion-cost-model]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "Roofline: An Insightful Visual Performance Model for Multicore Architectures"
+    url: "https://www2.eecs.berkeley.edu/Pubs/TechRpts/2008/EECS-2008-134.pdf"
+  - type: website
+    title: "NVIDIA CUDA C++ Programming Guide — Shared Memory"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory"
+  - type: website
+    title: "CUTLASS: CUDA Templates for Linear Algebra Subroutines"
+    url: "https://github.com/NVIDIA/cutlass"
+  - type: paper
+    title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+    url: "https://arxiv.org/abs/2205.14135"
+  - type: website
+    title: "Triton Language Documentation"
+    url: "https://triton-lang.org/main/index.html"
+  - type: website
+    title: "NVIDIA A100 GPU Architecture Whitepaper"
+    url: "https://images.nvidia.com/aem-dam/en-zz-Solutions/data-center/nvidia-ampere-architecture-whitepaper.pdf"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import TilingHierarchyExplorer from '../../../components/interactive/TilingHierarchyExplorer.tsx';
+import MemoryHierarchyFlow from '../../../components/interactive/MemoryHierarchyFlow.tsx';
+import TileSizeCalculator from '../../../components/interactive/TileSizeCalculator.tsx';
+import BankConflictVisualizer from '../../../components/interactive/BankConflictVisualizer.tsx';
+
+<CompilerStackMap currentArticle="tiling-memory-hierarchy" mode="compact" client:visible />
+
+## 简介
+
+Tiling（分块）是 GPU 编译中**最基础也是最重要**的优化技术。在前两篇文章中，我们讨论了[算子融合的分类](/zh/articles/operator-fusion-taxonomy)和 [Cost Model 的设计](/zh/articles/operator-fusion-cost-model)。本文从一个不同的角度切入——**内存层次（Memory Hierarchy）**——来理解为什么 tiling 是连接高层优化（Pass/Fusion）与底层代码生成（Codegen）的桥梁。
+
+核心观点：
+
+- GPU 的计算能力远超内存带宽，大多数 ML 运算是 **memory-bound**
+- Tiling 通过将大计算拆分为小块，使数据驻留在高速片上存储中，**将 memory-bound 问题转化为 compute-bound**
+- 多级 tiling（Thread Block → Warp → Register/MMA）直接映射到 GPU 的内存层次结构
+- Tile size 的选择是一个多约束优化问题，涉及 shared memory 容量、register 压力和 occupancy 的平衡
+
+本文是一篇**纵向主题文章**，贯穿编译器栈的多个阶段——从 IR 优化到代码生成再到调度执行。
+
+## 为什么 Tiling 是 GPU 编译的核心
+
+### Roofline Model 回顾
+
+理解 tiling 的必要性，需要先回顾 **Roofline Model**。它将每个计算核（kernel）描述为两个维度的交汇点：
+
+- **算术吞吐（Arithmetic Throughput）**：硬件每秒能做多少次浮点运算（FLOPS）
+- **内存带宽（Memory Bandwidth）**：硬件每秒能搬运多少数据
+
+两者的比值决定了 **计算-带宽比（Compute-to-Bandwidth Ratio）**：
+
+$$
+\text{Compute Intensity} = \frac{\text{FLOPs}}{\text{Bytes Accessed}}
+$$
+
+以 NVIDIA A100 为例：
+
+- 峰值算力：312 TFLOPS（FP16 Tensor Core）
+- HBM 带宽：2 TB/s
+
+$$
+\text{Ridge Point} = \frac{312 \text{ TFLOPS}}{2 \text{ TB/s}} = 156 \text{ FLOPs/Byte}
+$$
+
+这意味着：一个 kernel 要充分利用 A100 的计算能力，**每从内存读取 1 个字节，必须执行至少 156 次浮点运算**。绝大多数 ML 运算的算术强度远低于此——它们是 **memory-bound** 的。
+
+### Tiling 如何提升算术强度
+
+以矩阵乘法 $C[M,N] = A[M,K] \times B[K,N]$ 为例：
+
+**Naive 实现**：每个输出元素 $C[i,j]$ 需要读取 $A$ 的一整行和 $B$ 的一整列，做 $K$ 次乘加。数据复用率几乎为零——相邻线程读取的 $A$ 行和 $B$ 列大部分重叠，但由于没有共享机制，每次都要从 HBM 重新读取。
+
+$$
+\text{Naive Arithmetic Intensity} = \frac{2MNK}{(MK + KN + MN) \times \text{elem\_size}} \approx \frac{2K}{\text{elem\_size}} \text{ (when } M, N \gg K \text{)}
+$$
+
+**Tiled 实现**：将 $C$ 分成 $T_M \times T_N$ 的小块，每块对应的 $A$ 和 $B$ 片段加载到 shared memory 后，被该块内的所有线程复用：
+
+$$
+\text{Tiled Arithmetic Intensity} = \frac{2 \cdot T_M \cdot T_N \cdot K}{(T_M \cdot K + K \cdot T_N) \times \text{elem\_size}} = \frac{2 \cdot T_M \cdot T_N}{(T_M + T_N) \times \text{elem\_size}}
+$$
+
+当 $T_M = T_N = 128$, elem_size = 2（FP16）时：
+
+$$
+\text{Tiled AI} = \frac{2 \times 128 \times 128}{(128 + 128) \times 2} = \frac{32768}{512} = 64 \text{ FLOPs/Byte}
+$$
+
+这比 naive 实现高了一个数量级。进一步通过多级 tiling，在 register 层面还能继续提升复用率。
+
+### 类比理解
+
+可以把 tiling 想象成**阅读策略**：
+
+- **Naive**：从图书馆拿一本书，读一个句子，还回去，再拿，读下一句——每次访问都要走到图书馆（HBM）
+- **Tiled**：一次从图书馆借一整章（tile），放到桌上（shared memory），反复阅读这一章的所有段落，读完再借下一章
+- **Multi-level tiled**：先借一章到桌上（shared memory），再把当前在读的段落抄到便签纸上（register），便签纸访问最快
+
+## GPU 内存层次详解
+
+GPU 的内存系统是一个层次化的金字塔结构。从远到近、从慢到快：
+
+### HBM (High Bandwidth Memory)
+
+- **容量**：~80 GB（A100 80GB 版本）
+- **带宽**：~2 TB/s
+- **延迟**：~400 cycles
+- **管理方式**：由 CUDA Runtime 自动管理，通过 `cudaMalloc` 分配
+
+HBM 是 GPU 的"主存"。所有 tensor 数据默认存储在这里。虽然名字里有 "High Bandwidth"，但相比片上存储来说仍然是整个层次中最慢的一级。
+
+### L2 Cache
+
+- **容量**：~40 MB（A100）
+- **带宽**：~5 TB/s
+- **延迟**：~200 cycles
+- **管理方式**：硬件自动管理，对程序员透明
+
+L2 Cache 是 HBM 之上的硬件缓存层。程序员无法直接控制其内容（Hopper 架构引入了 L2 cache residency control 的初步 API），但通过合理的数据访问模式可以间接提高 L2 命中率。
+
+### Shared Memory (SRAM)
+
+- **容量**：~164 KB/SM（A100 运行时可配置）
+- **带宽**：~19 TB/s
+- **延迟**：~30 cycles
+- **管理方式**：程序员显式管理（`__shared__` 声明或 dynamic shared memory）
+
+Shared Memory 是 tiling 的核心战场。它位于每个 SM（Streaming Multiprocessor）内部，**由程序员完全控制**。一个 thread block 中的所有线程共享同一块 shared memory，这使得数据复用成为可能。
+
+关键特性：
+- 物理上由 **32 个 bank** 组成，每个 bank 宽 4 字节
+- 与 L1 cache 共享物理 SRAM（A100 上可配置 0/64/100/128/164 KB 比例）
+- 访问延迟仅为 HBM 的约 1/13
+
+### Register File
+
+- **容量**：256 KB/SM（65536 个 32-bit registers）
+- **带宽**：on-chip（理论上无限）
+- **延迟**：~1 cycle
+- **管理方式**：编译器自动分配，对程序员半透明
+
+Register 是最快的存储层。每个线程拥有私有的 register 集合。Tensor Core 的 MMA 指令直接在 register 中读写操作数和结果——这就是为什么 register-level tiling 对于达到峰值性能至关重要。
+
+### 内存层次对比
+
+| 层级 | 容量 | 带宽 | 延迟 | 管理方式 | Tiling 映射 |
+|------|------|------|------|---------|------------|
+| HBM | ~80 GB | ~2 TB/s | ~400 cycles | 自动 | 全局数据 |
+| L2 Cache | ~40 MB | ~5 TB/s | ~200 cycles | 硬件自动 | 透明缓存 |
+| Shared Memory | ~164 KB/SM | ~19 TB/s | ~30 cycles | 程序员显式 | Thread Block Tile |
+| Register File | 256 KB/SM | on-chip | ~1 cycle | 编译器 | Warp/MMA Tile |
+
+**关键洞察**：每向上一级，**带宽提升约 10 倍，但容量缩小约 1000 倍**。Tiling 的本质就是在这个带宽-容量的权衡中找到最优点。
+
+<MemoryHierarchyFlow client:visible />
+
+## 多级 Tiling 策略
+
+多级 tiling 将一个大矩阵运算逐层分解，使每一级的数据都能驻留在对应的存储层级中。以 GEMM（$C = A \times B$）为例，CUTLASS 采用三级 tiling 层次。
+
+### Thread Block Level Tiling
+
+最外层的 tiling 将输出矩阵 $C[M,N]$ 分成若干 $\text{BLOCK\_M} \times \text{BLOCK\_N}$ 的小块，每个小块由一个 CUDA thread block 计算。
+
+沿 K 维度，计算以 $\text{BLOCK\_K}$ 为步长迭代：
+
+```
+for k_tile in range(0, K, BLOCK_K):
+    # Load A[block_m : block_m+BLOCK_M, k_tile : k_tile+BLOCK_K] → shared memory
+    # Load B[k_tile : k_tile+BLOCK_K, block_n : block_n+BLOCK_N] → shared memory
+    __syncthreads()
+    # Compute partial sum: C_tile += A_tile @ B_tile
+    __syncthreads()
+```
+
+在 Triton 中，这个模式通过 block-level programming 自然表达：
+
+```python
+@triton.jit
+def matmul_kernel(A, B, C, M, N, K, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    for k in range(0, K, BLOCK_K):
+        a = tl.load(A + offs_m[:, None] * K + (k + tl.arange(0, BLOCK_K))[None, :])
+        b = tl.load(B + (k + tl.arange(0, BLOCK_K))[:, None] * N + offs_n[None, :])
+        accumulator += tl.dot(a, b)
+    tl.store(C + offs_m[:, None] * N + offs_n[None, :], accumulator)
+```
+
+典型的 thread block tile size：$\text{BLOCK\_M} = \text{BLOCK\_N} = 128$，$\text{BLOCK\_K} = 32$。
+
+### Warp Level Tiling
+
+在一个 thread block 内部，进一步将 $\text{BLOCK\_M} \times \text{BLOCK\_N}$ 的工作分配给多个 warp。每个 warp 负责一个 $\text{WARP\_M} \times \text{WARP\_N}$ 的子块。
+
+CUTLASS 中，一个 128×128 的 thread block tile 通常分配给 4 个 warp（2×2 布局），每个 warp 处理 64×64 的子块。数据从 shared memory 读入 register file。
+
+### Register Level Tiling (MMA Instructions)
+
+最内层的 tiling 映射到 Tensor Core 的 MMA（Matrix Multiply-Accumulate）指令。每条 MMA 指令处理一个小矩阵块：
+
+- **Ampere (A100)**：`mma.sync.aligned.m16n8k16.f32.f16.f16.f32`，处理 16×8×16 的 FP16 矩阵乘法
+- **更通用的视角**：16×16×16 的逻辑块（通过多次 m16n8k16 组合）
+
+数据以 **fragment** 的形式分散在 warp 中的 32 个线程的 register 中。每个线程持有 fragment 的一部分——这是 WMMA API 和底层 MMA PTX 指令的核心概念。
+
+<TilingHierarchyExplorer client:visible />
+
+## 内存层次优化技术
+
+选定了 tile size 后，还需要一系列技术来确保数据在各级存储之间高效流动。
+
+### Shared Memory Staging
+
+最基本的模式是**两层循环**：外层循环沿 K 维度步进，每步将一个 tile 从 HBM 加载到 shared memory；内层循环在 shared memory 中执行计算。
+
+```cuda
+__shared__ half A_smem[BLOCK_M][BLOCK_K];
+__shared__ half B_smem[BLOCK_K][BLOCK_N];
+
+for (int k = 0; k < K; k += BLOCK_K) {
+    // Phase 1: Load tile from HBM to shared memory
+    load_tile_A(A, A_smem, k);
+    load_tile_B(B, B_smem, k);
+    __syncthreads();
+
+    // Phase 2: Compute using shared memory data
+    compute_tile(A_smem, B_smem, C_reg);
+    __syncthreads();
+}
+```
+
+这里的 `__syncthreads()` 是关键——它确保所有线程完成 load 后才开始 compute，以及 compute 完成后才开始下一轮 load。
+
+### cp.async：异步复制
+
+在 Ampere 架构（SM80，A100）之前，HBM → Shared Memory 的数据路径是：
+
+$$
+\text{HBM} \xrightarrow{\text{global load}} \text{Register} \xrightarrow{\text{shared store}} \text{Shared Memory}
+$$
+
+这需要占用 register 作为中转，增加了 register 压力。
+
+Ampere 引入了 `cp.async` 指令，允许数据**直接从 HBM 复制到 Shared Memory**，不经过 register：
+
+$$
+\text{HBM} \xrightarrow{\text{cp.async}} \text{Shared Memory}
+$$
+
+```cuda
+// Ampere+ asynchronous copy
+cp_async_copy(A_smem, A_hbm, size);
+cp_async_commit_group();
+// ... do other work ...
+cp_async_wait_group<0>();
+__syncthreads();
+```
+
+好处有三：
+1. **减少 register 压力**：不需要 register 做中转
+2. **允许 load 和 compute 重叠**：异步操作天然支持流水线
+3. **提高 SM 资源利用率**
+
+### Double Buffering / Multi-Stage Pipelining
+
+如果 load 和 compute 完全串行执行，一半时间 Tensor Core 在等待数据。Double buffering 解决了这个问题：
+
+**核心思想**：在 shared memory 中分配**两份 buffer**。当 Tile[i] 在 buffer A 中被计算时，Tile[i+1] 同时从 HBM 加载到 buffer B。
+
+```
+Iteration i:
+  Buffer A: Compute(Tile[i])     ← Tensor Core busy
+  Buffer B: Load(Tile[i+1])      ← Memory pipeline busy (cp.async)
+
+Iteration i+1:
+  Buffer B: Compute(Tile[i+1])   ← swap
+  Buffer A: Load(Tile[i+2])      ← swap
+```
+
+可以推广到 N-stage pipeline（N = 3, 4, 5），每多一级 stage 需要多分配一份 shared memory buffer。Trade-off 很清晰：
+
+$$
+\text{SMEM usage} = \text{tile\_size} \times \text{elem\_size} \times \text{num\_stages}
+$$
+
+更多 stage 意味着更好的 latency hiding，但也意味着更多 shared memory 消耗（可能导致 occupancy 下降）。
+
+### Memory Coalescing
+
+**Coalesced access（合并访问）** 是 GPU 内存系统的核心要求：一个 warp 中的 32 个线程应该访问连续的内存地址，这样硬件可以将 32 次请求合并为 1 次 128-byte transaction。
+
+```
+// Coalesced: thread i reads element i — consecutive addresses
+data[threadIdx.x]          // ✓ One 128B transaction
+
+// Non-coalesced: thread i reads element i*stride — scattered addresses
+data[threadIdx.x * stride] // ✗ Multiple transactions if stride > 1
+```
+
+非合并访问的影响：
+- 每个线程的请求可能落在不同的 128-byte 段中
+- 最坏情况下，32 个线程产生 32 次独立的内存事务
+- **性能可能下降 10-32 倍**
+
+常见陷阱：在 row-major 存储的矩阵中按列访问。如果 $A$ 是 row-major 的 $[M, K]$ 矩阵，thread block 需要读取 $A$ 的一个 $\text{BLOCK\_M} \times \text{BLOCK\_K}$ 子块。如果线程沿 M 维度分配（每个线程处理一行），那么相邻线程读取的是 $A$ 的相邻行——内存地址跨越 $K \times \text{elem\_size}$ 字节，不连续。解决方案是让相邻线程读取同一行的连续元素。
+
+### Bank Conflict 与 Swizzling
+
+Shared memory 由 **32 个 bank** 组成，每个 bank 宽 4 字节。同一个 warp 中的线程如果访问不同的 bank，则所有访问可以并行完成（1 cycle）。如果多个线程访问同一个 bank，则必须串行化——这就是 **bank conflict**。
+
+地址到 bank 的映射：
+
+$$
+\text{bank}(\text{addr}) = \left\lfloor \frac{\text{addr}}{4} \right\rfloor \bmod 32
+$$
+
+**常见冲突模式**：
+
+| 访问 stride | Bank 分布 | 冲突度 | 性能影响 |
+|-------------|----------|--------|---------|
+| stride=1 | 0,1,2,...,31 | 1-way（无冲突） | 1x |
+| stride=2 | 0,2,4,...,30,0,2,... | 2-way | 2x slowdown |
+| stride=32 | 0,0,0,...,0 | 32-way（全冲突） | 32x slowdown |
+
+**Swizzling** 是消除 bank conflict 的标准技术。核心思想是对共享内存地址做 XOR 运算，重新映射 bank 分配：
+
+$$
+\text{swizzled\_bank} = (\text{row} \oplus \text{col}) \bmod 32
+$$
+
+这确保了即使原始访问模式有规律的 stride，经过 XOR 变换后线程也能分散到不同的 bank。CUTLASS 的 `swizzle` 函数和 Triton 的自动 swizzle 都基于这个原理。
+
+<BankConflictVisualizer client:visible />
+
+## Tile Size 选择的约束分析
+
+Tile size 的选择不是任意的——它受到多个硬件约束的限制，形成一个**可行性区域（feasibility region）**。
+
+### 约束一：Shared Memory 容量
+
+每个 tile 在 shared memory 中的占用：
+
+$$
+\text{SMEM} = (\text{BLOCK\_M} \times \text{BLOCK\_K} + \text{BLOCK\_K} \times \text{BLOCK\_N}) \times \text{elem\_size} \times \text{num\_stages}
+$$
+
+以 $\text{BLOCK\_M} = \text{BLOCK\_N} = 128$, $\text{BLOCK\_K} = 32$, FP16, 2-stage 为例：
+
+$$
+\text{SMEM} = (128 \times 32 + 32 \times 128) \times 2 \times 2 = 32{,}768 \text{ bytes} = 32 \text{ KB}
+$$
+
+A100 每个 SM 有约 164 KB shared memory。如果 tile 用了 32 KB，理论上一个 SM 可以容纳 5 个 thread block（$\lfloor 164/32 \rfloor = 5$）。
+
+如果增大到 $\text{BLOCK\_M} = \text{BLOCK\_N} = 256$, $\text{BLOCK\_K} = 64$, 3-stage：
+
+$$
+\text{SMEM} = (256 \times 64 + 64 \times 256) \times 2 \times 3 = 196{,}608 \text{ bytes} = 192 \text{ KB}
+$$
+
+这已经超过了 A100 的 164 KB 限制——**不可行**。
+
+### 约束二：Register 压力
+
+每个线程需要持有其 fragment 的 accumulator：
+
+$$
+\text{regs\_per\_thread} \approx \frac{\text{BLOCK\_M} \times \text{BLOCK\_N}}{\text{threads\_per\_block}} + \text{overhead}
+$$
+
+NVIDIA GPU 的每个线程最多使用 255 个 32-bit register。如果需求超过此上限，编译器会将 register "溢出"到 local memory（实际上是 HBM），导致性能灾难。
+
+### 约束三：Occupancy
+
+Occupancy = SM 上实际活跃的 warp 数 / SM 支持的最大 warp 数。
+
+更大的 tile → 更多的 shared memory 和 register → 每个 SM 能运行的 thread block 更少 → occupancy 下降。
+
+低 occupancy 意味着当一些 warp 在等待内存（stall）时，没有足够的其他 warp 来填补空闲的计算周期。一般来说，occupancy 低于 25% 会导致明显的性能下降。
+
+但 occupancy 也不是越高越好——更大的 tile 意味着更高的数据复用率。这是一个经典的 **occupancy vs. data reuse** trade-off。
+
+### 自动调优
+
+由于约束空间的复杂性，实践中往往通过 **autotuning** 来寻找最优 tile size：
+
+1. 枚举所有可行的 tile 配置组合
+2. 过滤掉违反硬件约束的配置
+3. 在目标硬件上对每个候选配置进行基准测试
+4. 选择性能最高的配置
+
+Triton 的 `autotune` decorator 正是这个思路的体现。CUTLASS 也提供了 profiling 工具来选择最优的 tile 配置。
+
+经验法则（Rule of thumb）：
+- 起始点：$\text{BLOCK\_M} = \text{BLOCK\_N} = 128$, $\text{BLOCK\_K} = 32$
+- 如果 shared memory 有余量，尝试增大 $\text{BLOCK\_K}$ 或增加 pipeline stage
+- 如果 occupancy 过低，减小 tile size
+- 如果 register 溢出，减小 $\text{BLOCK\_M} \times \text{BLOCK\_N}$
+
+<TileSizeCalculator client:visible />
+
+## Tiling 贯穿编译器栈
+
+Tiling 不是一个孤立的优化——它渗透到编译器栈的每一个阶段。
+
+### Pass 阶段：Bufferization
+
+MLIR 的 bufferization pass 将 tensor 语义转换为 buffer（memref）语义，决定数据在内存层次中的位置。Tiling 决策直接影响 bufferization 的 allocation strategy：
+
+- Thread block tile → `memref.alloc` in shared memory address space
+- Register tile → SSA value in register
+
+### Tiling 阶段：tile-and-fuse
+
+MLIR 的 `linalg` dialect 提供了 `tile-and-fuse` 变换，将高层的 linalg 操作按指定的 tile sizes 分块，同时将 producer-consumer 关系中的 producer 融合到 consumer 的 tile 循环内部。
+
+```
+// Before tiling
+linalg.matmul ins(%A, %B) outs(%C)
+
+// After tile-and-fuse (conceptual)
+scf.for %k = 0 to %K step %BLOCK_K {
+  %a_tile = memref.subview %A[%m, %k][BLOCK_M, BLOCK_K]
+  %b_tile = memref.subview %B[%k, %n][BLOCK_K, BLOCK_N]
+  linalg.matmul ins(%a_tile, %b_tile) outs(%c_tile)
+}
+```
+
+### Fusion 阶段：Tile 边界决定融合机会
+
+[融合文章](/zh/articles/operator-fusion-taxonomy)中讨论的各种融合类型，在 tiled 语境下有新的含义。Element-wise 后处理（如 ReLU、bias add）可以直接融合到 GEMM tile 的输出端，在结果写回 HBM 之前就地完成——这就是 **epilogue fusion**。
+
+Tile 的边界也决定了**哪些操作能融合**。如果两个操作的 tiling 维度不一致，融合就需要引入额外的 data movement。
+
+### Codegen 阶段：生成内存操作
+
+代码生成器根据 tiling 决策生成具体的内存操作：
+
+- Shared memory load/store 指令
+- `__syncthreads()` barrier
+- `cp.async` 异步复制指令
+- Tensor Core MMA 指令
+- Swizzle 地址计算
+
+### Scheduling 阶段：Kernel Launch 配置
+
+Tile size 直接决定了 kernel launch 的 grid 和 block 配置：
+
+$$
+\text{grid\_dim.x} = \lceil M / \text{BLOCK\_M} \rceil, \quad \text{grid\_dim.y} = \lceil N / \text{BLOCK\_N} \rceil
+$$
+
+$$
+\text{block\_dim} = \text{threads\_per\_block} \quad (\text{determined by warp-level tiling})
+$$
+
+## 实战：GEMM Kernel 完整 Tiling 分析
+
+让我们追踪一个 GEMM kernel 从 naive 到高性能的完整优化路径，在 A100 上以 FP16 计算 $C[4096, 4096] = A[4096, 4096] \times B[4096, 4096]$。
+
+### Step 1：Naive 实现（一个线程算一个元素）
+
+每个线程独立计算 $C[i,j]$，从 HBM 读取 $A$ 的整行和 $B$ 的整列。
+
+- 每个元素：$2 \times 4096$ FLOP, 读取 $2 \times 4096 \times 2$ = 16384 bytes
+- 算术强度：$8192 / 16384 = 0.5$ FLOPs/Byte
+- **严重 memory-bound**，约 2% of peak
+
+### Step 2：Shared Memory Tiling（128×128×32）
+
+Thread block tile + shared memory staging。
+
+- 数据复用率提升 $128 / 2 = 64$ 倍
+- 算术强度提升到 ~64 FLOPs/Byte
+- 约 **30% of peak FLOPS**
+
+### Step 3：Register Tiling + Tensor Core MMA
+
+加入 warp-level 和 register-level tiling，使用 Tensor Core 的 MMA 指令。
+
+- MMA 指令在 register 中完成 16×16×16 乘加
+- 消除了 shared memory 到 ALU 的带宽瓶颈
+- 约 **60% of peak FLOPS**
+
+### Step 4：Double Buffering + Vectorized Loads
+
+通过 `cp.async` 实现 2-stage pipeline，load 和 compute 重叠执行。使用 128-bit vectorized load (LDG.128) 提高 HBM 带宽利用率。
+
+- Load latency 被 compute 完全隐藏
+- 约 **80% of peak FLOPS**
+
+### Step 5：Swizzling + Occupancy Tuning
+
+消除 shared memory bank conflict，精细调节 tile size 以平衡 occupancy 和 data reuse。
+
+- Bank conflict 消除后 shared memory 带宽接近理论峰值
+- 约 **90% of peak FLOPS**（接近 CUTLASS/cuBLAS 水平）
+
+### 性能汇总
+
+| 优化步骤 | 算术强度 | 预估 TFLOPS | % of Peak |
+|---------|---------|-------------|-----------|
+| Naive（一线程一元素） | ~0.5 FLOPs/B | ~6 | ~2% |
+| Shared Memory Tiling | ~64 FLOPs/B | ~94 | ~30% |
+| + Tensor Core MMA | ~128 FLOPs/B | ~187 | ~60% |
+| + Double Buffering | ~128 FLOPs/B | ~250 | ~80% |
+| + Swizzle + Tuning | ~128 FLOPs/B | ~281 | ~90% |
+
+注意：上表中的 TFLOPS 数值为估算值，实际性能受 kernel 实现细节、硬件频率、thermal throttling 等因素影响。CUTLASS 和 cuBLAS 的优化 GEMM 在 A100 上通常可以达到 280-300 TFLOPS（FP16）。
+
+## 总结
+
+Tiling 是连接高层算法优化和底层硬件执行的**桥梁**。本文的核心要点：
+
+1. **内存层次是 GPU 性能的决定因素**。HBM 到 Register 的带宽提升超过 100 倍，tiling 将数据放置在正确的层级
+2. **多级 tiling（Thread Block → Warp → MMA）** 直接映射到 GPU 的 HBM → Shared Memory → Register 层次
+3. **关键技术**：shared memory staging、cp.async 异步复制、double buffering、memory coalescing、swizzling
+4. **Tile size 选择**是一个约束优化问题——shared memory 容量、register 压力和 occupancy 形成三角约束
+5. Tiling 决策**贯穿整个编译器栈**，从 IR 优化到代码生成到调度执行
+
+下一篇文章将讨论 **Dynamic Shapes** 的挑战——当 tensor 形状在编译时未知，这些静态 tiling 策略如何适应？
+
+## 延伸阅读
+
+- **NVIDIA CUDA Programming Guide — Shared Memory 章节**：shared memory 架构和 bank conflict 的官方文档
+- **CUTLASS documentation**：理解 NVIDIA 工程实践中的多级 tiling 实现
+- **Triton tutorials**：block-level programming model 如何简化 tiling 表达
+- **FlashAttention paper**：tiling 技术在 attention 计算中的创新应用
+- **Roofline Model paper**：理解 compute vs memory 瓶颈的分析框架
+- **A100 GPU Architecture Whitepaper**：A100 内存层次的权威规格说明

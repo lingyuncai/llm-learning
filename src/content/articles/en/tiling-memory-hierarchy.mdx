@@ -1,0 +1,545 @@
+---
+title: "Tiling Strategies & Memory Hierarchy Optimization"
+slug: tiling-memory-hierarchy
+locale: en
+tags: [compiler, tiling, memory-hierarchy, gpu, shared-memory, optimization]
+prerequisites: [operator-fusion-cost-model]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "Roofline: An Insightful Visual Performance Model for Multicore Architectures"
+    url: "https://www2.eecs.berkeley.edu/Pubs/TechRpts/2008/EECS-2008-134.pdf"
+  - type: website
+    title: "NVIDIA CUDA C++ Programming Guide — Shared Memory"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory"
+  - type: website
+    title: "CUTLASS: CUDA Templates for Linear Algebra Subroutines"
+    url: "https://github.com/NVIDIA/cutlass"
+  - type: paper
+    title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+    url: "https://arxiv.org/abs/2205.14135"
+  - type: website
+    title: "Triton Language Documentation"
+    url: "https://triton-lang.org/main/index.html"
+  - type: website
+    title: "NVIDIA A100 GPU Architecture Whitepaper"
+    url: "https://images.nvidia.com/aem-dam/en-zz-Solutions/data-center/nvidia-ampere-architecture-whitepaper.pdf"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import TilingHierarchyExplorer from '../../../components/interactive/TilingHierarchyExplorer.tsx';
+import MemoryHierarchyFlow from '../../../components/interactive/MemoryHierarchyFlow.tsx';
+import TileSizeCalculator from '../../../components/interactive/TileSizeCalculator.tsx';
+import BankConflictVisualizer from '../../../components/interactive/BankConflictVisualizer.tsx';
+
+<CompilerStackMap locale="en" currentArticle="tiling-memory-hierarchy" mode="compact" client:visible />
+
+## Introduction
+
+Tiling is the **most fundamental and important** optimization technique in GPU compilation. In the previous two articles, we discussed [operator fusion taxonomy](/en/articles/operator-fusion-taxonomy) and [cost model design](/en/articles/operator-fusion-cost-model). This article approaches from a different angle — **Memory Hierarchy** — to understand why tiling is the bridge between high-level optimizations (Pass/Fusion) and low-level code generation (Codegen).
+
+Core insights:
+
+- GPU compute capacity far exceeds memory bandwidth; most ML operations are **memory-bound**
+- Tiling decomposes large computations into small blocks that reside in fast on-chip memory, **transforming memory-bound problems into compute-bound ones**
+- Multi-level tiling (Thread Block → Warp → Register/MMA) maps directly to the GPU memory hierarchy
+- Tile size selection is a multi-constraint optimization problem involving shared memory capacity, register pressure, and occupancy tradeoffs
+
+This is a **vertical thematic article** that spans multiple stages of the compiler stack — from IR optimization to code generation to scheduling and execution.
+
+## Why Tiling Is Central to GPU Compilation
+
+### Roofline Model Recap
+
+To understand why tiling is necessary, we must first revisit the **Roofline Model**. It characterizes each kernel along two axes:
+
+- **Arithmetic Throughput**: how many floating-point operations per second the hardware can perform (FLOPS)
+- **Memory Bandwidth**: how many bytes per second the hardware can transfer
+
+Their ratio determines the **Compute-to-Bandwidth Ratio**:
+
+$$
+\text{Compute Intensity} = \frac{\text{FLOPs}}{\text{Bytes Accessed}}
+$$
+
+For the NVIDIA A100:
+
+- Peak throughput: 312 TFLOPS (FP16 Tensor Core)
+- HBM bandwidth: 2 TB/s
+
+$$
+\text{Ridge Point} = \frac{312 \text{ TFLOPS}}{2 \text{ TB/s}} = 156 \text{ FLOPs/Byte}
+$$
+
+This means: for a kernel to fully utilize the A100's compute capability, **it must execute at least 156 floating-point operations per byte read from memory**. The vast majority of ML operations have arithmetic intensity far below this threshold — they are **memory-bound**.
+
+### How Tiling Increases Arithmetic Intensity
+
+Consider matrix multiplication $C[M,N] = A[M,K] \times B[K,N]$:
+
+**Naive implementation**: each output element $C[i,j]$ requires reading an entire row of $A$ and an entire column of $B$, performing $K$ multiply-accumulate operations. Data reuse is nearly zero — neighboring threads read overlapping rows and columns of $A$ and $B$, but without a sharing mechanism, every access goes back to HBM.
+
+$$
+\text{Naive Arithmetic Intensity} = \frac{2MNK}{(MK + KN + MN) \times \text{elem\_size}} \approx \frac{2K}{\text{elem\_size}} \text{ (when } M, N \gg K \text{)}
+$$
+
+**Tiled implementation**: partition $C$ into $T_M \times T_N$ tiles, load the corresponding $A$ and $B$ fragments into shared memory, where they are reused by all threads within the tile:
+
+$$
+\text{Tiled Arithmetic Intensity} = \frac{2 \cdot T_M \cdot T_N \cdot K}{(T_M \cdot K + K \cdot T_N) \times \text{elem\_size}} = \frac{2 \cdot T_M \cdot T_N}{(T_M + T_N) \times \text{elem\_size}}
+$$
+
+With $T_M = T_N = 128$ and elem_size = 2 (FP16):
+
+$$
+\text{Tiled AI} = \frac{2 \times 128 \times 128}{(128 + 128) \times 2} = \frac{32768}{512} = 64 \text{ FLOPs/Byte}
+$$
+
+This is an order of magnitude higher than the naive implementation. Multi-level tiling further increases reuse at the register level.
+
+### An Analogy
+
+Think of tiling as a **reading strategy**:
+
+- **Naive**: walk to the library (HBM) for every sentence, read one sentence, return the book, repeat — every access requires a round trip
+- **Tiled**: borrow an entire chapter (tile) from the library, place it on your desk (shared memory), read all paragraphs in the chapter repeatedly, then return for the next chapter
+- **Multi-level tiled**: borrow a chapter to your desk (shared memory), then copy the current paragraph onto a sticky note (register) — the sticky note is the fastest to access
+
+## GPU Memory Hierarchy in Detail
+
+The GPU memory system is a hierarchical pyramid structure. From farthest to nearest, slowest to fastest:
+
+### HBM (High Bandwidth Memory)
+
+- **Capacity**: ~80 GB (A100 80GB variant)
+- **Bandwidth**: ~2 TB/s
+- **Latency**: ~400 cycles
+- **Management**: automatically managed by CUDA Runtime via `cudaMalloc`
+
+HBM is the GPU's "main memory." All tensor data resides here by default. Despite "High Bandwidth" in the name, it is the slowest tier relative to on-chip storage.
+
+### L2 Cache
+
+- **Capacity**: ~40 MB (A100)
+- **Bandwidth**: ~5 TB/s
+- **Latency**: ~200 cycles
+- **Management**: hardware-managed, transparent to the programmer
+
+L2 Cache is the hardware cache layer above HBM. Programmers cannot directly control its contents (Hopper architecture introduced preliminary L2 cache residency control APIs), but reasonable data access patterns can indirectly improve L2 hit rates.
+
+### Shared Memory (SRAM)
+
+- **Capacity**: ~164 KB/SM (A100, runtime-configurable)
+- **Bandwidth**: ~19 TB/s
+- **Latency**: ~30 cycles
+- **Management**: explicitly managed by the programmer (`__shared__` declaration or dynamic shared memory)
+
+Shared Memory is the core battlefield for tiling. It resides within each SM (Streaming Multiprocessor) and is **fully controlled by the programmer**. All threads within a thread block share the same shared memory, enabling data reuse.
+
+Key characteristics:
+- Physically composed of **32 banks**, each 4 bytes wide
+- Shares physical SRAM with L1 cache (A100 allows configuring 0/64/100/128/164 KB split)
+- Access latency is approximately 1/13th of HBM
+
+### Register File
+
+- **Capacity**: 256 KB/SM (65536 32-bit registers)
+- **Bandwidth**: on-chip (theoretically unlimited)
+- **Latency**: ~1 cycle
+- **Management**: automatically allocated by the compiler, semi-transparent to the programmer
+
+Registers are the fastest storage tier. Each thread owns a private set of registers. Tensor Core MMA instructions read and write operands and results directly in registers — this is why register-level tiling is critical for achieving peak performance.
+
+### Memory Hierarchy Comparison
+
+| Tier | Capacity | Bandwidth | Latency | Management | Tiling Mapping |
+|------|----------|-----------|---------|------------|---------------|
+| HBM | ~80 GB | ~2 TB/s | ~400 cycles | Automatic | Global data |
+| L2 Cache | ~40 MB | ~5 TB/s | ~200 cycles | Hardware auto | Transparent cache |
+| Shared Memory | ~164 KB/SM | ~19 TB/s | ~30 cycles | Programmer explicit | Thread Block Tile |
+| Register File | 256 KB/SM | on-chip | ~1 cycle | Compiler | Warp/MMA Tile |
+
+**Key insight**: at each level up, **bandwidth increases ~10x while capacity shrinks ~1000x**. The essence of tiling is finding the optimal point in this bandwidth-capacity tradeoff.
+
+<MemoryHierarchyFlow locale="en" client:visible />
+
+## Multi-Level Tiling Strategies
+
+Multi-level tiling decomposes a large matrix operation layer by layer so that each level's data resides in the corresponding memory tier. Using GEMM ($C = A \times B$) as an example, CUTLASS employs a three-level tiling hierarchy.
+
+### Thread Block Level Tiling
+
+The outermost tiling partitions the output matrix $C[M,N]$ into $\text{BLOCK\_M} \times \text{BLOCK\_N}$ tiles, each computed by one CUDA thread block.
+
+Along the K dimension, computation iterates in steps of $\text{BLOCK\_K}$:
+
+```
+for k_tile in range(0, K, BLOCK_K):
+    # Load A[block_m : block_m+BLOCK_M, k_tile : k_tile+BLOCK_K] → shared memory
+    # Load B[k_tile : k_tile+BLOCK_K, block_n : block_n+BLOCK_N] → shared memory
+    __syncthreads()
+    # Compute partial sum: C_tile += A_tile @ B_tile
+    __syncthreads()
+```
+
+In Triton, this pattern is naturally expressed through block-level programming:
+
+```python
+@triton.jit
+def matmul_kernel(A, B, C, M, N, K, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    for k in range(0, K, BLOCK_K):
+        a = tl.load(A + offs_m[:, None] * K + (k + tl.arange(0, BLOCK_K))[None, :])
+        b = tl.load(B + (k + tl.arange(0, BLOCK_K))[:, None] * N + offs_n[None, :])
+        accumulator += tl.dot(a, b)
+    tl.store(C + offs_m[:, None] * N + offs_n[None, :], accumulator)
+```
+
+Typical thread block tile sizes: $\text{BLOCK\_M} = \text{BLOCK\_N} = 128$, $\text{BLOCK\_K} = 32$.
+
+### Warp Level Tiling
+
+Within a thread block, the $\text{BLOCK\_M} \times \text{BLOCK\_N}$ work is further distributed among multiple warps. Each warp handles a $\text{WARP\_M} \times \text{WARP\_N}$ sub-tile.
+
+In CUTLASS, a 128x128 thread block tile is typically assigned to 4 warps (2x2 layout), each processing a 64x64 sub-tile. Data flows from shared memory into the register file.
+
+### Register Level Tiling (MMA Instructions)
+
+The innermost tiling maps to Tensor Core MMA (Matrix Multiply-Accumulate) instructions. Each MMA instruction processes a small matrix block:
+
+- **Ampere (A100)**: `mma.sync.aligned.m16n8k16.f32.f16.f16.f32`, processing a 16x8x16 FP16 matrix multiply
+- **More general view**: 16x16x16 logical blocks (composed of multiple m16n8k16 calls)
+
+Data is distributed as **fragments** across the 32 threads in a warp's registers. Each thread holds a portion of the fragment — this is the core concept behind the WMMA API and underlying MMA PTX instructions.
+
+<TilingHierarchyExplorer locale="en" client:visible />
+
+## Memory Hierarchy Optimization Techniques
+
+Once tile sizes are chosen, a suite of techniques ensures data flows efficiently between memory tiers.
+
+### Shared Memory Staging
+
+The most basic pattern is a **two-level loop**: the outer loop steps along the K dimension, loading a tile from HBM to shared memory each step; the inner loop computes using shared memory data.
+
+```cuda
+__shared__ half A_smem[BLOCK_M][BLOCK_K];
+__shared__ half B_smem[BLOCK_K][BLOCK_N];
+
+for (int k = 0; k < K; k += BLOCK_K) {
+    // Phase 1: Load tile from HBM to shared memory
+    load_tile_A(A, A_smem, k);
+    load_tile_B(B, B_smem, k);
+    __syncthreads();
+
+    // Phase 2: Compute using shared memory data
+    compute_tile(A_smem, B_smem, C_reg);
+    __syncthreads();
+}
+```
+
+The `__syncthreads()` calls are critical — they ensure all threads complete loading before computation begins, and that computation completes before the next load round.
+
+### cp.async: Asynchronous Copy
+
+Before the Ampere architecture (SM80, A100), the HBM → Shared Memory data path was:
+
+$$
+\text{HBM} \xrightarrow{\text{global load}} \text{Register} \xrightarrow{\text{shared store}} \text{Shared Memory}
+$$
+
+This required registers as intermediaries, increasing register pressure.
+
+Ampere introduced the `cp.async` instruction, allowing data to be **copied directly from HBM to Shared Memory** without passing through registers:
+
+$$
+\text{HBM} \xrightarrow{\text{cp.async}} \text{Shared Memory}
+$$
+
+```cuda
+// Ampere+ asynchronous copy
+cp_async_copy(A_smem, A_hbm, size);
+cp_async_commit_group();
+// ... do other work ...
+cp_async_wait_group<0>();
+__syncthreads();
+```
+
+Three benefits:
+1. **Reduced register pressure**: no register intermediary needed
+2. **Enables load-compute overlap**: asynchronous operations naturally support pipelining
+3. **Improved SM resource utilization**
+
+### Double Buffering / Multi-Stage Pipelining
+
+If load and compute execute entirely in serial, the Tensor Core idles half the time waiting for data. Double buffering solves this:
+
+**Core idea**: allocate **two buffers** in shared memory. While Tile[i] is being computed in buffer A, Tile[i+1] simultaneously loads from HBM into buffer B.
+
+```
+Iteration i:
+  Buffer A: Compute(Tile[i])     ← Tensor Core busy
+  Buffer B: Load(Tile[i+1])      ← Memory pipeline busy (cp.async)
+
+Iteration i+1:
+  Buffer B: Compute(Tile[i+1])   ← swap
+  Buffer A: Load(Tile[i+2])      ← swap
+```
+
+This generalizes to N-stage pipelines (N = 3, 4, 5), each additional stage requiring one more shared memory buffer. The tradeoff is clear:
+
+$$
+\text{SMEM usage} = \text{tile\_size} \times \text{elem\_size} \times \text{num\_stages}
+$$
+
+More stages mean better latency hiding but also more shared memory consumption (potentially reducing occupancy).
+
+### Memory Coalescing
+
+**Coalesced access** is a core requirement of the GPU memory system: the 32 threads in a warp should access contiguous memory addresses, allowing the hardware to merge 32 requests into a single 128-byte transaction.
+
+```
+// Coalesced: thread i reads element i — consecutive addresses
+data[threadIdx.x]          // One 128B transaction
+
+// Non-coalesced: thread i reads element i*stride — scattered addresses
+data[threadIdx.x * stride] // Multiple transactions if stride > 1
+```
+
+Impact of non-coalesced access:
+- Each thread's request may fall in a different 128-byte segment
+- Worst case: 32 threads generate 32 independent memory transactions
+- **Performance can degrade 10-32x**
+
+A common pitfall: column-wise access in a row-major layout. If $A$ is a row-major $[M, K]$ matrix and the thread block needs to read a $\text{BLOCK\_M} \times \text{BLOCK\_K}$ sub-tile of $A$, assigning threads along the M dimension (each thread processes one row) means adjacent threads read adjacent rows — memory addresses separated by $K \times \text{elem\_size}$ bytes, non-contiguous. The solution is to have adjacent threads read consecutive elements within the same row.
+
+### Bank Conflicts and Swizzling
+
+Shared memory consists of **32 banks**, each 4 bytes wide. If threads in the same warp access different banks, all accesses complete in parallel (1 cycle). If multiple threads access the same bank, they must serialize — this is a **bank conflict**.
+
+Address-to-bank mapping:
+
+$$
+\text{bank}(\text{addr}) = \left\lfloor \frac{\text{addr}}{4} \right\rfloor \bmod 32
+$$
+
+**Common conflict patterns**:
+
+| Access stride | Bank distribution | Conflict degree | Performance impact |
+|---------------|-------------------|-----------------|-------------------|
+| stride=1 | 0,1,2,...,31 | 1-way (no conflict) | 1x |
+| stride=2 | 0,2,4,...,30,0,2,... | 2-way | 2x slowdown |
+| stride=32 | 0,0,0,...,0 | 32-way (full conflict) | 32x slowdown |
+
+**Swizzling** is the standard technique for eliminating bank conflicts. The core idea is applying an XOR operation to shared memory addresses, remapping bank assignments:
+
+$$
+\text{swizzled\_bank} = (\text{row} \oplus \text{col}) \bmod 32
+$$
+
+This ensures that even if the original access pattern has a regular stride, the XOR transformation distributes threads across different banks. Both CUTLASS's `swizzle` functions and Triton's automatic swizzling are based on this principle.
+
+<BankConflictVisualizer locale="en" client:visible />
+
+## Tile Size Selection: Constraint Analysis
+
+Tile size selection is not arbitrary — it is constrained by multiple hardware limits, forming a **feasibility region**.
+
+### Constraint 1: Shared Memory Capacity
+
+Each tile's shared memory footprint:
+
+$$
+\text{SMEM} = (\text{BLOCK\_M} \times \text{BLOCK\_K} + \text{BLOCK\_K} \times \text{BLOCK\_N}) \times \text{elem\_size} \times \text{num\_stages}
+$$
+
+With $\text{BLOCK\_M} = \text{BLOCK\_N} = 128$, $\text{BLOCK\_K} = 32$, FP16, 2-stage:
+
+$$
+\text{SMEM} = (128 \times 32 + 32 \times 128) \times 2 \times 2 = 32{,}768 \text{ bytes} = 32 \text{ KB}
+$$
+
+The A100 has ~164 KB shared memory per SM. With a 32 KB tile, theoretically one SM can host 5 thread blocks ($\lfloor 164/32 \rfloor = 5$).
+
+If we increase to $\text{BLOCK\_M} = \text{BLOCK\_N} = 256$, $\text{BLOCK\_K} = 64$, 3-stage:
+
+$$
+\text{SMEM} = (256 \times 64 + 64 \times 256) \times 2 \times 3 = 196{,}608 \text{ bytes} = 192 \text{ KB}
+$$
+
+This exceeds the A100's 164 KB limit — **infeasible**.
+
+### Constraint 2: Register Pressure
+
+Each thread needs registers for its fragment accumulator:
+
+$$
+\text{regs\_per\_thread} \approx \frac{\text{BLOCK\_M} \times \text{BLOCK\_N}}{\text{threads\_per\_block}} + \text{overhead}
+$$
+
+NVIDIA GPUs allow a maximum of 255 32-bit registers per thread. If demand exceeds this limit, the compiler "spills" registers to local memory (effectively HBM), causing a performance catastrophe.
+
+### Constraint 3: Occupancy
+
+Occupancy = active warps on an SM / maximum warps the SM supports.
+
+Larger tiles → more shared memory and registers → fewer thread blocks per SM → lower occupancy.
+
+Low occupancy means when some warps stall on memory, there aren't enough other warps to fill idle compute cycles. Generally, occupancy below 25% causes noticeable performance degradation.
+
+However, higher occupancy isn't always better — larger tiles mean higher data reuse. This is the classic **occupancy vs. data reuse** tradeoff.
+
+### Autotuning
+
+Due to the complexity of the constraint space, practitioners typically use **autotuning** to find optimal tile sizes:
+
+1. Enumerate all feasible tile configuration combinations
+2. Filter out configurations violating hardware constraints
+3. Benchmark each candidate configuration on the target hardware
+4. Select the highest-performing configuration
+
+Triton's `autotune` decorator embodies exactly this approach. CUTLASS also provides profiling tools for selecting optimal tile configurations.
+
+Rules of thumb:
+- Starting point: $\text{BLOCK\_M} = \text{BLOCK\_N} = 128$, $\text{BLOCK\_K} = 32$
+- If shared memory has headroom, try increasing $\text{BLOCK\_K}$ or adding pipeline stages
+- If occupancy is too low, reduce tile size
+- If registers are spilling, reduce $\text{BLOCK\_M} \times \text{BLOCK\_N}$
+
+<TileSizeCalculator locale="en" client:visible />
+
+## Tiling Across the Compiler Stack
+
+Tiling is not an isolated optimization — it permeates every stage of the compiler stack.
+
+### Pass Stage: Bufferization
+
+MLIR's bufferization pass converts tensor semantics to buffer (memref) semantics, determining data placement in the memory hierarchy. Tiling decisions directly influence the bufferization allocation strategy:
+
+- Thread block tile → `memref.alloc` in shared memory address space
+- Register tile → SSA value in register
+
+### Tiling Stage: tile-and-fuse
+
+MLIR's `linalg` dialect provides the `tile-and-fuse` transformation, which tiles high-level linalg operations according to specified tile sizes while fusing producers into the consumer's tile loop.
+
+```
+// Before tiling
+linalg.matmul ins(%A, %B) outs(%C)
+
+// After tile-and-fuse (conceptual)
+scf.for %k = 0 to %K step %BLOCK_K {
+  %a_tile = memref.subview %A[%m, %k][BLOCK_M, BLOCK_K]
+  %b_tile = memref.subview %B[%k, %n][BLOCK_K, BLOCK_N]
+  linalg.matmul ins(%a_tile, %b_tile) outs(%c_tile)
+}
+```
+
+### Fusion Stage: Tile Boundaries Determine Fusion Opportunities
+
+The various fusion types discussed in the [fusion article](/en/articles/operator-fusion-taxonomy) take on new meaning in the tiled context. Element-wise post-processing (like ReLU, bias add) can be fused directly onto the GEMM tile's output, completed in-place before results write back to HBM — this is **epilogue fusion**.
+
+Tile boundaries also determine **which operations can be fused**. If two operations have inconsistent tiling dimensions, fusion requires introducing additional data movement.
+
+### Codegen Stage: Generating Memory Operations
+
+The code generator produces concrete memory operations based on tiling decisions:
+
+- Shared memory load/store instructions
+- `__syncthreads()` barriers
+- `cp.async` asynchronous copy instructions
+- Tensor Core MMA instructions
+- Swizzle address computations
+
+### Scheduling Stage: Kernel Launch Configuration
+
+Tile sizes directly determine kernel launch grid and block configuration:
+
+$$
+\text{grid\_dim.x} = \lceil M / \text{BLOCK\_M} \rceil, \quad \text{grid\_dim.y} = \lceil N / \text{BLOCK\_N} \rceil
+$$
+
+$$
+\text{block\_dim} = \text{threads\_per\_block} \quad (\text{determined by warp-level tiling})
+$$
+
+## Practical Walkthrough: Complete GEMM Tiling Analysis
+
+Let us trace a GEMM kernel from naive to high-performance, computing $C[4096, 4096] = A[4096, 4096] \times B[4096, 4096]$ in FP16 on an A100.
+
+### Step 1: Naive Implementation (One Thread per Element)
+
+Each thread independently computes $C[i,j]$, reading an entire row of $A$ and column of $B$ from HBM.
+
+- Per element: $2 \times 4096$ FLOPs, reading $2 \times 4096 \times 2$ = 16384 bytes
+- Arithmetic intensity: $8192 / 16384 = 0.5$ FLOPs/Byte
+- **Severely memory-bound**, ~2% of peak
+
+### Step 2: Shared Memory Tiling (128x128x32)
+
+Thread block tile + shared memory staging.
+
+- Data reuse improves by $128 / 2 = 64$x
+- Arithmetic intensity rises to ~64 FLOPs/Byte
+- ~**30% of peak FLOPS**
+
+### Step 3: Register Tiling + Tensor Core MMA
+
+Adding warp-level and register-level tiling with Tensor Core MMA instructions.
+
+- MMA instructions perform 16x16x16 multiply-accumulate in registers
+- Eliminates shared-memory-to-ALU bandwidth bottleneck
+- ~**60% of peak FLOPS**
+
+### Step 4: Double Buffering + Vectorized Loads
+
+Using `cp.async` for 2-stage pipeline with overlapped load and compute. Using 128-bit vectorized loads (LDG.128) to improve HBM bandwidth utilization.
+
+- Load latency fully hidden by compute
+- ~**80% of peak FLOPS**
+
+### Step 5: Swizzling + Occupancy Tuning
+
+Eliminating shared memory bank conflicts, fine-tuning tile sizes to balance occupancy and data reuse.
+
+- With bank conflicts eliminated, shared memory bandwidth approaches theoretical peak
+- ~**90% of peak FLOPS** (approaching CUTLASS/cuBLAS levels)
+
+### Performance Summary
+
+| Optimization Step | Arithmetic Intensity | Est. TFLOPS | % of Peak |
+|-------------------|---------------------|-------------|-----------|
+| Naive (one thread per element) | ~0.5 FLOPs/B | ~6 | ~2% |
+| Shared Memory Tiling | ~64 FLOPs/B | ~94 | ~30% |
+| + Tensor Core MMA | ~128 FLOPs/B | ~187 | ~60% |
+| + Double Buffering | ~128 FLOPs/B | ~250 | ~80% |
+| + Swizzle + Tuning | ~128 FLOPs/B | ~281 | ~90% |
+
+Note: TFLOPS figures above are estimates. Actual performance depends on kernel implementation details, hardware clock frequency, thermal throttling, and other factors. Optimized GEMM from CUTLASS and cuBLAS typically achieves 280-300 TFLOPS (FP16) on the A100.
+
+## Summary
+
+Tiling is the **bridge** between high-level algorithmic optimization and low-level hardware execution. Key takeaways from this article:
+
+1. **Memory hierarchy is the determining factor for GPU performance**. Bandwidth from HBM to Register improves over 100x; tiling places data at the right tier
+2. **Multi-level tiling (Thread Block → Warp → MMA)** maps directly to the GPU's HBM → Shared Memory → Register hierarchy
+3. **Key techniques**: shared memory staging, cp.async asynchronous copy, double buffering, memory coalescing, swizzling
+4. **Tile size selection** is a constraint optimization problem — shared memory capacity, register pressure, and occupancy form a triangular constraint
+5. Tiling decisions **permeate the entire compiler stack**, from IR optimization to code generation to scheduling
+
+The next article will discuss the **Dynamic Shapes** challenge — how do these static tiling strategies adapt when tensor shapes are unknown at compile time?
+
+## Further Reading
+
+- **NVIDIA CUDA Programming Guide — Shared Memory chapter**: official documentation on shared memory architecture and bank conflicts
+- **CUTLASS documentation**: understanding multi-level tiling in NVIDIA's engineering practice
+- **Triton tutorials**: how the block-level programming model simplifies tiling expression
+- **FlashAttention paper**: innovative application of tiling to attention computation
+- **Roofline Model paper**: analytical framework for understanding compute vs. memory bottlenecks
+- **A100 GPU Architecture Whitepaper**: authoritative specification of A100 memory hierarchy

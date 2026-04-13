@@ -1,0 +1,414 @@
+---
+title: "Code Generation (Part I): Instruction Selection, Vectorization & Register Allocation"
+slug: codegen-instruction-selection
+locale: en
+tags: [compiler, codegen, instruction-selection, vectorization, register-allocation, gpu]
+prerequisites: [dynamic-shapes-challenge]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: website
+    title: "NVIDIA CUDA C++ Programming Guide — PTX ISA"
+    url: "https://docs.nvidia.com/cuda/parallel-thread-execution/index.html"
+  - type: website
+    title: "LLVM Code Generator Documentation"
+    url: "https://llvm.org/docs/CodeGenerator.html"
+  - type: website
+    title: "CUTLASS: CUDA Templates for Linear Algebra Subroutines"
+    url: "https://github.com/NVIDIA/cutlass"
+  - type: website
+    title: "NVIDIA GPU Architecture — Execution Units"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#hardware-implementation"
+  - type: paper
+    title: "Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations"
+    url: "https://www.eecs.harvard.edu/~htk/publication/2019-mapl-tillet-kung-cox.pdf"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import InstructionSelectionDemo from '../../../components/interactive/InstructionSelectionDemo.tsx';
+import RegisterPressureVisualizer from '../../../components/interactive/RegisterPressureVisualizer.tsx';
+import VectorizationDemo from '../../../components/interactive/VectorizationDemo.tsx';
+
+<CompilerStackMap mode="compact" currentArticle="codegen-instruction-selection" locale="en" client:visible />
+
+## Introduction
+
+After the previous articles on [operator fusion taxonomy](/en/articles/operator-fusion-taxonomy), [cost model design](/en/articles/operator-fusion-cost-model), [tiling and memory hierarchy optimization](/en/articles/tiling-memory-hierarchy), and the [dynamic shapes challenge](/en/articles/dynamic-shapes-challenge), we have an optimized IR (Intermediate Representation) in hand. The operators have been fused, tiled, and analyzed for data dependencies. But this optimized IR is still an **abstract description** — it is one step away from the machine instructions that a GPU can actually execute.
+
+**Code Generation (Codegen)** is that final step — transforming the optimized IR into hardware instructions that the GPU can directly execute. This is not merely a simple translation; the codegen stage itself contains significant optimization opportunities:
+
+- **Instruction Selection**: A single IR operation may have multiple valid hardware instruction implementations; the compiler must choose the optimal one
+- **Vectorization**: Coalescing scalar memory accesses into wider vector accesses to improve bandwidth utilization
+- **Register Allocation**: Finding the balance between register reuse and occupancy
+
+These three subtasks together form the first half of the codegen pipeline. This article explores each in depth.
+
+## The Task of Code Generation
+
+### Input and Output
+
+Codegen takes as input the IR that has been optimized by passes, fusion, and tiling. In the case of Triton, the IR at this point is in the Triton Dialect (or MLIR-level IR), containing operations such as:
+
+- `tt.dot` (matrix multiplication)
+- `tt.load` / `tt.store` (memory reads and writes)
+- `arith.addf`, `arith.mulf` (scalar arithmetic)
+- `math.exp`, `math.tanh` (transcendental functions)
+
+The output of codegen is GPU-executable instructions. In the NVIDIA ecosystem, this process involves two stages:
+
+1. **IR → PTX (Parallel Thread Execution)**: The compiler lowers the high-level IR to the PTX virtual ISA. PTX is NVIDIA's virtual instruction set architecture, offering good cross-generation compatibility.
+2. **PTX → SASS (cubin)**: NVIDIA's `ptxas` assembler compiles PTX into the actual GPU microcode (SASS), which is typically a black box to developers.
+
+### The Semantic Gap
+
+There is a significant **semantic gap** between high-level IR operations and low-level hardware instructions:
+
+- A `linalg.matmul` may correspond to Tensor Core `HMMA` instructions or to a scalar FMA loop
+- A `math.exp` may be hardware-accelerated by an SFU (Special Function Unit) or implemented via polynomial approximation
+- A simple `arith.addf` can map directly to `FADD` but could also be folded into an `FFMA`
+
+The compiler's job is to find the optimal mapping among these choices.
+
+### LLVM as the Universal Backend
+
+Most ML compilers (including Triton, XLA, and TVM) ultimately lower their IR to LLVM IR, then leverage LLVM's NVPTX backend to generate PTX. LLVM's code generator uses two main algorithms:
+
+- **SelectionDAG**: The traditional DAG-based instruction selection that transforms LLVM IR into target-specific DAGs, then selects instructions through pattern matching
+- **GlobalISel (Global Instruction Selection)**: A newer framework that performs instruction selection directly on LLVM IR, supporting finer-grained optimizations
+
+For GPU targets, LLVM's NVPTX backend maps LLVM IR to PTX instructions, and `ptxas` further optimizes and generates SASS.
+
+## Instruction Selection
+
+### IR Op → Hardware Instruction Mapping
+
+The core of instruction selection is **one-to-many mapping**: a single IR operation typically has multiple legal hardware instruction sequences that can implement it. The compiler's task is to select the one with the **highest throughput, lowest latency, and most efficient resource utilization**.
+
+Consider these examples:
+
+**Matrix multiplication:**
+- `linalg.matmul<f16>` → HMMA.16816.F32 (Tensor Core, 1024 FLOPs/cycle/SM)
+- `linalg.matmul<f16>` → HFMA2 loop (FP16 ALU, 128 FLOPs/cycle/SM)
+
+Choosing Tensor Core yields an **8x** throughput improvement.
+
+**Exponential function:**
+- `math.exp<f32>` → MUFU.EX2 + MUL (SFU hardware-accelerated)
+- `math.exp<f32>` → 6 FFMA instructions forming a polynomial approximation
+
+The SFU approach uses 2 instructions while the ALU approach needs 6. Although SFU throughput is lower (16 ops/cycle/SM vs. FP32 ALU's 64 ops/cycle/SM), **fewer instructions** mean less register pressure and lower instruction cache pressure.
+
+### GPU-Specific Instruction Selection
+
+NVIDIA GPUs (using the A100 / Ampere architecture as an example) provide several classes of execution units, each with different instruction sets and performance characteristics:
+
+**Tensor Core instructions:**
+- `HMMA.16816.F32`: FP16 input, FP32 accumulation, $16 \times 8 \times 16$ matrix block
+- `HMMA.16816.F16`: FP16 input, FP16 accumulation
+- Corresponding PTX: `mma.sync.aligned.m16n8k16.f32.f16`
+- Throughput: 1024 FLOPs/cycle/SM (A100, 4 Tensor Cores), far exceeding scalar ALU
+
+**FP32 ALU instructions:**
+- `FADD` (addition), `FMUL` (multiplication), `FFMA` (fused multiply-add)
+- `FMNMX` (fused min/max, used for activations like ReLU)
+- Throughput: 64 ops/cycle/SM
+- Latency: 4 cycles
+
+**FP16 ALU instructions:**
+- `HFMA2`: processes 2 FP16 values per FMA instruction
+- Corresponding PTX: `fma.rn.f16x2`
+- Throughput: 128 FLOPs/cycle/SM (due to 2-wide execution)
+
+**SFU (Special Function Unit) instructions:**
+- `MUFU.EX2` ($2^x$), `MUFU.RCP` (reciprocal), `MUFU.RSQ` (inverse square root), `MUFU.SIN`, `MUFU.COS`
+- Corresponding PTX: `ex2.approx.f32`, `rcp.approx.f32`, etc.
+- Throughput: 16 ops/cycle/SM
+- Latency: ~20 cycles
+- Precision: approximate values (~22-bit mantissa), typically sufficient for ML training/inference
+
+Selection criteria combine: **throughput**, **latency**, **precision requirements**, and **contention for available execution units**.
+
+<InstructionSelectionDemo locale="en" client:visible />
+
+### Peephole Optimization
+
+After the initial instruction selection, the compiler performs **peephole optimization** — scanning local instruction windows for optimizable patterns:
+
+**Strength reduction:**
+- Multiply by power of 2 → shift: `x * 4.0` → `FMUL x, 4.0` (or direct exponent addition)
+- Divide by constant → multiply by reciprocal: `x / 3.0` → `FMUL x, 0.333...` (avoiding expensive division)
+
+**Instruction merging:**
+- Separate `MUL + ADD` → `FFMA` (fused multiply-add)
+- Example: `y = x * 2.0 + bias` requires two instructions `FMUL` + `FADD`
+- Merged: `FFMA(x, 2.0, bias)` completes in a single instruction
+- Benefits: fewer instructions, fewer intermediate registers, potentially higher precision (FMA performs only one rounding)
+
+**Instruction-level dead code elimination:**
+- Remove instructions whose results are never used
+- Eliminate redundant move instructions
+- Simplify identity operations: `x + 0.0` → `x`, `x * 1.0` → `x`
+
+These optimizations may seem minor, but in a GPU kernel that is invoked billions of times, every eliminated instruction translates to significant performance gains.
+
+## Vectorization
+
+### SIMD Mapping
+
+On CPUs, vectorization typically means leveraging SIMD (Single Instruction, Multiple Data) instruction sets — such as x86's SSE/AVX or ARM's NEON — to pack multiple scalar operations into a single vector instruction.
+
+GPUs operate differently. GPUs use the **SIMT (Single Instruction, Multiple Threads)** model: 32 threads in a warp naturally execute the same instruction, just operating on different data. Therefore, GPU "vectorization" is not about packing multiple operations at the instruction level, but about **memory access** — using wider load/store instructions to improve bandwidth utilization.
+
+### Vectorized Memory Access
+
+The basic unit of GPU memory access is the **32-byte sector**. When threads in a warp issue memory requests, the hardware coalesces them into accesses to 32-byte sectors (memory coalescing).
+
+But even with already-coalesced access patterns, the **width of each load instruction** still impacts performance:
+
+| Load Type | Bytes per Instruction | Load Instructions for 16 FP32 Elements | Instruction Reduction |
+|-----------|----------------------|----------------------------------------|----------------------|
+| `float` (scalar) | 4B | 16 | baseline |
+| `float2` | 8B | 8 | 2x fewer |
+| `float4` | 16B | 4 | 4x fewer |
+
+Key insight: **vectorization reduces the number of load instructions, not the number of 32-byte sector transactions**. Under the same memory coalescing pattern, a float4 load lets each thread read 16 bytes of data in a single instruction, while scalar loads need 4 instructions for the same amount of data.
+
+The benefits include:
+- **Fewer instructions**: Reduced instruction cache pressure and scheduling overhead
+- **Higher bandwidth per instruction**: Each load moves more data
+- **Fewer registers for address computation**: One address serves more data
+
+Alignment requirement: `float4` loads require **16-byte aligned** addresses. If input data is not aligned, the compiler must fall back to narrower loads.
+
+<VectorizationDemo locale="en" client:visible />
+
+### Vectorization Legality
+
+Not all memory accesses can be vectorized. The compiler must verify the following conditions:
+
+**Data independence:**
+Elements within a vectorized load must be independent — no data dependencies between them. For example, if `a[i]` depends on `a[i-1]`, they cannot be placed in the same vector load.
+
+**Address alignment:**
+Vectorized loads require the starting address to be aligned to the vector width:
+- `float2` requires 8-byte alignment
+- `float4` requires 16-byte alignment
+
+If the base pointer doesn't meet alignment requirements, the compiler must:
+1. Use scalar loads at the beginning for the unaligned portion
+2. Use vectorized loads in the main loop
+3. Use scalar loads at the end for remaining elements
+
+**Access stride:**
+Only **stride-1** (contiguous access) patterns can be directly vectorized:
+- `a[0], a[2], a[4], a[6]` (stride-2) → cannot directly vectorize
+- `a[indices[0]], a[indices[1]], ...` (gather) → cannot vectorize, requires gather instructions (poor performance)
+
+In Triton, the compiler analyzes the offset patterns of `tl.load` and `tl.store` to determine whether vectorization is possible and what vector width to select.
+
+## Register Allocation
+
+### GPU Register File Characteristics
+
+The GPU Register File is the fastest on-chip storage tier, but it operates fundamentally differently from CPU registers.
+
+Using the NVIDIA A100 as an example:
+
+- **Each SM has 65,536 32-bit registers**, shared among all active threads on the SM
+- **Each thread can use up to 255 registers** (hardware limit)
+- **Each SM supports up to 64 warps** (i.e., 2,048 threads)
+
+The relationship between these three numbers directly determines a kernel's **occupancy**:
+
+$$
+\text{max warps} = \min\left(64, \left\lfloor \frac{65536}{\text{regs\_per\_thread} \times 32} \right\rfloor\right)
+$$
+
+$$
+\text{occupancy} = \frac{\text{max warps}}{64}
+$$
+
+For example, if a kernel uses 32 registers per thread:
+
+$$
+\text{max warps} = \min\left(64, \left\lfloor \frac{65536}{32 \times 32} \right\rfloor\right) = \min(64, 64) = 64
+$$
+
+Occupancy = 100%. But if each thread uses 128 registers:
+
+$$
+\text{max warps} = \min\left(64, \left\lfloor \frac{65536}{128 \times 32} \right\rfloor\right) = \min(64, 16) = 16
+$$
+
+Occupancy = 25%.
+
+### The Critical GPU vs CPU Difference
+
+On CPUs, register spill moves data to L1 cache at a cost of roughly 4-5 cycles. On GPUs, register spill goes through the **local memory** path:
+
+$$
+\text{Register} \xrightarrow{\text{spill}} \text{L1 Cache} \rightarrow \text{L2 Cache} \rightarrow \text{DRAM (HBM)}
+$$
+
+If L1 misses, latency can spike from a few cycles to **hundreds of cycles** (HBM latency is roughly 400-600 cycles). This means GPU register spill carries a far higher cost than on CPUs and must be avoided in performance-critical code.
+
+### Register Pressure vs Occupancy Tradeoff
+
+This is one of the most fundamental tradeoffs in GPU kernel optimization:
+
+**Low register usage → high occupancy:**
+- More warps active simultaneously → better latency hiding
+- When one warp stalls on memory access, the scheduler switches to another warp
+- Critical for memory-bound kernels
+
+**High register usage → low occupancy, but more data reuse:**
+- Intermediate results kept in registers → avoids redundant memory reads
+- For compute-bound kernels, data reuse matters more than latency hiding
+- Typical scenario: GEMM kernels keeping partial sums across multiple tiles in registers
+
+**Rule of thumb:**
+For compute-bound kernels (e.g., GEMM), 32-64 registers per thread is typically a good balance. For memory-bound kernels (e.g., element-wise operations), minimize register usage to maximize occupancy.
+
+<RegisterPressureVisualizer locale="en" client:visible />
+
+### Impact of Fusion and Tiling on Register Pressure
+
+The fusion and tiling strategies discussed in previous articles directly impact register pressure:
+
+**More fusion → higher register pressure:**
+Each fused operator requires registers to hold intermediate results. Fusing 2 operators may need 16 registers; fusing 8 may need 96. Beyond a certain threshold, register spill causes performance to drop dramatically.
+
+**Larger tiles → higher register pressure:**
+Each thread processing a larger tile needs more registers to stage input data and partial results. For example, a thread handling a $4 \times 4$ output block requires far more registers than one handling $1 \times 1$.
+
+**Performance cliff:**
+Register pressure exhibits a threshold effect. When register usage just barely exceeds the spill threshold, performance drops suddenly and sharply — this is the "performance cliff." For example:
+
+- 64 registers per thread: 50% occupancy, no spill, good performance
+- 96 registers per thread: 21% occupancy, no spill, acceptable performance (data reuse compensates)
+- 200 registers per thread: exceeds the 255 limit, must spill, performance plummets
+
+This is why the compiler's register allocator must precisely control register usage, sometimes intentionally sacrificing some data reuse to avoid spill.
+
+### Compiler Register Allocation Strategies
+
+**LLVM's graph coloring algorithm:**
+LLVM's register allocator is based on **graph coloring**. It models each variable's lifetime as a node in an interference graph — if two variables have overlapping lifetimes, an edge connects them. Register allocation is equivalent to $k$-coloring this graph ($k$ = number of available registers).
+
+**GPU-specific optimizations:**
+LLVM's NVPTX backend considers GPU-specific constraints:
+- Balancing register count against occupancy
+- Accounting for register bank conflicts (on some architectures, simultaneous reads from the same bank cause conflicts)
+- Special layout for registers used by Tensor Core instructions
+
+**Triton's approach:**
+The Triton compiler indirectly controls register allocation through tile size selection. Smaller tiles → fewer registers needed. Triton's auto-tuner searches among different tile size configurations to find the optimal balance between register usage and performance.
+
+**Manual control in CUDA:**
+In CUDA, developers can hint to the compiler via:
+- `__launch_bounds__(maxThreadsPerBlock, minBlocksPerMultiprocessor)` — informs the compiler about the maximum threads per block and minimum blocks per SM, which guides register allocation
+- `#pragma unroll` — controls loop unrolling extent, indirectly affecting register pressure
+- `__maxnreg=N` — directly limits the maximum registers per thread (not recommended; the compiler usually makes better decisions automatically)
+
+## Practical Case Study: GELU Kernel Codegen
+
+Let us tie together the three concepts by tracing a complete GELU activation function kernel through the codegen pipeline.
+
+### Mathematical Definition of GELU
+
+$$
+\text{GELU}(x) = 0.5 \cdot x \cdot \left(1 + \tanh\left(\sqrt{\frac{2}{\pi}} \cdot \left(x + 0.044715 \cdot x^3\right)\right)\right)
+$$
+
+This function involves: multiplication, addition, cubing, tanh (transcendental function), and constant multiplication.
+
+### Step 1: Instruction Selection
+
+The compiler maps each GELU operation to specific instructions:
+
+| Operation | SASS Instruction | Execution Unit |
+|-----------|-----------------|---------------|
+| $x^3 = x \cdot x \cdot x$ | 2x `FFMA` | FP32 ALU |
+| $0.044715 \cdot x^3$ | `FFMA` | FP32 ALU |
+| $x + 0.044715 \cdot x^3$ | `FFMA` (fused with above) | FP32 ALU |
+| $\sqrt{2/\pi} \cdot (\ldots)$ | `FFMA` | FP32 ALU |
+| $\tanh(\ldots)$ | `MUFU.EX2` + series | SFU + FP32 ALU |
+| $1 + \tanh(\ldots)$ | `FADD` | FP32 ALU |
+| $0.5 \cdot x \cdot (\ldots)$ | `FFMA` | FP32 ALU |
+
+The implementation of `tanh` is the most complex. One common approach leverages the identity:
+
+$$
+\tanh(x) = \frac{e^{2x} - 1}{e^{2x} + 1} = 1 - \frac{2}{e^{2x} + 1}
+$$
+
+Where $e^{2x}$ can be computed via `MUFU.EX2` (which computes $2^y$) and a change-of-base: $e^x = 2^{x \cdot \log_2(e)}$.
+
+### Step 2: Vectorize Loads
+
+The GELU kernel is element-wise with perfect stride-1 access patterns for both input and output. The compiler promotes scalar loads to `float4` loads:
+
+- Original: each thread executes 1x `LD.E` (4 bytes) → processes 1 element
+- Optimized: each thread executes 1x `LDG.E.128` (16 bytes) → processes 4 elements
+
+This reduces load instruction count to **1/4** of the original.
+
+### Step 3: Register Allocation
+
+The GELU kernel requires approximately 12 registers per thread:
+- 4 for `float4` input
+- 4 for `float4` output
+- 4 for intermediate computation
+
+$$
+\text{max warps} = \min\left(64, \left\lfloor \frac{65536}{12 \times 32} \right\rfloor\right) = \min(64, 170) = 64
+$$
+
+Occupancy = 100%. This is ideal — GELU is a simple element-wise operation with low register demands.
+
+### Step 4: Final PTX Instruction Overview
+
+The generated PTX code looks approximately like (simplified):
+
+```
+// Load float4
+ld.global.v4.f32 {%f1, %f2, %f3, %f4}, [%rd1];
+
+// Compute GELU for each element (example for %f1)
+mul.f32     %f5, %f1, %f1;        // x^2
+fma.rn.f32  %f6, %f5, %f1, 0.0;   // x^3
+fma.rn.f32  %f7, %f6, 0.044715, %f1;  // x + 0.044715*x^3
+mul.f32     %f8, %f7, 0.7978845;   // sqrt(2/pi) * (...)
+mul.f32     %f9, %f8, 1.4426950;   // convert to base-2
+ex2.approx.f32 %f10, %f9;          // 2^(...)
+// ... remaining tanh computation steps ...
+fma.rn.f32  %f15, %f1, %f14, 0.0; // 0.5 * x * (1 + tanh)
+
+// Store float4
+st.global.v4.f32 [%rd2], {%f15, %f16, %f17, %f18};
+```
+
+Note the instruction mix: predominantly `fma.rn.f32` (FP32 ALU) plus `ex2.approx.f32` (SFU). The SFU throughput limitation (16 ops/cycle/SM) is the performance bottleneck of the GELU kernel.
+
+## Summary
+
+This article examined the three core tasks of GPU code generation in depth:
+
+1. **Instruction selection** maps IR operations to hardware instructions — choosing the optimal approach among Tensor Core, FP32 ALU, FP16 ALU, and SFU. Key insight: the same operation can have fundamentally different implementations, and the compiler must decide based on throughput, latency, and precision requirements.
+
+2. **Vectorization** promotes scalar memory accesses to vector accesses — `float4` loads reduce load instruction count to 1/4. Key constraints: stride-1 access patterns and address alignment are required.
+
+3. **Register allocation** balances data reuse against occupancy — the A100's 65,536 registers per SM may seem generous, but shared among 2,048 threads, each thread gets only 32. Excessive fusion or overly large tiles lead to register spill and dramatic performance degradation.
+
+These three tasks are tightly coupled: instruction selection determines how many registers are needed (different instructions have different register footprints), vectorization affects load/store register requirements, and register allocation results can in turn influence instruction selection strategy.
+
+The next article will dive into the **Triton compilation pipeline** and compiler backend implementation, examining how these concepts are realized in a practical ML compiler.
+
+## Further Reading
+
+- [NVIDIA PTX ISA Documentation](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html) — Complete GPU virtual instruction set reference
+- [LLVM Code Generator Documentation](https://llvm.org/docs/CodeGenerator.html) — Design documentation for SelectionDAG and GlobalISel
+- [CUTLASS Source Code](https://github.com/NVIDIA/cutlass) — Production-grade multi-level code generation reference
+- [NVIDIA CUDA Programming Guide — Hardware Implementation](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#hardware-implementation) — GPU hardware architecture details
+- [Triton Paper](https://www.eecs.harvard.edu/~htk/publication/2019-mapl-tillet-kung-cox.pdf) — Intermediate language and compiler for tiled neural network computations

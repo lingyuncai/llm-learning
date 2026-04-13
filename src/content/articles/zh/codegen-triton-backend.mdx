@@ -1,0 +1,394 @@
+---
+title: "代码生成（下）：Triton Pipeline、编译器后端与数值正确性"
+slug: codegen-triton-backend
+locale: zh
+tags: [compiler, codegen, triton, llvm, ptx, numerical-accuracy, backends]
+prerequisites: [codegen-instruction-selection]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations"
+    url: "https://www.eecs.harvard.edu/~htk/publication/2019-mapl-tillet-kung-cox.pdf"
+  - type: website
+    title: "Triton Language Documentation"
+    url: "https://triton-lang.org/main/index.html"
+  - type: website
+    title: "MLIR GPU Dialect"
+    url: "https://mlir.llvm.org/docs/Dialects/GPU/"
+  - type: website
+    title: "IREE Compiler and Runtime"
+    url: "https://iree.dev/"
+  - type: website
+    title: "TensorRT Developer Guide"
+    url: "https://docs.nvidia.com/deeplearning/tensorrt/developer-guide/index.html"
+  - type: website
+    title: "What Every Computer Scientist Should Know About Floating-Point Arithmetic"
+    url: "https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import TritonCompilationPipeline from '../../../components/interactive/TritonCompilationPipeline.tsx';
+import CodegenExplorer from '../../../components/interactive/CodegenExplorer.tsx';
+import BackendComparison from '../../../components/interactive/BackendComparison.tsx';
+import NumericalAccuracyDemo from '../../../components/interactive/NumericalAccuracyDemo.tsx';
+
+<CompilerStackMap currentArticle="codegen-triton-backend" mode="compact" client:visible />
+
+## 简介
+
+在[上一篇文章](/zh/articles/codegen-instruction-selection)中，我们讨论了代码生成的前半部分——指令选择（Instruction Selection）和向量化（Vectorization），了解了编译器如何将高层 IR 转换为接近硬件的低层操作。本文将完成代码生成的全貌：从 **Triton DSL 到可执行二进制**的完整编译管线。
+
+本文涵盖三个核心主题：
+
+1. **Triton 编译管线**：从 Python DSL 出发，经过 Triton IR、GPU IR、LLVM IR、PTX，最终生成 GPU 可执行的 cubin 二进制——6 个阶段的完整之旅
+2. **编译器后端对比**：TorchInductor+Triton、XLA、TensorRT、IREE——四大编译器后端的定位、优劣和适用场景
+3. **数值正确性**：浮点数的非结合性（non-associativity）如何在编译优化中制造精度问题，以及如何系统地验证数值正确性
+
+Triton 是连接 PyTorch 生态和 MLIR 编译器基础设施的关键桥梁。理解它的编译流程，不仅有助于编写高性能 GPU kernel，更能帮助开发者在遇到性能或正确性问题时精确定位到正确的编译阶段。
+
+## Triton 深入剖析
+
+### Triton 的定位
+
+Triton 占据了 GPU 编程模型中一个独特的生态位：它既不像 CUDA C 那样要求开发者手动管理 thread、warp 和 shared memory 的每个细节，也不像 PyTorch 那样完全隐藏硬件。Triton 提供的是 **block-level 编程模型**——用户在 thread block 的粒度上思考，编译器负责 thread 级别的映射。
+
+这种设计选择带来了根本性的优势：
+
+- **降低编程复杂度**：用户不需要手动处理 bank conflict、coalescing、shared memory padding 等底层细节
+- **保留优化空间**：编译器可以自由选择 thread mapping、数据布局和内存层次利用策略
+- **接近手写性能**：对于大多数 ML workload，Triton 生成的代码能达到手写 CUDA 90%+ 的性能
+
+Triton 的核心抽象包括：
+- `tl.load(ptr, mask)` / `tl.store(ptr, value, mask)` — 显式内存访问，以 block 为单位
+- `tl.dot(a, b)` — 矩阵乘法，直接映射到 Tensor Core MMA 指令
+- `tl.program_id(axis)` — block 索引，类似 CUDA 的 `blockIdx`
+- `tl.arange(start, end)` — 创建索引范围，类似向量化的 iota 操作
+- `tl.constexpr` — 编译时常量，用于 BLOCK_SIZE 等参数
+
+### 编程模型
+
+Triton kernel 使用 `@triton.jit` 装饰器标记，触发 Triton 的即时编译流程。让我们通过一个向量加法的例子来理解 Triton 的编程模型：
+
+```python
+@triton.jit
+def add_kernel(x_ptr, y_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
+    # 每个 program（类似 CUDA thread block）处理一个 BLOCK_SIZE 大小的数据块
+    pid = tl.program_id(axis=0)
+    block_start = pid * BLOCK_SIZE
+    offsets = block_start + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+
+    # Block-level load：整个 block 的数据一次性加载
+    x = tl.load(x_ptr + offsets, mask=mask)
+    y = tl.load(y_ptr + offsets, mask=mask)
+
+    output = x + y
+    tl.store(output_ptr + offsets, output, mask=mask)
+```
+
+关键观察：
+- **没有 threadIdx**：用户不需要知道 block 内部的 thread 组织方式
+- **显式 mask**：边界处理是用户的责任（类似 CUDA 的 bounds checking）
+- **BLOCK_SIZE 是 constexpr**：在编译时确定，不同的 BLOCK_SIZE 生成不同的 kernel
+- **操作的是 tensor，不是标量**：`tl.load` 返回一个 tensor（向量），所有操作隐式地在 block 内的所有元素上并行执行
+
+### Triton 编译管线
+
+Triton 的编译过程分为 6 个阶段，每个阶段将代码从一种表示降低（lower）到更接近硬件的表示。下面的交互式组件展示了每个阶段的代码变换：
+
+<TritonCompilationPipeline client:visible />
+
+让我们详细分析每个阶段的关键转换：
+
+**Stage 1: Python DSL → Triton IR**
+
+Triton 首先解析 Python AST（抽象语法树），提取被 `@triton.jit` 装饰的函数体，进行类型推导，生成 SSA（Static Single Assignment）形式的 Triton IR。这个 IR 使用 `tt.*` 命名空间（如 `tt.func`、`tt.get_program_id`），保留了 block-level 语义——所有操作仍然在整个 block 的粒度上表达。
+
+**Stage 2: Triton IR → Triton GPU IR**
+
+这是最关键的转换之一。GPU IR 在 Triton IR 的基础上添加了 **硬件映射信息**：
+
+- **Layout 属性**：每个 tensor 被标注 `#ttg.blocked<{sizePerThread, threadsPerWarp, warpsPerCTA}>` 等布局描述符，精确指定了数据在 thread/warp/block 三个层次的分布方式
+- **Warp 映射**：确定每个 warp 负责哪些数据元素
+- **Shared Memory 插入**：当数据需要在 warp 之间共享时（例如 matmul 的 K 维循环），自动插入 shared memory 的 load/store 操作
+
+注意：GPU IR 中的函数和操作仍然使用 `tt.*` 命名空间（如 `tt.func`、`tt.get_program_id`、`tt.load`），`ttg` 命名空间仅用于 **layout 属性**（如 `#ttg.blocked<...>`），而非操作本身。
+
+**Stage 3: Triton GPU IR → LLVM IR**
+
+通过 MLIR 的 lowering 机制，将 Triton Dialect 降低到 LLVM Dialect。这一步发生了根本性的转变：
+- Block-level 操作被展开为标量/向量操作
+- `tt.get_program_id` → `@llvm.nvvm.read.ptx.sreg.ctaid.x()`
+- `tt.load`（block load）→ `load <4 x float>` 等向量化内存访问
+- 控制流从 structured（scf.for）降低为 LLVM branches
+
+**Stage 4: LLVM IR → PTX**
+
+LLVM 的 NVPTX 后端将 LLVM IR 编译为 PTX（Parallel Thread Execution）汇编。PTX 是 NVIDIA 的虚拟 ISA，是最后一层可移植表示——不同代（compute capability）的 GPU 可以从同一份 PTX 生成不同的机器码。
+
+**Stage 5: PTX → cubin**
+
+`ptxas` 汇编器将 PTX 转换为 SASS（GPU 的实际机器指令集），再打包为 cubin（CUDA binary）。cubin 包含了所有元数据：寄存器用量、shared memory 需求、最大线程数等。
+
+**MLIR 迁移的意义**
+
+Triton 2.0+ 基于 MLIR 重写了整个编译栈。这使得多后端支持成为可能：通过替换 Stage 4-5 的后端，同一份 Triton IR 可以编译到 AMD GPU（via ROCDL Dialect → GCN ISA）或 Intel GPU（via SPIR-V Dialect）。
+
+## TorchInductor 的代码生成
+
+### 从 FX Graph 到 Triton Kernel
+
+TorchInductor 是 `torch.compile()` 的默认后端编译器。它接收由 TorchDynamo 捕获的 FX Graph，经过一系列优化（fusion、layout optimization 等），最终 **生成 Triton kernel 的 Python 源代码**。
+
+整个代码生成流程分为以下几步：
+
+1. **FX Graph 接收**：从 AOTAutograd 获取已经过 autograd 追踪的前向/反向图
+2. **Lowering**：将高层 PyTorch 操作降低为更细粒度的操作（pointwise、reduction、matmul 等）
+3. **Fusion 决策**：基于调度器（Scheduler）的 fusion rules，决定哪些操作合并为一个 kernel
+4. **代码模板填充**：对于每个 fused kernel，使用 Triton 代码模板生成对应的 Triton kernel 源代码
+5. **Wrapper 代码**：生成调用 kernel 的 Python wrapper（内存分配、kernel launch、同步等）
+
+下面的组件展示了三个典型的 FX Graph 到 Triton kernel 的代码生成示例：
+
+<CodegenExplorer client:visible />
+
+**三种典型的 codegen 模式**：
+
+- **Element-wise 融合**：多个逐元素操作（relu、mul、add）融合为一个 kernel。这是最简单也最常见的 fusion，因为所有操作共享完全相同的 index 空间。关键优势是只需一次 HBM 读写，所有中间结果都在 register 中完成。
+
+- **Reduction (LayerNorm)**：涉及归约操作的融合。Inductor 会将 mean、var 计算和后续的 normalize、scale、shift 全部融合到一个 kernel 中。关键在于整行数据被加载到 register/shared memory 中，归约在片上完成。
+
+- **MatMul + Epilogue**：矩阵乘法（使用 `tl.dot` 映射到 Tensor Core）加上后续的 bias add 和 activation。这是 **epilogue fusion** 的典型案例——在 matmul 的结果还在 register 中时，直接附加后续操作。
+
+### 生成代码的可读性与调试
+
+TorchInductor 生成的 Triton 代码是 **human-readable** 的，这是它相比 XLA 等编译器的一个显著优势。开发者可以通过以下方式检查和调试生成的代码：
+
+**TORCH_COMPILE_DEBUG=1**
+
+设置此环境变量后，`torch.compile()` 会将所有中间产物（FX Graph、生成的 Triton 源代码、wrapper 代码）转储到磁盘。输出目录结构通常包含：
+
+```
+torch_compile_debug/
+├── fx_graph_readable.py       # Human-readable FX graph
+├── fx_graph_runnable.py       # Runnable FX graph (for reproduction)
+├── output_code.py             # Generated Triton kernels + wrapper
+└── ...
+```
+
+**TRITON_INTERPRET=1**
+
+此模式将 Triton kernel 在 Python 解释器中执行（不编译为 GPU 代码），允许使用 `print()` 和标准 Python 调试工具。虽然速度极慢，但对于排查正确性问题非常有用。
+
+**NSight Compute Profiling**
+
+对于性能优化，可以使用 NVIDIA 的 NSight Compute 工具分析生成的 kernel：寄存器使用率、shared memory 吞吐、warp 效率、内存带宽利用率等。NSight 可以直接关联 PTX/SASS 指令和性能指标。
+
+常见的调试工作流：
+1. 检查生成代码：`TORCH_COMPILE_DEBUG=1` 查看 Triton 源
+2. 对比参考实现：将 compiled 输出与 eager mode 输出做 `torch.testing.assert_close()`
+3. Profile 性能：NSight Compute 分析 kernel-level 性能瓶颈
+
+## MLIR 到 LLVM 的 Lowering
+
+### LLVM Dialect 作为 MLIR 的出口
+
+MLIR 的 LLVM Dialect 是连接 MLIR 世界和 LLVM 世界的桥梁。它 **1:1 镜像** LLVM IR 的类型系统和操作，但以 MLIR 的统一框架表达。关键转换包括：
+
+- **memref → llvm.ptr**：MLIR 的 `memref` 类型（带维度、步幅等元数据的缓冲区描述符）被转换为 LLVM 的裸指针 + 元数据（base pointer, offset, sizes, strides）
+- **控制流降低**：`scf.for`、`scf.if` 等 structured 控制流被转换为 LLVM 的 basic block + branch 指令
+- **类型转换**：`tensor<...>` → `memref<...>` → `llvm.ptr` + metadata 的两步转换链
+
+### 多后端代码生成
+
+MLIR 的分层设计使得同一份高层 IR 可以编译到不同的硬件后端：
+
+$$
+\text{High-level IR} \rightarrow \text{GPU Dialect} \rightarrow \begin{cases}
+\text{NVVM Dialect} \rightarrow \text{PTX} & \text{(NVIDIA)} \\
+\text{ROCDL Dialect} \rightarrow \text{GCN ISA} & \text{(AMD)} \\
+\text{SPIR-V Dialect} \rightarrow \text{SPIR-V binary} & \text{(Intel / Vulkan)}
+\end{cases}
+$$
+
+关键在于：**所有高层优化（fusion、tiling、vectorization）是后端无关的**——它们在 GPU Dialect 或更高层完成。只有最终的 lowering 步骤是后端特定的。这种分离大大减少了支持新硬件的工作量。
+
+对于 Triton 而言：
+- Stage 1-3（Python → Triton IR → Triton GPU IR）是后端无关的
+- Stage 4-5（LLVM IR → PTX → cubin）是 NVIDIA 特定的
+- 通过替换 Stage 4-5，Triton 已经支持 AMD GPU（via HIP/ROCDL），并且正在实验 Intel GPU 支持
+
+## 编译器后端对比
+
+理解不同编译器后端的定位对于选择正确的工具至关重要。下面的组件对比了四大主流编译器后端：
+
+<BackendComparison client:visible />
+
+### TorchInductor + Triton
+
+TorchInductor 是 PyTorch 2.0 引入的默认编译器后端，与 Triton 深度集成。其核心优势在于 **JIT 编译速度**——单个 kernel 的编译时间在 100ms 以内，整个模型的编译通常在数秒内完成。这使得它非常适合研发迭代场景：开发者可以在 Jupyter Notebook 中使用 `torch.compile()` 并几乎无感地获得加速。
+
+Inductor 的 fusion 策略采用贪心算法（greedy fusion），优先合并所有可以合并的操作。虽然这不是全局最优的（可能错过一些需要"不 fuse"才能发现的更优方案），但 trade-off 是编译时间极短。
+
+**适用场景**：研发迭代、原型验证、动态 shape 模型（如 NLP 模型的变长序列）、PyTorch 生态的深度用户。
+
+### XLA
+
+XLA（Accelerated Linear Algebra）是 Google 开发的编译器，是 TensorFlow 和 JAX 的核心编译后端。XLA 的独特优势在于 **全局最优融合**——它使用 graph coloring 算法在整个计算图上寻找最优的 fusion 方案。
+
+XLA 的另一个杀手级特性是 **TPU 原生支持**。作为 Google 自研硬件的配套编译器，XLA 是目前唯一一个对 TPU 有 first-class 支持的编译器。JAX 的 `jit()` 底层直接调用 XLA 进行编译。
+
+**缺点**：编译时间较长（通常 > 1s），对动态 shape 的支持有限（需要额外的 padding 或 bucketing），PyTorch 集成需要通过 `torch_xla` 桥接层。
+
+**适用场景**：TPU 训练、静态 shape 的大规模训练任务、JAX 生态用户。
+
+### TensorRT
+
+TensorRT 是 NVIDIA 的推理优化工具，专为 **生产部署** 设计。它采用 AOT 编译，编译时间可能很长（分钟级），但生成的代码在 NVIDIA GPU 上是最优的——TensorRT 内置了大量手写优化的 kernel 库，并使用 cost model 选择最优实现。
+
+TensorRT 的量化支持（INT8/FP8）是业界最完善的，支持 calibration-based 和 QAT 两种量化方式。对于需要极低推理延迟的生产场景，TensorRT 往往是首选。
+
+**缺点**：仅支持 NVIDIA GPU、编译时间长、动态 shape 支持有限、不支持训练。
+
+**适用场景**：生产推理部署、实时推理（自动驾驶、推荐系统）、量化部署。
+
+### IREE
+
+IREE（Intermediate Representation Execution Environment）是一个 **MLIR-native** 的端到端编译器和运行时。与其他后端不同，IREE 从设计之初就面向 **跨平台** 部署：通过 Vulkan、CUDA、ROCm、CPU 等多种后端，同一份模型可以在不同硬件上运行。
+
+IREE 的运行时非常轻量（对比 PyTorch 的数百 MB），适合嵌入式和移动端部署。作为 MLIR 生态的旗舰项目，它也是 MLIR 编译器研究的重要实验平台。
+
+**缺点**：在 NVIDIA GPU 上的性能不如 TensorRT/Triton（因为没有针对 NVIDIA 的深度优化），生态系统较小，文档和社区仍在成长中。
+
+**适用场景**：跨平台部署、边缘设备推理、MLIR 编译器研究、需要轻量级运行时的嵌入式场景。
+
+## 数值正确性与验证
+
+### 浮点数的非结合性
+
+编译器优化带来的最微妙的问题之一是 **数值正确性**。IEEE 754 浮点数运算是 **不满足结合律** 的：
+
+$$
+(a + b) + c \neq a + (b + c)
+$$
+
+这不是理论上的可能性，而是实践中的必然性。当编译器进行 fusion、tiling、reduction tree 重构等优化时，它会改变运算的执行顺序，从而改变数值结果。
+
+让我们用一个具体的例子来理解：对 `[1.0, 1e-8, 1e-8, 1e-8, 1e-8, 1e-8, 1e-8, 1e-8]` 这 8 个数求和。关键数学事实：**FP32 在 1.0 附近的 ULP（Unit in the Last Place）约为 $1.19 \times 10^{-7}$**。由于 $10^{-8}$ 远小于这个 ULP，当我们计算 $1.0 + 10^{-8}$ 时，$10^{-8}$ 会被完全 **吸收（absorbed）**——结果仍然是 1.0。
+
+这意味着求和的顺序会 **决定性地** 影响结果：
+
+<NumericalAccuracyDemo client:visible />
+
+三种求和顺序的结果对比：
+
+- **顺序求和 (left-to-right)**：从 1.0 开始逐个加 1e-8。由于每次加法中 1e-8 都被 1.0 的 ULP 吸收，最终结果仍然是 1.0——**所有小值完全丢失**。
+- **成对求和 (pairwise)**：先将小值两两配对求和（1e-8 + 1e-8 = 2e-8），逐级汇总后再与大值相加。小值之间的加法不存在精度损失，因此能保留更多信息。
+- **反向求和 (small-first)**：先累加所有小值（7e-8），最后加大值。由于小值之间的加法完全精确，最终精度最好。
+
+### Fusion 和 Tiling 对数值的影响
+
+编译器优化会以多种方式改变数值行为：
+
+**Fusion 改变中间精度**
+
+当多个操作被融合为一个 kernel 时，中间结果的精度可能改变。例如：
+- 未 fuse 时：FP16 输入 → FP16 中间结果（写回 HBM）→ FP16 最终结果
+- Fuse 后：FP16 输入 → FP32 中间结果（保留在 register 中）→ FP16 最终结果
+
+Fusion 实际上可能 **提高** 精度（因为中间结果使用了更高精度），但也可能导致与 eager mode 的结果不一致。
+
+**Tiling 改变 Reduction 顺序**
+
+Tiling 将大的 reduction 拆分为 tile 内的 partial sum + tile 间的 final reduction。这改变了求和树的结构：
+
+- 未 tiled：全局顺序求和（一种确定的顺序）
+- Tiled：每个 tile 内部求和 → tile 间合并（不同的求和树）
+
+由于浮点加法的非结合性，这两种方式产生的结果可能不同。
+
+**混合精度的关键：FP32 累加器**
+
+在使用 Tensor Core 进行矩阵乘法时，输入通常是 FP16/BF16，但 **累加器必须是 FP32**。如果使用 FP16 累加，大规模 reduction 中的精度损失会非常严重。例如：对 512 个 FP16 值求和，FP16 累加器的结果可能是 512.0（丢失所有小数部分），而 FP32 累加器的结果是 512.0625。
+
+Triton 的 `tl.dot(a, b)` 默认使用 FP32 累加器，这正是为了保证数值正确性。
+
+### 测试策略
+
+系统的数值验证是确保编译器正确性的关键。PyTorch 提供了标准化的工具和阈值：
+
+**torch.testing.assert_close()**
+
+这是推荐的数值比较 API：
+
+```python
+# 比较 eager mode 和 compiled mode 的输出
+eager_output = model(x)
+compiled_output = compiled_model(x)
+torch.testing.assert_close(compiled_output, eager_output, atol=1e-5, rtol=1.3e-6)
+```
+
+两个关键参数：
+- **atol（absolute tolerance）**：绝对误差阈值，$|a - b| \leq \text{atol}$
+- **rtol（relative tolerance）**：相对误差阈值，$|a - b| \leq \text{rtol} \times \max(|a|, |b|)$
+
+常用阈值参考：
+- **FP32**：`atol=1e-5, rtol=1.3e-6`（与 FP32 的机器精度 ~1.19e-7 对应，留有余量）
+- **FP16**：`atol=1e-5, rtol=1e-3`（FP16 机器精度 ~9.77e-4，rtol 需要更宽松）
+- **BF16**：`atol=1e-3, rtol=1.6e-2`（BF16 指数范围大但尾数精度低）
+
+**TORCH_COMPILE_DEBUG**
+
+当数值验证失败时，使用 `TORCH_COMPILE_DEBUG=1` 可以：
+1. 查看生成的 Triton 源代码，确认融合策略是否引入了精度变化
+2. 对比 FX Graph 和生成代码的结构，定位问题 kernel
+3. 逐步禁用优化（`torch._inductor.config.xxx = False`）缩小问题范围
+
+### 常见数值陷阱
+
+**Softmax 溢出**
+
+$$
+\text{softmax}(x_i) = \frac{e^{x_i}}{\sum_j e^{x_j}}
+$$
+
+当 $x_i$ 很大时，$e^{x_i}$ 会溢出为 inf。**标准修复**：减去最大值：
+
+$$
+\text{softmax}(x_i) = \frac{e^{x_i - \max(x)}}{\sum_j e^{x_j - \max(x)}}
+$$
+
+编译器在 fuse softmax 时必须确保这个 numerical stability trick 被正确保留。
+
+**LayerNorm 方差为负**
+
+计算方差时，如果使用 $\text{Var}(x) = E[x^2] - (E[x])^2$ 的公式，由于灾难性消去（catastrophic cancellation），当 $E[x^2]$ 和 $(E[x])^2$ 非常接近时，结果可能为负。**标准修复**：使用 Welford's 在线算法，或者使用 $\text{Var}(x) = E[(x - E[x])^2]$ 的形式。
+
+**混合精度 Loss Scaling**
+
+在混合精度训练中，FP16 梯度可能 underflow（太小变成 0）或 overflow（太大变成 inf）。**标准修复**：动态 loss scaling——将 loss 乘以一个 scale factor，在反向传播后再除以它。当检测到 inf/nan 时，自动降低 scale factor。
+
+## 总结
+
+本文完成了代码生成的全貌——从 Triton Python DSL 到 GPU 可执行二进制的完整管线。核心要点：
+
+1. **Triton 的 6 阶段编译管线**（Python DSL → Triton IR → GPU IR → LLVM IR → PTX → cubin）将高层 block-level 抽象逐步降低为硬件指令，其中 MLIR 的引入使多后端支持成为可能
+
+2. **TorchInductor 代码生成** 将 FX Graph 转换为可读的 Triton kernel 源代码，支持三种典型模式（element-wise fusion、reduction fusion、epilogue fusion），生成代码可通过 TORCH_COMPILE_DEBUG 检查
+
+3. **四大编译器后端** 各有定位：TorchInductor+Triton（快速 JIT、研发友好）、XLA（全局最优、TPU 原生）、TensorRT（推理极致性能）、IREE（跨平台、轻量级）
+
+4. **数值正确性** 是编译优化的一等公民：浮点非结合性意味着 fusion/tiling 会改变结果，系统的测试策略（assert_close + 适当阈值）和调试工具（TORCH_COMPILE_DEBUG）是保障正确性的关键
+
+至此，我们完成了图编译优化学习路径中代码生成阶段的所有内容。下一阶段将进入量化、分布式编译、调度和自动调优等高级主题。
+
+## 延伸阅读
+
+- **Triton 原始论文**（Tillet et al., 2019）— Triton 的设计理念和最初实现
+- **Triton 官方文档** — 教程、API 参考和编程指南
+- **MLIR GPU Dialect 文档** — 多后端 lowering 的技术细节
+- **IREE 官方文档** — MLIR-native 编译器和运行时架构
+- **TensorRT Developer Guide** — NVIDIA 推理优化的权威参考
+- **Goldberg 的浮点数论文** — 每个程序员都应该了解的浮点算术知识

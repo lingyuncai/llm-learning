@@ -1,0 +1,414 @@
+---
+title: "代码生成（上）：指令选择、Vectorization 与 Register Allocation"
+slug: codegen-instruction-selection
+locale: zh
+tags: [compiler, codegen, instruction-selection, vectorization, register-allocation, gpu]
+prerequisites: [dynamic-shapes-challenge]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: website
+    title: "NVIDIA CUDA C++ Programming Guide — PTX ISA"
+    url: "https://docs.nvidia.com/cuda/parallel-thread-execution/index.html"
+  - type: website
+    title: "LLVM Code Generator Documentation"
+    url: "https://llvm.org/docs/CodeGenerator.html"
+  - type: website
+    title: "CUTLASS: CUDA Templates for Linear Algebra Subroutines"
+    url: "https://github.com/NVIDIA/cutlass"
+  - type: website
+    title: "NVIDIA GPU Architecture — Execution Units"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#hardware-implementation"
+  - type: paper
+    title: "Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations"
+    url: "https://www.eecs.harvard.edu/~htk/publication/2019-mapl-tillet-kung-cox.pdf"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import InstructionSelectionDemo from '../../../components/interactive/InstructionSelectionDemo.tsx';
+import RegisterPressureVisualizer from '../../../components/interactive/RegisterPressureVisualizer.tsx';
+import VectorizationDemo from '../../../components/interactive/VectorizationDemo.tsx';
+
+<CompilerStackMap mode="compact" currentArticle="codegen-instruction-selection" client:visible />
+
+## 简介
+
+经过前面几篇文章的讨论——[算子融合的分类与策略](/zh/articles/operator-fusion-taxonomy)、[Cost Model 的设计](/zh/articles/operator-fusion-cost-model)、[Tiling 与内存层次优化](/zh/articles/tiling-memory-hierarchy)以及[动态 Shape 的挑战](/zh/articles/dynamic-shapes-challenge)——我们已经有了一套经过优化的 IR（中间表示）。IR 中的算子已经被融合、tiled、分析过数据依赖。但这些优化后的 IR 仍然是**抽象的描述**，它们距离 GPU 能够真正执行的机器指令还有一步之遥。
+
+**代码生成（Code Generation, Codegen）** 就是这最后一步——将优化后的 IR 转化为 GPU 可以直接执行的硬件指令。这不仅仅是简单的翻译，codegen 阶段本身包含了大量的优化机会：
+
+- **指令选择（Instruction Selection）**：同一个 IR 操作可能有多种硬件指令实现方式，编译器需要选择最优的
+- **Vectorization（向量化）**：将标量内存访问合并为更宽的向量访问，提升带宽利用率
+- **Register Allocation（寄存器分配）**：在寄存器复用与 occupancy 之间找到平衡
+
+这三个子任务共同构成了 codegen pipeline 的前半部分。本文将逐一深入讲解。
+
+## 代码生成的任务
+
+### 输入与输出
+
+Codegen 的输入是经过 Pass、Fusion、Tiling 优化后的 IR。以 Triton 为例，这时的 IR 已经是 Triton Dialect（或 MLIR 层级的 IR），其中包含了：
+
+- `tt.dot`（矩阵乘法）
+- `tt.load` / `tt.store`（内存读写）
+- `arith.addf`、`arith.mulf`（标量算术）
+- `math.exp`、`math.tanh`（超越函数）
+
+Codegen 的输出是 GPU 可执行的指令。在 NVIDIA 生态中，这个过程分为两步：
+
+1. **IR → PTX（Parallel Thread Execution）**：编译器将高层 IR 降低为 PTX 虚拟指令集。PTX 是 NVIDIA 定义的虚拟 ISA，具有良好的跨代兼容性。
+2. **PTX → SASS（cubin）**：NVIDIA 的 `ptxas` 汇编器将 PTX 编译为实际的 GPU 微码（SASS），这一步对开发者通常是黑盒。
+
+### 语义鸿沟
+
+高层 IR 操作与底层硬件指令之间存在显著的**语义鸿沟（Semantic Gap）**：
+
+- 一个 `linalg.matmul` 可能对应 Tensor Core 上的 `HMMA` 指令，也可能对应标量 FMA 循环
+- 一个 `math.exp` 可能由 SFU（Special Function Unit）硬件加速，也可能用多项式逼近
+- 一个简单的 `arith.addf` 可以直接映射为 `FADD`，但也可以被融合进 `FFMA`
+
+编译器的工作就是在这些选择中，找到最优的映射方案。
+
+### LLVM 作为通用后端
+
+大部分 ML 编译器（包括 Triton、XLA、TVM）最终都将 IR 降低到 LLVM IR，然后利用 LLVM 的 NVPTX 后端生成 PTX。LLVM 的代码生成器使用两种主要算法：
+
+- **SelectionDAG**：传统的基于 DAG 的指令选择，将 LLVM IR 转化为目标特定的 DAG，再通过 pattern matching 选择指令
+- **GlobalISel（Global Instruction Selection）**：更新的框架，直接在 LLVM IR 上做指令选择，支持更细粒度的优化
+
+对于 GPU 目标，LLVM 的 NVPTX 后端负责将 LLVM IR 映射到 PTX 指令，而 `ptxas` 再将 PTX 进一步优化并生成 SASS。
+
+## 指令选择 (Instruction Selection)
+
+### IR Op → Hardware Instruction Mapping
+
+指令选择的核心是**一对多映射**：一个 IR 操作通常有多个合法的硬件指令序列可以实现它。编译器的任务是从中选择**吞吐量最高、延迟最低、资源利用最优**的方案。
+
+考虑以下几个例子：
+
+**矩阵乘法：**
+- `linalg.matmul<f16>` → HMMA.16816.F32（Tensor Core，1024 FLOPs/cycle/SM）
+- `linalg.matmul<f16>` → HFMA2 循环（FP16 ALU，128 FLOPs/cycle/SM）
+
+选择 Tensor Core 可以获得 **8x** 的吞吐量提升。
+
+**指数函数：**
+- `math.exp<f32>` → MUFU.EX2 + MUL（SFU 硬件加速）
+- `math.exp<f32>` → 6 条 FFMA 组成的多项式逼近
+
+SFU 方案用 2 条指令完成，ALU 方案需要 6 条。虽然 SFU 吞吐量较低（16 ops/cycle/SM vs FP32 ALU 的 64 ops/cycle/SM），但**指令数更少**意味着更少的 register pressure 和更低的 instruction cache 压力。
+
+### GPU-Specific Instruction Selection
+
+NVIDIA GPU（以 A100 / Ampere 架构为例）提供了多类执行单元，每类有不同的指令集和性能特征：
+
+**Tensor Core 指令：**
+- `HMMA.16816.F32`：FP16 输入，FP32 累加，$16 \times 8 \times 16$ 矩阵块
+- `HMMA.16816.F16`：FP16 输入，FP16 累加
+- 对应的 PTX：`mma.sync.aligned.m16n8k16.f32.f16`
+- 吞吐量：1024 FLOPs/cycle/SM（A100，4 个 Tensor Core），远超标量 ALU
+
+**FP32 ALU 指令：**
+- `FADD`（加法）、`FMUL`（乘法）、`FFMA`（fused multiply-add）
+- `FMNMX`（fused min/max，用于 ReLU 等激活函数）
+- 吞吐量：64 ops/cycle/SM
+- 延迟：4 cycles
+
+**FP16 ALU 指令：**
+- `HFMA2`：同时处理 2 个 FP16 值的 FMA
+- 对应 PTX：`fma.rn.f16x2`
+- 吞吐量：128 FLOPs/cycle/SM（因为 2-wide）
+
+**SFU（Special Function Unit）指令：**
+- `MUFU.EX2`（$2^x$）、`MUFU.RCP`（倒数）、`MUFU.RSQ`（逆平方根）、`MUFU.SIN`、`MUFU.COS`
+- 对应 PTX：`ex2.approx.f32`、`rcp.approx.f32` 等
+- 吞吐量：16 ops/cycle/SM
+- 延迟：~20 cycles
+- 精度：近似值（约 22-bit mantissa），对 ML 训练/推理通常足够
+
+选择标准综合考虑：**吞吐量**、**延迟**、**精度需求**和**可用执行单元的竞争情况**。
+
+<InstructionSelectionDemo client:visible />
+
+### Peephole Optimization
+
+在初始指令选择之后，编译器会进行 **Peephole Optimization（窥孔优化）**——在局部指令窗口内查找可优化的模式：
+
+**强度折减（Strength Reduction）：**
+- 乘以 2 的幂 → 移位：`x * 4.0` → `FMUL x, 4.0`（或直接用指数加法）
+- 除以常数 → 乘以倒数：`x / 3.0` → `FMUL x, 0.333...`（避免昂贵的除法指令）
+
+**指令融合（Instruction Merging）：**
+- 分离的 `MUL + ADD` → `FFMA`（fused multiply-add）
+- 例如：`y = x * 2.0 + bias` 需要两条指令 `FMUL` + `FADD`
+- 融合后：`FFMA(x, 2.0, bias)` 一条指令完成
+- 好处：减少指令数、减少中间寄存器需求、可能提高精度（FMA 只做一次 rounding）
+
+**指令级死代码消除：**
+- 移除结果未被使用的指令
+- 移除冗余的 move 指令
+- 简化恒等操作：`x + 0.0` → `x`、`x * 1.0` → `x`
+
+这些优化看似微小，但在一个被调用数十亿次的 GPU kernel 中，每减少一条指令都意味着显著的性能提升。
+
+## Vectorization
+
+### SIMD 映射
+
+在 CPU 上，向量化通常指利用 SIMD（Single Instruction, Multiple Data）指令集——如 x86 的 SSE/AVX 或 ARM 的 NEON——将多个标量操作打包成一条向量指令。
+
+GPU 的情况有所不同。GPU 采用 **SIMT（Single Instruction, Multiple Threads）** 模型：每个 warp 中的 32 个线程自然地执行相同的指令，只是操作在不同的数据上。因此，GPU 的"向量化"不是在指令层面打包多个操作，而是在**内存访问层面**——使用更宽的 load/store 指令来提升带宽利用率。
+
+### 向量化内存访问
+
+GPU 内存访问的基本单位是 **32-byte sector**。当一个 warp 中的线程发出内存请求时，硬件会将这些请求合并为对若干 32-byte sector 的访问（memory coalescing）。
+
+但即使在已经合并的访问模式下，**每条 load 指令的宽度**仍然影响性能：
+
+| Load 类型 | 每条指令字节数 | 处理 16 个 FP32 元素需要的 load 指令数 | 指令减少 |
+|-----------|-------------|--------------------------------------|---------|
+| `float`（标量）| 4B | 16 | baseline |
+| `float2` | 8B | 8 | 2x fewer |
+| `float4` | 16B | 4 | 4x fewer |
+
+关键理解：**向量化减少的是 load 指令的条数，而不是 32-byte sector transactions**。在同样的 memory coalescing 模式下，float4 load 让每个线程一条指令就能读取 16 字节数据，而标量 load 需要 4 条指令才能读取同样多的数据。
+
+这带来的好处是：
+- **更少的指令**：减少 instruction cache 压力和指令调度开销
+- **更高的每指令带宽**：每条 load 搬运更多数据
+- **更少的 register 用于地址计算**：一个地址对应更多数据
+
+对齐要求：`float4` load 需要 **16-byte 对齐**的地址。如果输入数据没有对齐，编译器需要回退到更窄的 load。
+
+<VectorizationDemo client:visible />
+
+### Vectorization Legality
+
+并非所有内存访问都可以向量化。编译器需要检查以下条件：
+
+**数据独立性（Independence）：**
+向量化 load 中的各元素必须是独立的——即它们之间不存在数据依赖。例如，如果 `a[i]` 的计算依赖于 `a[i-1]`，就不能将它们放入同一个向量 load。
+
+**地址对齐（Alignment）：**
+向量化 load 要求起始地址对齐到向量宽度。例如：
+- `float2` 需要 8-byte 对齐
+- `float4` 需要 16-byte 对齐
+
+如果 base pointer 不满足对齐要求，编译器需要：
+1. 在开头使用标量 load 处理非对齐的部分
+2. 主循环使用向量化 load
+3. 在结尾使用标量 load 处理剩余元素
+
+**访问步长（Stride）：**
+只有 **stride-1**（连续访问）的模式可以直接向量化。如果访问模式是：
+- `a[0], a[2], a[4], a[6]`（stride-2）→ 不能直接向量化
+- `a[indices[0]], a[indices[1]], ...`（gather）→ 不能向量化，需要使用 gather 指令（性能很差）
+
+在 Triton 中，编译器通过分析 `tl.load` 和 `tl.store` 的 offset 模式来判断是否可以向量化，以及选择什么向量宽度。
+
+## Register Allocation
+
+### GPU Register File 特性
+
+GPU 的 Register File（寄存器文件）是片上最快的存储层级，但它的使用方式与 CPU 有根本性的不同。
+
+以 NVIDIA A100 为例：
+
+- **每个 SM 有 65,536 个 32-bit 寄存器**，这些寄存器由 SM 上所有活跃的线程**共享**
+- **每个线程最多使用 255 个寄存器**（硬件上限）
+- **每个 SM 最多 64 个 warp**（即 2048 个线程）
+
+这三个数字之间的关系直接决定了 kernel 的 **occupancy（占用率）**：
+
+$$
+\text{max warps} = \min\left(64, \left\lfloor \frac{65536}{\text{regs\_per\_thread} \times 32} \right\rfloor\right)
+$$
+
+$$
+\text{occupancy} = \frac{\text{max warps}}{64}
+$$
+
+例如，如果一个 kernel 每线程使用 32 个寄存器：
+
+$$
+\text{max warps} = \min\left(64, \left\lfloor \frac{65536}{32 \times 32} \right\rfloor\right) = \min(64, 64) = 64
+$$
+
+occupancy = 100%。但如果每线程使用 128 个寄存器：
+
+$$
+\text{max warps} = \min\left(64, \left\lfloor \frac{65536}{128 \times 32} \right\rfloor\right) = \min(64, 16) = 16
+$$
+
+occupancy = 25%。
+
+### GPU 与 CPU 的关键差异
+
+在 CPU 上，寄存器溢出（register spill）会将数据溢出到 L1 cache，代价约为 4-5 个周期。但在 GPU 上，register spill 走的是 **local memory** 路径：
+
+$$
+\text{Register} \xrightarrow{\text{spill}} \text{L1 Cache} \rightarrow \text{L2 Cache} \rightarrow \text{DRAM (HBM)}
+$$
+
+如果 L1 miss，延迟可以从几个周期飙升到 **数百个周期**（HBM 延迟约 400-600 cycles）。这意味着 GPU 上的 register spill 代价远比 CPU 上更高，是性能优化中必须避免的情况。
+
+### Register Pressure vs Occupancy 权衡
+
+这是 GPU kernel 优化中最核心的权衡之一：
+
+**低寄存器使用 → 高 Occupancy：**
+- 更多 warp 同时活跃 → 更好的延迟隐藏（latency hiding）
+- 当一个 warp 等待内存访问时，调度器切换到另一个 warp
+- 对 memory-bound kernel 非常重要
+
+**高寄存器使用 → 低 Occupancy，但更多数据复用：**
+- 中间结果保留在寄存器中 → 避免重复从内存读取
+- 对 compute-bound kernel，数据复用比延迟隐藏更重要
+- 典型场景：GEMM kernel 将多个 tile 的部分和（partial sums）保存在寄存器中
+
+**经验法则：**
+对于 compute-bound kernel（如 GEMM），32-64 个寄存器/线程通常是较好的平衡点。对于 memory-bound kernel（如 element-wise 操作），尽量减少寄存器使用以最大化 occupancy。
+
+<RegisterPressureVisualizer client:visible />
+
+### Fusion 和 Tiling 对 Register Pressure 的影响
+
+前面文章中讨论的 Fusion 和 Tiling 策略直接影响 register pressure：
+
+**更多融合 → 更高寄存器压力：**
+每个被融合的算子都需要寄存器来保存中间结果。融合 2 个算子可能需要 16 个寄存器，融合 8 个可能需要 96 个。超过一定阈值后，寄存器溢出（spill）会导致性能急剧下降。
+
+**更大的 Tile → 更高寄存器压力：**
+每个线程处理更大的 tile 意味着需要更多寄存器来暂存输入数据和部分结果。例如，一个处理 $4 \times 4$ 输出元素的线程需要的寄存器远多于处理 $1 \times 1$ 的。
+
+**性能悬崖（Performance Cliff）：**
+Register pressure 存在一个阈值效应。当寄存器使用量刚好超过 spill 阈值时，性能会突然大幅下降——这就是"性能悬崖"。例如：
+
+- 每线程 64 个寄存器：occupancy 50%，无 spill，性能良好
+- 每线程 96 个寄存器：occupancy 21%，无 spill，性能尚可（靠数据复用弥补）
+- 每线程 200 个寄存器：超过 255 限制，必须 spill，性能骤降
+
+这就是为什么编译器的 register allocator 需要精确控制寄存器使用量，有时甚至主动牺牲一些数据复用来避免 spill。
+
+### 编译器的 Register Allocation 策略
+
+**LLVM 的 Graph Coloring 算法：**
+LLVM 的 register allocator 基于 **graph coloring（图着色）** 算法。它将每个变量的生命周期建模为干涉图（interference graph）中的节点，如果两个变量的生命周期重叠，就在它们之间连一条边。寄存器分配等价于对该图进行 $k$-coloring（$k$ = 可用寄存器数）。
+
+**GPU 特定优化：**
+LLVM 的 NVPTX 后端会考虑 GPU 的特殊约束：
+- 平衡寄存器数量与 occupancy
+- 考虑 register bank conflict（某些架构上，同一 bank 的寄存器同时读取会冲突）
+- 对 Tensor Core 指令使用的寄存器做特殊布局
+
+**Triton 的策略：**
+Triton 编译器通过 tile size 选择间接控制 register allocation。更小的 tile → 更少的寄存器需求。Triton 的 auto-tuner 会在不同的 tile size 配置之间搜索，找到寄存器使用量和性能的最佳平衡。
+
+**CUDA 用户的手动控制：**
+在 CUDA 中，开发者可以通过以下方式提示编译器：
+- `__launch_bounds__(maxThreadsPerBlock, minBlocksPerMultiprocessor)` — 告知编译器每个 block 的最大线程数和每个 SM 的最小 block 数，编译器据此调整寄存器分配
+- `#pragma unroll` — 控制循环展开程度，间接影响寄存器压力
+- `__maxnreg=N` — 直接限制每线程的最大寄存器数（不推荐，通常让编译器自动决定更好）
+
+## 实际案例：GELU Kernel 的 Codegen
+
+让我们将上述三个概念串联起来，看一个完整的 GELU 激活函数 kernel 是如何经历 codegen pipeline 的。
+
+### GELU 的数学定义
+
+$$
+\text{GELU}(x) = 0.5 \cdot x \cdot \left(1 + \tanh\left(\sqrt{\frac{2}{\pi}} \cdot \left(x + 0.044715 \cdot x^3\right)\right)\right)
+$$
+
+这个函数包含：乘法、加法、立方、tanh（超越函数）、常数乘法。
+
+### Step 1: 指令选择
+
+编译器将 GELU 的各操作映射到具体指令：
+
+| 操作 | SASS 指令 | 执行单元 |
+|------|----------|---------|
+| $x^3 = x \cdot x \cdot x$ | 2× `FFMA` | FP32 ALU |
+| $0.044715 \cdot x^3$ | `FFMA` | FP32 ALU |
+| $x + 0.044715 \cdot x^3$ | `FFMA`（与上一步融合） | FP32 ALU |
+| $\sqrt{2/\pi} \cdot (\ldots)$ | `FFMA` | FP32 ALU |
+| $\tanh(\ldots)$ | `MUFU.EX2` + 系列指令 | SFU + FP32 ALU |
+| $1 + \tanh(\ldots)$ | `FADD` | FP32 ALU |
+| $0.5 \cdot x \cdot (\ldots)$ | `FFMA` | FP32 ALU |
+
+其中 `tanh` 的实现最复杂。一种常见方法是利用恒等式：
+
+$$
+\tanh(x) = \frac{e^{2x} - 1}{e^{2x} + 1} = 1 - \frac{2}{e^{2x} + 1}
+$$
+
+其中 $e^{2x}$ 可以通过 `MUFU.EX2`（计算 $2^y$）和换底公式实现：$e^x = 2^{x \cdot \log_2(e)}$。
+
+### Step 2: Vectorize Loads
+
+GELU kernel 是 element-wise 的，输入和输出具有完美的 stride-1 访问模式。编译器将标量 load 提升为 `float4` load：
+
+- 原始：每个线程 1 次 `LD.E`（4 bytes）→ 处理 1 个元素
+- 优化：每个线程 1 次 `LDG.E.128`（16 bytes）→ 处理 4 个元素
+
+这将 load 指令数减少为原来的 **1/4**。
+
+### Step 3: Register Allocation
+
+GELU kernel 每线程需要约 12 个寄存器：
+- 4 个用于 `float4` 输入
+- 4 个用于 `float4` 输出
+- 4 个用于中间计算
+
+$$
+\text{max warps} = \min\left(64, \left\lfloor \frac{65536}{12 \times 32} \right\rfloor\right) = \min(64, 170) = 64
+$$
+
+occupancy = 100%。这是理想情况——GELU 是一个简单的 element-wise 操作，寄存器需求很低。
+
+### Step 4: 最终 PTX 指令概览
+
+生成的 PTX 代码大致如下（简化版）：
+
+```
+// Load float4
+ld.global.v4.f32 {%f1, %f2, %f3, %f4}, [%rd1];
+
+// 对每个元素计算 GELU（以 %f1 为例）
+mul.f32     %f5, %f1, %f1;        // x^2
+fma.rn.f32  %f6, %f5, %f1, 0.0;   // x^3
+fma.rn.f32  %f7, %f6, 0.044715, %f1;  // x + 0.044715*x^3
+mul.f32     %f8, %f7, 0.7978845;   // sqrt(2/pi) * (...)
+mul.f32     %f9, %f8, 1.4426950;   // convert to base-2
+ex2.approx.f32 %f10, %f9;          // 2^(...)
+// ... tanh 计算的后续步骤 ...
+fma.rn.f32  %f15, %f1, %f14, 0.0; // 0.5 * x * (1 + tanh)
+
+// Store float4
+st.global.v4.f32 [%rd2], {%f15, %f16, %f17, %f18};
+```
+
+注意指令混合：大量的 `fma.rn.f32`（FP32 ALU）加上 `ex2.approx.f32`（SFU）。SFU 的吞吐量限制（16 ops/cycle/SM）是 GELU kernel 的性能瓶颈所在。
+
+## 总结
+
+本文深入讨论了 GPU 代码生成的三大核心任务：
+
+1. **指令选择**将 IR 操作映射到硬件指令——在 Tensor Core、FP32 ALU、FP16 ALU 和 SFU 之间选择最优方案。关键洞察：同一操作可能有截然不同的实现方式，编译器需要基于吞吐量、延迟和精度需求做出选择。
+
+2. **Vectorization** 将标量内存访问提升为向量访问——`float4` load 将 load 指令数减少为 1/4。关键约束：需要 stride-1 访问模式和地址对齐。
+
+3. **Register Allocation** 在数据复用与 occupancy 之间寻找平衡——A100 的 65,536 个寄存器/SM 看似很多，但在 2048 个线程之间共享后，每线程只有 32 个。过多的融合或过大的 tile 会导致 register spill，性能骤降。
+
+这三个任务紧密耦合：指令选择决定了需要多少寄存器（不同指令的 register footprint 不同），向量化影响了 load/store 的寄存器需求，而 register allocation 的结果又可能反过来影响指令选择的策略。
+
+下一篇文章我们将深入 **Triton 编译 Pipeline** 和编译器后端的具体实现，看看这些概念如何在实际的 ML 编译器中落地。
+
+## 延伸阅读
+
+- [NVIDIA PTX ISA Documentation](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html) — 完整的 GPU 虚拟指令集参考
+- [LLVM Code Generator Documentation](https://llvm.org/docs/CodeGenerator.html) — SelectionDAG 和 GlobalISel 的设计文档
+- [CUTLASS Source Code](https://github.com/NVIDIA/cutlass) — 生产级多层 codegen 的参考实现
+- [NVIDIA CUDA Programming Guide — Hardware Implementation](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#hardware-implementation) — GPU 硬件架构详解
+- [Triton Paper](https://www.eecs.harvard.edu/~htk/publication/2019-mapl-tillet-kung-cox.pdf) — Tiled 神经网络计算的中间语言与编译器

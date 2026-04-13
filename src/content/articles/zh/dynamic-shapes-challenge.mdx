@@ -1,0 +1,507 @@
+---
+title: "Dynamic Shapes：从捕获到执行的全链路挑战"
+slug: dynamic-shapes-challenge
+locale: zh
+tags: [compiler, dynamic-shapes, symbolic-shapes, guards, bucketing, pytorch]
+prerequisites: [tiling-memory-hierarchy]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "PyTorch 2: Faster Machine Learning Through Dynamic Python Bytecode Transformation and Graph Compilation"
+    url: "https://dl.acm.org/doi/10.1145/3620665.3640366"
+  - type: website
+    title: "torch.compile Dynamic Shapes Documentation"
+    url: "https://pytorch.org/docs/stable/torch.compiler_dynamic_shapes.html"
+  - type: website
+    title: "TorchDynamo Deep Dive"
+    url: "https://pytorch.org/docs/stable/torch.compiler_dynamo_deepdive.html"
+  - type: website
+    title: "MLIR Tensor Type — Dynamic Dimensions"
+    url: "https://mlir.llvm.org/docs/Dialects/Builtin/#rankedtensortype"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import DynamicShapeImpactTracer from '../../../components/interactive/DynamicShapeImpactTracer.tsx';
+import GuardRecompilationDemo from '../../../components/interactive/GuardRecompilationDemo.tsx';
+import BucketingStrategyCompare from '../../../components/interactive/BucketingStrategyCompare.tsx';
+
+<CompilerStackMap currentArticle="dynamic-shapes-challenge" mode="compact" client:visible />
+
+## 简介
+
+Dynamic shapes 是 ML 编译器面临的**最核心的实践挑战**。在前面的文章中，我们讨论了[算子融合](/zh/articles/operator-fusion-taxonomy)、[Cost Model](/zh/articles/operator-fusion-cost-model) 和 [Tiling 策略](/zh/articles/tiling-memory-hierarchy)——这些优化技术都有一个隐含的假设：**编译器在编译时知道张量的完整 shape**。然而在真实的 LLM 推理场景中，这个假设几乎从不成立。
+
+核心矛盾：
+
+- **编译器需要静态信息来优化**：常量折叠需要知道值，fusion 需要知道中间结果大小，tiling 需要知道矩阵维度
+- **ML 工作负载天然是动态的**：LLM 推理中每个请求的序列长度不同，continuous batching 让 batch size 在运行时变化
+
+本文是一篇**纵向主题文章**，追踪 dynamic shapes 对编译器栈**每一个阶段**的影响——从图捕获（Graph Capture）、IR 表示、优化 Pass、算子融合、Tiling 到代码生成（Codegen）。我们将以 PyTorch 2 的 `torch.compile` 为主线，结合 MLIR 的 dynamic tensor 支持，全面分析问题和解决方案。
+
+## 问题定义
+
+### LLM 推理中的 Dynamic Shapes
+
+考虑一个典型的 LLM 推理场景。一个部署在生产环境中的 GPT 模型，接收来自不同用户的请求：
+
+```python
+# 用户 A 发送了一段短文本
+input_A = tokenizer("Hello world")  # shape: [1, 3, 768]
+
+# 用户 B 发送了一段长文本
+input_B = tokenizer("In this comprehensive guide, we will explore ...")  # shape: [1, 256, 768]
+
+# 用户 C 发送了一段超长文本
+input_C = tokenizer("...")  # shape: [1, 2048, 768]
+```
+
+三个请求的 `seq_len` 分别是 3、256、2048。如果编译器为 shape `[1, 3, 768]` 编译了一个高度特化的 kernel，那这个 kernel 无法处理其他两个请求。
+
+在 **continuous batching** 场景下，情况更加复杂：
+
+- Batch size 在运行时动态变化（新请求到达 → batch 增大，请求完成 → batch 缩小）
+- 即使是同一个 batch 内，不同序列的实际有效长度也不同（通过 attention mask 控制）
+- KV cache 的长度随解码步骤逐步增长
+
+这意味着一个 Transformer 模型中，至少有两个维度是动态的：`batch_size` 和 `seq_len`。
+
+### 传统编译器 vs ML 编译器
+
+传统编译器（如 GCC、LLVM）处理的程序，类型和数据结构的大小在编译时通常是已知的（或者通过静态分析可推断）。即使遇到动态内存分配（`malloc`），编译器也不需要根据分配大小来选择不同的优化策略。
+
+ML 编译器面临的挑战截然不同：**数据的 shape 直接影响优化策略的选择**。以矩阵乘法为例：
+
+$$
+C[M, N] = A[M, K] \times B[K, N]
+$$
+
+如果 $M$ 是动态的：
+- **Tiling**：无法在编译时选择最优的 `BLOCK_M`，因为不知道总共有多少 tile
+- **Fusion**：无法精确判断中间结果大小是否 fit SRAM
+- **Codegen**：无法消除边界检查（bounds check），因为不知道最后一个 tile 是否需要 mask
+- **Memory planning**：无法在编译时预分配精确大小的 buffer
+
+这就是 dynamic shapes 问题的本质：**shape 不只是数据的属性，它是优化决策的输入**。
+
+### 量化分析：Static vs Dynamic 的性能差距
+
+在一个典型的 Transformer 层中，static shape 编译 vs dynamic shape 编译的性能差距大约在 **10%–40%** 之间，具体取决于：
+
+| 因素 | 影响 |
+|------|------|
+| 矩阵尺寸大小 | 小矩阵受 dynamic 影响更大（overhead 相对占比高） |
+| 动态维度数量 | 1 个动态维度 < 2 个 < 全动态 |
+| Kernel 类型 | Compute-bound kernel 影响小；Memory-bound kernel 影响大 |
+| 编译器成熟度 | 更好的 symbolic reasoning 能缩小差距 |
+
+## PyTorch 的解决方案 — Symbolic Shapes
+
+PyTorch 2 通过 TorchDynamo + AOTAutograd 引入了一套完整的 symbolic shape 系统来应对 dynamic shapes 挑战。
+
+### SymInt / SymFloat
+
+**SymInt** 是 PyTorch 的核心抽象。它可以表示一个**符号化的整数**——不是一个具体的值（如 128），而是一个符号变量（如 `s0`），代表"某个运行时才确定的值"。
+
+```python
+import torch
+
+def my_model(x):
+    # x.shape[1] 不再是一个 Python int，而是一个 SymInt
+    batch_size = x.shape[0]  # 可能是 SymInt: s0
+    seq_len = x.shape[1]     # 可能是 SymInt: s1
+    hidden = x.shape[2]      # 如果固定，则是 int: 768
+
+    # SymInt 支持算术运算
+    output_size = seq_len * 2  # SymExpr: 2*s1
+    return x.reshape(batch_size, output_size, hidden // 2)
+```
+
+当 TorchDynamo 追踪用户的 Python 代码时，它用 SymInt 替换具体的 shape 值。所有涉及 shape 的计算——`reshape`、`view`、`permute`、`slice` 的参数——都变成了符号表达式。这些表达式被记录在 FX Graph 中，最终传递给后端编译器。
+
+SymInt 的关键设计决策：
+- **惰性求值（Lazy evaluation）**：SymInt 不在追踪时求值，只在运行时绑定具体值
+- **表达式追踪（Expression tracking）**：`s0 + s1`、`s0 * 3`、`s0 // 8` 等表达式都被精确追踪
+- **约束传播（Constraint propagation）**：从已知的约束（如 `s0 > 0`）推导出新的约束
+
+### Guard 系统
+
+Guard 是 PyTorch 的**运行时类型检查机制**。当 `torch.compile` 编译了一个函数后，每次调用这个函数时，Guard 系统会检查：当前的输入是否满足编译时的假设？
+
+```python
+@torch.compile
+def my_fn(x):
+    return x + 1
+
+# 第一次调用：编译，shape=[4, 128, 768]
+my_fn(torch.randn(4, 128, 768))
+
+# 第二次调用：Guard 检查 shape 是否匹配
+# 如果 shape 相同 → cache hit → 直接执行编译后的代码
+my_fn(torch.randn(4, 128, 768))
+
+# 第三次调用：shape 变了 → Guard fail → 触发重编译
+my_fn(torch.randn(4, 256, 768))
+```
+
+Guard 的类型包括：
+
+1. **Shape Guard**：`x.shape[0] == 4`（最常见，检查张量形状）
+2. **Dtype Guard**：`x.dtype == torch.float32`（检查数据类型）
+3. **Device Guard**：`x.device == cuda:0`（检查设备）
+4. **Value Guard**：检查 Python 变量的具体值（较少见）
+
+Guard 检查本身非常快——只是几个整数比较操作。**真正的开销在于 Guard fail 后触发的重编译**。
+
+### `dynamic=False` vs `dynamic=None` (automatic_dynamic_shapes)
+
+`torch.compile` 的 `dynamic` 参数控制如何处理 dynamic shapes：
+
+**`dynamic=False`**（显式静态模式）：
+- 每个具体的 shape 组合都单独编译和缓存
+- Shape 变化 → Guard fail → 重新编译一个新的特化 kernel
+- 编译缓存按具体 shape 索引：`{(4, 128, 768): kernel_1, (4, 256, 768): kernel_2, ...}`
+- 如果 shape 种类多，会导致**大量重编译**
+
+**`dynamic=None`**（默认，automatic_dynamic_shapes）：
+- 第一次调用按静态 shape 编译
+- 如果某个维度的 shape 变化导致 Guard fail，**该维度自动标记为符号化**（symbolic）
+- 重编译后生成的 kernel 对该维度是通用的——后续无论 `seq_len` 是多少，都能命中缓存
+- 大幅减少重编译次数（通常只需 1 次重编译就能处理所有 shape 变体）
+
+这是 PyTorch 2 的一个重要设计：**自动发现哪些维度是动态的，而不需要用户手动标注**。
+
+### Mark Dynamic API
+
+用户也可以主动告诉编译器哪些维度是动态的：
+
+```python
+x = torch.randn(4, 128, 768)
+
+# 标记第 1 维（seq_len）为动态
+torch._dynamo.mark_dynamic(x, 1)
+
+# 或者使用 torch.compile 的 dynamic_shapes 参数
+@torch.compile(dynamic=True)
+def my_fn(x):
+    return x + 1
+```
+
+`mark_dynamic` 的效果是：编译器从**第一次调用**就将该维度视为符号化变量，避免了首次 Guard fail 和重编译。
+
+### Symbol Constraint System
+
+符号变量不是无约束的——PyTorch 会从模型结构和用户提示中推导出约束：
+
+```python
+# 自动推导的约束示例：
+# s0 > 0          — 维度必须为正
+# s0 <= 2048      — 从模型的 max_position_embeddings 推导
+# s0 % 8 == 0     — 如果模型代码中有 reshape(..., seq_len // 8, 8)
+```
+
+这些约束被传递给后端编译器，缩小了优化搜索空间。例如，如果编译器知道 `s0 % 8 == 0`，它可以选择 `BLOCK_M = 8` 或其倍数而不需要边界检查。
+
+<GuardRecompilationDemo client:visible />
+
+## Dynamic Shape 对编译各阶段的影响
+
+Dynamic shapes 的影响不是孤立的——它**贯穿编译器栈的每一个阶段**。下面的交互组件让你逐阶段探索 static shape 和 dynamic shape 的对比差异。
+
+<DynamicShapeImpactTracer client:visible />
+
+### 对图捕获（Capture）的影响
+
+在图捕获阶段，TorchDynamo 需要将 Python 代码转换为一个中间表示（FX Graph）。Static shape 下，所有维度都是 Python int，图的结构是确定的。Dynamic shape 下，维度变成 SymInt，图中的 shape 操作变成符号表达式。
+
+关键影响：
+- **分支消除**：静态 shape 下，`if x.shape[0] > 16: ...` 可以在追踪时确定走哪个分支，生成单一路径的图。动态 shape 下，这类 shape-dependent 的控制流可能需要生成 guard 或者两条路径
+- **Graph break**：某些操作在 dynamic shape 下不被支持，会导致 graph break（将一个大图拆分为多个小图），增加 Python 解释器的介入开销
+
+### 对 IR 层的影响
+
+图捕获后，计算图被转换为更底层的 IR（如 Inductor IR 或 MLIR）。Static shape 下，所有维度是常量：
+
+```
+// Static IR
+linalg.matmul
+  ins(%A: tensor<128x768xf32>, %B: tensor<768x512xf32>)
+  outs(%C: tensor<128x512xf32>)
+```
+
+Dynamic shape 下，维度变成符号变量或 "?" 占位符：
+
+```
+// Dynamic IR (MLIR style)
+linalg.matmul
+  ins(%A: tensor<?x768xf32>, %B: tensor<768x512xf32>)
+  outs(%C: tensor<?x512xf32>)
+```
+
+MLIR 的 `RankedTensorType` 原生支持 dynamic dimensions（用 `?` 表示），这使得 IR 层面能自然地表达"已知 rank 但未知 shape"的张量。每个 `?` 维度在运行时需要通过 `tensor.dim` 操作动态获取值。
+
+循环边界、stride 计算、buffer 分配大小——所有依赖维度值的 IR 节点都从常量变成了运行时计算。
+
+### 对优化 Pass 的影响
+
+优化 Pass 受 dynamic shapes 的影响最为广泛。以下是主要影响：
+
+**失效的 Pass：**
+
+1. **常量折叠（Constant Folding）**：`alloc(128 * 512 * 4)` 可以在编译时计算为 `alloc(262144)`，但 `alloc(s0 * 512 * 4)` 必须保留为运行时计算
+2. **Layout 优化**：最优 memory layout 可能取决于具体的维度比例（如 $M/N$ ratio），dynamic 下无法确定
+3. **静态 Memory Planning**：编译器无法预分配精确大小的 buffer，必须使用运行时分配或 worst-case 预分配
+4. **Loop Unrolling**：循环边界未知时无法展开
+
+**仍可工作的 Pass：**
+
+1. **Dead Code Elimination (DCE)**：消除未使用的计算，不依赖 shape
+2. **Common Subexpression Elimination (CSE)**：合并重复计算，对 shape-independent 的部分仍然有效
+3. **Algebraic Simplification**：$x \times 1 = x$, $x + 0 = x$ 等代数简化不依赖 shape
+
+### 对 Fusion 的影响
+
+[算子融合](/zh/articles/operator-fusion-taxonomy)的核心决策是：**两个相邻的算子是否可以安全地融合为一个 kernel？** 这个决策在很大程度上依赖 shape 信息。
+
+**SRAM 容量检查**：融合两个算子意味着中间结果不写回 HBM，而是保留在 SRAM 中。编译器需要确认中间结果的大小不超过 SRAM 容量：
+
+$$
+\text{intermediate\_size} = M \times K \times \text{elem\_size} \leq \text{SRAM\_capacity}
+$$
+
+当 $M$ 是动态的：
+- **Static**：`14 KB < 164 KB` → 安全融合
+- **Dynamic**：`s0 * 512 * 4 < 164 KB` → 无法确定 → 保守策略（不融合或假设 worst case）
+
+**Element-wise fusion** 不受影响，因为它不需要缓存中间结果：
+
+```
+# 无论 shape 如何，这些操作都可以安全融合
+y = relu(x + bias)  # pointwise fusion always safe
+```
+
+### 对 Tiling/Codegen 的影响
+
+这是 dynamic shapes 影响最直接、最可度量的阶段。
+
+**Static Tiling**：
+```python
+# 编译时确定最优 tile size
+BLOCK_M = 128, BLOCK_N = 128, BLOCK_K = 32
+grid = (M // BLOCK_M, N // BLOCK_N, 1)  # 编译时可计算
+```
+
+**Dynamic Tiling**：
+```python
+# Tile size 必须保守选择，grid 只能运行时计算
+BLOCK_M = 64  # 选择较小值以兼顾多种 shape
+grid = (ceildiv(s0, BLOCK_M), N // BLOCK_N, 1)  # 运行时计算
+```
+
+**代码生成（Codegen）** 的影响更为直接：
+
+- **Static kernel**：编译器知道精确的维度，可以消除所有边界检查，完全展开循环，选择最优向量化宽度
+- **Dynamic kernel**：必须包含 mask（边界检查），不能展开循环，可能导致 warp divergence
+
+```python
+# Static kernel — 无需 mask
+@triton.jit
+def kernel_128_512(A_ptr, B_ptr, ...):
+    # 编译器知道所有维度，直接访问
+    a = tl.load(A_ptr + offs)  # no mask needed
+
+# Dynamic kernel — 需要 mask
+@triton.jit
+def kernel_generic(A_ptr, B_ptr, N, ...):
+    mask = offs < N  # bounds check
+    a = tl.load(A_ptr + offs, mask=mask, other=0.0)  # masked load
+```
+
+Mask 的代价：
+1. **额外指令**：每次 load/store 需要额外的比较和 mask 操作
+2. **Warp divergence**：同一 warp 内的线程可能有不同的 mask 值，导致分支发散
+3. **向量化受限**：mask 可能破坏连续内存访问模式
+
+## 工程策略
+
+面对 dynamic shapes 的挑战，工程实践中发展出了一系列策略来平衡**编译质量**和**灵活性**。
+
+### Bucketing
+
+Bucketing（分桶）是最广泛使用的策略。核心思想：**不为每个具体的 seq_len 编译一个 kernel，而是将 seq_len 映射到离散的"桶"中，每个桶对应一个编译后的 kernel。**
+
+例如，将所有 seq_len 映射到 `{64, 128, 256, 512, 1024, 2048}` 六个桶中。一个 seq_len=200 的请求被映射到桶 256，需要 padding 56 个 token——这就是"浪费"。
+
+不同的 bucketing 策略在**编译次数**和 **padding 浪费**之间做出不同的权衡：
+
+- **无 Bucketing**：每个唯一 seq_len 单独编译，零浪费但编译次数最多
+- **Power-of-2**：映射到最近的 2 的幂，编译次数极少但短序列浪费大
+- **固定间隔**（如 128 的倍数）：折中方案
+- **Multiple-of-8**：最小 padding，对 Tensor Core 对齐友好
+
+<BucketingStrategyCompare client:visible />
+
+### Padding 策略
+
+Padding 是 bucketing 的补充。当序列长度被映射到一个桶后，需要用 padding token 填充到桶的大小。Padding 策略的选择影响计算效率和内存使用：
+
+**Right Padding（右填充）**：最常见，在序列末尾添加 padding token。配合 attention mask 使用，padding 位置的注意力权重为零。
+
+```python
+# 原始序列: [tok1, tok2, tok3]  (len=3)
+# Padding 到 8: [tok1, tok2, tok3, PAD, PAD, PAD, PAD, PAD]
+# Attention mask: [1, 1, 1, 0, 0, 0, 0, 0]
+```
+
+**对齐考量**：Tensor Core（MMA 指令）通常要求维度为 8 或 16 的倍数。Pad 到 8 的倍数不仅满足 Tensor Core 对齐要求，还能确保 memory coalescing。
+
+$$
+\text{padded\_seq\_len} = \lceil \text{seq\_len} / 8 \rceil \times 8
+$$
+
+### Shape Hints
+
+Shape hints 允许用户向编译器提供关于动态维度的范围信息，帮助编译器在"完全静态"和"完全动态"之间找到一个平衡点。
+
+```python
+# torch.export with dynamic shapes
+from torch.export import export, Dim
+
+batch = Dim("batch", min=1, max=32)
+seq_len = Dim("seq_len", min=1, max=2048)
+
+exported = export(
+    model,
+    (sample_input,),
+    dynamic_shapes={"x": {0: batch, 1: seq_len}},
+)
+```
+
+编译器利用这些 hints 可以：
+1. **范围内优化**：知道 `seq_len <= 2048`，可以预分配固定大小的 buffer
+2. **分区优化**：将范围分为几个区间，每个区间使用不同的 tile 配置
+3. **消除部分边界检查**：如果 `seq_len % 8 == 0`，可以省去 mask
+
+### AOT vs JIT 编译
+
+面对 dynamic shapes，AOT（Ahead-of-Time）和 JIT（Just-in-Time）编译有不同的优劣：
+
+**AOT 编译**：
+- 提前为所有预期的 shape 变体编译 kernel
+- **优势**：推理时零编译延迟，延迟可预测
+- **劣势**：需要预知 shape 分布，编译时间长，可能遗漏罕见 shape
+
+```python
+# AOT: 预编译 bucket 对应的所有 kernel
+for bucket_size in [64, 128, 256, 512, 1024, 2048]:
+    compile_kernel(model, seq_len=bucket_size)
+```
+
+**JIT 编译**：
+- 遇到新 shape 时动态编译，编译结果缓存供后续使用
+- **优势**：灵活，自动适应任何 shape，无需预知分布
+- **劣势**：首次遇到新 shape 时有编译延迟（cold start）
+
+```python
+# JIT: torch.compile 的默认行为
+@torch.compile
+def model_fn(x):
+    return model(x)
+# 第一次调用编译，后续调用如果 shape 匹配则直接执行
+```
+
+**混合策略**（生产中最常见）：
+1. AOT 预编译常见 shape（如 bucket sizes）
+2. JIT 作为 fallback 处理罕见 shape
+3. 后台异步编译以减少 cold start 影响
+
+## 实战分析
+
+### 场景：LLM 推理服务
+
+假设一个 LLM 推理服务，处理以下请求分布：
+
+| seq_len 范围 | 请求占比 | 典型场景 |
+|-------------|---------|---------|
+| 1–32 | 20% | 短问答、补全 |
+| 33–128 | 35% | 普通对话 |
+| 129–512 | 30% | 长对话、摘要 |
+| 513–2048 | 15% | 长文档分析 |
+
+### 方案对比
+
+**方案 A：`torch.compile(dynamic=False)`**
+
+每个独特的 `seq_len` 都会触发一次编译。如果有 100 种不同的 `seq_len`，就需要 100 次编译。在高流量场景下，编译开销可能占总延迟的 30% 以上。
+
+**方案 B：`torch.compile(dynamic=None)` + 默认行为**
+
+第一次 Guard fail 后，`seq_len` 维度自动标记为 symbolic。后续所有 `seq_len` 值都命中缓存。总共只需 2 次编译（首次 + 1 次重编译）。性能比方案 A 降低约 10–15%（因为 kernel 是通用的，非特化的）。
+
+**方案 C：Bucketing + AOT 预编译**
+
+将 `seq_len` 映射到 `{32, 64, 128, 256, 512, 1024, 2048}` 七个桶。AOT 预编译 7 个特化 kernel。每个 kernel 都是针对特定 shape 高度优化的。
+
+| 指标 | 方案 A | 方案 B | 方案 C |
+|------|--------|--------|--------|
+| 编译次数 | ~100 | 2 | 7 (预编译) |
+| 推理延迟 | 最低（特化） | 中等（通用） | 低（特化） |
+| 首次请求延迟 | 高（编译） | 高（编译） | 低（预编译） |
+| Padding 浪费 | 0% | 0% | ~15% 平均 |
+| 内存使用 | 高（缓存多） | 低（1–2 个 kernel） | 中等（7 个 kernel） |
+
+### 常见陷阱
+
+1. **忘记 `mark_dynamic`**：模型中存在 shape-dependent 的控制流（`if x.shape[0] > 16`），但没有标记动态维度，导致每次 shape 变化都触发 graph break
+
+2. **过多 Guard**：模型的每一层都有独立的 Guard 检查，某些中间 tensor 的 shape 间接依赖输入 shape，导致 Guard 链过长
+
+3. **Shape-dependent 的控制流**：
+
+```python
+# 危险：shape-dependent 控制流
+def forward(self, x):
+    if x.shape[1] > 512:  # 这会根据 seq_len 走不同分支
+        return self.long_path(x)
+    return self.short_path(x)
+```
+
+这种代码会导致编译器为每个分支条件生成不同的图，在 shape 频繁变化时带来大量 graph break。推荐改为统一路径 + mask 控制。
+
+4. **Dynamic shape + 数据相关的 shape**：
+
+```python
+# 极端情况：output shape 依赖 input value，不仅仅是 input shape
+indices = (x > 0).nonzero()  # output shape 取决于 x 中正数的个数
+# 这种操作在编译器中极难处理
+```
+
+## 总结
+
+Dynamic shapes 是 ML 编译器面临的系统性挑战——它影响编译器栈的**每一个阶段**：
+
+1. **图捕获**：SymInt 替代具体值，guard 系统控制重编译
+2. **IR 表示**：动态维度用符号变量或 `?` 表示，loop bounds 变为运行时值
+3. **优化 Pass**：常量折叠、layout 优化、静态内存规划等关键 Pass 部分或全部失效
+4. **算子融合**：SRAM 容量检查无法确定，融合策略被迫保守
+5. **Tiling**：tile size 无法在编译时优化，grid 需要运行时计算
+6. **Codegen**：通用 kernel 需要边界检查（mask），可能导致 warp divergence
+
+PyTorch 2 的 SymInt/Guard 系统提供了一个**实用的解决方案**：
+- `dynamic=None`（默认）通过 automatic_dynamic_shapes 自动发现动态维度
+- Guard 系统以极低的开销实现运行时检查
+- Symbol constraints 将动态维度的知识传递给后端编译器
+
+工程策略（bucketing、padding、shape hints、AOT/JIT 混合）在实践中**弥补了编译器的不足**，通过合理的 trade-off 在编译质量和灵活性之间找到平衡。
+
+**展望**：dynamic shapes 的处理仍在快速演进。更好的 symbolic reasoning（在约束系统中传播更多信息）、自动 bucketing（编译器根据运行时 shape 分布自动选择桶大小）、以及 shape-polymorphic kernel（一个 kernel 通过少量运行时参数适配多种 shape）是主要的发展方向。
+
+下一篇文章将深入[代码生成（Codegen）](/zh/articles/codegen-instruction-selection)阶段——将优化后的 IR 翻译为目标硬件上的高效指令，这是编译器栈的最终产出。
+
+## 延伸阅读
+
+- **PyTorch 2 论文**（ASPLOS 2024）：全面介绍了 TorchDynamo、AOTAutograd 和 dynamic compilation 系统
+- **torch.compile dynamic shapes 文档**：`torch.compiler_dynamic_shapes` 的官方使用指南
+- **TorchDynamo 深入分析**：Guard 系统的内部实现细节
+- **MLIR 文档 — RankedTensorType**：MLIR 中 dynamic dimension 的类型系统设计
