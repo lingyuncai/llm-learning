@@ -26,8 +26,8 @@ const MILESTONES: Milestone[] = [
   { year: 2016, label: 'XLA', category: 'original', description: { zh: 'Google 为 TensorFlow 构建 ML 编译器', en: 'Google builds ML compiler for TensorFlow' } },
   { year: 2018, label: 'TVM', category: 'original', description: { zh: '端到端 ML 编译框架', en: 'End-to-end ML compilation framework' } },
   { year: 2019, label: 'MLIR', category: 'original', description: { zh: 'Google 提出可扩展多层 IR 框架', en: 'Google proposes extensible multi-level IR framework' } },
-  { year: 2020, label: 'Triton', category: 'original', description: { zh: 'Block-level GPU 编程 DSL', en: 'Block-level GPU programming DSL' } },
-  { year: 2022, label: 'torch.compile', category: 'original', description: { zh: 'PyTorch 2.0 发布，TorchDynamo + TorchInductor', en: 'PyTorch 2.0: TorchDynamo + TorchInductor' } },
+  { year: 2019, label: 'Triton', category: 'original', description: { zh: 'Block-level GPU 编程 DSL', en: 'Block-level GPU programming DSL' } },
+  { year: 2023, label: 'torch.compile', category: 'original', description: { zh: 'PyTorch 2.0 正式发布', en: 'PyTorch 2.0 officially released' } },
   { year: 2022, label: 'FlashAttention', category: 'original', description: { zh: 'IO-aware attention 算法', en: 'IO-aware attention algorithm' } },
   { year: 2023, label: 'FlashAttention-2', category: 'original', description: { zh: '优化 warp 分配和非 matmul FLOPs', en: 'Optimized warp partitioning' } },
 ];

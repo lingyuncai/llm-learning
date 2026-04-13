@@ -20,9 +20,9 @@ references:
   - type: website
     title: "torch.compiler — PyTorch Documentation"
     url: "https://pytorch.org/docs/stable/torch.compiler.html"
-  - type: blog
-    title: "AOTAutograd: Ahead-of-Time Autograd for PyTorch 2.0"
-    url: "https://dev-discuss.pytorch.org/t/functorch-primitives-aotautograd-and-functionalize/707"
+  - type: website
+    title: "AOT Autograd — How to use and optimize?"
+    url: "https://pytorch.org/functorch/stable/notebooks/aot_autograd_optimizations.html"
 ---
 
 import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
@@ -109,7 +109,7 @@ def fn(x, w):
     return y.relu() # record "result = relu(y)"
 ```
 
-TorchDynamo maintains a **VariableTracker** object for each variable, recording its symbolic information (which tensor it is, what operation produced it, its shape/dtype). When it encounters a tensor operation (like the `BINARY_MATMUL` bytecode), Dynamo doesn't execute the computation but instead adds a corresponding node to the FX Graph.
+TorchDynamo maintains a **VariableTracker** object for each variable, recording its symbolic information (which tensor it is, what operation produced it, its shape/dtype). When it encounters a tensor operation (like the `BINARY_MATRIX_MULTIPLY` bytecode), Dynamo doesn't execute the computation but instead adds a corresponding node to the FX Graph.
 
 CPython is a stack-based virtual machine. Bytecode operations (like `LOAD_FAST`, `BINARY_ADD`, `CALL_METHOD`) pass arguments and results through a value stack. TorchDynamo maintains a **shadow stack** where each element isn't a real Python value but a VariableTracker (symbolic value). Dynamo follows CPython bytecode semantics, executing each instruction symbolically on the shadow stack while simultaneously building the FX Graph.
 
@@ -220,12 +220,12 @@ The FX Graph is designed to be **analyzable and transformable**. Downstream pass
 
 The FX Graph captured by TorchDynamo contains only **forward computation**. But deep learning training requires backpropagation, i.e., automatic differentiation (autograd). Traditional PyTorch eager autograd dynamically constructs the backward graph at runtime.
 
-**AOTAutograd** (Ahead-of-Time Autograd) **moves autograd tracing to compile time**: it takes the forward FX Graph captured by Dynamo, uses `functorch`'s autograd tracing capability, and generates a **joint graph containing both forward and backward computation**.
+**AOTAutograd** (Ahead-of-Time Autograd) **moves autograd tracing to compile time**: it takes the forward FX Graph captured by Dynamo, uses `__torch_dispatch__`-based tracing to extract forward and backward graphs, and generates a **joint graph containing both forward and backward computation**.
 
 The specific flow:
 
 1. **Receive forward graph**: Get the forward FX Graph from TorchDynamo
-2. **Trace backward computation**: Use `functorch.grad` to trace autograd, recording all gradient computation operations
+2. **Trace backward computation**: Use the `__torch_dispatch__` mechanism to intercept autograd engine operations, extracting operator-level computation graphs for both forward and backward passes
 3. **Generate joint graph**: Merge forward and backward operations into a single graph
 4. **Partitioning**: Split the joint graph into a forward subgraph and a backward subgraph
    - Forward subgraph: executes forward computation + saves intermediate results needed by backward (saved tensors)
@@ -407,5 +407,5 @@ The next article will dive deep into FX Graph IR design, exploring SSA form, MLI
 - [TorchDynamo Deep Dive](https://dev-discuss.pytorch.org/t/torchdynamo-an-experiment-in-dynamic-python-bytecode-transformation/361) — Original TorchDynamo design article
 - [PEP 523 — Adding a frame evaluation API to CPython](https://peps.python.org/pep-0523/) — The CPython API that TorchDynamo relies on
 - [PyTorch 2.0 Release Blog](https://pytorch.org/blog/pytorch-2.0-release/) — Overall PyTorch 2.0 architecture and performance data
-- [AOTAutograd Design Document](https://dev-discuss.pytorch.org/t/functorch-primitives-aotautograd-and-functionalize/707) — Design principles of AOTAutograd and Functionalization
+- [AOT Autograd — How to use and optimize?](https://pytorch.org/functorch/stable/notebooks/aot_autograd_optimizations.html) — AOTAutograd usage and optimization tutorial
 - [torch.compiler Official Documentation](https://pytorch.org/docs/stable/torch.compiler.html) — Complete API reference and usage guide

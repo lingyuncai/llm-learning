@@ -19,7 +19,7 @@ const EXAMPLES: CodeExample[] = [
   {
     label: { zh: '纯计算（无 Graph Break）', en: 'Pure Computation (No Graph Break)' },
     pythonCode: `def fn(x, w):\n    y = x @ w\n    y = y + 1\n    return y.relu()`,
-    bytecodeOps: ['LOAD_FAST x', 'LOAD_FAST w', 'BINARY_MATMUL', 'LOAD_CONST 1', 'BINARY_ADD', 'CALL_METHOD relu', 'RETURN_VALUE'],
+    bytecodeOps: ['LOAD_FAST x', 'LOAD_FAST w', 'BINARY_MATRIX_MULTIPLY', 'LOAD_CONST 1', 'BINARY_ADD', 'CALL_METHOD relu', 'RETURN_VALUE'],
     fxNodes: [
       { op: 'placeholder', target: 'x', args: [] },
       { op: 'placeholder', target: 'w', args: [] },
@@ -31,16 +31,16 @@ const EXAMPLES: CodeExample[] = [
     graphBreaks: [],
   },
   {
-    label: { zh: '带 if/else 控制流', en: 'With if/else Control Flow' },
-    pythonCode: `def fn(x, flag):\n    y = x * 2\n    if flag:\n        y = y + 1\n    else:\n        y = y - 1\n    return y`,
-    bytecodeOps: ['LOAD_FAST x', 'LOAD_CONST 2', 'BINARY_MUL', 'LOAD_FAST flag', 'POP_JUMP_IF_FALSE', '\u2192 GRAPH BREAK', 'LOAD_CONST 1', 'BINARY_ADD/SUB', 'RETURN_VALUE'],
+    label: { zh: '含 print() 副作用', en: 'With print() Side Effect' },
+    pythonCode: `def fn(x):\n    y = x * 2\n    print("debug")\n    y = y + 1\n    return y`,
+    bytecodeOps: ['LOAD_FAST x', 'LOAD_CONST 2', 'BINARY_MUL', 'LOAD_GLOBAL print', 'CALL_FUNCTION', '\u2192 GRAPH BREAK', 'LOAD_CONST 1', 'BINARY_ADD', 'RETURN_VALUE'],
     fxNodes: [
       { op: 'placeholder', target: 'x', args: [] },
       { op: 'call_function', target: 'torch.mul', args: ['x', '2'] },
       { op: 'output', target: 'output', args: ['mul'] },
     ],
     graphBreaks: [5],
-    breakReason: { zh: 'data-dependent 控制流无法在编译时确定', en: 'Data-dependent control flow cannot be resolved at compile time' },
+    breakReason: { zh: 'print() 是不可追踪的 Python 副作用', en: 'print() is an untraceable Python side effect' },
   },
   {
     label: { zh: 'Data-Dependent 控制流', en: 'Data-Dependent Control Flow' },

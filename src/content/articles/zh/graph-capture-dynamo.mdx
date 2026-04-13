@@ -20,9 +20,9 @@ references:
   - type: website
     title: "torch.compiler — PyTorch Documentation"
     url: "https://pytorch.org/docs/stable/torch.compiler.html"
-  - type: blog
-    title: "AOTAutograd: Ahead-of-Time Autograd for PyTorch 2.0"
-    url: "https://dev-discuss.pytorch.org/t/functorch-primitives-aotautograd-and-functionalize/707"
+  - type: website
+    title: "AOT Autograd — How to use and optimize?"
+    url: "https://pytorch.org/functorch/stable/notebooks/aot_autograd_optimizations.html"
 ---
 
 import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
@@ -109,7 +109,7 @@ def fn(x, w):
     return y.relu() # 记录 "result = relu(y)"
 ```
 
-TorchDynamo 为每个变量维护一个 **VariableTracker** 对象，记录它的符号信息（是哪个 tensor、来自哪个操作、shape/dtype 是什么）。当遇到 tensor 操作（如 `BINARY_MATMUL` 字节码），Dynamo 不执行计算，而是在 FX Graph 中添加一个对应的节点。
+TorchDynamo 为每个变量维护一个 **VariableTracker** 对象，记录它的符号信息（是哪个 tensor、来自哪个操作、shape/dtype 是什么）。当遇到 tensor 操作（如 `BINARY_MATRIX_MULTIPLY` 字节码），Dynamo 不执行计算，而是在 FX Graph 中添加一个对应的节点。
 
 CPython 是一个基于栈的虚拟机。字节码操作（如 `LOAD_FAST`、`BINARY_ADD`、`CALL_METHOD`）都通过一个值栈来传递参数和结果。TorchDynamo 维护一个**影子栈（shadow stack）**，栈上的每个元素不是真实的 Python 值，而是 VariableTracker（符号值）。Dynamo 按照 CPython 字节码的语义，逐条指令推演这个影子栈的变化，同时构建 FX Graph。
 
@@ -220,12 +220,12 @@ FX Graph 的设计目标是**可分析、可变换**。下游的 pass（如 AOTA
 
 TorchDynamo 捕获的 FX Graph 只包含**前向计算**。但深度学习训练需要反向传播（backpropagation），即自动微分（autograd）。传统的 PyTorch eager autograd 在运行时动态构建反向图。
 
-**AOTAutograd**（Ahead-of-Time Autograd）将 autograd 的追踪**提前到编译时**：它接收 Dynamo 捕获的前向 FX Graph，使用 `functorch` 的 autograd tracing 功能，生成一个包含**前向和反向计算的联合图（joint graph）**。
+**AOTAutograd**（Ahead-of-Time Autograd）将 autograd 的追踪**提前到编译时**：它接收 Dynamo 捕获的前向 FX Graph，使用基于 `__torch_dispatch__` 的 tracing 机制，生成一个包含**前向和反向计算的联合图（joint graph）**。
 
 具体流程：
 
 1. **接收前向图**：从 TorchDynamo 获得前向 FX Graph
-2. **追踪反向计算**：使用 `functorch.grad` 追踪 autograd，记录所有梯度计算操作
+2. **追踪反向计算**：通过 `__torch_dispatch__` 机制拦截 autograd 引擎的操作，提取前向和反向的算子级计算图
 3. **生成联合图**：将前向和反向操作合并到一个图中
 4. **分区（Partitioning）**：将联合图切分为前向子图和反向子图
    - 前向子图：执行前向计算 + 保存反向需要的中间结果（saved tensors）
@@ -407,5 +407,5 @@ exported = export(model, (x,), dynamic_shapes={"x": {0: batch}})
 - [TorchDynamo 深度解析](https://dev-discuss.pytorch.org/t/torchdynamo-an-experiment-in-dynamic-python-bytecode-transformation/361) — TorchDynamo 原始设计文章
 - [PEP 523 — Adding a frame evaluation API to CPython](https://peps.python.org/pep-0523/) — TorchDynamo 依赖的 CPython API
 - [PyTorch 2.0 Release Blog](https://pytorch.org/blog/pytorch-2.0-release/) — PyTorch 2.0 整体架构和性能数据
-- [AOTAutograd 设计文档](https://dev-discuss.pytorch.org/t/functorch-primitives-aotautograd-and-functionalize/707) — AOTAutograd 和 Functionalization 的设计原理
+- [AOT Autograd — How to use and optimize?](https://pytorch.org/functorch/stable/notebooks/aot_autograd_optimizations.html) — AOTAutograd 的使用和优化教程
 - [torch.compiler 官方文档](https://pytorch.org/docs/stable/torch.compiler.html) — 完整的 API 参考和使用指南

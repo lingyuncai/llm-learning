@@ -9,7 +9,7 @@ created: "2026-04-13"
 updated: "2026-04-13"
 references:
   - type: paper
-    title: "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation"
+    title: "MLIR: A Compiler Infrastructure for the End of Moore's Law"
     url: "https://arxiv.org/abs/2002.11054"
   - type: website
     title: "MLIR Dialect Conversion"
@@ -56,7 +56,7 @@ This article will dive deep into the core mechanisms of Progressive Lowering: lo
 
 Let's first understand why the traditional "few fixed IRs" approach has fundamental limitations.
 
-Consider TVM as an example. TVM has two main IR levels: **Relay** (high-level computation graph) and **TIR** (low-level tensor IR). The conversion from Relay to TIR is an enormous leap — you jump directly from "this is a matmul operator" to "this is a set of nested loops with memory accesses." This jump loses a massive amount of information:
+Consider TVM as an example. TVM originally had two main IR levels: **Relay** (high-level computation graph) and **TIR** (low-level tensor IR). The conversion from Relay to TIR is an enormous leap — you jump directly from "this is a matmul operator" to "this is a set of nested loops with memory accesses." This jump loses a massive amount of information:
 
 - The **operator semantics** at the Relay level (matmul, conv2d) completely disappear at the TIR level, becoming indistinguishable loop structures.
 - If you want to do cross-operator fusion at the TIR level, you need to "guess" what operators these loops originally represented — which is practically impossible.
@@ -498,9 +498,8 @@ Note the `canonicalize` pass after each phase — it cleans up redundant ops (su
 
 MLIR provides powerful debugging tools:
 
-- `mlir-opt --print-ir-after-all`: Prints IR after each pass, showing the changes at every step.
-- `mlir-opt --verify-each`: Runs the IR verifier after each pass, ensuring the IR is always valid.
-- `mlir-opt --pass-statistics`: Reports execution time and operation counts for each pass.
+- `mlir-opt --mlir-print-ir-after-all`: Prints IR after each pass, showing the changes at every step.
+- `mlir-opt --mlir-pass-statistics`: Reports execution time and operation counts for each pass.
 - `mlir-opt --mlir-print-ir-after-failure`: Prints IR when a pass fails, helping to locate problems.
 
 These tools make it possible to inspect and verify IR correctness at every step of Progressive Lowering — something impossible with "big bang" conversions.
@@ -525,7 +524,7 @@ In subsequent articles, we will dive deeper into how specific optimization passe
 
 ## Further Reading
 
-- [MLIR: Scaling Compiler Infrastructure for Domain Specific Computation](https://arxiv.org/abs/2002.11054) — The original MLIR paper, detailing the motivation and design of Progressive Lowering.
+- [MLIR: A Compiler Infrastructure for the End of Moore's Law](https://arxiv.org/abs/2002.11054) — The original MLIR paper, detailing the motivation and design of Progressive Lowering.
 - [MLIR Dialect Conversion](https://mlir.llvm.org/docs/DialectConversion/) — Official documentation for the Dialect Conversion framework with complete API reference.
 - [MLIR Bufferization](https://mlir.llvm.org/docs/Bufferization/) — Design document and usage guide for One-Shot Bufferize.
 - [torch-mlir](https://github.com/llvm/torch-mlir) — Complete PyTorch -> MLIR lowering pipeline implementation.

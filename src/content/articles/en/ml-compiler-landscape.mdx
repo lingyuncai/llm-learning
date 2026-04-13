@@ -20,7 +20,7 @@ references:
     title: "TVM: An Automated End-to-End Optimizing Compiler for Deep Learning"
     url: "https://arxiv.org/abs/1802.04799"
   - type: paper
-    title: "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation"
+    title: "MLIR: A Compiler Infrastructure for the End of Moore's Law"
     url: "https://arxiv.org/abs/2002.11054"
   - type: blog
     title: "TorchDynamo: An Experiment in Dynamic Python Bytecode Transformation"
@@ -131,17 +131,17 @@ These five layers are not strictly linear — real systems involve extensive int
 
 ### How Much Does It Help?
 
-PyTorch's official benchmarks show that using `torch.compile` on 163 models from HuggingFace (Ansel et al., 2024):
+PyTorch's official benchmarks show that using `torch.compile` across three benchmark suites (TorchBench, HuggingFace, and TIMM), totaling ~180 models (Ansel et al., ASPLOS 2024):
 
-- **Training speedup**: median **1.32x** (geometric mean), with some models exceeding 2x
-- **Inference speedup**: median **1.40x**, with larger gains on memory-bound models
+- **Training speedup**: median ~**1.32x** (geometric mean), with some models exceeding 2x (figures from the PyTorch 2.0 announcement)
+- **Inference speedup**: median ~**1.40x**, with larger gains on memory-bound models (figures from the PyTorch 2.0 announcement)
 - **Greatest benefit**: pure Transformer models (with their repeating patterns of LayerNorm + Attention + FFN)
 
 These speedups **require no changes to model code** — just one line: `model = torch.compile(model)`.
 
 ## ML Compilers and Traditional Compilers
 
-ML compilers didn't emerge from a vacuum. Their technical DNA is approximately 40% inherited from traditional compilers, 30% adapted from the High-Performance Computing (HPC) community, and 30% native ML innovation. Understanding this genealogy is essential for a deep study of ML compilers.
+ML compilers didn't emerge from a vacuum. Their technical DNA is approximately 40% inherited from traditional compilers, 30% adapted from the High-Performance Computing (HPC) community, and 30% native ML innovation (this is a rough estimate intended to aid understanding, not a rigorous academic classification). Understanding this genealogy is essential for a deep study of ML compilers.
 
 ### Inheritance from Traditional Compilers (~40%)
 
@@ -201,7 +201,7 @@ The technology stack from top to bottom includes:
 
 4. **TorchInductor**: The default code generation backend for PyTorch 2.0. It converts FX Graph IR into Triton kernels (for GPU) or C++/OpenMP code (for CPU). Inductor's core capability is automatic operator fusion — merging multiple operators into a single efficient kernel.
 
-5. **Triton**: A GPU programming language and compiler developed by OpenAI (Tillet et al., 2019). It provides a block-level programming model — developers operate on "blocks" (contiguous memory regions) rather than individual threads. The Triton compiler translates block-level code into efficient PTX instructions, handling shared memory allocation, warp scheduling, and other details.
+5. **Triton**: A GPU programming language and compiler created by Philippe Tillet (originally developed at Harvard, later adopted and advanced by OpenAI) (Tillet et al., 2019). It provides a block-level programming model — developers operate on "blocks" (contiguous memory regions) rather than individual threads. The Triton compiler translates block-level code into efficient PTX instructions, handling shared memory allocation, warp scheduling, and other details.
 
 The advantage of this track is: **end-to-end usable**, with seamless integration into the PyTorch ecosystem. Developers don't need to learn a new programming model to achieve significant performance improvements.
 
@@ -317,5 +317,5 @@ Next, we'll start from the top of the compilation stack and dive deep into **Tor
 - [MLIR: Multi-Level Intermediate Representation](https://mlir.llvm.org/) — Official MLIR documentation, covering the Dialect system and Progressive Lowering
 - [Triton Language and Compiler](https://triton-lang.org/) — Official Triton documentation, understanding the block-level programming model
 - [TVM: An Automated End-to-End Optimizing Compiler for Deep Learning](https://arxiv.org/abs/1802.04799) (Chen et al., 2018) — TVM paper, an early milestone in ML compilers
-- [MLIR: Scaling Compiler Infrastructure for Domain Specific Computation](https://arxiv.org/abs/2002.11054) (Lattner et al., 2021) — MLIR paper, understanding the design philosophy of extensible compiler infrastructure
+- [MLIR: A Compiler Infrastructure for the End of Moore's Law](https://arxiv.org/abs/2002.11054) (Lattner et al., 2021) — MLIR paper, understanding the design philosophy of extensible compiler infrastructure
 - [TorchDynamo: An Experiment in Dynamic Python Bytecode Transformation](https://dev-discuss.pytorch.org/t/torchdynamo-an-experiment-in-dynamic-python-bytecode-transformation/361) — TorchDynamo design principles

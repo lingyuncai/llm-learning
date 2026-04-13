@@ -15,7 +15,7 @@ references:
     title: "torch.fx — PyTorch Documentation"
     url: "https://pytorch.org/docs/stable/fx.html"
   - type: paper
-    title: "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation"
+    title: "MLIR: A Compiler Infrastructure for the End of Moore's Law"
     url: "https://arxiv.org/abs/2002.11054"
   - type: website
     title: "MLIR Language Reference"
@@ -95,7 +95,7 @@ A good IR should not unnecessarily discard semantic information during translati
 
 > **Every variable is assigned (defined) exactly once.**
 
-This seemingly simple rule fundamentally changed compiler design. SSA was systematized by Cytron et al. in their 1991 landmark paper "Efficiently Computing Static Single Assignment Form and the Control Dependence Graph," and has since become the standard IR form for virtually all modern compilers — LLVM IR, GCC GIMPLE, Java HotSpot's Sea of Nodes, V8's TurboFan, without exception.
+This seemingly simple rule fundamentally changed compiler design. The concept of SSA was developed incrementally by IBM researchers in the 1980s (Rosen, Wegman, and Zadeck introduced $\phi$ functions in 1988). Cytron et al.'s 1991 landmark paper "Efficiently Computing Static Single Assignment Form and the Control Dependence Graph" presented an efficient algorithm for constructing SSA (based on dominance frontiers), establishing SSA as the standard for modern compilers. Since then, virtually all modern compilers have adopted SSA as their standard IR form — LLVM IR, GCC GIMPLE, Java HotSpot's Sea of Nodes, V8's TurboFan (later replaced by Turboshaft), without exception.
 
 ### Why SSA?
 
@@ -308,7 +308,7 @@ The deeper problem was: **no single-level IR could satisfy all requirements simu
 
 ### MLIR's Answer: An Extensible Multi-Level IR
 
-MLIR (Multi-Level Intermediate Representation) was initiated by Chris Lattner at Google, with the paper "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation" published in 2020. Its core innovation is:
+MLIR (Multi-Level Intermediate Representation) was initiated by Chris Lattner at Google, with the paper "MLIR: A Compiler Infrastructure for the End of Moore's Law" published in 2020. Its core innovation is:
 
 > **Rather than defining a fixed IR, provide a framework for building IRs.**
 
@@ -475,7 +475,7 @@ In the next article, **IR Design (Part 2): Progressive Lowering**, we will dive 
 ## Further Reading
 
 - Cytron et al., "Efficiently Computing Static Single Assignment Form and the Control Dependence Graph" (1991) — The foundational SSA paper, detailing how to efficiently compute SSA form and dominance frontiers
-- Lattner et al., "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation" (2020) — The MLIR design paper, explaining the motivation and implementation of multi-level IR and the Dialect system
+- Lattner et al., "MLIR: A Compiler Infrastructure for the End of Moore's Law" (2020) — The MLIR design paper, explaining the motivation and implementation of multi-level IR and the Dialect system
 - PyTorch `torch.fx` documentation — Complete API reference for FX Graph, including tutorials on symbolic tracing and graph transformations
 - MLIR official documentation — Especially the Language Reference and Dialects pages, providing detailed specifications for all Dialects
 - "Tutorial: Building a Compiler with MLIR" (MLIR official tutorial) — Building an MLIR-based compiler from scratch, the best entry point for understanding MLIR engineering practice
