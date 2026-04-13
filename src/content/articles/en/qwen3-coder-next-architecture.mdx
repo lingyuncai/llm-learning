@@ -145,7 +145,29 @@ $$
 H_t = (I - \beta_t k_t k_t^\top) H_{t-1} + \beta_t v_t k_t^\top
 $$
 
-The term $\beta_t k_t k_t^\top H_{t-1}$ first "erases" old memory associated with the current key, then $\beta_t v_t k_t^\top$ writes a new key-value association — implementing **associative memory** that can precisely overwrite old values rather than simply accumulating.
+The state matrix $H$ can be viewed as an **associative memory** — a "fuzzy key-value store." Expanding the formula into its equivalent delta form makes the update semantics clearer:
+
+$$
+H_t = H_{t-1} + \beta_t \cdot k_t \left(v_t - H_{t-1} k_t\right)^\top
+$$
+
+Each term has a clear meaning:
+
+- $H_{t-1} k_t \in \mathbb{R}^{d_v}$: **retrieve** from the state matrix using current key $k_t$ — the "old value currently associated with $k_t$ in memory"
+- $v_t \in \mathbb{R}^{d_v}$: the **new value** from the current token's input projection — the target we want to associate with $k_t$
+- $v_t - H_{t-1} k_t$: the **delta** (correction) — the error between the new target and old memory
+- $\beta_t \cdot k_t (\cdots)^\top$: **write** this correction back into the state matrix as an outer product
+
+This is where the "delta rule" name comes from — **instead of writing the new value $v_t$ directly, it writes only the correction $v_t - H_{t-1}k_t$**. Note that $v_t$ and $H_{t-1}k_t$ are both $\mathbb{R}^{d_v}$ vectors but with entirely different meanings: the former comes from the current input projection, the latter is an old value retrieved from the compressed historical state.
+
+Comparing the two update strategies:
+
+| Strategy | Update rule | Effect |
+|----------|-----------|--------|
+| Additive (Mamba) | $H \mathrel{+}= v \cdot k^\top$ | Old and new values accumulate, information blurs |
+| Delta rule | $H \mathrel{+}= \beta \cdot k(v_{new} - Hk)^\top$ | Old value corrected toward new value, precise overwrite |
+
+When $\beta_t = 1$, the update yields $H_t k_t = v_t$ — perfect overwrite. This gives DeltaNet an advantage over Mamba in tasks requiring precise recall of recent key-value pairs (e.g., in-context recall).
 
 **Gated DeltaNet** (Yang, Kautz & Hatamizadeh, 2024) adds element-wise decay gating on top of the delta rule:
 
@@ -153,7 +175,13 @@ $$
 \tilde{H}_{t-1} = \exp(\alpha_t) \odot H_{t-1}, \quad H_t = \tilde{H}_{t-1} + \beta_t \cdot k_t \left(v_t - \tilde{H}_{t-1} k_t\right)^\top
 $$
 
-First, the old state undergoes per-element exponential decay ($\alpha_t$ is input-dependent, giving each state element its own decay rate). Then the delta rule update is applied on the decayed state — retrieving the old value ($\tilde{H}_{t-1} k_t$), computing the correction, and writing it back. This combines flexible gating with precise associative memory.
+The difference from DeltaNet: before updating, the old state undergoes per-element exponential decay ($\alpha_t$ is input-dependent, giving each state element its own decay rate). Then the same delta rule is applied on the decayed state $\tilde{H}_{t-1}$:
+
+1. **Retrieve**: $\tilde{H}_{t-1} k_t$ — query the old value from the decayed state
+2. **Compute delta**: $v_t - \tilde{H}_{t-1} k_t$ — error between new target and old memory
+3. **Write correction**: $\beta_t \cdot k_t (\cdots)^\top$ — write the correction back as an outer product
+
+Decay gating lets the model actively forget information no longer needed ($\exp(\alpha_t) < 1$ causes the old state to gradually decay), while the delta rule ensures precise overwrite for information that should be remembered — flexible forgetting + precise overwriting, the core advantage of GatedDeltaNet over pure Mamba.
 
 ### 2.2 Complete Data Flow and Input Processing
 

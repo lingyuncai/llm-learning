@@ -145,7 +145,29 @@ $$
 H_t = (I - \beta_t k_t k_t^\top) H_{t-1} + \beta_t v_t k_t^\top
 $$
 
-直觉：$\beta_t k_t k_t^\top H_{t-1}$ 先"擦除"与当前 key 相关的旧记忆，然后 $\beta_t v_t k_t^\top$ 写入新的 key-value 关联。相比 Mamba 的 additive update，delta rule 实现了一种 **联想记忆**（associative memory）——能精确覆盖旧值，而非简单叠加。
+状态矩阵 $H$ 可以看作一个**联想记忆**（associative memory）——"模糊的 key-value 存储"。将上式展开为等价的 delta 形式更容易理解更新的含义：
+
+$$
+H_t = H_{t-1} + \beta_t \cdot k_t \left(v_t - H_{t-1} k_t\right)^\top
+$$
+
+其中每一项都有明确的语义：
+
+- $H_{t-1} k_t \in \mathbb{R}^{d_v}$：用当前 key $k_t$ **查询**状态矩阵，检索出"记忆中当前与 $k_t$ 关联的旧 value"
+- $v_t \in \mathbb{R}^{d_v}$：当前 token 投影得到的**新 value**——希望与 $k_t$ 关联的目标值
+- $v_t - H_{t-1} k_t$：**差值（delta）**——新目标与旧记忆之间的误差
+- $\beta_t \cdot k_t (\cdots)^\top$：将这个误差修正以外积形式**写回**状态矩阵
+
+这就是 "delta rule" 名称的由来——**不直接写入新 value $v_t$，而是只写入修正量 $v_t - H_{t-1}k_t$**。注意这里的 $v_t$ 和 $H_{t-1}k_t$ 虽然都是 $\mathbb{R}^{d_v}$ 向量，但含义完全不同：前者来自当前输入的投影，后者是从历史压缩状态中检索出的旧值。
+
+对比两种更新策略：
+
+| 策略 | 更新方式 | 效果 |
+|------|---------|------|
+| Additive（Mamba） | $H \mathrel{+}= v \cdot k^\top$ | 新旧值叠加，信息逐渐模糊 |
+| Delta rule | $H \mathrel{+}= \beta \cdot k(v_{new} - Hk)^\top$ | 旧值被修正为新值，精确覆写 |
+
+当 $\beta_t = 1$ 时，更新后 $H_t k_t = v_t$——完美覆写。这使 DeltaNet 在需要精确记住最近 key-value 对的任务（如 in-context recall）中优于 Mamba。
 
 **Gated DeltaNet** (Yang, Kautz & Hatamizadeh, 2024) 在 delta rule 基础上增加逐元素衰减门控：
 
@@ -153,7 +175,13 @@ $$
 \tilde{H}_{t-1} = \exp(\alpha_t) \odot H_{t-1}, \quad H_t = \tilde{H}_{t-1} + \beta_t \cdot k_t \left(v_t - \tilde{H}_{t-1} k_t\right)^\top
 $$
 
-先对旧状态施加逐元素指数衰减（$\alpha_t$ 依赖输入，每个状态元素有独立衰减速率），然后在衰减后的状态上执行 delta rule 更新——检索旧 value ($\tilde{H}_{t-1} k_t$)，计算差值，写入修正。这同时获得了门控的灵活遗忘能力和 delta rule 的精确覆写能力。
+与 DeltaNet 的区别：更新前先对旧状态施加逐元素指数衰减（$\alpha_t$ 依赖输入，每个状态元素有独立衰减速率）。然后在衰减后的状态 $\tilde{H}_{t-1}$ 上执行相同的 delta rule：
+
+1. **检索**：$\tilde{H}_{t-1} k_t$ — 从衰减后的状态中查询旧 value
+2. **计算差值**：$v_t - \tilde{H}_{t-1} k_t$ — 新目标与旧记忆的误差
+3. **写入修正**：$\beta_t \cdot k_t (\cdots)^\top$ — 将修正以外积写回状态
+
+衰减门控使模型能主动遗忘不再需要的信息（$\exp(\alpha_t) < 1$ 使旧状态逐渐衰减），同时 delta rule 保证了对需要记住的信息的精确覆写——灵活遗忘 + 精确覆写，这是 GatedDeltaNet 相比纯 Mamba 的核心优势。
 
 ### 2.2 完整数据流与输入处理
 
