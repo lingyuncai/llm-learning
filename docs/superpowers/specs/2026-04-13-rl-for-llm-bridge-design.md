@@ -55,17 +55,19 @@ rl-foundations → policy-gradient → ppo-actor-critic → rl-for-llm → rlhf 
 **2) Ceiling Problem（上限问题）**
 - SFT 最好也只能模仿训练数据的水平，无法超越
 - RL 可以通过 exploration 发现数据中没有的更好策略
-- 具体例子：DeepSeek-R1 通过 RL 自发学会了 chain-of-thought，这不是 SFT 数据里教的
+- 具体例子：DeepSeek-R1-Zero 证明了纯 RL（无任何 SFT 数据）即可让模型自发产生 chain-of-thought、self-verification 等推理行为；最终的 DeepSeek-R1 在此基础上加入 cold-start SFT + 多轮 RL 以提升可读性和稳定性。关键在于：RL 阶段产生的推理能力超越了 SFT 数据所能教授的上限
 
-**3) 不可微目标**
-- "有帮助"、"安全"、"推理正确"这些目标无法写成 token 级别的可微 loss
-- SFT 的 cross-entropy loss 只关心"和参考答案的每个 token 是否匹配"，不关心回答整体质量
-- RL 的 reward 信号可以是任意函数（RM score、规则判断、人类评分）
+**3) Sequence-Level 目标无法通过离散采样反向传播**
+- "有帮助"、"安全"、"推理正确"这些目标是在 **整个 response 层面** 定义的
+- 即使 Reward Model 本身是可微的，中间的 **token 离散采样过程**（从概率分布中选一个 token）是不可微的——你无法对 argmax / categorical sampling 求导
+- SFT 绕过了这个问题（直接用 teacher forcing + cross-entropy），但代价是只能优化 token 级别的模仿目标，无法优化 sequence-level 的质量目标
+- Policy Gradient 正是为此而生：它不需要通过采样过程反向传播，而是用 REINFORCE 估计梯度
 
-**4) On-policy vs Off-policy**
-- SFT 是 off-policy 的：学别人的行为
-- 随着模型变强，SFT 数据变得"太简单"，不再有教学价值
-- RL 是 on-policy 的：模型从自己的生成中学习，训练数据随模型进步而进步
+**4) On-policy 自我进化**（与 point 1 的 distribution shift 互补）
+- Point 1 描述了问题（训练分布 ≠ 推理分布），这里解释 RL 为什么天然不存在这个问题
+- RL 是 on-policy 的：训练数据由模型自己生成，天然覆盖模型当前会犯的错误
+- 随着模型改进，生成的数据质量也在提升——形成"自我进化"的正循环
+- SFT 的训练数据是固定的，无论模型训练到什么水平，数据不会跟着变
 
 **交互组件**: `SFTvsRLComparison` — 左右对比动画，左侧展示 SFT 学习过程（只看示范，遇到偏离就崩溃），右侧展示 RL 学习过程（自己尝试，从 reward 中学习修正）。使用简化的文本生成场景。
 
@@ -103,6 +105,17 @@ rl-foundations → policy-gradient → ppo-actor-critic → rl-for-llm → rlhf 
 
 **交互组件**: `LLMasMDP` — 给定一个 prompt，逐 token 动画展示 state 变化、概率分布柱状图、action 选择过程。用户可以手动点"下一步"或自动播放。
 
+**5) Token-level vs Response-level：两种建模粒度**
+
+上述 MDP 是 token-level 的（每个 token 是一个 action），这是最基础的视角。但后续文章中不同方法使用不同粒度：
+
+- **Token-level MDP**（PPO in RLHF）：每个 token 计算 advantage，逐 token 优化策略
+- **Response-level / Bandit-like 视角**（DPO, GRPO）：把整个 response 当作一个"action"，在 response pairs 之间做对比优化
+
+两种视角数学上等价（response-level 的 log probability 就是 token-level log probabilities 的求和），但操作粒度不同。Token-level 更细致但计算更复杂；response-level 更简洁，是 DPO/GRPO 等方法能简化训练的关键。
+
+在后续文章中遇到不同粒度时会明确标注，这里只需建立意识：**同一个 MDP 可以在不同粒度上操作**。
+
 ### §3 从 PG 到 PPO：在 LLM 语境下重新理解
 
 把前 3 篇学过的核心公式逐一"翻译"到 LLM 场景。不重复推导，而是标注每个符号在 LLM 中的具体含义。
@@ -139,6 +152,7 @@ rl-foundations → policy-gradient → ppo-actor-critic → rl-for-llm → rlhf 
 - 直觉：KL penalty 让 LLM"不要忘记预训练学到的语言能力"
 - 公式：$R_{total} = R_{task}(y|x) - \beta \cdot KL(\pi_\theta \| \pi_{ref})$
 - 在 token 级别：$r_t = r_{task,t} - \beta \cdot [\log \pi_\theta(y_t|s_t) - \log \pi_{ref}(y_t|s_t)]$
+- **关键细节**：$r_{task,t} = 0$ 对所有中间 token（$t < T$），只有最后一个 token $r_{task,T} = R_{RM}(x, y)$ 才携带任务 reward。因此中间步骤的 reward 信号完全来自 KL penalty——这也是 KL penalty 在 credit assignment 中起到意外重要作用的原因
 - 参数 $\beta$ 的 trade-off：太大 → 学不动，太小 → reward hacking
 
 **3) 生成即采样：on-policy 的代价**
