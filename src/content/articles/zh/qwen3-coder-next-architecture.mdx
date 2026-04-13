@@ -186,20 +186,24 @@ $$
 **Gated DeltaNet** (Yang, Kautz & Hatamizadeh, 2024) 在 delta rule 基础上增加逐元素衰减门控：
 
 $$
-\tilde{H}_{t-1} = \exp(\alpha_t) \odot H_{t-1}, \quad H_t = \tilde{H}_{t-1} + \beta_t \cdot k_t \left(v_t - \tilde{H}_{t-1} k_t\right)^\top
+\tilde{H}_{t-1} = \exp(\alpha_t) \odot H_{t-1}, \quad H_t = \tilde{H}_{t-1} + \beta_t \cdot k_t \left(v_t - \tilde{H}_{t-1} k_t\right)^\top, \quad o_t = H_t \, q_t
 $$
 
-与 DeltaNet 的区别：更新前先对旧状态施加逐元素指数衰减（$\alpha_t$ 依赖输入，每个状态元素有独立衰减速率）。然后在衰减后的状态 $\tilde{H}_{t-1}$ 上执行相同的 delta rule：
+与 DeltaNet 的区别：更新前先对旧状态施加逐元素指数衰减（$\alpha_t$ 依赖输入，每个状态元素有独立衰减速率），然后在衰减后的状态上执行 delta rule 更新，最后用查询向量 $q_t$ 读取输出。完整的五步流程：
 
-1. **检索**：$\tilde{H}_{t-1} k_t$ — 从衰减后的状态中查询旧 value
-2. **计算差值**：$v_t - \tilde{H}_{t-1} k_t$ — 新目标与旧记忆的误差
-3. **写入修正**：$\beta_t \cdot k_t (\cdots)^\top$ — 将修正以外积写回状态
+1. **衰减**：$\tilde{H}_{t-1} = \exp(\alpha_t) \odot H_{t-1}$ — 对旧状态施加逐元素指数衰减
+2. **检索旧值**：$\tilde{H}_{t-1} k_t$ — 用 $k_t$ 从衰减后的状态中查询旧 value
+3. **计算差值**：$v_t - \tilde{H}_{t-1} k_t$ — 新目标与旧记忆之间的误差（delta）
+4. **写入修正**：$H_t = \tilde{H}_{t-1} + \beta_t \cdot k_t (\cdots)^\top$ — 将修正以外积写回状态
+5. **读取输出**：$o_t = H_t \, q_t$ — 用 $q_t$ 从更新后的状态中检索本层输出
+
+注意 $q_t$ 和 $k_t$ 虽然都来自同一个投影（`attn_qkv`），但角色不同：**$k_t$ 是写入地址**（决定 value 存到状态矩阵的哪个位置），**$q_t$ 是读取地址**（决定从状态矩阵中检索什么信息作为输出）。两者分离使写入和读取可以关注不同的特征——这与标准 Attention 中 Q（查询）和 K（被查询）的分工一致。
 
 衰减门控使模型能主动遗忘不再需要的信息（$\exp(\alpha_t) < 1$ 使旧状态逐渐衰减），同时 delta rule 保证了对需要记住的信息的精确覆写——灵活遗忘 + 精确覆写，这是 GatedDeltaNet 相比纯 Mamba 的核心优势。
 
 ### 2.2 完整数据流与输入处理
 
-2.1 节给出了 Gated DeltaNet 的数学公式，但公式与实际模型之间还有一段距离。每个 GGUF 张量对应公式的哪一部分？数据从输入到输出经过了哪些变换？下面先给出一层 GatedDeltaNet 的完整前向传播流程，再逐步解释关键环节。
+2.1 节给出了 Gated DeltaNet 的完整公式（五步：衰减 → 检索 → 差值 → 写入 → 读取），但公式与实际模型之间还有一段距离：每个 GGUF 张量对应哪一步？数据从输入到输出经过了哪些变换？本节先给出整体流程图，后续各节（2.3–2.7）再逐一展开每个环节的细节。
 
 #### 前向传播流程
 
@@ -285,13 +289,17 @@ $$
 
 ### 2.3 Q/K 归一化与 Beta 激活
 
-Conv1d 拆分出 Q、K、V 后，还需经过几步关键处理：
+> **对应 2.1 公式**：$q_t, k_t$ 的归一化和 $\beta_t \in [0,1]$ 的激活——进入 delta rule 之前的预处理。
+
+Conv1d 拆分出 Q、K、V 后，还需经过几步关键处理才能进入 delta rule：
 
 - **L2 归一化**：Q 和 K 各自做 L2 norm，将向量投射到单位球面上，稳定 delta rule 的 key-value 关联
 - **Q 缩放**：$Q \leftarrow Q / \sqrt{d_v}$，防止点积随维度增大而过大
 - **Beta sigmoid**：$\beta_t \leftarrow \sigma(\beta_t)$，将写入强度限制在 $[0, 1]$ 范围内
 
 ### 2.4 衰减门控
+
+> **对应 2.1 公式**：步骤 1 的 $\tilde{H}_{t-1} = \exp(\alpha_t) \odot H_{t-1}$ — 构造衰减系数 $\exp(\alpha_t)$，控制旧状态的逐元素遗忘程度。
 
 门控 $\alpha_t$ 和写入强度 $\beta_t$ 来自同一个投影：
 
@@ -310,6 +318,8 @@ $$
 其中 $\text{softplus}(x) = \ln(1 + e^x)$。$-A$ 确保门控值为负，使 $\exp(\text{gate}_t) < 1$ 实现指数衰减。这类似于 Mamba 中 $\Delta$ 参数的作用——控制每步的信息保留程度。
 
 ### 2.5 分块并行计算
+
+> **对应 2.1 公式**：步骤 1–5 的实际执行——衰减、状态更新 $H_t = \tilde{H} + \beta_t k_t(v_t - \tilde{H}k_t)^\top$、输出读取 $o_t = H_t q_t$。
 
 **自回归模式**（decode，每次 1 token）直接递推状态：
 
@@ -331,6 +341,8 @@ chunk 之间通过状态矩阵累积传播。这种策略类似 [Mamba-2 的 SSD
 
 ### 2.6 输出门控
 
+> **对应 2.1 公式**：$o_t = H_t q_t$ 之后的后处理——delta rule 的原始输出需要经过门控和投影才能成为层输出。
+
 SSM 输出先经过 RMSNorm，再与 SiLU 激活的门控向量 $z$ 逐元素相乘：
 
 $$
@@ -340,6 +352,8 @@ $$
 最后通过输出投影 `ssm_out` ($4096 \to 2048$) 回到隐藏维度。
 
 ### 2.7 缓存
+
+> **对应 2.1 公式**：状态矩阵 $H_t$ 和 Conv1d 历史在 token 之间的持久存储——递推机制跨 token 传递信息的基础。
 
 每层维护两种固定大小的状态：
 

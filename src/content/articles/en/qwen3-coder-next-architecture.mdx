@@ -186,20 +186,24 @@ When $\beta_t = 1$, the update yields $H_t k_t = v_t$ — perfect overwrite. Thi
 **Gated DeltaNet** (Yang, Kautz & Hatamizadeh, 2024) adds element-wise decay gating on top of the delta rule:
 
 $$
-\tilde{H}_{t-1} = \exp(\alpha_t) \odot H_{t-1}, \quad H_t = \tilde{H}_{t-1} + \beta_t \cdot k_t \left(v_t - \tilde{H}_{t-1} k_t\right)^\top
+\tilde{H}_{t-1} = \exp(\alpha_t) \odot H_{t-1}, \quad H_t = \tilde{H}_{t-1} + \beta_t \cdot k_t \left(v_t - \tilde{H}_{t-1} k_t\right)^\top, \quad o_t = H_t \, q_t
 $$
 
-The difference from DeltaNet: before updating, the old state undergoes per-element exponential decay ($\alpha_t$ is input-dependent, giving each state element its own decay rate). Then the same delta rule is applied on the decayed state $\tilde{H}_{t-1}$:
+The difference from DeltaNet: before updating, the old state undergoes per-element exponential decay ($\alpha_t$ is input-dependent, giving each state element its own decay rate), then the delta rule update is applied, and finally a query vector $q_t$ reads the output. The complete five-step process:
 
-1. **Retrieve**: $\tilde{H}_{t-1} k_t$ — query the old value from the decayed state
-2. **Compute delta**: $v_t - \tilde{H}_{t-1} k_t$ — error between new target and old memory
-3. **Write correction**: $\beta_t \cdot k_t (\cdots)^\top$ — write the correction back as an outer product
+1. **Decay**: $\tilde{H}_{t-1} = \exp(\alpha_t) \odot H_{t-1}$ — apply per-element exponential decay to old state
+2. **Retrieve old value**: $\tilde{H}_{t-1} k_t$ — use $k_t$ to query the old value from the decayed state
+3. **Compute delta**: $v_t - \tilde{H}_{t-1} k_t$ — error between new target and old memory
+4. **Write correction**: $H_t = \tilde{H}_{t-1} + \beta_t \cdot k_t (\cdots)^\top$ — write the correction back as an outer product
+5. **Read output**: $o_t = H_t \, q_t$ — use $q_t$ to retrieve this layer's output from the updated state
+
+Note that $q_t$ and $k_t$ both come from the same projection (`attn_qkv`) but serve different roles: **$k_t$ is the write address** (determines where in the state matrix a value is stored), **$q_t$ is the read address** (determines what information is retrieved as output). Separating the two allows writing and reading to focus on different features — the same Q/K division of labor as in standard Attention.
 
 Decay gating lets the model actively forget information no longer needed ($\exp(\alpha_t) < 1$ causes the old state to gradually decay), while the delta rule ensures precise overwrite for information that should be remembered — flexible forgetting + precise overwriting, the core advantage of GatedDeltaNet over pure Mamba.
 
 ### 2.2 Complete Data Flow and Input Processing
 
-Section 2.1 presented the mathematical formulas for Gated DeltaNet, but there's a gap between formulas and the actual model. Which GGUF tensor corresponds to which part of the formula? What transformations does data undergo from input to output? Below is the complete forward pass for a GatedDeltaNet layer, followed by detailed explanations.
+Section 2.1 presented the complete Gated DeltaNet formula (five steps: decay → retrieve → delta → write → read), but there's a gap between formulas and the actual model: which GGUF tensor corresponds to which step? What transformations does data undergo from input to output? This section provides the overall flow diagram; subsequent sections (2.3–2.7) expand on each step in detail.
 
 #### Forward Pass Flow
 
@@ -285,13 +289,17 @@ This project → conv1d → recurrence three-stage pipeline is inherited from Ma
 
 ### 2.3 Q/K Normalization and Beta Activation
 
-After Conv1d splits out Q, K, V, several additional processing steps are applied:
+> **Formula mapping**: Preprocessing $q_t, k_t$ (normalization) and $\beta_t \in [0,1]$ (activation) — preparing variables before they enter the delta rule.
+
+After Conv1d splits out Q, K, V, several additional processing steps are needed before entering the delta rule:
 
 - **L2 normalization**: Q and K are each L2-normalized, projecting them onto the unit sphere to stabilize delta rule key-value associations
 - **Q scaling**: $Q \leftarrow Q / \sqrt{d_v}$, preventing dot products from growing with dimension
 - **Beta sigmoid**: $\beta_t \leftarrow \sigma(\beta_t)$, constraining write strength to $[0, 1]$
 
 ### 2.4 Decay Gating
+
+> **Formula mapping**: Step 1's $\tilde{H}_{t-1} = \exp(\alpha_t) \odot H_{t-1}$ — constructing the decay coefficient $\exp(\alpha_t)$ that controls per-element forgetting of the old state.
 
 The decay gate $\alpha_t$ and write strength $\beta_t$ come from a single combined projection:
 
@@ -311,6 +319,8 @@ This ensures $\exp(\text{gate}_t) < 1$ for exponential decay, similar to Mamba's
 
 ### 2.5 Chunked Parallel Computation
 
+> **Formula mapping**: Executing steps 1–5 — decay, state update $H_t = \tilde{H} + \beta_t k_t(v_t - \tilde{H}k_t)^\top$, and output $o_t = H_t q_t$.
+
 **Autoregressive mode** (decode, 1 token at a time) directly updates the state:
 
 $$
@@ -327,6 +337,8 @@ State propagates across chunks, similar to [Mamba-2's SSD algorithm](./state-spa
 
 ### 2.6 Output Gating
 
+> **Formula mapping**: Post-processing after $o_t = H_t q_t$ — the raw delta rule output needs gating and projection to become the layer output.
+
 SSM output goes through RMSNorm then element-wise multiplication with the SiLU-activated gate:
 
 $$
@@ -336,6 +348,8 @@ $$
 Finally projected back to hidden dimension via `ssm_out` ($4096 \to 2048$).
 
 ### 2.7 Cache
+
+> **Formula mapping**: Persistent storage of state matrix $H_t$ and Conv1d history across tokens — the foundation that enables the recurrence to carry information across tokens.
 
 Each layer maintains two fixed-size states:
 
