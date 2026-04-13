@@ -177,6 +177,7 @@ Section 2.1 presented the mathematical formulas for Gated DeltaNet, but there's 
 │     qkv' → Q [128×16] + K [128×16] + V [128×32]                    │
 │     Q ← L2Norm(Q) / √d_v     → q_t in formula                      │
 │     K ← L2Norm(K)            → k_t in formula                      │
+│     Q, K repeat 16→32 heads  → align with V's 32 heads              │
 │     β ← sigmoid(β_raw)       → β_t ∈ [0,1] in formula              │
 │     gate ← softplus(α + dt_bias) × (-A)                             │
 │                               → exp(α_t) in formula                 │
@@ -215,7 +216,11 @@ Each layer performs three parallel projections on input $x$:
 | `attn_gate` | $2048 \to 4096$ | Q4_K | Gate vector $z$ $[128 \times 32]$ |
 | `ssm_ba` | $2048 \to 64$ | Q4_K | Beta + Alpha combined (grouped by K-head) |
 
-Note the **asymmetric head structure**: K heads = 16, V heads = 32 (2:1 ratio), head_dim = 128. Having 2x more V-heads means the state matrix $H$ is wider in the V direction ($128 \times 4096$, where $4096 = 128 \times 32$), increasing memory capacity.
+Note the **asymmetric head structure**: Q heads = K heads = 16, V heads = 32, head_dim = 128. Q and K share the same head count, but V has 2x more.
+
+This creates a mismatch: the delta rule state update operates **per-head**, so Q/K/V head counts must align. The solution is to **repeat Q and K from 16 heads to 32 heads** — each Q/K-head is duplicated twice to match V's 32 heads. This mirrors the [GQA](./gqa-mqa) approach from full attention: fewer K-heads are shared across multiple "working heads," saving Q/K projection parameters.
+
+After expansion, the model has 32 independent delta rule states, each $H^{(i)} \in \mathbb{R}^{128 \times 128}$, for a total state size of $32 \times 128 \times 128 = 128 \times 4096$. More V-heads mean larger state capacity, while Q/K serve only as "addresses" and need fewer parameters.
 
 #### Why Conv1d? (Step ②)
 

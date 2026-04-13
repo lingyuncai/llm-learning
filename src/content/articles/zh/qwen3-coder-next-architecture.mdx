@@ -177,6 +177,7 @@ $$
 │     qkv' → Q [128×16] + K [128×16] + V [128×32]            │
 │     Q ← L2Norm(Q) / √d_v     → 公式中 q_t                  │
 │     K ← L2Norm(K)            → 公式中 k_t                  │
+│     Q, K repeat 16→32 heads  → 与 V 的 32 heads 对齐        │
 │     β ← sigmoid(β_raw)       → 公式中 β_t ∈ [0,1]          │
 │     gate ← softplus(α + dt_bias) × (-A)                     │
 │                               → 公式中 exp(α_t)             │
@@ -215,7 +216,11 @@ $$
 | `attn_gate` | $2048 \to 4096$ | Q4_K | 门控向量 $z$ $[128 \times 32]$ |
 | `ssm_ba` | $2048 \to 64$ | Q4_K | Beta + Alpha 合并（按 K-head 分组） |
 
-注意 **非对称头结构**：K heads = 16, V heads = 32（2:1 比例），head_dim = 128。V heads 是 K heads 的 2 倍，意味着状态矩阵 $H$ 在 V 方向更宽（$128 \times 4096$，其中 $4096 = 128 \times 32$），增强了记忆容量。
+注意 **非对称头结构**：Q heads = K heads = 16, V heads = 32，head_dim = 128。Q 和 K 的 head 数量相同，但 V 是它们的 2 倍。
+
+这会带来一个问题：delta rule 的状态更新是 **per-head** 操作，Q/K/V 的 head 数必须对齐。代码中的解决方案是**将 Q 和 K 从 16 heads repeat 扩展到 32 heads**——每个 Q/K-head 复制 2 次，使其与 V 的 32 heads 一一对应。这与全注意力中 [GQA](./gqa-mqa) 的思路相同：少量 K-head 共享给多个 "工作 head"，节省 Q/K 投影的参数量。
+
+扩展后，模型有 32 组独立的 delta rule 状态，每组状态矩阵为 $H^{(i)} \in \mathbb{R}^{128 \times 128}$，总状态大小为 $32 \times 128 \times 128 = 128 \times 4096$。更多 V-heads 意味着更大的状态容量，而 Q/K 只是"地址"，用更少的参数即可。
 
 #### 为什么需要 Conv1d？（步骤②）
 
