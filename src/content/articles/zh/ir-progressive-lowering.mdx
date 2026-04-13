@@ -1,0 +1,532 @@
+---
+title: "IR 设计（下）：Progressive Lowering 与多层 IR"
+slug: ir-progressive-lowering
+locale: zh
+tags: [compiler, mlir, progressive-lowering, dialect-conversion, bufferization]
+prerequisites: [ir-design-basics]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation"
+    url: "https://arxiv.org/abs/2002.11054"
+  - type: website
+    title: "MLIR Dialect Conversion"
+    url: "https://mlir.llvm.org/docs/DialectConversion/"
+  - type: website
+    title: "MLIR Bufferization"
+    url: "https://mlir.llvm.org/docs/Bufferization/"
+  - type: website
+    title: "MLIR Pass Infrastructure"
+    url: "https://mlir.llvm.org/docs/PassManagement/"
+  - type: repo
+    title: "torch-mlir: PyTorch to MLIR compiler"
+    url: "https://github.com/llvm/torch-mlir"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import ProgressiveLoweringAnimation from '../../../components/interactive/ProgressiveLoweringAnimation.tsx';
+import DialectConversionDemo from '../../../components/interactive/DialectConversionDemo.tsx';
+import BufferizationVisualizer from '../../../components/interactive/BufferizationVisualizer.tsx';
+
+<CompilerStackMap mode="compact" currentArticle="ir-progressive-lowering" client:visible />
+
+## 简介
+
+在 [IR 设计（上）](/zh/articles/ir-design-basics) 中，我们介绍了 SSA form、FX Graph IR 和 MLIR Dialect 的基本概念。你已经知道 MLIR 通过 **dialect** 机制让不同抽象层级的 IR 共存于同一框架中。
+
+但一个关键问题还没有回答：**这些不同层级的 IR 之间是怎么转换的？**
+
+传统编译器（如 GCC、LLVM）的做法是定义少数几个固定的 IR 层级，每个层级之间有一个"big bang"式的转换 — 一步跳到完全不同的表示。LLVM 的路径是 `Clang AST → LLVM IR → Machine IR → Assembly`，每一步跨度巨大。
+
+MLIR 选择了一条完全不同的路线：**Progressive Lowering**（渐进降级）。核心思想是 — 不要一步走到底，而是 **每次只降低一个抽象层级，每步只处理一个关注点（concern）**。从高层 tensor 语义，经过循环结构、内存管理、硬件映射，最终到底层 LLVM IR，中间可以有任意多个中间层级。
+
+这种设计的价值在于：
+
+1. **保留信息的时间最长** — 高层语义信息（如"这是 matmul"）在被转换为循环之前一直保持可用，优化 pass 可以利用这些信息。
+2. **每步可验证** — 每次 lowering 只改变一小部分 IR，可以在每一步之间运行验证和优化。
+3. **组合灵活** — 不同的 lowering 路径可以自由组合。同一个 `linalg.matmul` 可以 lower 到 CPU 循环，也可以 lower 到 GPU kernel，取决于你选择哪条路径。
+
+本文将深入介绍 Progressive Lowering 的核心机制：lowering 路径、Dialect Conversion 框架、Bufferization，以及实际编译器（如 torch-mlir）是如何组织这些 lowering pipeline 的。
+
+## Progressive Lowering 核心思想
+
+### 单层 IR 的困境
+
+让我们先理解为什么传统的"少数固定 IR"方式存在根本性限制。
+
+以 TVM 为例。TVM 有两个主要 IR 层级：**Relay**（高层计算图）和 **TIR**（低层张量 IR）。从 Relay 到 TIR 的转换是一个巨大的跳跃 — 你直接从"这是一个 matmul 算子"跳到"这是一组嵌套循环加上内存访问"。这个跳跃中间丢失了大量信息：
+
+- Relay 层面的 **算子语义**（matmul, conv2d）在 TIR 层面完全消失，变成了不可区分的循环结构。
+- 如果你想在 TIR 层面做跨算子融合（fusion），你需要重新"猜测"这些循环原来是什么算子 — 这几乎不可能。
+- 内存管理（buffer 分配、in-place 复用）和循环变换（tiling, vectorization）被耦合在同一步完成。
+
+XLA 的 HLO（High Level Optimizer）面临类似问题。HLO 是一个相对扁平的算子图，到 LLVM IR 的转换同样是一个大跳跃。
+
+### MLIR 的答案：多步小跳
+
+MLIR 的 Progressive Lowering 将这个巨大跳跃分解为一系列小步：
+
+```
+linalg on tensors
+    → linalg on buffers (bufferization)
+    → SCF loops (loop materialization)
+    → affine loops (optional, for polyhedral optimization)
+    → GPU dialect (hardware mapping)
+    → LLVM dialect
+    → LLVM IR
+```
+
+**每一步只改变一个关注点：**
+
+| 步骤 | 关注点 | 从什么 dialect | 到什么 dialect |
+|------|--------|---------------|---------------|
+| Bufferization | 值语义 → 内存语义 | tensor | memref |
+| Loop materialization | 算子 → 循环 | linalg | scf / affine |
+| Hardware mapping | 循环 → 并行执行 | scf | gpu / vector |
+| Final lowering | 抽象 → 具体指令 | gpu, vector | llvm |
+
+关键原则是 **尽可能长地保留高层信息**。`linalg.matmul` 这个 op 一直存在，直到你显式地通过一个 lowering pass 将它转换为循环。在它被转换之前，任何优化 pass 都可以识别它并做基于 matmul 语义的优化（例如选择最优的 tiling 策略）。
+
+<ProgressiveLoweringAnimation client:visible />
+
+### 每步的信息损失与收益
+
+Progressive Lowering 的核心权衡是：**每降低一个层级，你会失去一些高层信息，但获得一些低层优化机会**。
+
+**从 Linalg on Tensors 到 Linalg on Buffers：**
+- 失去：tensor 的值语义（immutability）。在 tensor 世界中，每个 op 产生一个新 tensor，不会修改输入。这对分析和变换非常友好。
+- 获得：具体的内存 buffer 分配。编译器现在知道数据存在哪里，可以做 buffer 复用（in-place 分析），减少内存消耗。
+
+**从 Linalg on Buffers 到 SCF 循环：**
+- 失去：`linalg.matmul` 的语义标签。循环展开后，编译器不再知道这三层嵌套循环是一个矩阵乘法。
+- 获得：显式的循环结构，可以应用 tiling、unrolling、interchange 等经典循环变换。
+
+**从 SCF 循环到 GPU dialect：**
+- 失去：硬件无关性。一旦映射到 GPU 的 grid/block/thread 模型，IR 就和特定硬件绑定了。
+- 获得：GPU 并行执行模型，可以控制 block size、shared memory usage 等硬件特定参数。
+
+**从 GPU dialect 到 LLVM IR：**
+- 失去：GPU 的结构化抽象（block, thread, shared memory）变成了 NVVM intrinsic call。
+- 获得：可以直接被 LLVM 后端编译为 PTX / SPIR-V 等目标代码。
+
+## Lowering 路径示例
+
+我们以 `linalg.matmul` 的完整 lowering 路径为例，展示一个 $128 \times 768$ 乘 $768 \times 768$ 矩阵乘法是如何一步步被降低到 LLVM IR 的。
+
+### Level 1: Linalg on Tensors
+
+起点是最高层的表示：
+
+```mlir
+%result = linalg.matmul
+    ins(%A, %B : tensor<128x768xf32>, tensor<768x768xf32>)
+    outs(%C : tensor<128x768xf32>) -> tensor<128x768xf32>
+```
+
+此时编译器知道：
+- 这是一个 matmul（$C = A \times B$）
+- 输入输出的形状是已知的
+- tensor 语义 — `%A`, `%B` 不会被修改
+
+这个层级适合做 **高层优化**：算子融合（fusion）、布局变换（layout transformation）、分块策略选择。
+
+### Level 2: Linalg on Buffers
+
+Bufferization pass 将 tensor 转换为 memref：
+
+```mlir
+%A_buf = memref.alloc() : memref<128x768xf32>
+memref.copy %A_tensor, %A_buf
+linalg.matmul
+    ins(%A_buf, %B_buf : memref<128x768xf32>, memref<768x768xf32>)
+    outs(%C_buf : memref<128x768xf32>)
+```
+
+注意 `linalg.matmul` 仍然存在 — 我们只改变了数据的表示（tensor → memref），没有改变计算结构。编译器仍然知道这是一个 matmul。
+
+### Level 3: SCF Loops
+
+现在将 matmul 算子展开为显式的三重嵌套循环：
+
+```mlir
+scf.for %i = 0 to 128 step 1 {
+  scf.for %j = 0 to 768 step 1 {
+    scf.for %k = 0 to 768 step 1 {
+      %a = memref.load %A_buf[%i, %k]
+      %b = memref.load %B_buf[%k, %j]
+      %prev = memref.load %C_buf[%i, %j]
+      %prod = arith.mulf %a, %b : f32
+      %sum = arith.addf %prev, %prod : f32
+      memref.store %sum, %C_buf[%i, %j]
+    }
+  }
+}
+```
+
+从这里开始，"这是 matmul" 的信息已经丢失。但我们获得了循环结构，可以应用：
+- **Tiling**：将循环切分为 tile，改善 cache locality
+- **Loop interchange**：调整循环顺序（i-j-k vs i-k-j），优化内存访问模式
+- **Vectorization**：将内层循环向量化
+
+### Level 4: GPU Launch
+
+将循环映射到 GPU 的执行模型：
+
+```mlir
+gpu.launch blocks(%bx, %by) in (%gx = 4, %gy = 24)
+    threads(%tx, %ty) in (%bdx = 32, %bdy = 32) {
+  %i = %bx * 32 + %tx
+  %j = %by * 32 + %ty
+  scf.for %k = 0 to 768 step 1 {
+    %a = memref.load %A_buf[%i, %k]
+    %b = memref.load %B_buf[%k, %j]
+    ...
+  }
+  gpu.terminator
+}
+```
+
+外层两个循环（i, j）被映射为 GPU 的 block 和 thread。内层循环（k，reduction 维度）保持串行。
+
+### Level 5: LLVM IR
+
+最终转换为 LLVM IR，可以被 LLVM 后端编译为 PTX：
+
+```llvm
+define void @matmul_kernel(float* %A, float* %B, float* %C) {
+  %tid.x = call i32 @llvm.nvvm.read.ptx.sreg.tid.x()
+  %bid.x = call i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()
+  %i = add i32 %tid.x, ...
+  %a_ptr = getelementptr float, float* %A, i64 %idx
+  %a = load float, float* %a_ptr
+  %prod = fmul float %a, %b
+  %acc = fadd float %prev, %prod
+  store float %acc, float* %c_ptr
+  ret void
+}
+```
+
+GPU 的结构化概念（block, thread）变成了 NVVM intrinsic call（`@llvm.nvvm.read.ptx.sreg.tid.x()`），memref 变成了原始指针加 `getelementptr`。
+
+## Dialect Conversion 框架
+
+Progressive Lowering 不是手动字符串替换 — MLIR 提供了一套完整的 **Dialect Conversion** 框架来实现类型安全、可组合的 IR 转换。
+
+### 三个核心组件
+
+Dialect Conversion 框架由三个部分组成：
+
+**1. ConversionTarget** — 定义什么是"合法的"（legal）和"非法的"（illegal）IR。
+
+```cpp
+ConversionTarget target(getContext());
+// 目标 dialect 中的 op 是合法的
+target.addLegalDialect<scf::SCFDialect>();
+target.addLegalDialect<arith::ArithDialect>();
+target.addLegalDialect<memref::MemRefDialect>();
+// linalg 的 op 需要被转换
+target.addIllegalDialect<linalg::LinalgDialect>();
+```
+
+ConversionTarget 定义了一个"终态"— 转换完成后，IR 中不应该还有任何 illegal op。如果转换后仍有 illegal op 残留，框架会报错。
+
+**2. RewritePattern** — 定义如何将一个（或一组）op 转换为另一组 op。
+
+```cpp
+struct MatmulToLoopsPattern : public OpRewritePattern<linalg::MatmulOp> {
+  LogicalResult matchAndRewrite(
+      linalg::MatmulOp op, PatternRewriter &rewriter) const override {
+    // 1. 提取操作数
+    Value A = op.getInputs()[0];
+    Value B = op.getInputs()[1];
+    Value C = op.getOutputs()[0];
+    // 2. 获取形状信息
+    auto M = ..., N = ..., K = ...;
+    // 3. 创建三重嵌套循环
+    auto iLoop = rewriter.create<scf::ForOp>(loc, zero, M, one);
+    // ... (嵌套 j, k 循环)
+    // 4. 替换原 op
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+```
+
+每个 RewritePattern 实现一个 `matchAndRewrite` 方法：
+- **match** 阶段：检查当前 op 是否匹配这个 pattern（类型、属性、操作数约束等）
+- **rewrite** 阶段：用新的 op 替换匹配的 op
+
+**3. TypeConverter** — 定义类型之间的映射。
+
+```cpp
+TypeConverter typeConverter;
+typeConverter.addConversion([](TensorType type) -> Optional<Type> {
+  // tensor<128x768xf32> → memref<128x768xf32>
+  return MemRefType::get(type.getShape(), type.getElementType());
+});
+```
+
+TypeConverter 在 bufferization 中尤为重要 — 它定义了 `tensor<...>` 如何映射为 `memref<...>`。
+
+### Pattern 匹配与替换过程
+
+Dialect Conversion 的执行流程：
+
+1. **收集所有 illegal op** — 遍历 IR，找到所有不在 legal set 中的 op。
+2. **尝试 pattern 匹配** — 对每个 illegal op，依次尝试所有注册的 pattern。Pattern 有优先级（benefit），高优先级的先尝试。
+3. **应用 rewrite** — 匹配成功后，执行 rewrite，用新 op 替换旧 op。
+4. **验证** — 转换完成后，检查是否所有 op 都是 legal 的。如果仍有 illegal op，转换失败并回滚（rollback）。
+
+这个"全有或全无"的语义非常重要 — 要么所有 illegal op 都被成功转换，要么整个转换被回滚到初始状态。这保证了 IR 始终处于一致的状态。
+
+<DialectConversionDemo client:visible />
+
+### Partial Conversion vs Full Conversion
+
+MLIR 支持两种转换模式：
+
+- **Full Conversion**：所有 illegal op 必须被转换。如果有任何 illegal op 无法匹配 pattern，转换失败。
+- **Partial Conversion**：只转换能匹配 pattern 的 op，其余保持不变。这在增量 lowering 中很有用 — 你可以先 lower 一部分 op，留下其他的在后续 pass 中处理。
+
+实际的 lowering pipeline 通常混合使用这两种模式。例如：
+- Bufferization 通常使用 full conversion（所有 tensor 必须被转换为 memref）。
+- 某些 legalization pass 使用 partial conversion（只转换特定的 op pattern）。
+
+## Bufferization 深入
+
+Bufferization 是 Progressive Lowering 中最关键也最复杂的一步。它将 **tensor 值语义**（每个 op 产生新 tensor，不修改输入）转换为 **memref 引用语义**（op 直接读写内存 buffer）。
+
+### 为什么 Bufferization 是独立的一步？
+
+在传统编译器中，"值 vs 引用" 的转换通常与其他 lowering 混在一起。MLIR 将它独立出来，有两个重要原因：
+
+1. **Buffer 分配是全局优化问题。** 决定"哪些 tensor 可以共享同一个 buffer"需要全局的数据流分析（liveness analysis）。如果和循环变换混在一起做，问题会变得极其复杂。
+
+2. **In-place 分析需要高层语义。** 判断一个 op 是否可以"原地"（in-place）修改输入 buffer，需要知道该输入在后续是否还被使用。这种分析在 tensor 语义下很自然 — 只要没有其他 op 引用同一个 tensor 值，就可以 in-place。一旦转换为 memref，这种分析就困难得多（需要 alias analysis）。
+
+### One-Shot Bufferize
+
+MLIR 提供了 **One-Shot Bufferize** 框架（之前叫 Comprehensive Bufferize），它的工作流程是：
+
+**第一步：In-Place 分析**
+
+对每个 op 的每个 tensor 操作数，判断是否可以 in-place。判断标准：
+- 该 tensor 值在该 op 之后是否还有其他使用者（user）？
+- 如果没有，则该 op 可以直接复用输入 tensor 对应的 buffer — 这就是 in-place 操作。
+- 如果有，必须分配一个新 buffer，先 copy 数据过去，再修改。
+
+以 `%y = relu(%x)` 为例：
+- 如果 `%x` 在 `relu` 之后不再被使用（即 relu 是 `%x` 的最后使用者），那么 `relu` 可以 in-place — 直接在 `%x` 对应的 buffer 上做修改，输出 `%y` 和输入 `%x` 共享同一个 buffer。
+- 如果 `%x` 在 relu 之后还有其他用途（例如还要参与另一个计算），那么必须为 `%y` 分配新 buffer。
+
+**第二步：Buffer 分配**
+
+基于 in-place 分析的结果，为每个 tensor 分配 buffer：
+- In-place 的 tensor 复用输入 buffer。
+- 非 in-place 的 tensor 分配新 buffer（`memref.alloc`）。
+
+**第三步：IR 重写**
+
+将所有 tensor 操作替换为 memref 操作。Op 的签名从 `tensor<...>` 变为 `memref<...>`。
+
+<BufferizationVisualizer client:visible />
+
+### Buffer Deallocation
+
+分配了 buffer 就需要释放。MLIR 提供了 **Buffer Deallocation** pass，自动在 buffer 的最后使用点之后插入 `memref.dealloc`。这类似于编译器级别的自动内存管理（但比 GC 高效得多，因为 lifetime 在编译期就能确定）。
+
+对于更复杂的控制流（if-else、循环），deallocation 需要考虑所有可能的执行路径。MLIR 的 ownership-based buffer deallocation pass 通过引入 ownership token 来处理这些情况。
+
+### Bufferization 的挑战
+
+虽然 One-Shot Bufferize 解决了大部分情况，但仍有一些挑战：
+
+- **动态形状（Dynamic Shapes）**：当 tensor 形状在编译期未知时，buffer 大小也未知，需要运行时分配。这增加了复杂性，因为运行时分配可能失败，而且难以做 buffer 复用。
+- **跨函数分析**：如果一个 tensor 作为参数传入另一个函数，in-place 分析需要跨函数边界。MLIR 支持这种分析，但会增加编译时间。
+- **Control Flow**：`scf.if` 的两个分支可能需要不同大小的 buffer。需要 carefully 处理这种情况。
+
+## 实战：torch-mlir 的 Lowering Pipeline
+
+[torch-mlir](https://github.com/llvm/torch-mlir) 是一个将 PyTorch 模型编译为 MLIR 的项目，它是 Progressive Lowering 在实际编译器中的典型应用。
+
+### 整体 Pipeline
+
+torch-mlir 的 lowering pipeline 如下：
+
+```
+PyTorch (torch.nn.Module)
+    ↓ TorchDynamo / torch.export
+Torch FX Graph (Python AST)
+    ↓ torch-mlir importer
+Torch Dialect (MLIR)
+    ↓ DecomposeComplexOps
+    ↓ torch-to-linalg conversion
+Linalg on Tensors (MLIR)
+    ↓ Linalg fusion / tiling passes
+    ↓ One-Shot Bufferize
+Linalg on Buffers (MLIR)
+    ↓ linalg-to-loops / linalg-to-affine
+SCF / Affine loops (MLIR)
+    ↓ target-specific lowering (GPU / CPU)
+    ↓ convert-to-llvm
+LLVM Dialect (MLIR)
+    ↓ mlir-translate
+LLVM IR → machine code
+```
+
+### 关键步骤解析
+
+**Torch Dialect → Linalg on Tensors：**
+
+Torch dialect 中的 op（如 `torch.aten.matmul`, `torch.aten.layer_norm`）被转换为 linalg op。这一步的关键是 **算子分解（decomposition）**。
+
+例如，`torch.aten.layer_norm` 不是直接映射为一个 linalg op，而是被分解为：
+```
+mean = linalg.generic(reduction) → reduce_sum / count
+var = linalg.generic(reduction) → reduce_sum_sq / count - mean^2
+norm = linalg.generic(parallel) → (x - mean) / sqrt(var + eps) * gamma + beta
+```
+
+这种分解让编译器可以分别优化每个子操作，也为后续的 fusion pass 提供了更细粒度的优化空间。
+
+**Linalg Fusion：**
+
+在 linalg 层面，融合 pass 可以识别 producer-consumer 关系。例如 matmul 后跟 relu：
+```
+%matmul = linalg.matmul ins(%A, %B) outs(%C) -> tensor<...>
+%relu = linalg.generic {indexing_maps = [...], iterator_types = ["parallel", "parallel"]}
+    ins(%matmul) { ^bb0(%in): %0 = arith.maxf %in, %zero; linalg.yield %0 }
+```
+
+Fusion pass 可以将 relu 融合进 matmul 的循环体中，避免额外的内存读写。这在 linalg 层面做比在循环层面做容易得多，因为编译器还知道这是 matmul + relu 的组合。
+
+**Target-specific Lowering：**
+
+最终的 lowering 取决于目标硬件：
+- **CPU 路径**：SCF loops → vectorize → LLVM (x86/ARM)
+- **GPU 路径**：SCF loops → gpu.launch → NVVM / ROCDL → PTX / AMDGPU
+- **Vulkan 路径**：SCF loops → SPIR-V
+
+同一个 linalg.matmul 可以通过不同的 lowering path 到达不同的硬件后端，这就是 Progressive Lowering 的组合灵活性。
+
+## 对比单层 IR 的局限
+
+### TVM: Relay → TIR
+
+TVM 的两层 IR 设计（Relay + TIR）在 Progressive Lowering 出现之前是业界标准。但它有几个固有限制：
+
+1. **固定的抽象边界。** Relay 和 TIR 之间是一道不可逾越的墙。Relay 只能做图级优化（constant folding, operator fusion），TIR 只能做算子内优化（tiling, vectorization）。跨越这个边界的优化（例如跨算子 tiling）很难实现。
+
+2. **融合决策过早固化。** Relay 层面做 fusion decision，此时还不知道 TIR 层面的 tiling 策略。但 fusion 和 tiling 是强耦合的 — 某些 fusion pattern 只在特定 tiling 配置下有收益。
+
+3. **缺乏中间层级。** 从 Relay 的 `nn.dense` 到 TIR 的嵌套循环，中间没有过渡。任何需要"部分 lower"的优化都无处施展。
+
+TVM 团队也认识到了这些限制，其新一代框架 **Apache TVM Unity** 引入了 **Relax IR**，设计上借鉴了 MLIR 的多层 dialect 思想。
+
+### XLA: HLO
+
+Google 的 XLA（Accelerated Linear Algebra）使用 HLO（High Level Optimizer）IR：
+
+1. **扁平算子图。** HLO 没有 dialect 概念 — 所有 op 都在同一个层级。这意味着高层信息（"这是一个 transformer attention block"）和低层信息（element-wise add）混在同一个 IR 中。
+
+2. **硬件绑定较早。** HLO 的优化 pass（如 fusion, layout assignment）在很早期就需要考虑目标硬件。这让跨硬件复用变得困难。
+
+3. **不可扩展。** 添加新的抽象层级需要修改 HLO 的 core 代码，而 MLIR 只需要定义新的 dialect。
+
+XLA 的新一代项目（如 **StableHLO**）也在向 MLIR 生态靠拢，StableHLO 本身就是一个 MLIR dialect。
+
+### MLIR 的优势总结
+
+| 维度 | 单层/双层 IR (TVM, XLA) | Progressive Lowering (MLIR) |
+|------|------------------------|---------------------------|
+| 抽象层级 | 2-3 个固定层级 | 任意多个可组合的层级 |
+| 信息保留 | 跨层级信息丢失 | 按需逐步丢弃 |
+| 优化时机 | 在固定层级做 | 在最佳层级做 |
+| 硬件适配 | 每个后端各写一套 | 共享高层 → 分叉低层 |
+| 可扩展性 | 修改核心代码 | 添加新 dialect |
+
+## Pass Pipeline 的组织
+
+实际的 MLIR 编译器中，lowering 不是调用一个函数就完成的，而是组织为一系列 **pass** 的 pipeline。
+
+### Pass 的种类
+
+MLIR 中的 pass 主要分为两类：
+
+1. **Transformation Pass** — 修改 IR 结构（lowering, fusion, tiling 都属于这类）。
+2. **Analysis Pass** — 分析 IR 属性但不修改它（liveness analysis, alias analysis）。Analysis 的结果通常被 transformation pass 消费。
+
+### Pipeline 组织
+
+一个典型的 pipeline 可能如下组织：
+
+```
+// Phase 1: High-level optimization
+pass: canonicalize
+pass: cse (common subexpression elimination)
+pass: linalg-fusion-on-tensors
+
+// Phase 2: Bufferization
+pass: one-shot-bufferize
+pass: buffer-deallocation
+pass: canonicalize
+
+// Phase 3: Loop optimization
+pass: linalg-to-loops
+pass: affine-loop-fusion
+pass: affine-loop-tiling {tile-size=32}
+pass: canonicalize
+
+// Phase 4: Hardware mapping
+pass: convert-scf-to-gpu
+pass: gpu-kernel-outlining
+pass: canonicalize
+
+// Phase 5: Final lowering
+pass: convert-gpu-to-nvvm
+pass: convert-memref-to-llvm
+pass: convert-arith-to-llvm
+pass: convert-func-to-llvm
+pass: reconcile-unrealized-casts
+```
+
+注意每个 phase 之后都有一个 `canonicalize` pass — 它清理冗余 op（如 `x + 0 → x`），保持 IR 的规范形式。这对后续 pass 的 pattern 匹配至关重要。
+
+### 调试 Lowering Pipeline
+
+MLIR 提供了强大的调试工具：
+
+- `mlir-opt --print-ir-after-all`：在每个 pass 之后打印 IR，可以看到每一步的变化。
+- `mlir-opt --verify-each`：在每个 pass 之后运行 IR 验证器，确保 IR 始终有效。
+- `mlir-opt --pass-statistics`：统计每个 pass 的执行时间和操作次数。
+- `mlir-opt --mlir-print-ir-after-failure`：当 pass 失败时打印 IR，帮助定位问题。
+
+这些工具使得在 Progressive Lowering 的每一步都能检查和验证 IR 的正确性 — 这是"big bang"式转换无法做到的。
+
+## 总结
+
+Progressive Lowering 是 MLIR 最核心的设计哲学，它从根本上改变了编译器 IR 设计的思路：
+
+1. **不要一步到底** — 每次 lowering 只处理一个关注点，每步只降低一个抽象层级。
+2. **保留信息** — 高层语义信息（算子类型、tensor 形状）尽可能长地保持可用。
+3. **Dialect Conversion 框架** — 提供类型安全、可回滚的 IR 转换基础设施。ConversionTarget + RewritePattern + TypeConverter 三件套。
+4. **Bufferization 是关键步骤** — 从 tensor 值语义到 memref 引用语义的转换，涉及全局的 in-place 分析和 buffer 复用。
+5. **组合灵活** — 同一个高层 IR 可以通过不同的 lowering 路径到达不同的硬件目标。
+6. **每步可验证** — pass pipeline 中的每一步都可以单独调试和验证。
+
+对于 ML 编译器开发者，理解 Progressive Lowering 意味着：
+- 设计 IR 时，**先想清楚有几个独立的关注点**，然后每个关注点对应一个 lowering 步骤。
+- 新增优化时，**在最佳抽象层级做** — 如果需要知道"这是 matmul"，就在 linalg 层做；如果需要操作循环，就在 SCF 层做。
+- 调试性能问题时，**逐步 dump IR**，找到性能在哪一步丢失。
+
+在后续文章中，我们将深入讨论具体的优化 pass 如何在不同 dialect 层级上工作，以及 [数据流分析与 Pass 基础](/zh/articles/graph-passes-foundations) 中的核心分析技术。
+
+## 延伸阅读
+
+- [MLIR: Scaling Compiler Infrastructure for Domain Specific Computation](https://arxiv.org/abs/2002.11054) — MLIR 的原始论文，详细描述了 Progressive Lowering 的动机和设计。
+- [MLIR Dialect Conversion](https://mlir.llvm.org/docs/DialectConversion/) — Dialect Conversion 框架的官方文档，包含完整的 API 参考。
+- [MLIR Bufferization](https://mlir.llvm.org/docs/Bufferization/) — One-Shot Bufferize 的设计文档和使用指南。
+- [torch-mlir](https://github.com/llvm/torch-mlir) — 完整的 PyTorch → MLIR lowering pipeline 实现。
+- [MLIR Pass Infrastructure](https://mlir.llvm.org/docs/PassManagement/) — Pass 管理和 pipeline 组织的官方文档。

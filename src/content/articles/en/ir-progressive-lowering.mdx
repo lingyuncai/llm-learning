@@ -1,0 +1,532 @@
+---
+title: "IR Design (Part 2): Progressive Lowering and Multi-Level IR"
+slug: ir-progressive-lowering
+locale: en
+tags: [compiler, mlir, progressive-lowering, dialect-conversion, bufferization]
+prerequisites: [ir-design-basics]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation"
+    url: "https://arxiv.org/abs/2002.11054"
+  - type: website
+    title: "MLIR Dialect Conversion"
+    url: "https://mlir.llvm.org/docs/DialectConversion/"
+  - type: website
+    title: "MLIR Bufferization"
+    url: "https://mlir.llvm.org/docs/Bufferization/"
+  - type: website
+    title: "MLIR Pass Infrastructure"
+    url: "https://mlir.llvm.org/docs/PassManagement/"
+  - type: repo
+    title: "torch-mlir: PyTorch to MLIR compiler"
+    url: "https://github.com/llvm/torch-mlir"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import ProgressiveLoweringAnimation from '../../../components/interactive/ProgressiveLoweringAnimation.tsx';
+import DialectConversionDemo from '../../../components/interactive/DialectConversionDemo.tsx';
+import BufferizationVisualizer from '../../../components/interactive/BufferizationVisualizer.tsx';
+
+<CompilerStackMap mode="compact" currentArticle="ir-progressive-lowering" locale="en" client:visible />
+
+## Introduction
+
+In [IR Design (Part 1)](/en/articles/ir-design-basics), we introduced the fundamental concepts of SSA form, FX Graph IR, and MLIR Dialects. You already know that MLIR uses the **dialect** mechanism to allow IR representations at different abstraction levels to coexist within the same framework.
+
+But a critical question remains unanswered: **how do we convert between these different levels of IR?**
+
+Traditional compilers (like GCC and LLVM) define a small number of fixed IR levels, with a "big bang" conversion between each level — jumping in one step to a completely different representation. LLVM's path is `Clang AST -> LLVM IR -> Machine IR -> Assembly`, with each step covering an enormous gap.
+
+MLIR chose a fundamentally different approach: **Progressive Lowering**. The core idea is — don't go all the way down in one step. Instead, **lower one abstraction level at a time, handling one concern per step**. From high-level tensor semantics, through loop structures, memory management, hardware mapping, and finally down to LLVM IR, there can be arbitrarily many intermediate levels.
+
+The value of this design lies in:
+
+1. **Information is preserved as long as possible** — High-level semantic information (like "this is a matmul") remains available until explicitly lowered, and optimization passes can leverage this information.
+2. **Each step is verifiable** — Each lowering step changes only a small part of the IR, allowing verification and optimization between every step.
+3. **Flexible composition** — Different lowering paths can be freely combined. The same `linalg.matmul` can be lowered to CPU loops or GPU kernels depending on which path you choose.
+
+This article will dive deep into the core mechanisms of Progressive Lowering: lowering paths, the Dialect Conversion framework, Bufferization, and how real-world compilers like torch-mlir organize their lowering pipelines.
+
+## The Core Idea of Progressive Lowering
+
+### The Predicament of Single-Level IR
+
+Let's first understand why the traditional "few fixed IRs" approach has fundamental limitations.
+
+Consider TVM as an example. TVM has two main IR levels: **Relay** (high-level computation graph) and **TIR** (low-level tensor IR). The conversion from Relay to TIR is an enormous leap — you jump directly from "this is a matmul operator" to "this is a set of nested loops with memory accesses." This jump loses a massive amount of information:
+
+- The **operator semantics** at the Relay level (matmul, conv2d) completely disappear at the TIR level, becoming indistinguishable loop structures.
+- If you want to do cross-operator fusion at the TIR level, you need to "guess" what operators these loops originally represented — which is practically impossible.
+- Memory management (buffer allocation, in-place reuse) and loop transformations (tiling, vectorization) are coupled into a single step.
+
+XLA's HLO (High Level Optimizer) faces similar issues. HLO is a relatively flat operator graph, and the conversion to LLVM IR is similarly a large leap.
+
+### MLIR's Answer: Many Small Steps
+
+MLIR's Progressive Lowering decomposes this enormous jump into a series of small steps:
+
+```
+linalg on tensors
+    -> linalg on buffers (bufferization)
+    -> SCF loops (loop materialization)
+    -> affine loops (optional, for polyhedral optimization)
+    -> GPU dialect (hardware mapping)
+    -> LLVM dialect
+    -> LLVM IR
+```
+
+**Each step handles exactly one concern:**
+
+| Step | Concern | From Dialect | To Dialect |
+|------|---------|-------------|------------|
+| Bufferization | Value semantics -> memory semantics | tensor | memref |
+| Loop materialization | Operators -> loops | linalg | scf / affine |
+| Hardware mapping | Loops -> parallel execution | scf | gpu / vector |
+| Final lowering | Abstract -> concrete instructions | gpu, vector | llvm |
+
+The key principle is to **preserve high-level information as long as possible**. The `linalg.matmul` op persists until you explicitly convert it to loops through a lowering pass. Before that conversion, any optimization pass can recognize it and perform matmul-specific optimizations (such as choosing the optimal tiling strategy).
+
+<ProgressiveLoweringAnimation locale="en" client:visible />
+
+### Information Loss and Gain at Each Step
+
+The core trade-off of Progressive Lowering is: **each level you lower, you lose some high-level information but gain some low-level optimization opportunities**.
+
+**From Linalg on Tensors to Linalg on Buffers:**
+- Lost: Tensor value semantics (immutability). In the tensor world, each op produces a new tensor without modifying inputs. This is very friendly for analysis and transformation.
+- Gained: Concrete memory buffer allocation. The compiler now knows where data lives and can do buffer reuse (in-place analysis), reducing memory consumption.
+
+**From Linalg on Buffers to SCF Loops:**
+- Lost: The `linalg.matmul` semantic label. After loop expansion, the compiler no longer knows these three nested loops are a matrix multiplication.
+- Gained: Explicit loop structure, enabling classical loop transformations like tiling, unrolling, and interchange.
+
+**From SCF Loops to GPU Dialect:**
+- Lost: Hardware independence. Once mapped to GPU's grid/block/thread model, the IR is bound to specific hardware.
+- Gained: GPU parallel execution model, with control over block size, shared memory usage, and other hardware-specific parameters.
+
+**From GPU Dialect to LLVM IR:**
+- Lost: GPU's structured abstractions (block, thread, shared memory) become NVVM intrinsic calls.
+- Gained: Can be directly compiled by the LLVM backend to PTX / SPIR-V and other target code.
+
+## Lowering Path Example
+
+Let's trace the complete lowering path of `linalg.matmul`, showing how a $128 \times 768$ by $768 \times 768$ matrix multiplication is progressively lowered to LLVM IR.
+
+### Level 1: Linalg on Tensors
+
+The starting point is the highest-level representation:
+
+```mlir
+%result = linalg.matmul
+    ins(%A, %B : tensor<128x768xf32>, tensor<768x768xf32>)
+    outs(%C : tensor<128x768xf32>) -> tensor<128x768xf32>
+```
+
+At this level, the compiler knows:
+- This is a matmul ($C = A \times B$)
+- The shapes of inputs and outputs are known
+- Tensor semantics — `%A`, `%B` will not be modified
+
+This level is suitable for **high-level optimizations**: operator fusion, layout transformation, and tiling strategy selection.
+
+### Level 2: Linalg on Buffers
+
+The bufferization pass converts tensors to memrefs:
+
+```mlir
+%A_buf = memref.alloc() : memref<128x768xf32>
+memref.copy %A_tensor, %A_buf
+linalg.matmul
+    ins(%A_buf, %B_buf : memref<128x768xf32>, memref<768x768xf32>)
+    outs(%C_buf : memref<128x768xf32>)
+```
+
+Note that `linalg.matmul` still exists — we only changed the data representation (tensor -> memref), not the computation structure. The compiler still knows this is a matmul.
+
+### Level 3: SCF Loops
+
+Now the matmul operator is expanded into explicit triple-nested loops:
+
+```mlir
+scf.for %i = 0 to 128 step 1 {
+  scf.for %j = 0 to 768 step 1 {
+    scf.for %k = 0 to 768 step 1 {
+      %a = memref.load %A_buf[%i, %k]
+      %b = memref.load %B_buf[%k, %j]
+      %prev = memref.load %C_buf[%i, %j]
+      %prod = arith.mulf %a, %b : f32
+      %sum = arith.addf %prev, %prod : f32
+      memref.store %sum, %C_buf[%i, %j]
+    }
+  }
+}
+```
+
+From here, the "this is matmul" information is lost. But we've gained loop structure, enabling:
+- **Tiling**: Splitting loops into tiles to improve cache locality
+- **Loop interchange**: Adjusting loop order (i-j-k vs i-k-j) to optimize memory access patterns
+- **Vectorization**: Vectorizing the inner loop
+
+### Level 4: GPU Launch
+
+Mapping loops to the GPU execution model:
+
+```mlir
+gpu.launch blocks(%bx, %by) in (%gx = 4, %gy = 24)
+    threads(%tx, %ty) in (%bdx = 32, %bdy = 32) {
+  %i = %bx * 32 + %tx
+  %j = %by * 32 + %ty
+  scf.for %k = 0 to 768 step 1 {
+    %a = memref.load %A_buf[%i, %k]
+    %b = memref.load %B_buf[%k, %j]
+    ...
+  }
+  gpu.terminator
+}
+```
+
+The outer two loops (i, j) are mapped to GPU blocks and threads. The inner loop (k, the reduction dimension) remains sequential.
+
+### Level 5: LLVM IR
+
+The final conversion to LLVM IR, which can be compiled to PTX by the LLVM backend:
+
+```llvm
+define void @matmul_kernel(float* %A, float* %B, float* %C) {
+  %tid.x = call i32 @llvm.nvvm.read.ptx.sreg.tid.x()
+  %bid.x = call i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()
+  %i = add i32 %tid.x, ...
+  %a_ptr = getelementptr float, float* %A, i64 %idx
+  %a = load float, float* %a_ptr
+  %prod = fmul float %a, %b
+  %acc = fadd float %prev, %prod
+  store float %acc, float* %c_ptr
+  ret void
+}
+```
+
+GPU's structured concepts (block, thread) become NVVM intrinsic calls (`@llvm.nvvm.read.ptx.sreg.tid.x()`), and memrefs become raw pointers with `getelementptr`.
+
+## The Dialect Conversion Framework
+
+Progressive Lowering is not manual string replacement — MLIR provides a comprehensive **Dialect Conversion** framework for type-safe, composable IR transformation.
+
+### Three Core Components
+
+The Dialect Conversion framework consists of three parts:
+
+**1. ConversionTarget** — Defines what IR is "legal" and what is "illegal."
+
+```cpp
+ConversionTarget target(getContext());
+// Ops in target dialects are legal
+target.addLegalDialect<scf::SCFDialect>();
+target.addLegalDialect<arith::ArithDialect>();
+target.addLegalDialect<memref::MemRefDialect>();
+// linalg ops need to be converted
+target.addIllegalDialect<linalg::LinalgDialect>();
+```
+
+ConversionTarget defines an "end state" — after conversion completes, the IR should not contain any illegal ops. If illegal ops remain, the framework reports an error.
+
+**2. RewritePattern** — Defines how to convert one (or a group of) ops into another set of ops.
+
+```cpp
+struct MatmulToLoopsPattern : public OpRewritePattern<linalg::MatmulOp> {
+  LogicalResult matchAndRewrite(
+      linalg::MatmulOp op, PatternRewriter &rewriter) const override {
+    // 1. Extract operands
+    Value A = op.getInputs()[0];
+    Value B = op.getInputs()[1];
+    Value C = op.getOutputs()[0];
+    // 2. Get shape information
+    auto M = ..., N = ..., K = ...;
+    // 3. Create triple nested loop
+    auto iLoop = rewriter.create<scf::ForOp>(loc, zero, M, one);
+    // ... (nested j, k loops)
+    // 4. Replace original op
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+```
+
+Each RewritePattern implements a `matchAndRewrite` method:
+- **Match** phase: Check if the current op matches this pattern (type, attributes, operand constraints, etc.)
+- **Rewrite** phase: Replace the matched op with new ops
+
+**3. TypeConverter** — Defines mappings between types.
+
+```cpp
+TypeConverter typeConverter;
+typeConverter.addConversion([](TensorType type) -> Optional<Type> {
+  // tensor<128x768xf32> -> memref<128x768xf32>
+  return MemRefType::get(type.getShape(), type.getElementType());
+});
+```
+
+TypeConverter is especially important in bufferization — it defines how `tensor<...>` maps to `memref<...>`.
+
+### Pattern Matching and Replacement Process
+
+The execution flow of Dialect Conversion:
+
+1. **Collect all illegal ops** — Traverse the IR and find all ops not in the legal set.
+2. **Attempt pattern matching** — For each illegal op, try all registered patterns in order. Patterns have priorities (benefit), with higher priority patterns tried first.
+3. **Apply rewrite** — After a successful match, execute the rewrite, replacing old ops with new ones.
+4. **Verify** — After conversion completes, check that all ops are legal. If illegal ops remain, the conversion fails and rolls back.
+
+This "all or nothing" semantics is crucial — either all illegal ops are successfully converted, or the entire conversion is rolled back to its initial state. This guarantees the IR is always in a consistent state.
+
+<DialectConversionDemo locale="en" client:visible />
+
+### Partial Conversion vs Full Conversion
+
+MLIR supports two conversion modes:
+
+- **Full Conversion**: All illegal ops must be converted. If any illegal op cannot match a pattern, the conversion fails.
+- **Partial Conversion**: Only ops that can match patterns are converted; the rest remain unchanged. This is useful in incremental lowering — you can lower some ops first and handle others in subsequent passes.
+
+Real-world lowering pipelines typically use a mix of both modes. For example:
+- Bufferization typically uses full conversion (all tensors must be converted to memrefs).
+- Some legalization passes use partial conversion (only converting specific op patterns).
+
+## Deep Dive: Bufferization
+
+Bufferization is the most critical and complex step in Progressive Lowering. It converts **tensor value semantics** (each op produces a new tensor without modifying inputs) to **memref reference semantics** (ops directly read and write memory buffers).
+
+### Why Is Bufferization a Separate Step?
+
+In traditional compilers, the "value vs reference" conversion is typically mixed with other lowering. MLIR separates it for two important reasons:
+
+1. **Buffer allocation is a global optimization problem.** Deciding "which tensors can share the same buffer" requires global dataflow analysis (liveness analysis). Mixing this with loop transformations would make the problem extremely complex.
+
+2. **In-place analysis needs high-level semantics.** Determining whether an op can modify its input buffer "in-place" requires knowing whether that input is used later. This analysis is natural under tensor semantics — if no other op references the same tensor value, in-place is safe. Once converted to memref, this analysis becomes much harder (requiring alias analysis).
+
+### One-Shot Bufferize
+
+MLIR provides the **One-Shot Bufferize** framework (formerly Comprehensive Bufferize), with the following workflow:
+
+**Step 1: In-Place Analysis**
+
+For each tensor operand of each op, determine whether it can be in-place. The criteria:
+- Does the tensor value have any other users after this op?
+- If not, the op can directly reuse the input tensor's buffer — this is an in-place operation.
+- If yes, a new buffer must be allocated, data copied over, then modified.
+
+Consider `%y = relu(%x)` as an example:
+- If `%x` is not used after `relu` (i.e., relu is the last user of `%x`), then `relu` can be in-place — directly modifying the buffer corresponding to `%x`, with output `%y` sharing the same buffer as input `%x`.
+- If `%x` has other uses after relu (e.g., participating in another computation), a new buffer must be allocated for `%y`.
+
+**Step 2: Buffer Allocation**
+
+Based on the in-place analysis results, allocate buffers for each tensor:
+- In-place tensors reuse the input buffer.
+- Non-in-place tensors get new buffers (`memref.alloc`).
+
+**Step 3: IR Rewriting**
+
+Replace all tensor operations with memref operations. Op signatures change from `tensor<...>` to `memref<...>`.
+
+<BufferizationVisualizer locale="en" client:visible />
+
+### Buffer Deallocation
+
+Allocated buffers need to be freed. MLIR provides a **Buffer Deallocation** pass that automatically inserts `memref.dealloc` after a buffer's last use point. This is similar to compiler-level automatic memory management (but much more efficient than GC, since lifetimes are determined at compile time).
+
+For more complex control flow (if-else, loops), deallocation needs to consider all possible execution paths. MLIR's ownership-based buffer deallocation pass handles these cases by introducing ownership tokens.
+
+### Bufferization Challenges
+
+While One-Shot Bufferize handles most cases, several challenges remain:
+
+- **Dynamic Shapes**: When tensor shapes are unknown at compile time, buffer sizes are also unknown, requiring runtime allocation. This adds complexity since runtime allocation can fail and buffer reuse is harder.
+- **Cross-function Analysis**: When a tensor is passed as an argument to another function, in-place analysis needs to cross function boundaries. MLIR supports this but it increases compile time.
+- **Control Flow**: Two branches of an `scf.if` may need different-sized buffers. These cases require careful handling.
+
+## In Practice: torch-mlir's Lowering Pipeline
+
+[torch-mlir](https://github.com/llvm/torch-mlir) is a project that compiles PyTorch models to MLIR, and it is a classic application of Progressive Lowering in a real compiler.
+
+### Overall Pipeline
+
+The torch-mlir lowering pipeline is:
+
+```
+PyTorch (torch.nn.Module)
+    | TorchDynamo / torch.export
+Torch FX Graph (Python AST)
+    | torch-mlir importer
+Torch Dialect (MLIR)
+    | DecomposeComplexOps
+    | torch-to-linalg conversion
+Linalg on Tensors (MLIR)
+    | Linalg fusion / tiling passes
+    | One-Shot Bufferize
+Linalg on Buffers (MLIR)
+    | linalg-to-loops / linalg-to-affine
+SCF / Affine loops (MLIR)
+    | target-specific lowering (GPU / CPU)
+    | convert-to-llvm
+LLVM Dialect (MLIR)
+    | mlir-translate
+LLVM IR -> machine code
+```
+
+### Key Step Analysis
+
+**Torch Dialect -> Linalg on Tensors:**
+
+Ops in the Torch dialect (such as `torch.aten.matmul`, `torch.aten.layer_norm`) are converted to linalg ops. The key to this step is **operator decomposition**.
+
+For example, `torch.aten.layer_norm` is not directly mapped to a single linalg op but decomposed into:
+```
+mean = linalg.generic(reduction) -> reduce_sum / count
+var = linalg.generic(reduction) -> reduce_sum_sq / count - mean^2
+norm = linalg.generic(parallel) -> (x - mean) / sqrt(var + eps) * gamma + beta
+```
+
+This decomposition allows the compiler to optimize each sub-operation independently and provides finer-grained optimization opportunities for subsequent fusion passes.
+
+**Linalg Fusion:**
+
+At the linalg level, fusion passes can identify producer-consumer relationships. For example, matmul followed by relu:
+```
+%matmul = linalg.matmul ins(%A, %B) outs(%C) -> tensor<...>
+%relu = linalg.generic {indexing_maps = [...], iterator_types = ["parallel", "parallel"]}
+    ins(%matmul) { ^bb0(%in): %0 = arith.maxf %in, %zero; linalg.yield %0 }
+```
+
+The fusion pass can fold relu into matmul's loop body, avoiding extra memory reads and writes. This is much easier to do at the linalg level than at the loop level, because the compiler still knows this is a matmul + relu combination.
+
+**Target-specific Lowering:**
+
+The final lowering depends on the target hardware:
+- **CPU path**: SCF loops -> vectorize -> LLVM (x86/ARM)
+- **GPU path**: SCF loops -> gpu.launch -> NVVM / ROCDL -> PTX / AMDGPU
+- **Vulkan path**: SCF loops -> SPIR-V
+
+The same `linalg.matmul` can reach different hardware backends through different lowering paths — this is the compositional flexibility of Progressive Lowering.
+
+## Comparing Single-Level IR Limitations
+
+### TVM: Relay -> TIR
+
+TVM's two-level IR design (Relay + TIR) was the industry standard before Progressive Lowering. But it has several inherent limitations:
+
+1. **Fixed abstraction boundaries.** Relay and TIR have an insurmountable wall between them. Relay can only do graph-level optimizations (constant folding, operator fusion), while TIR can only do intra-operator optimizations (tiling, vectorization). Cross-boundary optimizations (such as cross-operator tiling) are very difficult to implement.
+
+2. **Premature fusion decisions.** Fusion decisions are made at the Relay level without knowledge of TIR-level tiling strategies. But fusion and tiling are tightly coupled — some fusion patterns only provide benefit under specific tiling configurations.
+
+3. **No intermediate levels.** From Relay's `nn.dense` to TIR's nested loops, there is no transition. Any optimization requiring "partial lowering" has nowhere to operate.
+
+The TVM team recognized these limitations, and their next-generation framework **Apache TVM Unity** introduced **Relax IR**, drawing design inspiration from MLIR's multi-level dialect approach.
+
+### XLA: HLO
+
+Google's XLA (Accelerated Linear Algebra) uses HLO (High Level Optimizer) IR:
+
+1. **Flat operator graph.** HLO has no dialect concept — all ops are at the same level. This means high-level information ("this is a transformer attention block") and low-level information (element-wise add) are mixed in the same IR.
+
+2. **Early hardware binding.** HLO optimization passes (such as fusion, layout assignment) need to consider target hardware very early. This makes cross-hardware reuse difficult.
+
+3. **Not extensible.** Adding new abstraction levels requires modifying HLO's core code, while MLIR only requires defining a new dialect.
+
+XLA's next-generation projects (such as **StableHLO**) are also moving toward the MLIR ecosystem — StableHLO itself is an MLIR dialect.
+
+### Summary of MLIR Advantages
+
+| Dimension | Single/Two-Level IR (TVM, XLA) | Progressive Lowering (MLIR) |
+|-----------|-------------------------------|---------------------------|
+| Abstraction levels | 2-3 fixed levels | Arbitrarily many composable levels |
+| Information preservation | Lost across level boundaries | Gradually discarded as needed |
+| Optimization timing | At fixed levels | At the optimal level |
+| Hardware adaptation | Separate implementation per backend | Shared high-level -> diverge low-level |
+| Extensibility | Modify core code | Add new dialects |
+
+## Organizing Pass Pipelines
+
+In real MLIR compilers, lowering is not accomplished by calling a single function but is organized as a series of **passes** in a pipeline.
+
+### Types of Passes
+
+Passes in MLIR are mainly of two kinds:
+
+1. **Transformation Pass** — Modifies IR structure (lowering, fusion, tiling all belong here).
+2. **Analysis Pass** — Analyzes IR properties without modification (liveness analysis, alias analysis). Analysis results are typically consumed by transformation passes.
+
+### Pipeline Organization
+
+A typical pipeline might be organized as follows:
+
+```
+// Phase 1: High-level optimization
+pass: canonicalize
+pass: cse (common subexpression elimination)
+pass: linalg-fusion-on-tensors
+
+// Phase 2: Bufferization
+pass: one-shot-bufferize
+pass: buffer-deallocation
+pass: canonicalize
+
+// Phase 3: Loop optimization
+pass: linalg-to-loops
+pass: affine-loop-fusion
+pass: affine-loop-tiling {tile-size=32}
+pass: canonicalize
+
+// Phase 4: Hardware mapping
+pass: convert-scf-to-gpu
+pass: gpu-kernel-outlining
+pass: canonicalize
+
+// Phase 5: Final lowering
+pass: convert-gpu-to-nvvm
+pass: convert-memref-to-llvm
+pass: convert-arith-to-llvm
+pass: convert-func-to-llvm
+pass: reconcile-unrealized-casts
+```
+
+Note the `canonicalize` pass after each phase — it cleans up redundant ops (such as `x + 0 -> x`), keeping the IR in canonical form. This is critical for pattern matching in subsequent passes.
+
+### Debugging Lowering Pipelines
+
+MLIR provides powerful debugging tools:
+
+- `mlir-opt --print-ir-after-all`: Prints IR after each pass, showing the changes at every step.
+- `mlir-opt --verify-each`: Runs the IR verifier after each pass, ensuring the IR is always valid.
+- `mlir-opt --pass-statistics`: Reports execution time and operation counts for each pass.
+- `mlir-opt --mlir-print-ir-after-failure`: Prints IR when a pass fails, helping to locate problems.
+
+These tools make it possible to inspect and verify IR correctness at every step of Progressive Lowering — something impossible with "big bang" conversions.
+
+## Summary
+
+Progressive Lowering is MLIR's most fundamental design philosophy, fundamentally changing how compiler IRs are designed:
+
+1. **Don't go all the way down at once** — Each lowering step handles one concern, lowering one abstraction level at a time.
+2. **Preserve information** — High-level semantic information (operator types, tensor shapes) stays available as long as possible.
+3. **Dialect Conversion framework** — Provides type-safe, rollback-capable IR conversion infrastructure. The trinity of ConversionTarget + RewritePattern + TypeConverter.
+4. **Bufferization is a critical step** — The conversion from tensor value semantics to memref reference semantics involves global in-place analysis and buffer reuse.
+5. **Flexible composition** — The same high-level IR can reach different hardware targets through different lowering paths.
+6. **Each step is verifiable** — Every step in the pass pipeline can be independently debugged and verified.
+
+For ML compiler developers, understanding Progressive Lowering means:
+- When designing IR, **first identify the independent concerns**, then let each concern correspond to a lowering step.
+- When adding optimizations, **do it at the best abstraction level** — if you need to know "this is matmul," work at the linalg level; if you need to manipulate loops, work at the SCF level.
+- When debugging performance issues, **dump IR incrementally** and find where performance is lost.
+
+In subsequent articles, we will dive deeper into how specific optimization passes work at different dialect levels, and the core analysis techniques in [Dataflow Analysis and Pass Foundations](/en/articles/graph-passes-foundations).
+
+## Further Reading
+
+- [MLIR: Scaling Compiler Infrastructure for Domain Specific Computation](https://arxiv.org/abs/2002.11054) — The original MLIR paper, detailing the motivation and design of Progressive Lowering.
+- [MLIR Dialect Conversion](https://mlir.llvm.org/docs/DialectConversion/) — Official documentation for the Dialect Conversion framework with complete API reference.
+- [MLIR Bufferization](https://mlir.llvm.org/docs/Bufferization/) — Design document and usage guide for One-Shot Bufferize.
+- [torch-mlir](https://github.com/llvm/torch-mlir) — Complete PyTorch -> MLIR lowering pipeline implementation.
+- [MLIR Pass Infrastructure](https://mlir.llvm.org/docs/PassManagement/) — Official documentation for pass management and pipeline organization.
