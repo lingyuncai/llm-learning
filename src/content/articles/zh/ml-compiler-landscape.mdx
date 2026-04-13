@@ -1,0 +1,321 @@
+---
+title: "全景图：ML 编译器的世界"
+slug: ml-compiler-landscape
+locale: zh
+tags: [compiler, pytorch, mlir, triton, optimization]
+difficulty: intermediate
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: blog
+    title: "PyTorch 2.0: Our next generation release"
+    url: "https://pytorch.org/blog/pytorch-2.0-release/"
+  - type: website
+    title: "MLIR: Multi-Level Intermediate Representation"
+    url: "https://mlir.llvm.org/"
+  - type: website
+    title: "Triton Language and Compiler"
+    url: "https://triton-lang.org/"
+  - type: paper
+    title: "TVM: An Automated End-to-End Optimizing Compiler for Deep Learning"
+    url: "https://arxiv.org/abs/1802.04799"
+  - type: paper
+    title: "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation"
+    url: "https://arxiv.org/abs/2002.11054"
+  - type: blog
+    title: "TorchDynamo: An Experiment in Dynamic Python Bytecode Transformation"
+    url: "https://dev-discuss.pytorch.org/t/torchdynamo-an-experiment-in-dynamic-python-bytecode-transformation/361"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import EagerVsCompiled from '../../../components/interactive/EagerVsCompiled.tsx';
+import CompilerTimelineChart from '../../../components/interactive/CompilerTimelineChart.tsx';
+
+## 简介
+
+你写了一行 `model(input)`，PyTorch 忠实地执行了每一个算子，返回了正确的结果。但你有没有想过：这行代码在 GPU 上到底发生了什么？每一步的中间结果都被写入显存、再读出来、再写回去——这种 "逐行翻译" 的方式，是否存在巨大的优化空间？
+
+答案是：**存在，而且空间惊人。**
+
+ML 编译器（Machine Learning Compiler）正是为解决这个问题而诞生的。它的核心思想很简单——**不要逐行执行，而是先看到全局，再一起优化**。就像一个优秀的翻译不会逐词翻译一样，ML 编译器会先理解整个计算图的结构，然后找出最优的执行方式。
+
+这篇文章是 "图编译与优化" 学习路径的**入口**。我们不会深入任何单一技术的细节，而是建立一张**全景地图**——理解 ML 编译器的核心动机、关键技术的谱系关系、以及这个领域的两条主要发展路线。有了这张地图，后续的每篇文章你都能准确定位 "我在学什么，它在整体中的位置是什么"。
+
+<CompilerStackMap mode="full" client:visible />
+
+## 从性能瓶颈出发
+
+### Eager 执行的代价
+
+PyTorch 的默认执行模式叫做 **eager 模式**（即时执行模式）。在 eager 模式下，每一行 Python 代码都会立即发射（dispatch）一个 GPU kernel：
+
+```python
+# 每一行都是一次独立的 GPU kernel 调用
+x = layer_norm(x)      # kernel 1: 从 HBM 读 x → 计算 → 写回 HBM
+x = linear(x)          # kernel 2: 从 HBM 读 x → 计算 → 写回 HBM
+x = gelu(x)            # kernel 3: 从 HBM 读 x → 计算 → 写回 HBM
+```
+
+这种模式的好处是**调试方便**——你可以在任意一行打断点、查看中间结果。但代价是：**每个 kernel 之间，数据必须经过 HBM（高带宽内存）的一次完整往返。**
+
+### 内存墙：真正的瓶颈
+
+现代 GPU 的计算能力增长速度远超内存带宽增长速度。以 NVIDIA A100 为例：
+
+| 指标 | 数值 |
+|------|------|
+| FP16 Tensor Core 算力 | 312 TFLOPS |
+| HBM2e 带宽 | 2.0 TB/s |
+| 算术强度分界点 (Arithmetic Intensity) | 156 FLOPs/byte |
+
+这意味着：如果一个操作每从 HBM 读 1 字节数据，不能做到至少 156 次浮点运算，那么**它就是内存瓶颈的**（memory-bound），GPU 的大量计算单元在空转等待数据。
+
+不幸的是，深度学习中大量操作都是 memory-bound 的：
+
+- **LayerNorm / RMSNorm**：算术强度约 5-10 FLOPs/byte
+- **Activation 函数**（GELU, SiLU 等）：算术强度约 1-2 FLOPs/byte
+- **Softmax**：算术强度约 3-5 FLOPs/byte
+- **元素级操作**（add, mul）：算术强度约 0.5-1 FLOPs/byte
+
+即使是计算密集的矩阵乘法（GEMM），在 batch size 较小时也会变成 memory-bound。这些操作如果各自独立执行，每次都要从 HBM 读取、写回，大量时间浪费在数据搬运上。
+
+### 量化分析：一个具体例子
+
+考虑 Transformer 中一个常见的操作序列：LayerNorm → Linear → GELU。在 eager 模式下：
+
+1. **LayerNorm kernel**：从 HBM 读 $x$（4 MB），计算均值和方差，写回结果（4 MB）。总 HBM 访问 8 MB。
+2. **Linear kernel**：从 HBM 读 $x$ 和权重（4 + 16 MB），做矩阵乘法，写回结果（4 MB）。总 HBM 访问 24 MB。
+3. **GELU kernel**：从 HBM 读 $x$（4 MB），逐元素计算 GELU，写回结果（4 MB）。总 HBM 访问 8 MB。
+
+**总 HBM 访问量：~40 MB**，其中 LayerNorm 的输出和 Linear 的输入是同一份数据，却被写出再读入——这是纯粹的浪费。
+
+如果我们把这三个操作**融合**（fuse）成一个 kernel：
+
+1. **Fused kernel**：从 HBM 读 $x$ 和权重（4 + 16 MB），在 SRAM 中完成 LayerNorm → GEMM → GELU 的全部计算，写回最终结果（4 MB）。总 HBM 访问 24 MB。
+
+**HBM 访问量减少了 40%**。对于纯 memory-bound 操作（如连续多个 elementwise op），融合的收益更加显著。
+
+<EagerVsCompiled client:visible />
+
+## 图编译器的价值
+
+### 从局部到全局
+
+Eager 模式的根本问题是**局部视野**——每个算子只看到自己的输入和输出，无法知道下一个算子要用什么数据。而图编译器（Graph Compiler）则拥有**全局视野**：它可以看到整个计算图，从而发现跨算子的优化机会。
+
+图编译器的工作方式可以类比 C/C++ 编译器的优化：
+
+| 优化类型 | C/C++ 编译器 | ML 图编译器 |
+|---------|-------------|------------|
+| 死代码消除 | 删除不可达代码 | 删除不影响输出的算子 |
+| 常量折叠 | 编译期计算常量表达式 | 预计算 shape/dtype 相关的常量 |
+| 内联 | 函数内联 | 子图融合 |
+| 循环优化 | 循环展开、向量化 | Tiling、内存排布优化 |
+| 寄存器分配 | 减少栈访问 | 减少 HBM 访问（用 SRAM 暂存） |
+
+### 编译栈的层次
+
+一个完整的 ML 编译栈通常包含以下层次：
+
+**第一层：计算图捕获（Graph Capture）。** 从 Python 代码中提取出计算图——这在动态语言中是非常有挑战性的。PyTorch 的 TorchDynamo 通过 Python 字节码分析来实现这一点，能够处理控制流、动态 shape 等复杂情况（Ansel et al., 2024）。
+
+**第二层：中间表示（Intermediate Representation, IR）。** 捕获到的计算图需要被转换成一种适合优化的中间表示。不同的编译器使用不同的 IR：PyTorch 2.0 使用 FX Graph IR，MLIR 框架则提供了多层级的 Dialect 体系（Lattner et al., 2021）。
+
+**第三层：图级优化 Pass。** 在 IR 上执行各种优化变换，包括算子融合（operator fusion）、常量折叠（constant folding）、公共子表达式消除（common subexpression elimination, CSE）、dead code elimination 等。每个变换叫做一个 "Pass"。
+
+**第四层：代码生成（Code Generation）。** 将优化后的 IR 转换成可在特定硬件上执行的代码。对于 GPU，这通常意味着生成 CUDA kernel 或 PTX 代码。Triton 在这一层提供了一个重要的抽象——block-level 编程模型（Tillet et al., 2019）。
+
+**第五层：运行时调度（Runtime Scheduling）。** 决定 kernel 的执行顺序、内存分配策略、多设备协调等。
+
+这五层之间并非严格线性——实际系统中存在大量的层间交互和反馈。例如，代码生成的 cost model 会反馈给图级优化 Pass，影响融合决策。
+
+### 收益有多大？
+
+PyTorch 官方的基准测试显示，使用 `torch.compile` 对 HuggingFace 上 163 个模型进行编译（Ansel et al., 2024）：
+
+- **训练加速**：中位数 **1.32x**（geometric mean），部分模型超过 2x
+- **推理加速**：中位数 **1.40x**，在 memory-bound 的模型上收益更大
+- **最大收益**：纯 Transformer 模型（大量 LayerNorm + Attention + FFN 的重复模式）
+
+这些加速**不需要修改任何模型代码**——只需要加一行 `model = torch.compile(model)`。
+
+## ML 编译器与传统编译器的关系
+
+ML 编译器并非凭空出现的。它的技术基因有约 40% 来自传统编译器、30% 来自高性能计算（HPC）社区、30% 是 ML 领域的原生创新。理解这个技术谱系，对于深入学习 ML 编译器至关重要。
+
+### 传统编译器的继承（~40%）
+
+ML 编译器从传统编译器继承了大量核心概念和技术：
+
+**静态单赋值形式 (Static Single Assignment, SSA)**。SSA 是现代编译器 IR 的基石（Cytron et al., 1991）。在 SSA 形式中，每个变量只被赋值一次，如果需要重新赋值则创建新的版本。这种表示极大简化了数据流分析和优化 pass 的实现。PyTorch 的 FX Graph IR 和 MLIR 都采用了 SSA 形式。
+
+**Pass 管理框架（Pass Manager）**。传统编译器将优化组织为一系列 "Pass"，每个 Pass 执行一种特定的变换（如死代码消除、常量传播等）。LLVM 的 Pass 基础设施直接影响了 MLIR 的 Pass 框架设计（Lattner et al., 2021）。ML 编译器中的 operator fusion、layout transformation 等也遵循相同的 Pass 模式。
+
+**数据流分析（Dataflow Analysis）**。编译器通过分析程序中数据的定义和使用关系来发现优化机会。经典的算法包括 reaching definitions、liveness analysis、available expressions 等。ML 编译器使用同样的分析来决定哪些算子可以融合、中间 tensor 何时可以释放。
+
+**Polyhedral 模型**。Polyhedral（多面体）编译是循环优化的强大框架，可以精确建模循环的迭代空间，并自动发现最优的 tiling、并行化和数据局部性优化策略（Bondhugula et al., 2008）。MLIR 中的 Affine dialect 直接基于 polyhedral 模型，TVM 的调度原语也受到了 polyhedral 思想的影响。
+
+### HPC 社区的适配（~30%）
+
+高性能计算（High-Performance Computing, HPC）社区为 ML 编译器提供了关键的优化思路：
+
+**Autotuning**。自动调优的思想源于 HPC 领域，ATLAS（Automatically Tuned Linear Algebra Software, 1996）是先驱之一。ATLAS 通过搜索不同的 tile size、循环展开因子等参数来找到特定硬件上的最优配置。这个思想直接影响了 TVM 的 AutoTVM（Chen et al., 2018）和 Ansor（Zheng et al., 2020）调度搜索系统，以及 PyTorch Inductor 中的 autotuning 策略。
+
+**Tiling 策略**。将大的计算分块（tile），使每块数据能放入缓存（或 GPU 的 SRAM），是 HPC 中优化 cache locality 的经典技术。FlashAttention（Dao et al., 2022）本质上就是将 attention 计算分块到 GPU SRAM 能容纳的大小，与 HPC 中的 tiled GEMM 是同一思想。
+
+**内存层次优化（Memory Hierarchy Optimization）**。HPC 对 L1/L2/L3 cache、DRAM 带宽的优化经验，直接映射到了 GPU 上的 register → shared memory → HBM 层次。ML 编译器在做 kernel fusion 和 tiling 决策时，本质上是在解决与 HPC 相同的内存层次优化问题。
+
+### ML 领域的原生创新（~30%）
+
+ML 编译器也带来了许多传统编译器没有的新挑战和新方案：
+
+**动态计算图的处理**。传统编译器处理的是静态的源代码，而 ML 模型（特别是 PyTorch 模型）的计算图可能随输入动态变化——不同的 batch size、不同的序列长度、if/else 分支等。TorchDynamo 的 "guard + recompile" 机制是解决这一问题的创新方案（Ansel et al., 2024）。
+
+**张量级语义（Tensor-Level Semantics）**。传统编译器的基本操作单位是标量或向量，而 ML 编译器的基本操作单位是高维张量。这需要专门的 shape 推导、内存排布（layout）优化、以及张量级的并行策略。MLIR 的 tensor/memref/linalg dialect 就是为此设计的分层抽象（Lattner et al., 2021）。
+
+**特化 kernel 设计**。某些关键操作（如 attention）的优化超出了通用编译器的自动优化能力。FlashAttention（Dao et al., 2022）通过手动设计 IO-aware 的 tiling 和 online softmax 算法，实现了比通用编译器输出快数倍的 kernel。Triton（Tillet et al., 2019）则提供了一种中间路线——通过 block-level 编程模型，让开发者用比 CUDA 更高的抽象表达 kernel 逻辑，同时由编译器处理底层优化。
+
+**多层 IR 框架**。传统编译器通常使用 2-3 层 IR（如 LLVM 的前端 IR → LLVM IR → 机器码）。MLIR 的核心创新是提供一个**可扩展的多层 IR 框架**，允许不同的抽象层级共存于同一个系统中（Lattner et al., 2021）。这使得从高层的张量操作到底层的硬件指令，可以通过一系列渐进式 lowering 步骤来转换，每一步都可以应用该层级特有的优化。
+
+<CompilerTimelineChart client:visible />
+
+## 双主线：PyTorch 2.0 与 MLIR
+
+当前 ML 编译器的发展呈现出两条清晰的主线，它们从不同的方向切入同一个问题：
+
+### 主线一：PyTorch 2.0 编译栈（应用驱动）
+
+PyTorch 2.0 的编译栈以**用户体验**为核心设计目标——"一行代码获得编译加速"：
+
+```python
+model = torch.compile(model)  # 就这一行
+```
+
+这条主线的技术栈从上到下包括：
+
+1. **TorchDynamo**：通过分析 Python 字节码（CPython bytecode）来捕获计算图。它不要求用户改变编程风格，能够处理 Python 的动态特性（条件分支、循环、数据依赖的控制流），遇到无法编译的代码段会自动 "graph break" 回退到 eager 模式。
+
+2. **AOTAutograd**：在编译期自动生成反向传播图（backward graph）。传统的 autograd 是运行时动态构建反向图，AOTAutograd 将其提前到编译期，使得前向和反向计算图可以一起优化。
+
+3. **FX Graph IR**：PyTorch 内部的图表示格式，基于 SSA 形式。它捕获的是 ATen（PyTorch 的核心算子库）层面的操作，粒度介于高层 Python API 和底层硬件指令之间。
+
+4. **TorchInductor**：PyTorch 2.0 的默认代码生成后端。它将 FX Graph IR 转换为 Triton kernel（用于 GPU）或 C++/OpenMP 代码（用于 CPU）。Inductor 的核心能力是自动 operator fusion——将多个算子融合成一个高效的 kernel。
+
+5. **Triton**：由 OpenAI 开发的 GPU 编程语言和编译器（Tillet et al., 2019）。它提供了 block-level 编程模型——开发者操作的是 "block"（一块连续的内存区域），而非单个线程。Triton 编译器负责将 block-level 代码转换为高效的 PTX 指令，处理 shared memory 分配、warp 调度等细节。
+
+这条主线的优势是：**端到端可用**，与 PyTorch 生态无缝集成。开发者不需要学习新的编程模型，就能获得显著的性能提升。
+
+### 主线二：MLIR 编译基础设施（基础设施驱动）
+
+MLIR（Multi-Level Intermediate Representation）由 Google 于 2019 年提出（Lattner et al., 2021），其设计哲学与 PyTorch 编译栈截然不同——**它不是一个编译器，而是一个构建编译器的框架**。
+
+MLIR 的核心设计概念：
+
+1. **Dialect（方言）体系**：MLIR 的 IR 不是单一固定格式，而是由多个 "Dialect" 组成的可扩展体系。每个 Dialect 定义了一组操作（Operations）和类型（Types），代表特定的抽象层级。例如：
+   - `tensor` dialect：操作的是高层张量
+   - `linalg` dialect：线性代数操作的结构化抽象
+   - `affine` dialect：基于 polyhedral 模型的循环描述
+   - `scf` dialect：结构化控制流
+   - `gpu` dialect：GPU 特定操作
+   - `llvm` dialect：接近 LLVM IR 的底层表示
+
+2. **Progressive Lowering（渐进式 lowering）**：编译过程是从高层 Dialect 逐步转换到低层 Dialect。每一步转换（lowering pass）将高层抽象替换为更具体的操作。这种设计使得：
+   - 每个层级可以应用该层级特有的优化
+   - 新的硬件后端只需要实现最后几步 lowering
+   - 不同的领域可以共享中间层的优化基础设施
+
+3. **可组合性（Composability）**：不同的 Dialect 可以在同一个 IR 中共存，这是 MLIR 与传统编译器 IR（如 LLVM IR）的关键区别。一个函数可以同时包含 `linalg` 操作（高层）和 `gpu` 操作（低层），编译器逐步将高层操作 lowering，直到整个函数都到达目标层级。
+
+MLIR 的实际应用包括：
+- **XLA/HLO** 正在逐步迁移到 MLIR 基础设施（StableHLO 项目）
+- **IREE**（Intermediate Representation Execution Environment）：基于 MLIR 的端到端 ML 编译器和运行时
+- **Torch-MLIR**：将 PyTorch 模型接入 MLIR 编译栈的桥梁
+- **多家硬件厂商**（Intel、AMD、国内芯片公司）使用 MLIR 来构建自己的 ML 编译器后端
+
+### 两条主线的关系
+
+PyTorch 2.0 和 MLIR 并非竞争关系，而是**互补的**：
+
+- **PyTorch 2.0** 解决的是 "如何让 99% 的 ML 开发者无痛获得编译加速"——它是**应用层面**的答案
+- **MLIR** 解决的是 "如何让编译器开发者高效构建和组合优化 pass"——它是**基础设施层面**的答案
+- 两者已经在融合：Torch-MLIR 项目将 PyTorch 的计算图接入 MLIR 编译栈，使得 PyTorch 用户可以间接受益于 MLIR 上的优化
+
+从长远来看，MLIR 有可能成为 ML 编译器的 "统一基础设施"，就像 LLVM 成为传统编译器的统一基础设施一样。但在当前阶段，PyTorch 2.0 编译栈是对大多数 ML 开发者**最直接可用**的编译优化方案。
+
+## 学习路径导览
+
+本学习路径包含 **17 篇文章**，按照三种类型组织：
+
+### 横向文章（Horizontal）：沿编译栈分层深入
+
+这是学习路径的主轴。每篇文章对应编译栈的一个具体层次：
+
+| 编号 | 标题 | 聚焦层次 | 前置文章 |
+|------|------|---------|---------|
+| 1 | ML 编译器的世界（本文） | 全景 | 无 |
+| 2 | TorchDynamo & AOTAutograd | 计算图捕获 | 本文 |
+| 3 | SSA, FX IR & MLIR Dialect | IR 设计 | 文章 2 |
+| 4 | Progressive Lowering | IR lowering | 文章 3 |
+| 5 | 数据流分析 & Pass 基础 | 优化 Pass | 文章 3 |
+| 6 | 高级优化 & Pattern Matching | 优化 Pass（进阶） | 文章 5 |
+| 7 | Polyhedral 优化 | 循环优化 | 文章 5 |
+| 8 | 融合类型学 | 算子融合 | 文章 5 |
+| 9 | Cost Model | 融合决策 | 文章 8 |
+| 12 | 指令选择 & Vectorization | 代码生成 | 文章 4 |
+| 13 | Triton & 编译器后端 | 代码生成 | 文章 12 |
+| 16 | 调度与执行优化 | 运行时 | 文章 13 |
+| 17 | 自动调优 & 端到端 | 全栈整合 | 文章 16 |
+
+### 纵向文章（Vertical）：跨越多层的关键主题
+
+某些主题贯穿编译栈的多个层次，需要纵向的视角：
+
+| 编号 | 标题 | 跨越的层次 |
+|------|------|-----------|
+| 10 | Tiling & 内存层次 | 优化 Pass → 算子融合 → 代码生成 → 调度 |
+| 11 | Dynamic Shapes | 图捕获 → IR 设计 → 优化 Pass → 融合 → 代码生成 |
+
+这两篇文章涵盖了 ML 编译器中最关键、也是最有挑战性的两个跨层问题。
+
+### 进阶文章（Advanced）：专题深入
+
+在掌握核心编译栈之后，这些文章聚焦于特定的高级话题：
+
+| 编号 | 标题 | 主题 |
+|------|------|------|
+| 14 | 量化编译 | 低精度运算的编译支持 |
+| 15 | 分布式编译 | 跨设备的图切分与编译 |
+
+### 建议的学习顺序
+
+**线性路径**（推荐初学者）：1 → 2 → 3 → 4 → 5 → 6 → 8 → 9 → 10 → 12 → 13 → 16 → 17
+
+**选择性路径**（有基础的读者）：
+- 关注 PyTorch 实践：1 → 2 → 3 → 5 → 8 → 9 → 13 → 17
+- 关注 MLIR 基础设施：1 → 3 → 4 → 5 → 7 → 12
+- 关注性能优化：1 → 8 → 9 → 10 → 13 → 16
+
+## 总结
+
+ML 编译器是连接 "用户写的 Python 代码" 和 "GPU 上高效执行的 kernel" 之间的桥梁。本文的核心要点：
+
+1. **性能瓶颈在内存，不在计算。** 现代 GPU 的计算能力远超内存带宽，大量操作是 memory-bound 的。Eager 模式的逐算子执行导致了大量不必要的 HBM 访问。
+
+2. **图编译器通过全局视野找到优化机会。** 算子融合、常量折叠、CSE 等图级优化可以显著减少 HBM 访问，实现 1.3-4x 的加速。
+
+3. **ML 编译器的技术基因来自三个方向。** 传统编译器提供了 SSA、Pass 框架、数据流分析等核心概念（~40%）；HPC 社区提供了 autotuning、tiling、内存层次优化等实践（~30%）；ML 领域本身催生了动态图处理、张量级语义、多层 IR 等原生创新（~30%）。
+
+4. **两条主线互补发展。** PyTorch 2.0 编译栈（TorchDynamo → AOTAutograd → Inductor → Triton）提供了端到端可用的编译加速；MLIR 提供了可扩展的编译器基础设施框架。两者通过 Torch-MLIR 等项目逐步融合。
+
+5. **编译栈是一个多层系统。** 从计算图捕获到代码生成，每一层都有独立的挑战和解决方案，但层间的交互同样重要。
+
+接下来，我们将从编译栈的顶层开始，深入 **TorchDynamo 和 AOTAutograd** 的计算图捕获机制——这是理解整个编译流程的第一步。
+
+## 延伸阅读
+
+- [PyTorch 2.0: Our next generation release](https://pytorch.org/blog/pytorch-2.0-release/) — PyTorch 2.0 发布博文，介绍 torch.compile 的设计动机和基准测试
+- [MLIR: Multi-Level Intermediate Representation](https://mlir.llvm.org/) — MLIR 官方文档，了解 Dialect 体系和 Progressive Lowering
+- [Triton Language and Compiler](https://triton-lang.org/) — Triton 官方文档，理解 block-level 编程模型
+- [TVM: An Automated End-to-End Optimizing Compiler for Deep Learning](https://arxiv.org/abs/1802.04799) (Chen et al., 2018) — TVM 论文，ML 编译器的早期里程碑
+- [MLIR: Scaling Compiler Infrastructure for Domain Specific Computation](https://arxiv.org/abs/2002.11054) (Lattner et al., 2021) — MLIR 论文，理解可扩展编译基础设施的设计哲学
+- [TorchDynamo: An Experiment in Dynamic Python Bytecode Transformation](https://dev-discuss.pytorch.org/t/torchdynamo-an-experiment-in-dynamic-python-bytecode-transformation/361) — TorchDynamo 的设计原理

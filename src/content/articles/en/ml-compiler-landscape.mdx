@@ -1,0 +1,321 @@
+---
+title: "Panorama: The World of ML Compilers"
+slug: ml-compiler-landscape
+locale: en
+tags: [compiler, pytorch, mlir, triton, optimization]
+difficulty: intermediate
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: blog
+    title: "PyTorch 2.0: Our next generation release"
+    url: "https://pytorch.org/blog/pytorch-2.0-release/"
+  - type: website
+    title: "MLIR: Multi-Level Intermediate Representation"
+    url: "https://mlir.llvm.org/"
+  - type: website
+    title: "Triton Language and Compiler"
+    url: "https://triton-lang.org/"
+  - type: paper
+    title: "TVM: An Automated End-to-End Optimizing Compiler for Deep Learning"
+    url: "https://arxiv.org/abs/1802.04799"
+  - type: paper
+    title: "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation"
+    url: "https://arxiv.org/abs/2002.11054"
+  - type: blog
+    title: "TorchDynamo: An Experiment in Dynamic Python Bytecode Transformation"
+    url: "https://dev-discuss.pytorch.org/t/torchdynamo-an-experiment-in-dynamic-python-bytecode-transformation/361"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import EagerVsCompiled from '../../../components/interactive/EagerVsCompiled.tsx';
+import CompilerTimelineChart from '../../../components/interactive/CompilerTimelineChart.tsx';
+
+## Introduction
+
+You write `model(input)`, and PyTorch faithfully executes every operator, returning the correct result. But have you ever wondered: what actually happens on the GPU? Every intermediate result gets written to memory, read back, and written again — is there a huge optimization opportunity hiding in this "line-by-line translation" approach?
+
+The answer is: **yes, and the opportunity is enormous.**
+
+ML compilers (Machine Learning Compilers) were born to solve exactly this problem. The core idea is simple — **don't execute line by line; instead, see the whole picture first, then optimize together.** Just as a skilled translator doesn't translate word by word, an ML compiler first understands the entire computation graph structure, then finds the optimal execution strategy.
+
+This article is the **entry point** to the "Graph Compilation & Optimization" learning path. We won't dive deep into any single technology. Instead, we'll build a **panoramic map** — understanding the core motivation behind ML compilers, the genealogy of key technologies, and the two major development tracks in this field. With this map, you'll be able to precisely locate where each subsequent article sits in the bigger picture.
+
+<CompilerStackMap mode="full" locale="en" client:visible />
+
+## Starting from the Performance Bottleneck
+
+### The Cost of Eager Execution
+
+PyTorch's default execution mode is called **eager mode**. In eager mode, every line of Python code immediately dispatches a GPU kernel:
+
+```python
+# Each line is an independent GPU kernel call
+x = layer_norm(x)      # kernel 1: read x from HBM → compute → write back to HBM
+x = linear(x)          # kernel 2: read x from HBM → compute → write back to HBM
+x = gelu(x)            # kernel 3: read x from HBM → compute → write back to HBM
+```
+
+The advantage of this mode is **easy debugging** — you can set a breakpoint at any line and inspect intermediate results. But the cost is: **between every kernel, data must make a full round trip through HBM (High Bandwidth Memory).**
+
+### The Memory Wall: The Real Bottleneck
+
+Modern GPU compute capacity has been growing far faster than memory bandwidth. Take the NVIDIA A100 as an example:
+
+| Metric | Value |
+|--------|-------|
+| FP16 Tensor Core throughput | 312 TFLOPS |
+| HBM2e bandwidth | 2.0 TB/s |
+| Arithmetic intensity threshold | 156 FLOPs/byte |
+
+This means: if an operation cannot perform at least 156 floating-point operations per byte read from HBM, then **it is memory-bound** — the GPU's compute units sit idle waiting for data.
+
+Unfortunately, a large number of deep learning operations are memory-bound:
+
+- **LayerNorm / RMSNorm**: arithmetic intensity ~5-10 FLOPs/byte
+- **Activation functions** (GELU, SiLU, etc.): arithmetic intensity ~1-2 FLOPs/byte
+- **Softmax**: arithmetic intensity ~3-5 FLOPs/byte
+- **Elementwise operations** (add, mul): arithmetic intensity ~0.5-1 FLOPs/byte
+
+Even compute-intensive matrix multiplications (GEMM) become memory-bound at small batch sizes. When these operations execute independently, each one reading from and writing back to HBM, a significant amount of time is wasted on data movement.
+
+### Quantitative Analysis: A Concrete Example
+
+Consider a common operation sequence in a Transformer: LayerNorm → Linear → GELU. In eager mode:
+
+1. **LayerNorm kernel**: reads $x$ from HBM (4 MB), computes mean and variance, writes result back (4 MB). Total HBM access: 8 MB.
+2. **Linear kernel**: reads $x$ and weights from HBM (4 + 16 MB), performs matrix multiplication, writes result back (4 MB). Total HBM access: 24 MB.
+3. **GELU kernel**: reads $x$ from HBM (4 MB), computes elementwise GELU, writes result back (4 MB). Total HBM access: 8 MB.
+
+**Total HBM access: ~40 MB**, where the output of LayerNorm and the input of Linear are the same data, yet they get written out and read back in — pure waste.
+
+If we **fuse** these three operations into a single kernel:
+
+1. **Fused kernel**: reads $x$ and weights from HBM (4 + 16 MB), completes the entire LayerNorm → GEMM → GELU computation in SRAM, writes only the final result (4 MB). Total HBM access: 24 MB.
+
+**HBM access reduced by 40%.** For purely memory-bound operations (such as consecutive elementwise ops), the benefit of fusion is even more dramatic.
+
+<EagerVsCompiled locale="en" client:visible />
+
+## The Value of Graph Compilers
+
+### From Local to Global
+
+The fundamental problem with eager mode is its **local view** — each operator only sees its own inputs and outputs, with no knowledge of what the next operator needs. A graph compiler, by contrast, has a **global view**: it can see the entire computation graph and discover cross-operator optimization opportunities.
+
+The way a graph compiler works can be compared to optimization in a C/C++ compiler:
+
+| Optimization Type | C/C++ Compiler | ML Graph Compiler |
+|-------------------|----------------|-------------------|
+| Dead code elimination | Remove unreachable code | Remove operators that don't affect output |
+| Constant folding | Evaluate constant expressions at compile time | Pre-compute shape/dtype-dependent constants |
+| Inlining | Function inlining | Subgraph fusion |
+| Loop optimization | Loop unrolling, vectorization | Tiling, memory layout optimization |
+| Register allocation | Minimize stack access | Minimize HBM access (use SRAM as cache) |
+
+### Layers of the Compilation Stack
+
+A complete ML compilation stack typically consists of the following layers:
+
+**Layer 1: Graph Capture.** Extract the computation graph from Python code — this is extremely challenging in a dynamic language. PyTorch's TorchDynamo achieves this through Python bytecode analysis, handling control flow, dynamic shapes, and other complex scenarios (Ansel et al., 2024).
+
+**Layer 2: Intermediate Representation (IR).** The captured computation graph needs to be converted into a form suitable for optimization. Different compilers use different IRs: PyTorch 2.0 uses FX Graph IR, while the MLIR framework provides a multi-level Dialect system (Lattner et al., 2021).
+
+**Layer 3: Graph-Level Optimization Passes.** Various optimization transformations are applied to the IR, including operator fusion, constant folding, common subexpression elimination (CSE), dead code elimination, and more. Each transformation is called a "Pass."
+
+**Layer 4: Code Generation.** Convert the optimized IR into code that can execute on specific hardware. For GPUs, this typically means generating CUDA kernels or PTX code. Triton provides an important abstraction at this layer — a block-level programming model (Tillet et al., 2019).
+
+**Layer 5: Runtime Scheduling.** Determines kernel execution order, memory allocation strategy, multi-device coordination, and more.
+
+These five layers are not strictly linear — real systems involve extensive inter-layer interactions and feedback. For example, the code generation cost model feeds back into graph-level optimization passes, influencing fusion decisions.
+
+### How Much Does It Help?
+
+PyTorch's official benchmarks show that using `torch.compile` on 163 models from HuggingFace (Ansel et al., 2024):
+
+- **Training speedup**: median **1.32x** (geometric mean), with some models exceeding 2x
+- **Inference speedup**: median **1.40x**, with larger gains on memory-bound models
+- **Greatest benefit**: pure Transformer models (with their repeating patterns of LayerNorm + Attention + FFN)
+
+These speedups **require no changes to model code** — just one line: `model = torch.compile(model)`.
+
+## ML Compilers and Traditional Compilers
+
+ML compilers didn't emerge from a vacuum. Their technical DNA is approximately 40% inherited from traditional compilers, 30% adapted from the High-Performance Computing (HPC) community, and 30% native ML innovation. Understanding this genealogy is essential for a deep study of ML compilers.
+
+### Inheritance from Traditional Compilers (~40%)
+
+ML compilers inherit a large body of core concepts and techniques from traditional compilers:
+
+**Static Single Assignment (SSA) Form.** SSA is the cornerstone of modern compiler IRs (Cytron et al., 1991). In SSA form, every variable is assigned exactly once; if reassignment is needed, a new version is created. This representation dramatically simplifies dataflow analysis and optimization pass implementation. Both PyTorch's FX Graph IR and MLIR adopt SSA form.
+
+**Pass Management Framework.** Traditional compilers organize optimizations as a series of "passes," each performing a specific transformation (such as dead code elimination, constant propagation, etc.). LLVM's pass infrastructure directly influenced MLIR's pass framework design (Lattner et al., 2021). ML compiler transformations like operator fusion and layout transformation follow the same pass pattern.
+
+**Dataflow Analysis.** Compilers analyze the definition and use relationships of data in a program to discover optimization opportunities. Classic algorithms include reaching definitions, liveness analysis, and available expressions. ML compilers use the same analyses to determine which operators can be fused and when intermediate tensors can be freed.
+
+**Polyhedral Model.** Polyhedral compilation is a powerful framework for loop optimization that can precisely model the iteration space of loops and automatically discover optimal tiling, parallelization, and data locality strategies (Bondhugula et al., 2008). MLIR's Affine dialect is directly based on the polyhedral model, and TVM's schedule primitives were also influenced by polyhedral concepts.
+
+### Adaptation from HPC (~30%)
+
+The High-Performance Computing (HPC) community provided ML compilers with critical optimization insights:
+
+**Autotuning.** The idea of automatic tuning originated in HPC, with ATLAS (Automatically Tuned Linear Algebra Software, 1996) being a pioneer. ATLAS searched over different tile sizes, loop unrolling factors, and other parameters to find optimal configurations for specific hardware. This idea directly influenced TVM's AutoTVM (Chen et al., 2018) and Ansor (Zheng et al., 2020) schedule search systems, as well as the autotuning strategy in PyTorch Inductor.
+
+**Tiling Strategies.** Decomposing large computations into blocks (tiles) so that each block fits in cache (or GPU SRAM) is a classic HPC technique for optimizing cache locality. FlashAttention (Dao et al., 2022) is essentially the same idea applied to attention computation — tiling it to fit within GPU SRAM capacity, just as HPC tiles GEMM computations.
+
+**Memory Hierarchy Optimization.** HPC's experience optimizing for L1/L2/L3 cache and DRAM bandwidth maps directly to the GPU's register → shared memory → HBM hierarchy. When ML compilers make kernel fusion and tiling decisions, they are fundamentally solving the same memory hierarchy optimization problem as HPC.
+
+### Native ML Innovation (~30%)
+
+ML compilers also introduce many new challenges and solutions that traditional compilers never faced:
+
+**Dynamic Computation Graph Handling.** Traditional compilers process static source code, but ML models (especially PyTorch models) can have computation graphs that change dynamically with input — different batch sizes, different sequence lengths, if/else branches, and so on. TorchDynamo's "guard + recompile" mechanism is an innovative solution to this problem (Ansel et al., 2024).
+
+**Tensor-Level Semantics.** Traditional compilers operate on scalars or vectors as their basic unit, while ML compilers operate on high-dimensional tensors. This requires specialized shape inference, memory layout optimization, and tensor-level parallelization strategies. MLIR's tensor/memref/linalg dialects were designed specifically as layered abstractions for this purpose (Lattner et al., 2021).
+
+**Specialized Kernel Design.** Certain critical operations (like attention) demand optimizations beyond what general-purpose compilers can automatically achieve. FlashAttention (Dao et al., 2022) achieves kernels several times faster than generic compiler output through manually designed IO-aware tiling and online softmax algorithms. Triton (Tillet et al., 2019) provides a middle ground — its block-level programming model lets developers express kernel logic at a higher abstraction than CUDA, while the compiler handles low-level optimizations.
+
+**Multi-Level IR Frameworks.** Traditional compilers typically use 2-3 IR levels (e.g., LLVM's frontend IR → LLVM IR → machine code). MLIR's core innovation is providing an **extensible multi-level IR framework** that allows different abstraction levels to coexist within a single system (Lattner et al., 2021). This enables a series of progressive lowering steps from high-level tensor operations to low-level hardware instructions, with each step applying optimizations specific to that level.
+
+<CompilerTimelineChart locale="en" client:visible />
+
+## Dual Tracks: PyTorch 2.0 and MLIR
+
+The current development of ML compilers follows two clear tracks, approaching the same problem from different directions:
+
+### Track 1: PyTorch 2.0 Compilation Stack (Application-Driven)
+
+The PyTorch 2.0 compilation stack is designed with **user experience** as the core goal — "one line of code for compilation speedup":
+
+```python
+model = torch.compile(model)  # just this one line
+```
+
+The technology stack from top to bottom includes:
+
+1. **TorchDynamo**: Captures the computation graph by analyzing Python bytecode (CPython bytecode). It doesn't require users to change their programming style and can handle Python's dynamic features (conditional branches, loops, data-dependent control flow). When it encounters code it cannot compile, it automatically performs a "graph break" and falls back to eager mode.
+
+2. **AOTAutograd**: Automatically generates the backward propagation graph at compile time. Traditional autograd dynamically constructs the backward graph at runtime; AOTAutograd moves this ahead to compile time, enabling the forward and backward graphs to be optimized together.
+
+3. **FX Graph IR**: PyTorch's internal graph representation format, based on SSA form. It captures operations at the ATen (PyTorch's core operator library) level, at a granularity between high-level Python API and low-level hardware instructions.
+
+4. **TorchInductor**: The default code generation backend for PyTorch 2.0. It converts FX Graph IR into Triton kernels (for GPU) or C++/OpenMP code (for CPU). Inductor's core capability is automatic operator fusion — merging multiple operators into a single efficient kernel.
+
+5. **Triton**: A GPU programming language and compiler developed by OpenAI (Tillet et al., 2019). It provides a block-level programming model — developers operate on "blocks" (contiguous memory regions) rather than individual threads. The Triton compiler translates block-level code into efficient PTX instructions, handling shared memory allocation, warp scheduling, and other details.
+
+The advantage of this track is: **end-to-end usable**, with seamless integration into the PyTorch ecosystem. Developers don't need to learn a new programming model to achieve significant performance improvements.
+
+### Track 2: MLIR Compiler Infrastructure (Infrastructure-Driven)
+
+MLIR (Multi-Level Intermediate Representation) was proposed by Google in 2019 (Lattner et al., 2021), with a design philosophy fundamentally different from the PyTorch compilation stack — **it's not a compiler, but a framework for building compilers.**
+
+MLIR's core design concepts:
+
+1. **Dialect System**: MLIR's IR is not a single fixed format but an extensible system composed of multiple "Dialects." Each Dialect defines a set of Operations and Types representing a specific abstraction level. For example:
+   - `tensor` dialect: operates on high-level tensors
+   - `linalg` dialect: structured abstraction for linear algebra operations
+   - `affine` dialect: loop descriptions based on the polyhedral model
+   - `scf` dialect: structured control flow
+   - `gpu` dialect: GPU-specific operations
+   - `llvm` dialect: low-level representation close to LLVM IR
+
+2. **Progressive Lowering**: The compilation process is a step-by-step transformation from high-level Dialects to low-level Dialects. Each transformation step (lowering pass) replaces high-level abstractions with more concrete operations. This design enables:
+   - Each level to apply optimizations specific to that level
+   - New hardware backends to only implement the last few lowering steps
+   - Different domains to share intermediate-level optimization infrastructure
+
+3. **Composability**: Different Dialects can coexist within the same IR, which is the key difference between MLIR and traditional compiler IRs (such as LLVM IR). A function can simultaneously contain `linalg` operations (high-level) and `gpu` operations (low-level), with the compiler progressively lowering high-level operations until the entire function reaches the target level.
+
+Real-world applications of MLIR include:
+- **XLA/HLO** is progressively migrating to MLIR infrastructure (the StableHLO project)
+- **IREE** (Intermediate Representation Execution Environment): an end-to-end ML compiler and runtime built on MLIR
+- **Torch-MLIR**: a bridge connecting PyTorch models to the MLIR compilation stack
+- **Multiple hardware vendors** (Intel, AMD, and others) use MLIR to build their own ML compiler backends
+
+### Relationship Between the Two Tracks
+
+PyTorch 2.0 and MLIR are not competitors — they are **complementary**:
+
+- **PyTorch 2.0** answers "how to let 99% of ML developers painlessly get compilation speedup" — it's an **application-level** answer
+- **MLIR** answers "how to let compiler developers efficiently build and compose optimization passes" — it's an **infrastructure-level** answer
+- The two are already converging: the Torch-MLIR project connects PyTorch's computation graphs to the MLIR compilation stack, allowing PyTorch users to indirectly benefit from optimizations built on MLIR
+
+In the long run, MLIR may become the "unified infrastructure" for ML compilers, just as LLVM became the unified infrastructure for traditional compilers. But at the current stage, the PyTorch 2.0 compilation stack is the most **directly accessible** compilation optimization for most ML developers.
+
+## Learning Path Guide
+
+This learning path contains **17 articles**, organized into three types:
+
+### Horizontal Articles: Layer-by-Layer Through the Compilation Stack
+
+These form the main axis of the learning path. Each article corresponds to a specific layer of the compilation stack:
+
+| # | Title | Focus Layer | Prerequisites |
+|---|-------|-------------|---------------|
+| 1 | ML Compiler Landscape (this article) | Panorama | None |
+| 2 | TorchDynamo & AOTAutograd | Graph Capture | This article |
+| 3 | SSA, FX IR & MLIR Dialect | IR Design | Article 2 |
+| 4 | Progressive Lowering | IR Lowering | Article 3 |
+| 5 | Dataflow Analysis & Pass Basics | Optimization Passes | Article 3 |
+| 6 | Advanced Optimization & Pattern Matching | Optimization Passes (Advanced) | Article 5 |
+| 7 | Polyhedral Optimization | Loop Optimization | Article 5 |
+| 8 | Fusion Taxonomy | Operator Fusion | Article 5 |
+| 9 | Cost Model | Fusion Decisions | Article 8 |
+| 12 | Instruction Selection & Vectorization | Code Generation | Article 4 |
+| 13 | Triton & Compiler Backends | Code Generation | Article 12 |
+| 16 | Scheduling & Execution Optimization | Runtime | Article 13 |
+| 17 | Autotuning & End-to-End | Full-Stack Integration | Article 16 |
+
+### Vertical Articles: Cross-Cutting Key Themes
+
+Some themes span multiple layers of the compilation stack and require a vertical perspective:
+
+| # | Title | Layers Spanned |
+|---|-------|---------------|
+| 10 | Tiling & Memory Hierarchy | Optimization Passes → Operator Fusion → Code Generation → Scheduling |
+| 11 | Dynamic Shapes | Graph Capture → IR Design → Optimization Passes → Fusion → Code Generation |
+
+These two articles cover the most critical and challenging cross-layer problems in ML compilers.
+
+### Advanced Articles: Specialized Deep Dives
+
+After mastering the core compilation stack, these articles focus on specific advanced topics:
+
+| # | Title | Topic |
+|---|-------|-------|
+| 14 | Quantization Compilation | Compiler support for low-precision arithmetic |
+| 15 | Distributed Compilation | Cross-device graph partitioning and compilation |
+
+### Recommended Study Order
+
+**Linear path** (recommended for beginners): 1 → 2 → 3 → 4 → 5 → 6 → 8 → 9 → 10 → 12 → 13 → 16 → 17
+
+**Selective paths** (for readers with background):
+- PyTorch practice focus: 1 → 2 → 3 → 5 → 8 → 9 → 13 → 17
+- MLIR infrastructure focus: 1 → 3 → 4 → 5 → 7 → 12
+- Performance optimization focus: 1 → 8 → 9 → 10 → 13 → 16
+
+## Summary
+
+ML compilers are the bridge between "the Python code users write" and "the efficient kernels that run on GPUs." The key takeaways from this article:
+
+1. **The performance bottleneck is memory, not compute.** Modern GPU compute capacity far exceeds memory bandwidth, and a large number of operations are memory-bound. Eager mode's operator-by-operator execution leads to massive unnecessary HBM access.
+
+2. **Graph compilers find optimization opportunities through global visibility.** Graph-level optimizations like operator fusion, constant folding, and CSE can significantly reduce HBM access, achieving 1.3-4x speedup.
+
+3. **ML compiler technology has three DNA sources.** Traditional compilers provide core concepts like SSA, pass frameworks, and dataflow analysis (~40%); the HPC community provides practices like autotuning, tiling, and memory hierarchy optimization (~30%); the ML domain itself gave rise to native innovations like dynamic graph handling, tensor-level semantics, and multi-level IRs (~30%).
+
+4. **Two complementary development tracks.** The PyTorch 2.0 compilation stack (TorchDynamo → AOTAutograd → Inductor → Triton) provides end-to-end usable compilation speedup; MLIR provides an extensible compiler infrastructure framework. The two are gradually converging through projects like Torch-MLIR.
+
+5. **The compilation stack is a multi-layered system.** From graph capture to code generation, each layer has its own challenges and solutions, but inter-layer interactions are equally important.
+
+Next, we'll start from the top of the compilation stack and dive deep into **TorchDynamo and AOTAutograd's** graph capture mechanisms — the first step in understanding the entire compilation pipeline.
+
+## Further Reading
+
+- [PyTorch 2.0: Our next generation release](https://pytorch.org/blog/pytorch-2.0-release/) — PyTorch 2.0 release blog post, introducing torch.compile's design motivation and benchmarks
+- [MLIR: Multi-Level Intermediate Representation](https://mlir.llvm.org/) — Official MLIR documentation, covering the Dialect system and Progressive Lowering
+- [Triton Language and Compiler](https://triton-lang.org/) — Official Triton documentation, understanding the block-level programming model
+- [TVM: An Automated End-to-End Optimizing Compiler for Deep Learning](https://arxiv.org/abs/1802.04799) (Chen et al., 2018) — TVM paper, an early milestone in ML compilers
+- [MLIR: Scaling Compiler Infrastructure for Domain Specific Computation](https://arxiv.org/abs/2002.11054) (Lattner et al., 2021) — MLIR paper, understanding the design philosophy of extensible compiler infrastructure
+- [TorchDynamo: An Experiment in Dynamic Python Bytecode Transformation](https://dev-discuss.pytorch.org/t/torchdynamo-an-experiment-in-dynamic-python-bytecode-transformation/361) — TorchDynamo design principles
