@@ -5,7 +5,7 @@ locale: zh
 tags: [reinforcement-learning, mdp, bellman-equation, value-function, q-learning]
 difficulty: intermediate
 created: "2026-04-05"
-updated: "2026-04-05"
+updated: "2026-04-13"
 prerequisites: []
 references:
   - type: website
@@ -83,7 +83,19 @@ $$V^\pi(s) = \mathbb{E}_\pi\left[\sum_{t=0}^{\infty} \gamma^t r_t \mid s_0 = s\r
 
 $$Q^\pi(s,a) = \mathbb{E}_\pi\left[\sum_{t=0}^{\infty} \gamma^t r_t \mid s_0 = s, a_0 = a\right]$$
 
-两者的关系：$V^\pi(s) = \sum_a \pi(a|s) \cdot Q^\pi(s,a)$ — 状态价值等于所有动作的 Q 值按策略概率加权。
+公式中 $s_0 = s$ 表示"从时间步 0 开始、初始状态为 $s$"，$a_0 = a$ 表示"第一步选择的动作为 $a$"。两个公式的区别仅在于：$V$ 只固定起始状态，第一步动作由策略 $\pi$ 决定；$Q$ 同时固定了起始状态和第一步动作。
+
+**V 和 Q 的互推关系**：
+
+从 Q 到 V — 在状态 $s$ 下，Agent 可以选择多个动作，每个动作 $a$ 有各自的 Q 值。状态的价值就是把所有动作的 Q 值按策略选择概率做加权平均：
+
+$$V^\pi(s) = \sum_a \pi(a|s) \cdot Q^\pi(s,a)$$
+
+从 V 到 Q — 反过来，在状态 $s$ 选择动作 $a$ 之后，环境可能转移到多个下一状态 $s'$。动作的价值就是对所有可达的下一状态，按转移概率加权求和（即时奖励 + 折扣后的下一状态价值）：
+
+$$Q^\pi(s,a) = \sum_{s'} P(s'|s,a) \left[R(s,a,s') + \gamma V^\pi(s')\right]$$
+
+这两个方向合在一起，就构成了下一节 Bellman 方程的完整递推。
 
 ## Bellman 方程
 

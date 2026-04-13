@@ -5,7 +5,7 @@ locale: en
 tags: [reinforcement-learning, mdp, bellman-equation, value-function, q-learning]
 difficulty: intermediate
 created: "2026-04-05"
-updated: "2026-04-06"
+updated: "2026-04-13"
 prerequisites: []
 references:
   - type: website
@@ -83,7 +83,19 @@ $$V^\pi(s) = \mathbb{E}_\pi\left[\sum_{t=0}^{\infty} \gamma^t r_t \mid s_0 = s\r
 
 $$Q^\pi(s,a) = \mathbb{E}_\pi\left[\sum_{t=0}^{\infty} \gamma^t r_t \mid s_0 = s, a_0 = a\right]$$
 
-The relationship between the two: $V^\pi(s) = \sum_a \pi(a|s) \cdot Q^\pi(s,a)$ — the state value equals the policy-weighted sum of Q-values over all actions.
+In these formulas, $s_0 = s$ means "starting from state $s$ at time step 0", and $a_0 = a$ means "taking action $a$ at the first step". The only difference between the two: $V$ fixes only the starting state (the first action is chosen by policy $\pi$), while $Q$ fixes both the starting state and the first action.
+
+**The V-Q Duality**:
+
+From Q to V — In state $s$, the Agent can choose among multiple actions, each with its own Q-value. The state's value is the weighted average of all action Q-values, weighted by the policy's selection probabilities:
+
+$$V^\pi(s) = \sum_a \pi(a|s) \cdot Q^\pi(s,a)$$
+
+From V to Q — Conversely, after choosing action $a$ in state $s$, the environment may transition to multiple next states $s'$. The action's value is the probability-weighted sum over all reachable next states of (immediate reward + discounted next-state value):
+
+$$Q^\pi(s,a) = \sum_{s'} P(s'|s,a) \left[R(s,a,s') + \gamma V^\pi(s')\right]$$
+
+Together, these two directions form the complete recursive structure of the Bellman equation in the next section.
 
 ## Bellman Equation
 
