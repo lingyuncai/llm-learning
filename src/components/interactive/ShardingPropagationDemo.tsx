@@ -155,7 +155,7 @@ export default function ShardingPropagationDemo({ locale = 'zh' }: Props) {
       : EDGES;
 
     // Compute comm volume
-    const commVolume = `B*S*D*${4}/${N}`;
+    const commVolume = `2*B*S*D*(${N}-1)/${N}`;
 
     return (
       <div className="my-4">

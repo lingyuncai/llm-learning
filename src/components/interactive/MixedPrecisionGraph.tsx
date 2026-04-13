@@ -105,10 +105,12 @@ function getQualityRisk(opId: string, precision: Precision): RiskLevel {
   if (!op) return 'NONE';
   // Softmax/LayerNorm at <FP16 -> HIGH
   if ((opId === 'softmax' || opId === 'ln1' || opId === 'ln2') && (precision === 'INT8' || precision === 'INT4')) return 'HIGH';
+  // Attention score at <FP16 -> MEDIUM
+  if (opId === 'attn_score' && (precision === 'INT8' || precision === 'INT4')) return 'MEDIUM';
   // GeLU at <FP16 -> MEDIUM
   if (opId === 'gelu' && (precision === 'INT8' || precision === 'INT4')) return 'MEDIUM';
   // MatMul ops at INT4 -> MEDIUM
-  if ((op.category === 'attention' && opId !== 'softmax') && precision === 'INT4') return 'MEDIUM';
+  if (op.category === 'matmul' && precision === 'INT4') return 'MEDIUM';
   // FFN at INT8/INT4 -> LOW
   if (op.category === 'ffn' && (precision === 'INT8' || precision === 'INT4')) return 'LOW';
   return 'NONE';

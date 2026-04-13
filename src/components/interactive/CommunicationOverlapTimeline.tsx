@@ -101,7 +101,7 @@ function buildTimeline(config: OverlapConfig): TimelineBlock[] {
       computeTime += computeTimePerLayer;
       // Start bucket comm as soon as bucket is full, with overlap
       if ((i + 1) % bucketSize === 0 || i === layerCount - 1) {
-        const bucketCommTime = commTimePerLayer * bucketSize * 0.8;
+        const bucketCommTime = commTimePerLayer * bucketSize;
         const commStart = computeTime;
         blocks.push({
           id: `c${blockId++}`, type: 'communication', layer: i,

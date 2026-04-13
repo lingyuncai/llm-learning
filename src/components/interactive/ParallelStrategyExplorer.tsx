@@ -101,7 +101,7 @@ export default function ParallelStrategyExplorer({ locale = 'zh' }: Props) {
   const ppMemPerGpu = model.memoryFP16GB / N;
   const ppOom = ppMemPerGpu > GPU_MEM;
   const M_microBatches = 8; // fixed for simplicity
-  const ppEfficiency = N === 1 ? 100 : Math.round(((M_microBatches - N + 1) / M_microBatches) * 100);
+  const ppEfficiency = N === 1 ? 100 : Math.max(0, Math.round(((M_microBatches - N + 1) / M_microBatches) * 100));
   const ppBubbleRatio = N === 1 ? 0 : Math.round(((N - 1) / M_microBatches) * 100);
   const layersPerStage = Math.ceil(model.layerCount / N);
 

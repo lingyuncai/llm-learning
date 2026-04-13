@@ -44,36 +44,35 @@ const TENSOR_COLORS: Record<string, string> = {
   t3: HEAD_COLORS[2],
   t4: HEAD_COLORS[3],
   t5: HEAD_COLORS[4],
-  t6: HEAD_COLORS[5],
-  out: HEAD_COLORS[6],
+  out: HEAD_COLORS[5],
 };
 
 /* ─── Data ─── */
 
 const OPS: OpNode[] = [
-  { id: 'A', label: 'Op A', outputTensors: [{ id: 't1', sizeMB: 256 }, { id: 't2', sizeMB: 128 }], inputTensorIds: [] },
-  { id: 'B', label: 'Op B', outputTensors: [{ id: 't3', sizeMB: 128 }], inputTensorIds: ['t1'] },
-  { id: 'C', label: 'Op C', outputTensors: [{ id: 't4', sizeMB: 64 }], inputTensorIds: ['t1'] },
-  { id: 'D', label: 'Op D', outputTensors: [{ id: 't5', sizeMB: 128 }], inputTensorIds: ['t2'] },
-  { id: 'E', label: 'Op E', outputTensors: [{ id: 't6', sizeMB: 64 }], inputTensorIds: ['t3', 't4'] },
-  { id: 'F', label: 'Op F', outputTensors: [{ id: 'out', sizeMB: 64 }], inputTensorIds: ['t5', 't6'] },
+  { id: 'A', label: 'Op A', outputTensors: [{ id: 't1', sizeMB: 256 }], inputTensorIds: [] },
+  { id: 'B', label: 'Op B', outputTensors: [{ id: 't2', sizeMB: 128 }], inputTensorIds: ['t1'] },
+  { id: 'C', label: 'Op C', outputTensors: [{ id: 't3', sizeMB: 256 }], inputTensorIds: [] },
+  { id: 'D', label: 'Op D', outputTensors: [{ id: 't4', sizeMB: 128 }], inputTensorIds: ['t3'] },
+  { id: 'E', label: 'Op E', outputTensors: [{ id: 't5', sizeMB: 64 }], inputTensorIds: ['t2', 't4'] },
+  { id: 'F', label: 'Op F', outputTensors: [{ id: 'out', sizeMB: 64 }], inputTensorIds: ['t5'] },
 ];
 
 const SCHEDULES: ScheduleOrder[] = [
   {
     name: { zh: 'BFS 调度', en: 'BFS Schedule' },
-    order: ['A', 'B', 'C', 'D', 'E', 'F'],
+    order: ['A', 'C', 'B', 'D', 'E', 'F'],
     description: {
-      zh: '广度优先: A→B→C→D→E→F，多个 tensor 同时存活',
-      en: 'Breadth-first: A→B→C→D→E→F, many tensors alive simultaneously',
+      zh: '广度优先: A→C→B→D→E→F，两个分支交替执行',
+      en: 'Breadth-first: A→C→B→D→E→F, interleaves both branches',
     },
   },
   {
     name: { zh: 'DFS 调度', en: 'DFS Schedule' },
-    order: ['A', 'B', 'C', 'E', 'D', 'F'],
+    order: ['A', 'B', 'C', 'D', 'E', 'F'],
     description: {
-      zh: '深度优先: A→B→C→E→D→F，尽早释放 tensor',
-      en: 'Depth-first: A→B→C→E→D→F, frees tensors earlier',
+      zh: '深度优先: A→B→C→D→E→F，先完成一个分支再开始下一个',
+      en: 'Depth-first: A→B→C→D→E→F, completes one branch before starting next',
     },
   },
 ];
@@ -142,22 +141,20 @@ function computeMemoryTimeline(
 /* ─── DAG Layout (top area) ─── */
 
 const DAG_POSITIONS: Record<string, { x: number; y: number }> = {
-  A: { x: 70, y: 45 },
+  A: { x: 70, y: 20 },
   B: { x: 210, y: 20 },
-  C: { x: 210, y: 70 },
-  D: { x: 350, y: 70 },
-  E: { x: 350, y: 20 },
+  C: { x: 70, y: 70 },
+  D: { x: 210, y: 70 },
+  E: { x: 350, y: 45 },
   F: { x: 490, y: 45 },
 };
 
 const DAG_EDGES: [string, string, string][] = [
   ['A', 'B', 't1'],
-  ['A', 'C', 't1'],
-  ['A', 'D', 't2'],
-  ['B', 'E', 't3'],
-  ['C', 'E', 't4'],
-  ['D', 'F', 't5'],
-  ['E', 'F', 't6'],
+  ['B', 'E', 't2'],
+  ['C', 'D', 't3'],
+  ['D', 'E', 't4'],
+  ['E', 'F', 't5'],
 ];
 
 /* ─── Component ─── */

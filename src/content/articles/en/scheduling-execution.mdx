@@ -343,6 +343,8 @@ The NVIDIA Hopper architecture (Compute Capability 9.0+) introduces **Conditiona
 
 **While nodes**: Repeat a subgraph based on a GPU-side condition value. This enables iterative algorithms (such as iterative refinement) to complete within the graph.
 
+**Switch nodes**: Select one of multiple subgraphs to execute based on a GPU-side integer index, similar to C-style switch-case.
+
 ```cpp
 // CUDA Graph Conditional Node pseudocode (CUDA C++ API)
 cudaGraphConditionalHandle handle;
@@ -354,7 +356,7 @@ cudaGraphAddChildGraphNode(&condNode, graph, &deps, numDeps, conditionalGraph);
 
 Conditional Node limitations:
 - Condition values must be **GPU-side scalars** (cannot depend on CPU-side computation)
-- Supported control flow patterns are limited (only if-then and while, not arbitrary branching)
+- Supported control flow patterns are limited (IF/WHILE/SWITCH, not arbitrary branching)
 - Subgraphs themselves are still static
 
 Despite these limitations, Conditional Nodes enable many workloads that previously could not use CUDA Graphs (such as verification loops in speculative decoding, early stopping in autoregressive generation) to benefit from them.

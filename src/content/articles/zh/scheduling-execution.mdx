@@ -343,6 +343,8 @@ NVIDIA Hopper 架构（Compute Capability 9.0+）引入了 **Conditional Nodes**
 
 **While 节点**：根据 GPU 端的条件值决定是否重复执行一个子图。这使得迭代算法（如迭代式 refinement）可以在图内完成。
 
+**Switch 节点**：根据 GPU 端的整数索引选择执行多个子图中的一个，类似 C 语言的 switch-case。
+
 ```cpp
 // CUDA Graph Conditional Node 伪代码 (CUDA C++ API)
 cudaGraphConditionalHandle handle;
@@ -354,7 +356,7 @@ cudaGraphAddChildGraphNode(&condNode, graph, &deps, numDeps, conditionalGraph);
 
 Conditional Nodes 的限制：
 - 条件值必须是 **GPU 端的标量**（不能依赖 CPU 端计算）
-- 支持的控制流模式有限（仅 if-then、while，不支持任意分支）
+- 支持的控制流模式有限（IF/WHILE/SWITCH，不支持任意分支）
 - 子图本身仍然是静态的
 
 尽管有这些限制，Conditional Nodes 使得许多之前无法使用 CUDA Graph 的工作负载（如 speculative decoding 中的验证循环、自回归生成中的 early stopping）得以受益。
