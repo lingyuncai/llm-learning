@@ -160,6 +160,20 @@ Each term has a clear meaning:
 
 This is where the "delta rule" name comes from — **instead of writing the new value $v_t$ directly, it writes only the correction $v_t - H_{t-1}k_t$**. Note that $v_t$ and $H_{t-1}k_t$ are both $\mathbb{R}^{d_v}$ vectors but with entirely different meanings: the former comes from the current input projection, the latter is an old value retrieved from the compressed historical state.
 
+> **Why does $H_{t-1}k_t$ retrieve the "old value"?**
+>
+> If you're familiar with standard Attention ($\text{softmax}(QK^\top) \cdot V$), you might wonder: don't you first compute QK similarity, then multiply by V to get the value? Why does multiplying $H$ by $k$ directly produce a value?
+>
+> The key is how $H$ is constructed. Taking the simplest additive update: $H_t = H_{t-1} + k_t v_t^\top$. Unrolled, $H$ is the **sum of outer products** of all historical key-value pairs:
+>
+> $$H_{t-1} = \sum_{i=1}^{t-1} k_i \, v_i^\top$$
+>
+> When you query with the current $k_t$:
+>
+> $$H_{t-1} k_t = \left(\sum_{i=1}^{t-1} k_i v_i^\top\right) k_t = \sum_{i=1}^{t-1} \underbrace{(k_i^\top k_t)}_{\text{key similarity}} \, v_i$$
+>
+> The right-hand side is **a weighted sum of all historical values, weighted by key-key dot product similarity** — essentially the same operation as standard Attention's $\sum \text{softmax}(q^\top k_i) \cdot v_i$, except: (1) no softmax normalization; (2) all historical K/V are compressed into a fixed-size matrix $H$, so retrieval is a single matrix-vector multiply at $O(1)$ cost instead of $O(n)$.
+
 Comparing the two update strategies:
 
 | Strategy | Update rule | Effect |

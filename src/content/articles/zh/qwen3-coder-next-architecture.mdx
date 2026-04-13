@@ -160,6 +160,20 @@ $$
 
 这就是 "delta rule" 名称的由来——**不直接写入新 value $v_t$，而是只写入修正量 $v_t - H_{t-1}k_t$**。注意这里的 $v_t$ 和 $H_{t-1}k_t$ 虽然都是 $\mathbb{R}^{d_v}$ 向量，但含义完全不同：前者来自当前输入的投影，后者是从历史压缩状态中检索出的旧值。
 
+> **为什么 $H_{t-1}k_t$ 能检索出"旧 value"？**
+>
+> 如果你熟悉标准 Attention 的 $\text{softmax}(QK^\top) \cdot V$，可能会疑惑：以前不是先算 QK 相似度，再乘 V 才得到 value 吗？为什么这里 $H$ 乘以 $k$ 就直接得到 value 了？
+>
+> 关键在于 $H$ 是如何构建的。以最简单的累加更新为例：$H_t = H_{t-1} + k_t v_t^\top$，展开后 $H$ 就是所有历史 key-value 对的**外积之和**：
+>
+> $$H_{t-1} = \sum_{i=1}^{t-1} k_i \, v_i^\top$$
+>
+> 当你用当前 $k_t$ 去查询时：
+>
+> $$H_{t-1} k_t = \left(\sum_{i=1}^{t-1} k_i v_i^\top\right) k_t = \sum_{i=1}^{t-1} \underbrace{(k_i^\top k_t)}_{\text{key 相似度}} \, v_i$$
+>
+> 最右边正是**用 key 之间的点积相似度对所有历史 value 做加权求和**——这与标准 Attention 的 $\sum \text{softmax}(q^\top k_i) \cdot v_i$ 本质相同，区别仅在于：(1) 没有 softmax 归一化；(2) 所有历史 K/V 被压缩进了固定大小的矩阵 $H$，一次矩阵-向量乘法就完成了检索，复杂度 $O(1)$ 而非 $O(n)$。
+
 对比两种更新策略：
 
 | 策略 | 更新方式 | 效果 |
