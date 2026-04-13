@@ -3,201 +3,262 @@ import StepNavigator from '../primitives/StepNavigator';
 
 const W = 580;
 
+function fmtV(v: number): string {
+  if (v === 0) return '0';
+  return String(v);
+}
+
 export default function BellmanBackup({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
-  const t = {
-    zh: {
-      step0Title: '单步 Backup 直觉',
-      step0MainTitle: 'Bellman Backup：从下一个状态"回传"价值',
-      step0Intuition: '核心直觉：价值来自未来',
-      step0IntuitionDesc: '好的状态 = 能到达高奖励状态的状态',
-      step0CurrentValue: '当前价值 = 即时奖励 + 折扣未来价值',
-      step1Title: '递推展开',
-      step1MainTitle: '递推展开：Bellman 方程层层回传',
-      step1BackupDesc: '← 价值从终点向起点回传（Backup）',
-      step1Formula: 'V(s₂) = r₃ + γ·V(s₃) → V(s₁) = r₂ + γ·V(s₂) → V(s₀) = r₁ + γ·V(s₁)',
-      step2Title: '收敛到最优值',
-      step2MainTitle: 'Value Iteration：反复 Backup 直到收敛',
-      step2Iteration1: '迭代 1',
-      step2Iteration2: '迭代 2',
-      step2Iteration3: '迭代 3',
-      step2Convergence: '收敛',
-      step2Desc: '反复应用 Bellman 方程（Backup），每次迭代更新所有状态的 V 值',
-      step2ConvergenceDesc: '当所有状态的 V 值不再变化时 → 收敛到最优值函数 V*(s)',
-    },
-    en: {
-      step0Title: 'Single-Step Backup Intuition',
-      step0MainTitle: 'Bellman Backup: "Propagating" Value from Next States',
-      step0Intuition: 'Core Intuition: Value Comes from the Future',
-      step0IntuitionDesc: 'Good state = state that can reach high-reward states',
-      step0CurrentValue: 'Current value = immediate reward + discounted future value',
-      step1Title: 'Recursive Expansion',
-      step1MainTitle: 'Recursive Expansion: Bellman Equation Propagates Layer by Layer',
-      step1BackupDesc: '← Value propagates backward from terminal to initial states (Backup)',
-      step1Formula: 'V(s₂) = r₃ + γ·V(s₃) → V(s₁) = r₂ + γ·V(s₂) → V(s₀) = r₁ + γ·V(s₁)',
-      step2Title: 'Converge to Optimal Value',
-      step2MainTitle: 'Value Iteration: Repeated Backup Until Convergence',
-      step2Iteration1: 'Iteration 1',
-      step2Iteration2: 'Iteration 2',
-      step2Iteration3: 'Iteration 3',
-      step2Convergence: 'Converged',
-      step2Desc: 'Repeatedly apply Bellman equation (Backup), updating V values for all states in each iteration',
-      step2ConvergenceDesc: 'When V values for all states stop changing → converged to optimal value function V*(s)',
-    },
-  }[locale];
+  const isZh = locale === 'zh';
+  const t = isZh ? {
+    step1Title: '1. 单步 Backup 计算',
+    step1Header: '如何用下一状态的价值，反推当前状态的价值？',
+    step1Best: '← 最大！',
+    step1Result: '∴ V(s) = 3.80，最优动作 = ↓',
+    step2Title: '2. 链式回传：从终点逐步计算',
+    step2Header: '终端状态价值已知 → 逐步 Backup 到每个前驱状态',
+    step2Known: '（已知）',
+    step2Arrow: '← 价值从终点向起点逐步回传',
+    step3Title: '3. Value Iteration：反复 Backup 到收敛',
+    step3Header: '对所有状态反复 Backup，价值从目标像波浪一样向外扩散',
+    step3Init: '初始',
+    step3Iter: '迭代',
+    step3Done: '收敛！',
+    step3Goal: '目标',
+    step3Note: 'γ=0.9 → 每远一步，价值衰减到 0.9 倍',
+  } : {
+    step1Title: '1. Single-Step Backup',
+    step1Header: 'How to compute current value from next state values?',
+    step1Best: '← max!',
+    step1Result: '∴ V(s) = 3.80, optimal action = ↓',
+    step2Title: '2. Chain Propagation',
+    step2Header: 'Terminal value is known → Backup to each predecessor',
+    step2Known: '(known)',
+    step2Arrow: '← Value propagates from goal to start',
+    step3Title: '3. Value Iteration: Converge',
+    step3Header: 'Repeatedly Backup all states; values spread from goal like a wave',
+    step3Init: 'Init',
+    step3Iter: 'Iter',
+    step3Done: 'Converged!',
+    step3Goal: 'Goal',
+    step3Note: 'γ=0.9 → each step further, value decays to 0.9×',
+  };
+
+  // Step 1: backup from 3 next states (γ=0.9)
+  const nexts = [
+    { y: 60, label: "s'₁", v: 3.0, r: 1, act: '↑' },
+    { y: 110, label: "s'₂", v: 1.0, r: 0, act: '→' },
+    { y: 160, label: "s'₃", v: 2.0, r: 2, act: '↓' },
+  ];
+  const vals = nexts.map(n => n.r + 0.9 * n.v); // [3.70, 0.90, 3.80]
+  const best = vals.indexOf(Math.max(...vals));   // 2
+
+  // Step 3: value iteration on 4-cell strip, γ=0.9, goal V=10
+  const iters = [
+    [0, 0, 0, 10],
+    [0, 0, 9, 10],
+    [0, 8.1, 9, 10],
+    [7.29, 8.1, 9, 10],
+  ];
 
   const steps = [
     {
-      title: t.step0Title,
-      content: (
-        <svg viewBox={`0 0 ${W} 220`} className="w-full" style={{ fontFamily: FONTS.sans }}>
-          <text x={W / 2} y={24} textAnchor="middle" fontSize={13} fontWeight={700} fill={COLORS.dark}>
-            {t.step0MainTitle}
-          </text>
-          {/* Current state */}
-          <circle cx={120} cy={100} r={30} fill={COLORS.highlight} stroke={COLORS.primary} strokeWidth={2} />
-          <text x={120} y={96} textAnchor="middle" fontSize={13} fontWeight={700} fill={COLORS.dark}>s</text>
-          <text x={120} y={112} textAnchor="middle" fontSize={10} fill={COLORS.mid}>V(s) = ?</text>
-
-          {/* Arrow */}
-          <line x1={155} y1={90} x2={220} y2={70} stroke={COLORS.primary} strokeWidth={2} markerEnd="url(#arrow1)" />
-          <line x1={155} y1={100} x2={220} y2={100} stroke={COLORS.primary} strokeWidth={2} markerEnd="url(#arrow1)" />
-          <line x1={155} y1={110} x2={220} y2={130} stroke={COLORS.primary} strokeWidth={2} markerEnd="url(#arrow1)" />
-          <defs>
-            <marker id="arrow1" viewBox="0 0 10 10" refX={8} refY={5} markerWidth={6} markerHeight={6} orient="auto">
-              <path d="M 0 0 L 10 5 L 0 10 z" fill={COLORS.primary} />
-            </marker>
-          </defs>
-
-          {/* Next states */}
-          {[{ y: 60, label: "s'₁", v: '3.0', r: '+1' }, { y: 100, label: "s'₂", v: '1.0', r: '0' }, { y: 140, label: "s'₃", v: '2.0', r: '+2' }].map((s, i) => (
-            <g key={i}>
-              <circle cx={260} cy={s.y} r={24} fill={COLORS.valid} stroke={COLORS.mid} strokeWidth={1.5} />
-              <text x={260} y={s.y - 4} textAnchor="middle" fontSize={12} fontWeight={600} fill={COLORS.dark}>{s.label}</text>
-              <text x={260} y={s.y + 12} textAnchor="middle" fontSize={9} fill={COLORS.mid}>V={s.v}</text>
-              <text x={210} y={s.y - 6} textAnchor="middle" fontSize={9} fill={COLORS.orange}>r={s.r}</text>
-            </g>
-          ))}
-
-          {/* Formula */}
-          <text x={380} y={80} fontSize={12} fontWeight={600} fill={COLORS.dark} fontFamily={FONTS.mono}>
-            V(s) = max_a Σ P(s'|s,a)
-          </text>
-          <text x={380} y={100} fontSize={12} fontWeight={600} fill={COLORS.dark} fontFamily={FONTS.mono}>
-                 × [R + γ·V(s')]
-          </text>
-          <text x={380} y={130} fontSize={11} fill={COLORS.mid}>
-            {t.step0CurrentValue}
-          </text>
-          <rect x={370} y={145} width={190} height={40} rx={6} fill={COLORS.highlight} stroke={COLORS.orange} strokeWidth={1} />
-          <text x={465} y={163} textAnchor="middle" fontSize={11} fontWeight={600} fill={COLORS.orange}>
-            {t.step0Intuition}
-          </text>
-          <text x={465} y={178} textAnchor="middle" fontSize={10} fill={COLORS.mid}>
-            {t.step0IntuitionDesc}
-          </text>
-        </svg>
-      ),
-    },
-    {
       title: t.step1Title,
       content: (
-        <svg viewBox={`0 0 ${W} 220`} className="w-full" style={{ fontFamily: FONTS.sans }}>
-          <text x={W / 2} y={24} textAnchor="middle" fontSize={13} fontWeight={700} fill={COLORS.dark}>
-            {t.step1MainTitle}
-          </text>
+        <svg viewBox={`0 0 ${W} 230`} className="w-full" style={{ fontFamily: FONTS.sans }}>
+          <defs>
+            <marker id="bk-a" viewBox="0 0 10 10" refX={8} refY={5}
+              markerWidth={6} markerHeight={6} orient="auto">
+              <polygon points="0,0 10,5 0,10" fill={COLORS.primary} />
+            </marker>
+          </defs>
 
-          {/* Chain of states */}
-          {[
-            { x: 60, label: 's₀', v: '?', col: COLORS.highlight },
-            { x: 170, label: 's₁', v: '?', col: COLORS.highlight },
-            { x: 280, label: 's₂', v: '?', col: COLORS.highlight },
-            { x: 390, label: 's₃', v: '10', col: '#d4edda' },
-            { x: 500, label: 'sₜ', v: '0', col: COLORS.masked },
-          ].map((s, i) => (
+          <text x={W / 2} y={22} textAnchor="middle" fontSize={13}
+            fontWeight={700} fill={COLORS.dark}>{t.step1Header}</text>
+
+          {/* State s */}
+          <circle cx={80} cy={110} r={30} fill={COLORS.highlight}
+            stroke={COLORS.primary} strokeWidth={2} />
+          <text x={80} y={106} textAnchor="middle" fontSize={14}
+            fontWeight={700} fill={COLORS.dark}>s</text>
+          <text x={80} y={122} textAnchor="middle" fontSize={10}
+            fill={COLORS.mid}>V = ?</text>
+
+          {/* Next states with arrows */}
+          {nexts.map((n, i) => (
             <g key={i}>
-              <circle cx={s.x} cy={100} r={28} fill={s.col} stroke={COLORS.mid} strokeWidth={1.5} />
-              <text x={s.x} y={96} textAnchor="middle" fontSize={13} fontWeight={700} fill={COLORS.dark}>{s.label}</text>
-              <text x={s.x} y={112} textAnchor="middle" fontSize={10} fill={COLORS.mid}>V={s.v}</text>
-              {i < 4 && (
-                <>
-                  <line x1={s.x + 30} y1={100} x2={s.x + 78} y2={100} stroke={COLORS.primary} strokeWidth={1.5} markerEnd="url(#arrow2)" />
-                  <text x={s.x + 55} y={90} textAnchor="middle" fontSize={9} fill={COLORS.orange}>
-                    r{i + 1}, γ
-                  </text>
-                </>
-              )}
+              <line x1={112} y1={110 + (n.y - 110) * 0.4} x2={185} y2={n.y}
+                stroke={i === best ? COLORS.primary : COLORS.light}
+                strokeWidth={i === best ? 2.5 : 1.5} markerEnd="url(#bk-a)" />
+              <circle cx={215} cy={n.y} r={22} fill={COLORS.valid}
+                stroke={COLORS.mid} strokeWidth={1.5} />
+              <text x={215} y={n.y - 4} textAnchor="middle" fontSize={11}
+                fontWeight={600} fill={COLORS.dark}>{n.label}</text>
+              <text x={215} y={n.y + 10} textAnchor="middle" fontSize={9}
+                fill={COLORS.mid}>V={n.v.toFixed(1)}</text>
+              <text x={160} y={n.y - 10} textAnchor="middle" fontSize={9}
+                fill={COLORS.orange}>r={n.r > 0 ? '+' + n.r : n.r}</text>
             </g>
           ))}
-          <defs>
-            <marker id="arrow2" viewBox="0 0 10 10" refX={8} refY={5} markerWidth={6} markerHeight={6} orient="auto">
-              <path d="M 0 0 L 10 5 L 0 10 z" fill={COLORS.primary} />
-            </marker>
-          </defs>
 
-          {/* Backward arrows */}
-          {[390, 280, 170, 60].map((x, i) => (
-            <path key={i}
-              d={`M ${x} 135 Q ${x - 55} 170 ${x - 110} 135`}
-              fill="none" stroke={COLORS.green} strokeWidth={1.5} strokeDasharray="4 3"
-              markerEnd="url(#arrow2g)" />
-          ))}
-          <defs>
-            <marker id="arrow2g" viewBox="0 0 10 10" refX={8} refY={5} markerWidth={6} markerHeight={6} orient="auto">
-              <path d="M 0 0 L 10 5 L 0 10 z" fill={COLORS.green} />
-            </marker>
-          </defs>
+          {/* Calculation table */}
+          <text x={280} y={48} fontSize={11} fontWeight={600}
+            fill={COLORS.primary} fontFamily={FONTS.mono}>
+            V(s) = max [R + γ·V(s')]  γ=0.9
+          </text>
 
-          <text x={W / 2} y={190} textAnchor="middle" fontSize={12} fontWeight={600} fill={COLORS.green}>
-            {t.step1BackupDesc}
+          {nexts.map((n, i) => {
+            const y = 72 + i * 28;
+            return (
+              <g key={`c${i}`}>
+                {i === best && <rect x={272} y={y - 13} width={280} height={20} rx={4}
+                  fill={COLORS.highlight} stroke={COLORS.primary} strokeWidth={1} />}
+                <text x={280} y={y} fontSize={10}
+                  fontWeight={i === best ? 700 : 400}
+                  fill={i === best ? COLORS.primary : COLORS.dark}
+                  fontFamily={FONTS.mono}>
+                  {n.act}→{n.label}: {n.r} + 0.9×{n.v.toFixed(1)} = {vals[i].toFixed(2)}
+                </text>
+                {i === best && <text x={535} y={y} fontSize={10} fontWeight={700}
+                  fill={COLORS.primary}>{t.step1Best}</text>}
+              </g>
+            );
+          })}
+
+          {/* Result box */}
+          <rect x={272} y={155} width={280} height={28} rx={6}
+            fill={COLORS.valid} stroke={COLORS.green} strokeWidth={1.5} />
+          <text x={412} y={174} textAnchor="middle" fontSize={11}
+            fontWeight={700} fill={COLORS.green} fontFamily={FONTS.mono}>
+            {t.step1Result}
           </text>
-          <text x={W / 2} y={210} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-            {t.step1Formula}
-          </text>
+
+          {/* Green arrow back to s */}
+          <path d="M 272 170 Q 180 210 85 145" fill="none"
+            stroke={COLORS.green} strokeWidth={1.5} strokeDasharray="4 3" />
+          <text x={80} y={158} textAnchor="middle" fontSize={12}
+            fontWeight={700} fill={COLORS.green}>3.80</text>
         </svg>
       ),
     },
     {
       title: t.step2Title,
       content: (
-        <svg viewBox={`0 0 ${W} 220`} className="w-full" style={{ fontFamily: FONTS.sans }}>
-          <text x={W / 2} y={24} textAnchor="middle" fontSize={13} fontWeight={700} fill={COLORS.dark}>
-            {t.step2MainTitle}
-          </text>
+        <svg viewBox={`0 0 ${W} 230`} className="w-full" style={{ fontFamily: FONTS.sans }}>
+          <defs>
+            <marker id="bk-a2" viewBox="0 0 10 10" refX={8} refY={5}
+              markerWidth={6} markerHeight={6} orient="auto">
+              <polygon points="0,0 10,5 0,10" fill={COLORS.mid} />
+            </marker>
+          </defs>
 
-          {/* Iteration visualization */}
-          {[t.step2Iteration1, t.step2Iteration2, t.step2Iteration3, '...', t.step2Convergence].map((label, i) => {
-            const x = 40 + i * 110;
-            const colors = [
-              [COLORS.masked, COLORS.masked, COLORS.masked, '#d4edda'],
-              [COLORS.masked, COLORS.masked, COLORS.highlight, '#d4edda'],
-              [COLORS.masked, COLORS.highlight, COLORS.highlight, '#d4edda'],
-              [],
-              [COLORS.valid, COLORS.valid, COLORS.valid, '#d4edda'],
-            ];
+          <text x={W / 2} y={22} textAnchor="middle" fontSize={13}
+            fontWeight={700} fill={COLORS.dark}>{t.step2Header}</text>
+
+          {/* Chain: s₀ → s₁ → s₂ → Goal */}
+          {[
+            { x: 70, label: 's₀', v: '7.29' },
+            { x: 200, label: 's₁', v: '8.1' },
+            { x: 330, label: 's₂', v: '9' },
+            { x: 460, label: isZh ? '目标' : 'Goal', v: '10' },
+          ].map((s, i) => {
+            const isGoal = i === 3;
             return (
               <g key={i}>
-                <text x={x + 20} y={60} textAnchor="middle" fontSize={11} fontWeight={600} fill={COLORS.dark}>{label}</text>
-                {i !== 3 && colors[i].map((c, j) => (
-                  <rect key={j} x={x} y={70 + j * 28} width={40} height={22} rx={4}
-                    fill={c} stroke={COLORS.mid} strokeWidth={1} />
-                ))}
-                {i === 3 && (
-                  <text x={x + 20} y={110} textAnchor="middle" fontSize={20} fill={COLORS.mid}>⋯</text>
-                )}
-                {i < 4 && (
-                  <text x={x + 60} y={110} textAnchor="middle" fontSize={16} fill={COLORS.mid}>→</text>
+                <circle cx={s.x} cy={80} r={28}
+                  fill={isGoal ? '#d4edda' : COLORS.highlight}
+                  stroke={isGoal ? COLORS.green : COLORS.primary}
+                  strokeWidth={isGoal ? 2.5 : 1.5} />
+                <text x={s.x} y={75} textAnchor="middle" fontSize={12}
+                  fontWeight={700} fill={COLORS.dark}>{s.label}</text>
+                <text x={s.x} y={93} textAnchor="middle" fontSize={10}
+                  fontWeight={600} fill={isGoal ? COLORS.green : COLORS.primary}>
+                  V={s.v}
+                </text>
+                {isGoal && <text x={s.x} y={120} textAnchor="middle" fontSize={9}
+                  fontWeight={600} fill={COLORS.green}>{t.step2Known}</text>}
+                {i < 3 && <line x1={s.x + 30} y1={80} x2={s.x + 100} y2={80}
+                  stroke={COLORS.mid} strokeWidth={1.5} markerEnd="url(#bk-a2)" />}
+              </g>
+            );
+          })}
+
+          {/* Backward propagation arrow */}
+          <path d="M 455 115 C 390 148 140 148 75 115" fill="none"
+            stroke={COLORS.green} strokeWidth={2} strokeDasharray="5 3" />
+          <text x={265} y={148} textAnchor="middle" fontSize={10}
+            fontWeight={600} fill={COLORS.green}>{t.step2Arrow}</text>
+
+          {/* Step-by-step calculation */}
+          {[
+            '① V(s₂) = 0 + 0.9 × 10 = 9',
+            '② V(s₁) = 0 + 0.9 × 9 = 8.1',
+            '③ V(s₀) = 0 + 0.9 × 8.1 = 7.29',
+          ].map((line, i) => (
+            <text key={i} x={80} y={178 + i * 22} fontSize={10}
+              fill={COLORS.dark} fontFamily={FONTS.mono}>{line}</text>
+          ))}
+        </svg>
+      ),
+    },
+    {
+      title: t.step3Title,
+      content: (
+        <svg viewBox={`0 0 ${W} 280`} className="w-full" style={{ fontFamily: FONTS.sans }}>
+          <text x={W / 2} y={22} textAnchor="middle" fontSize={13}
+            fontWeight={700} fill={COLORS.dark}>{t.step3Header}</text>
+
+          {/* Iteration rows */}
+          {iters.map((row, ri) => {
+            const y = 42 + ri * 52;
+            const isLast = ri === iters.length - 1;
+            const label = ri === 0 ? t.step3Init
+              : isLast ? t.step3Done
+              : `${t.step3Iter} ${ri}`;
+            return (
+              <g key={ri}>
+                <text x={58} y={y + 22} textAnchor="end" fontSize={10}
+                  fontWeight={isLast ? 700 : 400}
+                  fill={isLast ? COLORS.green : COLORS.dark}>{label}</text>
+                {row.map((v, ci) => {
+                  const cx = 80 + ci * 120;
+                  const isGoal = ci === 3;
+                  const prev = ri > 0 ? iters[ri - 1][ci] : v;
+                  const updated = ri > 0 && prev !== v;
+                  const frac = v / 10;
+                  const bg = isGoal ? '#d4edda'
+                    : v > 0 ? `rgba(59,130,246,${0.08 + frac * 0.25})`
+                    : COLORS.bgAlt;
+                  return (
+                    <g key={ci}>
+                      <rect x={cx} y={y} width={100} height={36} rx={6}
+                        fill={bg}
+                        stroke={updated ? COLORS.primary : COLORS.light}
+                        strokeWidth={updated ? 2 : 1} />
+                      <text x={cx + 50} y={y + 14} textAnchor="middle"
+                        fontSize={9} fill={COLORS.mid}>
+                        {isGoal ? t.step3Goal : `s${ci}`}
+                      </text>
+                      <text x={cx + 50} y={y + 30} textAnchor="middle"
+                        fontSize={12} fontWeight={updated ? 700 : 400}
+                        fill={updated ? COLORS.primary : COLORS.dark}
+                        fontFamily={FONTS.mono}>{fmtV(v)}</text>
+                    </g>
+                  );
+                })}
+                {ri < iters.length - 1 && (
+                  <text x={W / 2 + 20} y={y + 46} textAnchor="middle"
+                    fontSize={14} fill={COLORS.mid}>↓</text>
                 )}
               </g>
             );
           })}
 
-          <rect x={40} y={170} width={500} height={40} rx={6} fill={COLORS.bgAlt} stroke={COLORS.primary} strokeWidth={1} />
-          <text x={W / 2} y={187} textAnchor="middle" fontSize={11} fontWeight={600} fill={COLORS.primary}>
-            {t.step2Desc}
-          </text>
-          <text x={W / 2} y={203} textAnchor="middle" fontSize={11} fill={COLORS.mid}>
-            {t.step2ConvergenceDesc}
-          </text>
+          {/* Bottom note */}
+          <rect x={60} y={256} width={460} height={20} rx={4}
+            fill={COLORS.valid} stroke={COLORS.primary} strokeWidth={0.5} />
+          <text x={W / 2} y={269} textAnchor="middle" fontSize={10}
+            fontWeight={600} fill={COLORS.primary}>{t.step3Note}</text>
         </svg>
       ),
     },

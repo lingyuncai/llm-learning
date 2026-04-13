@@ -99,15 +99,42 @@ Together, these two directions form the complete recursive structure of the Bell
 
 ## Bellman Equation
 
-The Bellman equation is the most fundamental recursive relationship in RL. Its intuition is simple: **the value of a state = immediate reward + discounted value of the next state**.
+### Why Do We Need the Bellman Equation?
+
+The ultimate goal of RL is to find the **optimal policy** $\pi^*$ — choosing the best action in every state. If we already knew $Q^*(s,a)$ (the optimal value of each state-action pair), the policy would be trivial: just pick the action with the highest Q-value: $\pi^*(s) = \arg\max_a Q^*(s,a)$. So **the core problem of RL reduces to: how to compute $V^*$ or $Q^*$?**
+
+The brute-force approach: for each state $s$, enumerate all possible future trajectories, compute the cumulative discounted reward for each, and take the expectation. The problem is that the number of trajectories grows **exponentially** with the number of steps ($T$ steps, $|A|$ actions per step = $|A|^T$ trajectories) — completely intractable. The brilliance of the Bellman equation: it transforms this exponential global search into a **local recursive relation** — you don't need to see the endpoint, just the value of your "one-step-away neighbors."
+
+### The Recursive Relation
+
+Core intuition: **the value of a state = immediate reward from taking one step + discounted value of the state you land in**.
 
 $$V^\pi(s) = \sum_a \pi(a|s) \sum_{s'} P(s'|s,a) \left[R(s,a,s') + \gamma V^\pi(s')\right]$$
 
-The optimal Bellman equation (taking the best action rather than weighting by policy probabilities):
+This is exactly the V→Q→V combination from the previous section: at state $s$, choose action $a$ according to policy $\pi$ (outer sum), the environment transitions to next state $s'$ according to $P(s'|s,a)$ (inner sum), and the value = immediate reward $R$ + discount factor $\gamma$ × next-state value $V(s')$.
+
+The optimal Bellman equation — instead of weighting by policy probabilities, directly take the action that achieves the highest value:
 
 $$V^*(s) = \max_a \sum_{s'} P(s'|s,a) \left[R(s,a,s') + \gamma V^*(s')\right]$$
 
+### Bellman Backup Visualization
+
+The three-step visualization below shows how the Bellman equation goes from "a recursive formula" to "an executable algorithm":
+
+**Step 1 — Single-Step Backup**: Given the values $V(s')$ of next states, compute $R + \gamma \cdot V(s')$ for each possible action and take the maximum — that's the current state's $V(s)$. This is one Bellman "backup" — propagating value backward from successor states to the current state.
+
+**Step 2 — Chain Propagation**: The terminal state's value is known (e.g., goal cell V=10). Through successive Backups, we compute the values of s₂, s₁, s₀ — information propagates layer by layer from the endpoint back to the start.
+
+**Step 3 — Value Iteration**: In real environments, state relationships form a graph, not a chain. Value Iteration performs Backup on **all states** repeatedly — each iteration, values near the terminal states stabilize first, then spread outward like a wave, until all states' $V$ values converge to $V^*$.
+
 <BellmanBackup client:visible locale="en" />
+
+### From Equation to Algorithm
+
+The Bellman equation is not just a mathematical property — it directly yields the core algorithms of RL:
+
+- **Value Iteration** (requires environment model): Repeatedly apply the Bellman update $V(s) \leftarrow \max_a \sum_{s'} P(s'|s,a)[R + \gamma V(s')]$ to every state until convergence. But this requires knowing the transition probabilities $P(s'|s,a)$ — a model-based method.
+- **Q-Learning** (no environment model needed): The Agent collects samples $(s, a, r, s')$ through interaction with the environment and uses these samples to approximate the Bellman update — turning "requires full model" into "only needs samples." This is the model-free method discussed in the next section.
 
 ## Value-Based Methods
 
