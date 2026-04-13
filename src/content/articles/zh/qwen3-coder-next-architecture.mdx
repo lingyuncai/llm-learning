@@ -61,6 +61,68 @@ Layer 47: Full Attention    ← 最后一层也是全注意力
 
 **关键设计**：所有 48 层无论注意力类型如何，都共享相同的 **MoE FFN** 结构。层类型的差异仅在注意力部分。
 
+### 1.3 GGUF 视角：一层长什么样？
+
+在 llama.cpp 的 GGUF 格式中，模型的每一层由一组具名张量构成。以下是从实际 GGUF 文件中提取的两个代表性 block——一个 GatedDeltaNet 层和一个 Full Attention 层——让你直观看到每层的"物理构成"。
+
+**Block 0（GatedDeltaNet 层）：**
+
+```
+张量名                            形状              量化    用途
+───────────────────────────────────────────────────────────────────
+  # ── 注意力/SSM 部分 ──
+blk.0.attn_norm.weight           [2048]            F32    注意力前 RMSNorm
+blk.0.attn_qkv.weight           [2048, 8192]      Q4_K   Q+K+V 合并投影
+blk.0.attn_gate.weight           [2048, 4096]      Q4_K   输出门控向量 z
+blk.0.ssm_ba.weight              [2048, 64]        Q4_K   β+α 合并投影
+blk.0.ssm_conv1d.weight          [4, 8192]         F32    1D 因果卷积核
+blk.0.ssm_dt                     [32]              F32    时间步偏置 (dt_bias)
+blk.0.ssm_a                      [32]              F32    状态衰减系数 (-exp(A))
+blk.0.ssm_norm.weight            [128]             F32    SSM 输出 RMSNorm
+blk.0.ssm_out.weight             [4096, 2048]      Q4_K   输出投影
+
+  # ── MoE 部分（所有层相同结构）──
+blk.0.post_attention_norm.weight [2048]            F32    MoE 前 RMSNorm
+blk.0.ffn_gate_inp.weight        [2048, 512]       F32    Router（512 expert 打分）
+blk.0.ffn_gate_exps.weight       [2048, 512, 512]  Q4_K   512 Expert gate 投影
+blk.0.ffn_up_exps.weight         [2048, 512, 512]  Q4_K   512 Expert up 投影
+blk.0.ffn_down_exps.weight       [512, 2048, 512]  Q6_K   512 Expert down 投影
+blk.0.ffn_gate_shexp.weight      [2048, 512]       Q4_K   Shared Expert gate
+blk.0.ffn_up_shexp.weight        [2048, 512]       Q4_K   Shared Expert up
+blk.0.ffn_down_shexp.weight      [512, 2048]       Q6_K   Shared Expert down
+blk.0.ffn_gate_inp_shexp.weight  [2048, 1]         F16    Shared Expert sigmoid 门控
+```
+
+**Block 3（Full Attention 层）：**
+
+```
+张量名                            形状              量化    用途
+───────────────────────────────────────────────────────────────────
+  # ── 注意力部分（与 Block 0 完全不同）──
+blk.3.attn_norm.weight           [2048]            F32    注意力前 RMSNorm
+blk.3.attn_q.weight              [2048, 8192]      Q4_K   Q 投影（含 sigmoid gate）
+blk.3.attn_k.weight              [2048, 512]       Q4_K   K 投影（2 heads × 256）
+blk.3.attn_v.weight              [2048, 512]       Q6_K   V 投影（2 heads × 256）
+blk.3.attn_q_norm.weight         [256]             F32    Q RMSNorm
+blk.3.attn_k_norm.weight         [256]             F32    K RMSNorm
+blk.3.attn_output.weight         [4096, 2048]      Q4_K   注意力输出投影
+
+  # ── MoE 部分（与 Block 0 完全相同，省略）──
+blk.3.ffn_*                      ...                      （同上）
+```
+
+对比两种层类型的关键差异：
+
+| 差异 | GatedDeltaNet (Block 0) | Full Attention (Block 3) |
+|------|------------------------|-----------------------------|
+| QKV 投影 | 合并 `attn_qkv` [2048→8192] | 分开 `attn_q/k/v` |
+| 门控 | `attn_gate`（输出门控 z） | Q 内置 sigmoid gate |
+| 独有张量 | `ssm_*`（6 个 SSM 相关张量） | `attn_q/k_norm`（QK 归一化） |
+| 输出投影 | `ssm_out` [4096→2048] | `attn_output` [4096→2048] |
+| F32 敏感参数 | `ssm_a`, `ssm_dt`, `ssm_conv1d` | `attn_v` 使用 Q6_K |
+
+注意 MoE 部分（`ffn_*` 开头的张量）在两种层中完全一致——这就是上文提到的"层类型差异仅在注意力部分"的具体体现。
+
 ---
 
 ## 2. GatedDeltaNet：线性注意力层
@@ -93,28 +155,86 @@ $$
 
 先对旧状态施加逐元素指数衰减（$\alpha_t$ 依赖输入，每个状态元素有独立衰减速率），然后在衰减后的状态上执行 delta rule 更新——检索旧 value ($\tilde{H}_{t-1} k_t$)，计算差值，写入修正。这同时获得了门控的灵活遗忘能力和 delta rule 的精确覆写能力。
 
-### 2.2 输入投影与 Conv1d
+### 2.2 完整数据流与输入处理
 
-每层的输入经过两个线性投影：
+2.1 节给出了 Gated DeltaNet 的数学公式，但公式与实际模型之间还有一段距离。每个 GGUF 张量对应公式的哪一部分？数据从输入到输出经过了哪些变换？下面先给出一层 GatedDeltaNet 的完整前向传播流程，再逐步解释关键环节。
+
+#### 前向传播流程
+
+```
+┌───────────────── GatedDeltaNet 层前向传播 ──────────────────┐
+│                                                              │
+│  ① 三路并行投影                                              │
+│     x ─→ attn_qkv  [2048→8192] ─→ qkv [8192]              │
+│     x ─→ attn_gate [2048→4096] ─→ z [4096]    (输出门控)   │
+│     x ─→ ssm_ba    [2048→64]  ─→ β+α [64]    (衰减+写入)  │
+│                                                              │
+│  ② Conv1d 时序融合                                           │
+│     [conv_state; qkv] ─→ Conv1d(k=4) ─→ SiLU ─→ qkv'      │
+│      ↑ 前 3 token 缓存                                      │
+│                                                              │
+│  ③ 拆分 + 预处理                                             │
+│     qkv' → Q [128×16] + K [128×16] + V [128×32]            │
+│     Q ← L2Norm(Q) / √d_v     → 公式中 q_t                  │
+│     K ← L2Norm(K)            → 公式中 k_t                  │
+│     β ← sigmoid(β_raw)       → 公式中 β_t ∈ [0,1]          │
+│     gate ← softplus(α + dt_bias) × (-A)                     │
+│                               → 公式中 exp(α_t)             │
+│                                                              │
+│  ④ Delta Rule 状态更新                                       │
+│     H̃ = exp(gate) ⊙ H_{t-1}       ← delta_state [128,4096]│
+│     H_t = H̃ + β · k_t(v_t − H̃k_t)ᵀ                       │
+│     out_t = H_t · q_t                                        │
+│                                                              │
+│  ⑤ 输出门控                                                  │
+│     output = ssm_out( ssm_norm(out) ⊙ SiLU(z) )             │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 张量与公式的对应关系
+
+| GGUF 张量 | 形状 | 量化 | 对应公式 / 作用 |
+|-----------|------|------|----------------|
+| `attn_qkv` | $[2048, 8192]$ | Q4_K | 生成 $q, k, v$ 的原始值（经 Conv1d 后拆分） |
+| `attn_gate` | $[2048, 4096]$ | Q4_K | 输出门控 $z$，步骤⑤中控制 SSM 输出的信息流 |
+| `ssm_conv1d` | $[4, 8192]$ | F32 | 因果卷积核，步骤②中融合前 3 token 的局部上下文 |
+| `ssm_ba` | $[2048, 64]$ | Q4_K | 生成 $\beta_t$（写入强度）和 $\alpha_t$（衰减率） |
+| `ssm_dt` | $[32]$ | F32 | 时间步偏置 $\text{dt\_bias}$，步骤③中加到 $\alpha$ 上 |
+| `ssm_a` | $[32]$ | F32 | $-\exp(A_{\log})$，确保 $\exp(\text{gate}) < 1$ 实现衰减 |
+| `ssm_norm` | $[128]$ | F32 | 步骤⑤中输出的 RMSNorm（注意：不是 zero-centered 变体） |
+| `ssm_out` | $[4096, 2048]$ | Q4_K | 步骤⑤中将门控后的输出投影回隐藏维度 |
+
+#### 输入投影（步骤①）
+
+每层对输入 $x$ 做三路并行投影：
 
 | 投影 | 维度 | 量化 | 输出拆分 |
 |------|------|------|----------|
-| attn_qkv | $2048 \to 8192$ | Q4_K | Q $[128 \times 16]$ + K $[128 \times 16]$ + V $[128 \times 32]$ |
-| attn_gate | $2048 \to 4096$ | Q4_K | 门控向量 $z$ $[128 \times 32]$ |
+| `attn_qkv` | $2048 \to 8192$ | Q4_K | Q $[128 \times 16]$ + K $[128 \times 16]$ + V $[128 \times 32]$ |
+| `attn_gate` | $2048 \to 4096$ | Q4_K | 门控向量 $z$ $[128 \times 32]$ |
+| `ssm_ba` | $2048 \to 64$ | Q4_K | Beta + Alpha 合并（按 K-head 分组） |
 
-注意 **非对称头结构**：
+注意 **非对称头结构**：K heads = 16, V heads = 32（2:1 比例），head_dim = 128。V heads 是 K heads 的 2 倍，意味着状态矩阵 $H$ 在 V 方向更宽（$128 \times 4096$，其中 $4096 = 128 \times 32$），增强了记忆容量。
 
-- K heads = 16, head_dim = 128（对应 `ssm.group_count`）
-- V heads = 32, head_dim = 128（对应 `ssm.time_step_rank`）
-- V heads 是 K heads 的 2 倍
+#### 为什么需要 Conv1d？（步骤②）
 
-QKV 拼接后经过 **1D 因果卷积**（kernel=4），为每个位置引入短程时序上下文：
+`attn_qkv` 投影后得到 8192 维的 QKV 向量，但它**仅包含当前 token** $x_t$ 的信息。然而在步骤④的 delta rule 状态更新中，$k_t$ 和 $v_t$ 的质量直接决定了写入状态矩阵的 key-value 关联有多好。如果 $k_t, v_t$ 完全依赖单个 token，表达力就会受限。
+
+Conv1d 弥补了这个缺陷：通过 kernel=4 的因果卷积，**当前 token 的 QKV 在进入 delta rule 之前就融合了前 3 个 token 的信息**：
 
 $$
-\text{qkv}' = \text{SiLU}(\text{Conv1d}(\text{qkv}, \text{kernel}=4))
+\text{qkv}' = \text{SiLU}\!\left(\text{Conv1d}_{\text{depthwise}}\!\left([\underbrace{\text{conv\_state}}_{\text{前 3 token}};\; \underbrace{\text{qkv}}_{\text{当前 token}}],\; \text{kernel}=4\right)\right)
 $$
 
-这个 Conv1d 继承自 Mamba 的设计——在状态更新之前提供局部时序融合。卷积后再拆分为 Q、K、V 三组向量。
+这带来两个关键好处：
+
+1. **无损的短程上下文**：最近 3 个 token 的信息通过卷积直接注入 Q/K/V，无需经过状态矩阵 $H$ 的有损压缩。这意味着对于 4-token 窗口内的依赖，模型拥有精确的原始信息
+2. **与递推互补**：Conv1d 负责精确的短程依赖（4 token 窗口），delta rule 负责长程依赖（通过状态矩阵 $H$ 压缩表示）——两种机制分工明确
+
+`ssm_conv1d.weight [4, 8192]` 是**逐通道（depthwise）卷积核**——8192 个通道各有独立的 4 元素卷积核，不混合 Q/K/V 之间的信息，只在时间维度上做局部融合。运行时需要维护 `conv_state [3, 8192]` 缓存（见 2.7 节），存储前 3 个 token 的 qkv 值。
+
+这种 project → conv1d → recurrence 的三段式设计继承自 Mamba——在 [SSM 文章](./state-space-models) 中介绍的相同模式。Conv1d + SiLU 之后，输出被拆分为 Q、K、V 三组向量，进入后续的归一化和状态更新流程。
 
 ### 2.3 Q/K 归一化与 Beta 激活
 

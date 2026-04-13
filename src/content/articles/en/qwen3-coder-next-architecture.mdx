@@ -61,6 +61,68 @@ Compared to Jamba's 7:1 (Mamba:Attention) ratio, Qwen3-Coder-Next gives full att
 
 **Key design**: All 48 layers share the same **MoE FFN** structure regardless of attention type. The layer type difference is only in the attention component.
 
+### 1.3 GGUF Tensor View: What Does a Layer Look Like?
+
+In llama.cpp's GGUF format, each layer consists of a set of named tensors. Below are two representative blocks from the actual GGUF file — one GatedDeltaNet layer and one Full Attention layer — giving you a concrete view of each layer's "physical composition."
+
+**Block 0 (GatedDeltaNet layer):**
+
+```
+Tensor                            Shape             Quant   Role
+───────────────────────────────────────────────────────────────────
+  # ── Attention/SSM ──
+blk.0.attn_norm.weight           [2048]            F32     Pre-attention RMSNorm
+blk.0.attn_qkv.weight           [2048, 8192]      Q4_K    Combined Q+K+V projection
+blk.0.attn_gate.weight           [2048, 4096]      Q4_K    Output gate vector z
+blk.0.ssm_ba.weight              [2048, 64]        Q4_K    Combined β+α projection
+blk.0.ssm_conv1d.weight          [4, 8192]         F32     1D causal conv kernel
+blk.0.ssm_dt                     [32]              F32     Time-step bias (dt_bias)
+blk.0.ssm_a                      [32]              F32     State decay coeff (-exp(A))
+blk.0.ssm_norm.weight            [128]             F32     SSM output RMSNorm
+blk.0.ssm_out.weight             [4096, 2048]      Q4_K    Output projection
+
+  # ── MoE (same structure in all layers) ──
+blk.0.post_attention_norm.weight [2048]            F32     Pre-MoE RMSNorm
+blk.0.ffn_gate_inp.weight        [2048, 512]       F32     Router (scores 512 experts)
+blk.0.ffn_gate_exps.weight       [2048, 512, 512]  Q4_K    512 Expert gate projections
+blk.0.ffn_up_exps.weight         [2048, 512, 512]  Q4_K    512 Expert up projections
+blk.0.ffn_down_exps.weight       [512, 2048, 512]  Q6_K    512 Expert down projections
+blk.0.ffn_gate_shexp.weight      [2048, 512]       Q4_K    Shared Expert gate
+blk.0.ffn_up_shexp.weight        [2048, 512]       Q4_K    Shared Expert up
+blk.0.ffn_down_shexp.weight      [512, 2048]       Q6_K    Shared Expert down
+blk.0.ffn_gate_inp_shexp.weight  [2048, 1]         F16     Shared Expert sigmoid gate
+```
+
+**Block 3 (Full Attention layer):**
+
+```
+Tensor                            Shape             Quant   Role
+───────────────────────────────────────────────────────────────────
+  # ── Attention (entirely different from Block 0) ──
+blk.3.attn_norm.weight           [2048]            F32     Pre-attention RMSNorm
+blk.3.attn_q.weight              [2048, 8192]      Q4_K    Q projection (includes gate)
+blk.3.attn_k.weight              [2048, 512]       Q4_K    K projection (2 heads × 256)
+blk.3.attn_v.weight              [2048, 512]       Q6_K    V projection (2 heads × 256)
+blk.3.attn_q_norm.weight         [256]             F32     Q RMSNorm
+blk.3.attn_k_norm.weight         [256]             F32     K RMSNorm
+blk.3.attn_output.weight         [4096, 2048]      Q4_K    Attention output projection
+
+  # ── MoE (identical to Block 0, omitted) ──
+blk.3.ffn_*                      ...                       (same as above)
+```
+
+Key differences between the two layer types:
+
+| Difference | GatedDeltaNet (Block 0) | Full Attention (Block 3) |
+|------------|------------------------|-----------------------------|
+| QKV projection | Combined `attn_qkv` [2048→8192] | Separate `attn_q/k/v` |
+| Gating | `attn_gate` (output gate z) | Sigmoid gate built into Q |
+| Unique tensors | `ssm_*` (6 SSM-specific tensors) | `attn_q/k_norm` (QK normalization) |
+| Output proj | `ssm_out` [4096→2048] | `attn_output` [4096→2048] |
+| F32 precision | `ssm_a`, `ssm_dt`, `ssm_conv1d` all F32 | `attn_v` uses Q6_K |
+
+Note that MoE tensors (`ffn_*` prefix) are identical across both layer types — this is the concrete manifestation of the design principle from section 1.2: "layer type difference is only in the attention component."
+
 ---
 
 ## 2. GatedDeltaNet: Linear Attention Layers
@@ -93,22 +155,86 @@ $$
 
 First, the old state undergoes per-element exponential decay ($\alpha_t$ is input-dependent, giving each state element its own decay rate). Then the delta rule update is applied on the decayed state — retrieving the old value ($\tilde{H}_{t-1} k_t$), computing the correction, and writing it back. This combines flexible gating with precise associative memory.
 
-### 2.2 Input Projections and Conv1d
+### 2.2 Complete Data Flow and Input Processing
 
-Each layer projects the input through two linear layers:
+Section 2.1 presented the mathematical formulas for Gated DeltaNet, but there's a gap between formulas and the actual model. Which GGUF tensor corresponds to which part of the formula? What transformations does data undergo from input to output? Below is the complete forward pass for a GatedDeltaNet layer, followed by detailed explanations.
 
-| Projection | Dimensions | Quantization | Output split |
-|------------|-----------|--------------|--------------|
-| attn_qkv | $2048 \to 8192$ | Q4_K | Q $[128 \times 16]$ + K $[128 \times 16]$ + V $[128 \times 32]$ |
-| attn_gate | $2048 \to 4096$ | Q4_K | Gate vector $z$ $[128 \times 32]$ |
+#### Forward Pass Flow
 
-Note the **asymmetric head structure**: K heads = 16, V heads = 32 (2:1 ratio), both with head_dim = 128.
+```
+┌───────────────── GatedDeltaNet Layer Forward Pass ──────────────────┐
+│                                                                      │
+│  ① Three parallel projections                                        │
+│     x ─→ attn_qkv  [2048→8192] ─→ qkv [8192]                      │
+│     x ─→ attn_gate [2048→4096] ─→ z [4096]    (output gate)        │
+│     x ─→ ssm_ba    [2048→64]  ─→ β+α [64]    (decay + write)      │
+│                                                                      │
+│  ② Conv1d temporal fusion                                            │
+│     [conv_state; qkv] ─→ Conv1d(k=4) ─→ SiLU ─→ qkv'              │
+│      ↑ cached last 3 tokens                                         │
+│                                                                      │
+│  ③ Split + preprocessing                                             │
+│     qkv' → Q [128×16] + K [128×16] + V [128×32]                    │
+│     Q ← L2Norm(Q) / √d_v     → q_t in formula                      │
+│     K ← L2Norm(K)            → k_t in formula                      │
+│     β ← sigmoid(β_raw)       → β_t ∈ [0,1] in formula              │
+│     gate ← softplus(α + dt_bias) × (-A)                             │
+│                               → exp(α_t) in formula                 │
+│                                                                      │
+│  ④ Delta Rule state update                                           │
+│     H̃ = exp(gate) ⊙ H_{t-1}       ← delta_state [128,4096]        │
+│     H_t = H̃ + β · k_t(v_t − H̃k_t)ᵀ                               │
+│     out_t = H_t · q_t                                                │
+│                                                                      │
+│  ⑤ Output gating                                                     │
+│     output = ssm_out( ssm_norm(out) ⊙ SiLU(z) )                     │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
 
-The concatenated QKV passes through a **1D causal convolution** (kernel=4) with SiLU activation before splitting:
+#### Tensor-to-Formula Mapping
+
+| GGUF Tensor | Shape | Quant | Formula / Role |
+|-------------|-------|-------|----------------|
+| `attn_qkv` | $[2048, 8192]$ | Q4_K | Produces raw $q, k, v$ (split after Conv1d) |
+| `attn_gate` | $[2048, 4096]$ | Q4_K | Output gate $z$, controls SSM output flow in step ⑤ |
+| `ssm_conv1d` | $[4, 8192]$ | F32 | Causal conv kernel, fuses last 3 tokens' context in step ② |
+| `ssm_ba` | $[2048, 64]$ | Q4_K | Produces $\beta_t$ (write strength) and $\alpha_t$ (decay rate) |
+| `ssm_dt` | $[32]$ | F32 | Time-step bias $\text{dt\_bias}$, added to $\alpha$ in step ③ |
+| `ssm_a` | $[32]$ | F32 | $-\exp(A_{\log})$, ensures $\exp(\text{gate}) < 1$ for decay |
+| `ssm_norm` | $[128]$ | F32 | Output RMSNorm in step ⑤ (note: NOT zero-centered variant) |
+| `ssm_out` | $[4096, 2048]$ | Q4_K | Projects gated output back to hidden dim in step ⑤ |
+
+#### Input Projections (Step ①)
+
+Each layer performs three parallel projections on input $x$:
+
+| Projection | Dimensions | Quant | Output split |
+|------------|-----------|-------|--------------|
+| `attn_qkv` | $2048 \to 8192$ | Q4_K | Q $[128 \times 16]$ + K $[128 \times 16]$ + V $[128 \times 32]$ |
+| `attn_gate` | $2048 \to 4096$ | Q4_K | Gate vector $z$ $[128 \times 32]$ |
+| `ssm_ba` | $2048 \to 64$ | Q4_K | Beta + Alpha combined (grouped by K-head) |
+
+Note the **asymmetric head structure**: K heads = 16, V heads = 32 (2:1 ratio), head_dim = 128. Having 2x more V-heads means the state matrix $H$ is wider in the V direction ($128 \times 4096$, where $4096 = 128 \times 32$), increasing memory capacity.
+
+#### Why Conv1d? (Step ②)
+
+The `attn_qkv` projection produces an 8192-dimensional QKV vector that **only contains information from the current token** $x_t$. But in the delta rule state update (step ④), the quality of $k_t$ and $v_t$ directly determines how good the key-value associations written to the state matrix are. If $k_t, v_t$ depend entirely on a single token, expressiveness is limited.
+
+Conv1d addresses this: with a kernel=4 causal convolution, **the current token's QKV incorporates information from the previous 3 tokens before entering the delta rule**:
 
 $$
-\text{qkv}' = \text{SiLU}(\text{Conv1d}(\text{qkv}, \text{kernel}=4))
+\text{qkv}' = \text{SiLU}\!\left(\text{Conv1d}_{\text{depthwise}}\!\left([\underbrace{\text{conv\_state}}_{\text{last 3 tokens}};\; \underbrace{\text{qkv}}_{\text{current token}}],\; \text{kernel}=4\right)\right)
 $$
+
+This provides two key benefits:
+
+1. **Lossless short-range context**: The last 3 tokens' information is directly injected into Q/K/V via convolution, bypassing the lossy compression of state matrix $H$. For dependencies within the 4-token window, the model has access to precise, original information
+2. **Complementary to recurrence**: Conv1d handles precise short-range dependencies (4-token window), delta rule handles long-range dependencies (compressed via state matrix $H$) — clear division of labor
+
+`ssm_conv1d.weight [4, 8192]` is a **depthwise convolution kernel** — each of the 8192 channels has its own independent 4-element kernel. It doesn't mix information across Q/K/V channels; it only fuses along the time dimension. At runtime, a `conv_state [3, 8192]` cache (see section 2.7) stores the previous 3 tokens' qkv values.
+
+This project → conv1d → recurrence three-stage pipeline is inherited from Mamba — the same pattern introduced in the [SSM article](./state-space-models). After Conv1d + SiLU, the output is split into Q, K, V vectors for subsequent normalization and state update.
 
 ### 2.3 Q/K Normalization and Beta Activation
 
