@@ -1,0 +1,427 @@
+---
+title: "Scheduling and Execution Optimization"
+slug: scheduling-execution
+locale: en
+tags: [compiler, scheduling, cuda-stream, cuda-graph, memory-planning, activation-checkpointing, multi-backend]
+prerequisites: [codegen-triton-backend, quantization-compilation, distributed-compilation]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: website
+    title: "CUDA C++ Programming Guide — Streams"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#streams"
+  - type: website
+    title: "CUDA Graphs"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-graphs"
+  - type: paper
+    title: "Checkmate: Breaking the Memory Wall with Optimal Tensor Rematerialization"
+    url: "https://arxiv.org/abs/1910.02653"
+  - type: paper
+    title: "Dynamic Tensor Rematerialization"
+    url: "https://arxiv.org/abs/2006.09616"
+  - type: website
+    title: "TorchInductor: A PyTorch Native Compiler"
+    url: "https://dev-discuss.pytorch.org/t/torchinductor-a-pytorch-native-compiler-with-define-by-run-ir-and-target-agnostic-codegen/747"
+  - type: website
+    title: "PyTorch Activation Checkpointing"
+    url: "https://pytorch.org/docs/stable/checkpoint.html"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import KernelSchedulerDemo from '../../../components/interactive/KernelSchedulerDemo.tsx';
+import MemoryScheduleVisualizer from '../../../components/interactive/MemoryScheduleVisualizer.tsx';
+import MultiBackendDispatch from '../../../components/interactive/MultiBackendDispatch.tsx';
+
+<CompilerStackMap currentArticle="scheduling-execution" mode="compact" locale="en" client:visible />
+
+## Introduction
+
+In the previous articles, we completed the **code generation** phase of the compiler — from high-level IR to Triton kernels, LLVM IR, PTX, and finally executable GPU binaries. But generating kernels is only half the story. Once a complete Transformer model has been compiled into dozens or even hundreds of kernels, a critical question emerges: **In what order and on which hardware resources should these kernels execute?**
+
+This is the core problem of **Scheduling and Execution Optimization**. The scheduler sits between code generation and hardware execution, needing to simultaneously optimize three competing objectives:
+
+1. **Maximize parallelism**: Independent kernels should execute concurrently on different CUDA Streams rather than waiting serially
+2. **Minimize peak memory**: Different execution orderings produce vastly different tensor lifetime overlaps, leading to 2-3x differences in peak memory
+3. **Efficient multi-backend dispatch**: Different operation types need to be dispatched to the most suitable hardware backend (cuBLAS, Triton, FlashAttention), while avoiding costly CPU fallbacks
+
+Scheduling bridges **compile-time optimization** and **runtime efficiency**. A well-designed scheduler can improve end-to-end performance by 20-40% without changing any kernel code. This article explores three core scheduling strategies in depth: kernel-level parallel scheduling, memory-aware scheduling, and multi-backend dispatch. We also provide a detailed discussion of CUDA Graphs, an increasingly important execution optimization technique.
+
+## Kernel Scheduling Strategies
+
+### Dependency Analysis and Topological Sorting
+
+The first step in scheduling is **dependency analysis**. The compiler's fusion phase partitions the computation graph into fusion groups, each corresponding to one or more kernels. These kernels have data dependencies — kernel B needs to read a tensor written by kernel A. The scheduler first builds a **DAG (Directed Acyclic Graph)** to express these dependencies.
+
+In a typical Transformer layer, the kernel DAG structure looks roughly like this:
+
+- **QKV Projection** (MatMul) → **Attention Score** (MatMul) → **Softmax** (Reduction) → **Attention × V** (MatMul) → **Output Projection** (MatMul) → **LayerNorm**
+
+This main chain is entirely serial — each kernel depends on the previous one's output. But in the FFN (Feed-Forward Network) block, the situation differs:
+
+- **FFN Up** and **FFN Gate** (two MatMuls) can execute **in parallel**, since they read the same input but produce independent outputs
+- The **GeLU/SiLU** activation and **element-wise multiply** must wait for both branches to complete
+
+Performing a **topological sort** on this DAG yields multiple valid execution orderings. The key insight is: **different topological orderings have significantly different performance characteristics**. Which ordering to choose depends on our optimization target — maximizing parallelism or minimizing memory.
+
+### CUDA Stream Parallelism
+
+NVIDIA GPUs support kernel-level parallel execution through the **CUDA Stream** mechanism. A CUDA Stream is a sequence of GPU operations that execute in order; operations on different Streams can execute in parallel (if hardware resources permit).
+
+The problem with **serial execution (Single Stream)** is clear: even if two kernels are completely independent, they must execute sequentially. Worse, each kernel launch incurs approximately **5-15 microseconds** of CPU-side overhead (launch overhead). For kernels that are small in compute but numerous (like element-wise operations), launch overhead can account for over 30% of total time.
+
+The **multi-Stream parallel** scheduling algorithm is typically based on **Greedy List Scheduling**:
+
+1. Build the kernel dependency DAG
+2. Perform topological sort to obtain a ready queue (all kernels whose dependencies are satisfied)
+3. For each ready kernel, choose the **earliest available Stream** — the one whose last kernel finishes earliest
+4. If a kernel has cross-Stream dependencies, insert a **CUDA Event** synchronization point
+5. Repeat until all kernels are scheduled
+
+CUDA Events are lightweight GPU-side synchronization primitives. Stream A can record an event, and Stream B can wait on that event — this is much cheaper than `cudaDeviceSynchronize()`, which synchronizes all Streams.
+
+In practice, using 2-4 Streams typically captures most of the parallelism benefits. More Streams may actually degrade performance due to hardware resource contention (SM contention, memory bandwidth saturation).
+
+<KernelSchedulerDemo locale="en" client:visible />
+
+The visualization above compares three scheduling modes. Observe:
+
+- In **Serial execution**, the red gaps between kernels represent launch overhead
+- In **Multi-Stream parallel**, independent kernels are assigned to different Streams for concurrent execution
+- In **CUDA Graph** mode, the entire kernel graph is submitted at once, reducing launch overhead to a single instance
+
+### CUDA Graph Basics
+
+CUDA Graph is an execution optimization mechanism introduced by NVIDIA in CUDA 10.0. The core idea is to **pre-record (capture)** a series of kernel launches into a graph structure, then **replay the entire graph with a single launch**.
+
+```python
+# CUDA Graph capture pseudocode
+with torch.cuda.graph(graph):
+    # These operations are captured, not executed
+    y = model(x)
+
+# Replay: single launch, all kernels execute automatically per dependencies
+graph.replay()
+```
+
+CUDA Graph's performance advantages come from three sources:
+
+1. **Elimination of launch overhead**: N kernel launches from CPU→GPU become 1
+2. **Optimized dependency scheduling**: The GPU driver can see the complete dependency graph and make better scheduling decisions than runtime
+3. **Reduced CPU-GPU synchronization**: The entire graph executes autonomously on the GPU without CPU waiting per-kernel
+
+However, CUDA Graph has a significant limitation — **static structure**. On Pre-Hopper (< CC 9.0) architectures, once a graph is captured, its structure (number of kernels, dependencies, grid/block configuration) cannot change. This means:
+
+- **Dynamic shapes**: If batch size or sequence length changes, the graph must be re-captured
+- **Conditional logic**: `if-else` branches cannot be expressed within the graph
+- **Dynamic loops**: Loop counts must be determined at capture time
+
+We discuss how the Hopper architecture partially breaks through these limitations via Conditional Nodes in a later section.
+
+## TorchInductor Scheduler Design
+
+### Fusion Group DAG as Input
+
+The TorchInductor scheduler receives not the raw operation graph, but the **fusion group DAG** produced after fusion decisions. Each fusion group corresponds to a Triton kernel (or cuBLAS/cuDNN call). This means the scheduler operates at a relatively coarse granularity — a typical Transformer layer may have only 15-30 fusion groups rather than hundreds of atomic operations.
+
+### Dual-Objective Optimization
+
+The TorchInductor scheduler must simultaneously optimize two objectives:
+
+1. **Minimize execution time**: Through parallel scheduling and reduced synchronization waits
+2. **Minimize peak memory**: By controlling tensor lifetimes and freeing intermediate results as early as possible
+
+These two objectives frequently conflict. Consider the following scenario:
+
+- Operation A produces tensor T (256 MB), consumed by both B and C
+- If B executes before C (serial), T can be freed immediately after C executes
+- If B and C execute in parallel (two Streams), T must remain alive until both complete
+
+More parallelism means more tensors alive simultaneously, leading to higher peak memory. TorchInductor's approach is: **time as the primary objective, memory as a constraint**. The scheduler first tries to maximize parallelism, then checks whether it would exceed the memory budget. If so, it falls back to a more conservative scheduling strategy.
+
+### Scheduling Heuristics
+
+Core heuristics used by the TorchInductor scheduler include:
+
+**Priority ordering**: Kernel scheduling priority is determined by:
+- **Critical path length**: Kernels on the critical path get higher priority (similar to the Critical Path Method in project management)
+- **Successor count**: Nodes with more successor kernels are scheduled first to unblock downstream work earlier
+- **Memory release potential**: If scheduling a kernel would free its last input tensor, that kernel gets priority
+
+**Buffer reuse**: The scheduler cooperates with the memory allocator to identify buffer reuse opportunities. If kernel B's output is the same size as kernel A's input, and A's tensor is no longer needed when B starts, B can reuse A's buffer in-place.
+
+**Interaction with fusion decisions**: There is an important feedback loop between the scheduler and the fusion pass. In some cases, the scheduler may find that two fusion groups that should execute in parallel can only run serially due to Stream count limitations. In such cases, further fusing them into a single larger kernel might be better — eliminating kernel launch overhead. TorchInductor handles this by iteratively running fusion + scheduling.
+
+### Scheduler Limitations
+
+Current limitations of the TorchInductor scheduler include:
+
+- **Single GPU assumption**: The scheduler does not handle multi-GPU communication scheduling (this is handled by distributed frameworks)
+- **Heuristic-driven**: Scheduling decisions are based on heuristic rules rather than precise cost models
+- **Static scheduling**: Scheduling results are determined at compile time and do not adapt dynamically to runtime load
+
+These limitations leave room for future improvements. Academic work has modeled the scheduling problem as ILP (Integer Linear Programming), which can find optimal solutions in reasonable time.
+
+## Memory Scheduling Optimization
+
+### Tensor Lifetime Analysis
+
+The core of memory scheduling optimization is **Tensor Lifetime Analysis**. For each intermediate tensor in the computation graph, we need to determine:
+
+- **Production time**: Which operation created this tensor
+- **Last use time**: Which operation last reads this tensor
+- **Size**: How much memory the tensor occupies
+
+A tensor's lifetime spans from production to last use. After its lifetime ends, its memory can be freed or reused. The key insight is: **different execution orderings produce different tensor lifetime overlap patterns, leading to dramatically different peak memory**.
+
+### Impact of Execution Order on Peak Memory
+
+Consider a computation graph with branch structure (common in Transformers, e.g., residual connections around attention and FFN). Different topological orderings of the same DAG can lead to **2-3x** differences in peak memory.
+
+**BFS (Breadth-First) scheduling** tends to expand all branches simultaneously, causing intermediate tensors from all branches to be alive at once. This maximizes parallelism but also maximizes memory usage.
+
+**DFS (Depth-First) scheduling** completes one branch before starting the next. This means intermediate tensors from one branch can be freed before another branch begins. Peak memory is lower, but some parallelism may be sacrificed.
+
+<MemoryScheduleVisualizer locale="en" client:visible />
+
+The visualization above clearly shows the memory usage differences between BFS and DFS scheduling. Note how DFS scheduling frees tensors by completing branches earlier, significantly reducing peak memory. Enabling Activation Checkpointing further reduces peak memory.
+
+### Recompute vs Store Trade-off
+
+When memory is insufficient to hold all intermediate tensors, the compiler faces a classic trade-off: **store or recompute**.
+
+**Store strategy**: Keep all intermediate tensors, trading space for time. Advantage: no extra computation. Disadvantage: high memory overhead.
+
+**Recompute strategy**: Release some intermediate tensors and recompute them from upstream when needed. Advantage: saves memory. Disadvantage: increases computation.
+
+The optimal strategy depends on the specific computation graph structure and hardware constraints. Some rules of thumb:
+
+- **Cheap operations** (element-wise, activation) output tensors are good recomputation candidates — minimal compute cost but potentially large memory footprint
+- **Expensive operations** (MatMul, Attention) output tensors should be preserved whenever possible — recomputation cost is too high
+- **Non-deterministic operations** (e.g., dropout) outputs must be preserved — recomputation would produce different results
+
+### Activation Checkpointing
+
+**Activation Checkpointing** (also called gradient checkpointing) systematizes the recompute-vs-store trade-off. During training's forward pass, instead of keeping all layers' activations, only selected **checkpoints** are retained. When the backward pass needs a missing activation, it recomputes from the nearest checkpoint.
+
+**Manual Checkpointing** (PyTorch `torch.utils.checkpoint`):
+
+```python
+# Manually set checkpoint at each Transformer block
+class TransformerBlock(nn.Module):
+    def forward(self, x):
+        # Intermediate activations of this function are not saved
+        # They will be recomputed during backward pass
+        return checkpoint(self._forward, x)
+```
+
+Manual checkpointing is simple but coarse-grained — it can only set checkpoints at module boundaries.
+
+**Checkmate (Optimal Tensor Rematerialization)** is an academic work that formulates the checkpointing problem as **Integer Linear Programming (ILP)**:
+
+- **Variables**: For each timestep and each tensor, whether to store/release/recompute
+- **Constraints**: Peak memory must not exceed budget; tensors needed for backward must be obtainable
+- **Objective**: Minimize total recomputation overhead
+
+Checkmate's ILP approach finds mathematically optimal checkpointing strategies, achieving peak memory savings of 40-60% (compared to no checkpointing) with only 20-35% recomputation overhead. However, ILP solving time grows exponentially with graph size, potentially requiring minutes for large models.
+
+**Dynamic Tensor Rematerialization (DTR)** takes a different approach, making runtime decisions about which tensors to evict:
+
+- Maintains a priority queue ordered by tensor "cost-effectiveness" — large tensor + low recomputation cost = high eviction priority
+- When memory is insufficient, evicts the tensor at the queue head
+- Complements compile-time static checkpointing
+
+### In-place Operations and Buffer Reuse
+
+Beyond checkpointing, compilers can reduce memory usage through **in-place operations** and **buffer reuse**:
+
+**In-place operations**: Some operations can modify input tensors in place without allocating new output buffers. For example, ReLU can zero out negative values in place. The condition is that the input tensor is not needed by any other operation after this one.
+
+**Buffer reuse** (also called memory planning): The compiler analyzes all tensor lifetimes, finds non-overlapping tensor pairs, and has them share the same physical memory. This is analogous to **register allocation** in compilers — except allocating GPU memory rather than CPU registers.
+
+TorchInductor's buffer reuse strategy:
+1. Sort all intermediate tensors by size
+2. For each tensor, check if there is an allocated but lifetime-expired buffer available for reuse
+3. If a size-matching (or close) buffer is available, reuse it
+4. Otherwise, allocate a new buffer
+
+Through buffer reuse, a GPT-2 scale model can reduce total intermediate tensor memory usage by approximately 35-50%.
+
+## Multi-Backend Support
+
+### TorchInductor's Backend Ecosystem
+
+TorchInductor does not have just one code generation backend. It dispatches different fusion groups to different backends based on operation type and hardware capabilities:
+
+| Operation Type | Default Backend | Notes |
+|---------------|----------------|-------|
+| MatMul/GEMM | cuBLAS | NVIDIA's highly optimized matrix multiplication library |
+| Attention | FlashAttention | Fused attention kernel (via `torch.nn.functional.scaled_dot_product_attention`) |
+| Element-wise | Triton | Compiler-generated fused kernels with high flexibility |
+| Norm (LayerNorm, RMSNorm) | Triton | Can fuse with preceding/following operations |
+| Convolution | cuDNN | Convolution-specialized optimization library |
+| Custom ops | C++/CPU fallback | Operations that cannot be compiled for GPU |
+
+This mixed strategy is the practical optimum. Specialized libraries (cuBLAS, FlashAttention) have extreme optimizations for specific operations, while Triton provides flexible kernel fusion capability. The combination covers the vast majority of workloads.
+
+### MLIR Multi-Backend Architecture
+
+The MLIR (Multi-Level IR) ecosystem's multi-backend support is more systematic. Through dialect progressive lowering, the same high-level IR can be lowered to different hardware backends:
+
+- **NVVM dialect** → NVIDIA GPU PTX → cubin
+- **ROCDL dialect** → AMD GPU GCN/CDNA ISA → hsaco
+- **SPIR-V dialect** → Intel GPU / Vulkan → SPIR-V binary
+- **IREE HAL (Hardware Abstraction Layer)** → Cross-platform unified interface
+
+IREE's HAL is particularly noteworthy. It provides a **unified execution model** — regardless of whether the underlying hardware is CUDA, Vulkan, or CPU, the upper-level scheduling logic remains consistent. This allows the same compiled model to run on different hardware by simply swapping the HAL driver.
+
+### The Cost of CPU Fallback
+
+When an operation cannot execute on the GPU (e.g., custom Python operations, unsupported data types, or complex control flow), TorchInductor falls back to CPU execution. This seems like a reasonable fallback strategy, but the actual cost is extremely high.
+
+**Hidden costs of CPU fallback**:
+
+1. **GPU→CPU data transfer**: Copying a tensor from GPU memory to CPU memory. For a `[batch, seq_len, hidden_dim]` tensor (e.g., [32, 2048, 4096]) in FP16, that is about 512 MB, taking approximately 20ms on PCIe Gen4 x16 (~25 GB/s)
+2. **CPU computation**: Even simple operations are 10-100x slower on CPU than GPU
+3. **CPU→GPU data transfer**: Copying results back to GPU memory takes another ~20ms
+4. **Pipeline disruption**: During data transfer, the GPU sits idle. If using CUDA Graphs, a single CPU fallback breaks the entire graph capture
+
+**A single CPU fallback operation can have total latency of 40-60ms — while the entire Transformer layer's GPU execution time might be only 2-5ms.** This means one CPU fallback can degrade overall performance by 10-30x.
+
+<MultiBackendDispatch locale="en" client:visible />
+
+The visualization above shows the performance impact of different dispatch strategies. Pay particular attention to the "Mixed + CPU Fallback" mode, where a single CPU fallback operation (Custom Norm) dominates the total execution time.
+
+### Heterogeneous Dispatch Strategies
+
+Strategies to avoid CPU fallback include:
+
+1. **Operator replacement**: Replace unsupported operations with functionally equivalent GPU-compatible operation compositions. For example, certain custom norms can be decomposed into standard reduce + element-wise operations
+2. **Triton custom kernels**: For truly irreducible custom operations, write Triton kernels to replace CPU implementations
+3. **Graph break**: TorchInductor "breaks" the graph when encountering uncompilable operations, splitting it into multiple segments. Each segment is compiled and executed separately. While this introduces extra launch overhead, it avoids CPU fallback
+4. **Eager fallback elimination**: `torch.compile`'s `fullgraph=True` mode rejects graphs containing uncompilable operations, forcing developers to rewrite their code
+
+In production deployment, eliminating all CPU fallbacks is the top priority for performance optimization. A common verification method is using the `TORCH_COMPILE_DEBUG=1` environment variable to check for "graph break" and "fallback" warnings in compilation logs.
+
+## CUDA Graph Deep Dive
+
+### Capture/Replay Mechanism
+
+CUDA Graph capture is implemented through **stream capture**:
+
+```python
+# PyTorch CUDA Graph API
+g = torch.cuda.CUDAGraph()
+
+# Warmup (allocate memory, ensure all kernels are compiled)
+with torch.cuda.stream(s):
+    for _ in range(3):
+        out = model(static_input)
+
+# Capture
+with torch.cuda.graph(g, stream=s):
+    out = model(static_input)
+
+# Replay (can be repeated many times)
+static_input.copy_(new_input)  # Must update input in-place
+g.replay()
+```
+
+During capture, all CUDA API calls (kernel launches, memory copies, event synchronization) are recorded into the graph structure rather than executed immediately. During replay, the GPU driver submits the entire graph to the hardware scheduler as a single unit.
+
+**Key constraints**:
+- **Fixed memory addresses**: All tensor GPU memory addresses within the graph are determined at capture time and cannot change during replay. This means inputs must be updated via `copy_()`
+- **Static shapes**: All tensor shapes are determined at capture time
+- **No CPU logic**: No CPU-side Python logic (if/else, dynamic loops) within the graph
+- **No dynamic memory allocation**: Cannot call `torch.empty()` or similar allocation functions within the graph
+
+### Hopper Conditional Nodes
+
+The NVIDIA Hopper architecture (Compute Capability 9.0+) introduces **Conditional Nodes**, partially breaking through CUDA Graph's static limitations. Conditional Nodes allow expressing limited control flow within graphs:
+
+**If-Then nodes**: Execute a subgraph based on a GPU-side scalar value. For example, early stopping checks can be performed on the GPU without CPU synchronization.
+
+**While nodes**: Repeat a subgraph based on a GPU-side condition value. This enables iterative algorithms (such as iterative refinement) to complete within the graph.
+
+```cpp
+// CUDA Graph Conditional Node pseudocode (CUDA C++ API)
+cudaGraphConditionalHandle handle;
+cudaGraphConditionalHandleCreate(&handle, graph, defaultLaunch, flags);
+
+// Conditional subgraph: executes when handle value > 0
+cudaGraphAddChildGraphNode(&condNode, graph, &deps, numDeps, conditionalGraph);
+```
+
+Conditional Node limitations:
+- Condition values must be **GPU-side scalars** (cannot depend on CPU-side computation)
+- Supported control flow patterns are limited (only if-then and while, not arbitrary branching)
+- Subgraphs themselves are still static
+
+Despite these limitations, Conditional Nodes enable many workloads that previously could not use CUDA Graphs (such as verification loops in speculative decoding, early stopping in autoregressive generation) to benefit from them.
+
+### Dynamic Shape Challenges
+
+Dynamic shapes are CUDA Graph's biggest practical obstacle. In LLM inference, sequence length almost always varies dynamically. Solutions include:
+
+1. **Padding + fixed shapes**: Pad inputs to a fixed size. Simple but wastes computation
+2. **Shape buckets**: Pre-capture graphs for several common shapes (e.g., seq_len = 128, 256, 512, 1024, 2048) and select the closest at runtime. This is the strategy TensorRT employs
+3. **Graph parameterization**: CUDA Graph supports modifying certain node parameters (such as kernel grid size) during replay, allowing limited shape variation
+4. **Multi-graph pool**: Maintain a graph cache indexed by (shape, dtype). New shapes trigger new graph captures
+
+### TorchInductor CUDA Graph Trees
+
+TorchInductor implements a mechanism called **CUDA Graph Trees** to manage multiple CUDA Graphs:
+
+```python
+# torch.compile's CUDA Graph support
+model = torch.compile(model, mode="reduce-overhead")
+```
+
+`mode="reduce-overhead"` enables CUDA Graph Trees. How it works:
+
+1. **Tree structure**: Each distinct execution path (determined by guards/shapes) corresponds to a tree node
+2. **Lazy capture**: The first time a new path is encountered, a graph is captured; subsequent visits replay directly
+3. **Memory pool sharing**: Different graphs can share the same memory pool, reducing memory fragmentation
+4. **Automatic warmup**: TorchInductor automatically handles warmup iterations, ensuring memory allocations stabilize before capture
+
+CUDA Graph Trees eliminate most of the complexity of manually managing CUDA Graphs. However, note:
+
+- **First-compilation latency**: Graph capture happens at runtime, making the first few iterations slower
+- **Memory overhead**: Each graph pins a set of memory addresses; multiple graphs mean multiple copies of memory
+- **Compatibility**: Not all PyTorch operations are compatible with CUDA Graph capture
+
+### Performance Gains
+
+In typical LLM inference workloads, CUDA Graph performance gains:
+
+| Scenario | Without CUDA Graph | With CUDA Graph | Speedup |
+|----------|-------------------|-----------------|---------|
+| GPT-2 Decode (batch=1) | 2.8 ms/token | 1.2 ms/token | 2.3x |
+| LLaMA-7B Decode (batch=1) | 8.5 ms/token | 5.1 ms/token | 1.7x |
+| LLaMA-70B Decode (batch=32) | 45 ms/token | 38 ms/token | 1.2x |
+
+The speedup is most significant in **small batch, many kernel** scenarios — because launch overhead accounts for the largest proportion of total time. For large batches with large kernels, kernel computation itself dominates, and CUDA Graph's marginal benefit diminishes.
+
+## CUDA Graph in Practice
+
+CUDA Graph support across major inference frameworks:
+
+- **vLLM**: Enables CUDA Graph by default during the decode phase, pre-capturing graphs for common batch sizes. Handles dynamic batches through padding
+- **TensorRT-LLM**: Deeply integrates CUDA Graph, supporting graph switching in inflight batching scenarios
+- **SGLang**: Manages multiple pre-captured graphs via `CUDAGraphRunner`, indexed by (batch_size, seq_len)
+- **torch.compile**: `mode="reduce-overhead"` automatically uses CUDA Graph Trees
+
+A notable trend is the combination of **CUDA Graph + Speculative Decoding**. In speculative decoding, the draft model needs to quickly generate multiple candidate tokens, and CUDA Graph can significantly accelerate this process. Hopper's Conditional Nodes enable verification + rollback logic to complete within the graph, further reducing CPU-GPU synchronization.
+
+## Summary
+
+Scheduling and execution optimization is the last mile where compilers transform kernels into efficient runtime behavior. This article discussed three core dimensions:
+
+1. **Kernel-level scheduling**: Through dependency analysis, topological sorting, and CUDA Stream parallelism, maximizing hardware utilization. Greedy list scheduling is the standard approach in practice
+2. **Memory scheduling**: Different execution orderings can lead to 2-3x differences in peak memory. Activation Checkpointing (from manual to ILP-optimal) and buffer reuse are key techniques
+3. **Multi-backend dispatch**: Dispatching each operation to its best-suited backend (cuBLAS, Triton, FlashAttention) while strenuously avoiding CPU fallback. A single CPU fallback can degrade performance by 10-30x
+4. **CUDA Graph**: Eliminating launch overhead through capture/replay, with Hopper Conditional Nodes partially breaking through static limitations. TorchInductor CUDA Graph Trees provide automated management
+
+These techniques are not isolated — an excellent compiler must consider the interactions between fusion decisions, scheduling strategies, and execution optimization. For example, CUDA Graph usage influences fusion decisions (because graph breaks cannot occur within a graph), and memory constraints in turn affect scheduling parallelism.
+
+In the [next article](/en/articles/autotuning-end-to-end), we will discuss **Autotuning and End-to-End Evaluation** — how to reach the ultimate performance limits by searching for optimal configurations (tile sizes, fusion strategies, scheduling parameters).

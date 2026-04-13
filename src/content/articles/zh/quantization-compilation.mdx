@@ -1,0 +1,591 @@
+---
+title: "量化编译与混合精度优化"
+slug: quantization-compilation
+locale: zh
+tags: [compiler, quantization, mixed-precision, kernel-generation, fusion]
+prerequisites: [codegen-triton-backend]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "A Survey of Quantization Methods for Efficient Neural Network Inference"
+    url: "https://arxiv.org/abs/2103.13630"
+  - type: paper
+    title: "GPTQ: Accurate Post-Training Quantization for Generative Pre-Trained Transformers"
+    url: "https://arxiv.org/abs/2210.17323"
+  - type: paper
+    title: "AWQ: Activation-aware Weight Quantization for LLM Compression and Acceleration"
+    url: "https://arxiv.org/abs/2306.00978"
+  - type: paper
+    title: "FP8 Formats for Deep Learning"
+    url: "https://arxiv.org/abs/2209.05433"
+  - type: website
+    title: "PyTorch Quantization Documentation"
+    url: "https://pytorch.org/docs/stable/quantization.html"
+  - type: website
+    title: "TensorRT Quantization Toolkit"
+    url: "https://docs.nvidia.com/deeplearning/tensorrt/developer-guide/index.html#working-with-int8"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import QuantFusionVisualizer from '../../../components/interactive/QuantFusionVisualizer.tsx';
+import MixedPrecisionGraph from '../../../components/interactive/MixedPrecisionGraph.tsx';
+import QuantKernelComparison from '../../../components/interactive/QuantKernelComparison.tsx';
+
+<CompilerStackMap currentArticle="quantization-compilation" mode="compact" client:visible />
+
+## 简介
+
+在量化学习路径中，我们已经讨论了[量化基础](/zh/articles/quantization-fundamentals)（数值格式与量化数学）、[训练后权重量化](/zh/articles/ptq-weight-quantization)（GPTQ、AWQ 等方法）以及[推理时量化](/zh/articles/inference-time-quantization)（动态量化与 KV Cache 压缩）。那些文章回答的核心问题是"**怎么量化**"——如何将 FP32/FP16 的权重和激活压缩到 INT8、INT4 乃至更低精度。
+
+本文转换视角，从**编译器**的角度回答一个同样关键的问题：**量化后的计算图，编译器怎么处理？**
+
+这个问题的重要性常被低估。一个经过精心量化的模型，如果编译器不能正确优化其执行图，性能提升可能远低于理论值。具体来说，编译器需要解决三个核心挑战：
+
+1. **融合问题**：量化引入了大量的 `Dequant` → `Compute` → `Quant` "三明治"结构。如果每个 dequant/quant 都作为独立算子执行，类型转换的开销可能吃掉量化的收益。编译器必须识别并融合这些模式。
+2. **混合精度路由**：一个 Transformer 层中可能同时存在 INT4 权重、FP16 激活、FP32 的 LayerNorm 和 Softmax。编译器需要在图中传播精度信息，插入最少的类型转换节点，同时保证数值稳定性。
+3. **Kernel 生成**：不同的量化格式需要完全不同的计算 kernel。Weight-only INT4 需要在线 dequant + FP16 MatMul；W8A8 需要整数 GEMM + 重量化；FP8 在 Hopper 架构上有专门的 Tensor Core 指令。编译器必须为每种组合选择或生成最优 kernel。
+
+本文从[代码生成与 Triton 后端](/zh/articles/codegen-triton-backend)的知识出发，深入探讨量化图的编译优化全流程。我们将覆盖量化感知融合（Quantization-Aware Fusion）、混合精度编译策略（Mixed-Precision Compilation）和量化 kernel 生成（Quantized Kernel Generation）三个核心主题，并通过交互可视化帮助读者建立直观理解。
+
+## 量化图的编译挑战
+
+### Dequant-Compute-Quant 三明治结构
+
+当一个模型经过 PTQ（Post-Training Quantization）量化后，其计算图会发生根本性变化。以一个简单的 `Linear → ReLU → Linear` 为例：
+
+**量化前**的计算图非常简洁：
+
+```
+X(FP16) → MatMul(W1) → ReLU → MatMul(W2) → Y(FP16)
+```
+
+**量化后**（假设 W4A16 方案），计算图膨胀了数倍：
+
+```
+X(FP16) → Dequant(W1_INT4→FP16) → MatMul → Quant(FP16→INT8)
+→ Dequant(INT8→FP16) → ReLU → Quant(FP16→INT8)
+→ Dequant(INT8→FP16) → Dequant(W2_INT4→FP16) → MatMul → Y(FP16)
+```
+
+这种结构被称为 **Dequant-Compute-Quant 三明治**（sandwich pattern）。每个计算操作的两侧都被量化/反量化节点包围。如果编译器天真地按照图的拓扑顺序逐个执行这些算子，会产生严重的性能问题：
+
+- **显存带宽浪费**：每个 dequant/quant 都需要读写中间 tensor，产生大量的 DRAM 往返。在 A100 上，一次 DRAM 读写的延迟是 Tensor Core 计算的 10-100 倍。
+- **Kernel launch 开销**：每个独立算子对应一次 CUDA kernel launch，GPU 在 launch 之间处于空闲状态。
+- **类型转换计算开销**：INT4→FP16 的 dequant 需要解包（unpack）+ 缩放（scale multiplication）+ 加偏移（zero-point addition），这些都是 element-wise 操作，计算密度极低。
+
+以一个 4096×4096 的 INT4 Linear 层为例。权重大小为 4096×4096×0.5 = 8MB（INT4 打包后）。如果 dequant 作为独立 kernel 执行：
+- 读取 8MB INT4 数据
+- 写出 32MB FP16 数据
+- 总显存访问 40MB
+
+而如果 dequant 融合到 MatMul kernel 内部：
+- 读取 8MB INT4 数据（在寄存器中即时转换）
+- 直接传给 Tensor Core
+- 省去 32MB 的中间写出
+
+仅这一步，显存带宽就节省了 80%。
+
+### 混合精度的图级复杂性
+
+真实的 Transformer 推理图不是单一精度的——它是一个"精度马赛克"。一个典型的 LLaMA-2 7B 推理配置可能是：
+
+| 组件 | 权重精度 | 激活精度 | 累积精度 |
+|------|---------|---------|---------|
+| Embedding | FP16 | FP16 | — |
+| QKV Projection | INT4 (GPTQ) | FP16 | FP32 |
+| Attention Score | — | FP16 | FP32 |
+| Softmax | — | FP32 | FP32 |
+| KV Cache | — | FP8/INT8 | — |
+| Output Projection | INT4 (GPTQ) | FP16 | FP32 |
+| LayerNorm | FP32 | FP32 | FP64* |
+| FFN Gate/Up | INT4 (GPTQ) | FP16 | FP32 |
+| FFN Down | INT4 (GPTQ) | FP16 | FP32 |
+| SiLU/GeLU | — | FP16 | — |
+
+（*LayerNorm 的方差计算在某些实现中使用 FP64 累积，但多数推理框架使用 FP32 累积 + Welford 在线算法保证数值稳定性。）
+
+编译器面对这张精度地图，需要回答一系列问题：
+
+1. **精度传播**（Precision Propagation）：从叶节点（权重和输入）的精度出发，如何推导每条边的数据类型？当两个不同精度的 tensor 相遇时（如 INT4 权重 × FP16 激活），以哪个为准？
+2. **类型转换最小化**：在满足数值正确性的前提下，如何插入最少的 cast 节点？这是一个约束优化问题。
+3. **安全精度区域**：哪些操作可以安全地用低精度执行（如 ReLU 的 INT8 完全无损），哪些必须保持高精度（如 Softmax 的指数运算、LayerNorm 的方差计算）？
+4. **硬件约束**：Tensor Core 支持哪些精度组合？INT4×FP16 是否有原生支持，还是需要软件 dequant？
+
+这些问题的答案决定了量化后模型的实际推理性能。一个优秀的编译器和一个天真的编译器之间，在同一量化模型上的推理延迟差距可达 2-4 倍。
+
+### 类型转换开销的量化分析
+
+为了理解编译器优化的必要性，让我们量化类型转换的实际开销。在 NVIDIA A100 上：
+
+- **INT4 → FP16 dequant**：需要 bit-shift + mask（解包 2 个 INT4 → 1 字节），乘以 scale，加 zero_point。每个元素约 5-8 FLOPs，arithmetic intensity 极低（~0.1 FLOP/byte），完全 memory-bound。
+- **FP16 → INT8 quant**：需要除以 scale + round + clamp。每个元素约 4 FLOPs，同样 memory-bound。
+- **FP32 → FP16 cast**：硬件原生支持，几乎零开销（Tensor Core 内部完成）。
+- **FP16 → FP32 cast**：同上，零开销。
+
+关键观察：INT4/INT8 相关的量化/反量化是 **compute-trivial but memory-heavy** 操作。它们的计算量可以忽略不计，但产生的显存流量不可忽略。这正是编译器融合的绝佳目标——将它们吸收进计算密集的 MatMul kernel，利用 MatMul 的高 arithmetic intensity "掩盖"类型转换的开销。
+
+## 量化感知融合
+
+量化感知融合（Quantization-Aware Fusion）是量化编译的核心优化。它的目标是：**识别 dequant-compute-quant 模式，将类型转换吸收进计算 kernel，消除中间 tensor 的显存往返**。
+
+<QuantFusionVisualizer client:visible />
+
+### Pattern 1: Weight Dequant Fusion（权重反量化融合）
+
+这是最基本也最重要的融合模式。在 weight-only quantization（如 GPTQ、AWQ）中，权重以 INT4/INT8 存储，推理时需要 dequant 为 FP16 再参与 MatMul。
+
+**融合前**：
+```
+W_int4 → Dequant → W_fp16 ─┐
+                             ├─ MatMul → Y_fp16
+X_fp16 ─────────────────────┘
+```
+
+**融合后**：
+```
+W_int4 ─┐
+         ├─ FusedDequantMatMul → Y_fp16
+X_fp16 ─┘
+```
+
+融合 kernel 的实现策略：
+
+1. **Load 阶段**：从 global memory 加载 INT4 打包数据到 shared memory。每个 thread 负责解包（unpack）其对应的权重元素：shift、mask、scale、offset——全部在寄存器中完成。
+2. **Compute 阶段**：dequant 后的 FP16 值直接传入 Tensor Core 的 `mma` 指令（`wmma::mma_sync`）。
+3. **Store 阶段**：MatMul 结果直接写出，没有中间 tensor。
+
+这个融合在 TensorRT、vLLM（通过 Marlin kernel）和 llama.cpp 中都是标准实现。以 4096×4096 的 MatMul 为例：
+
+- **融合前显存访问**：读 8MB INT4 + 写 32MB FP16 + 读 32MB FP16 + 读 32MB X + 写 32MB Y = **136MB**
+- **融合后显存访问**：读 8MB INT4 + 读 32MB X + 写 32MB Y = **72MB**
+- **节省**：47% 显存带宽
+
+### Pattern 2: Epilogue Quant Fusion（尾部量化融合）
+
+当 MatMul 的输出需要立即量化（如 W8A8 方案中，下一层期望 INT8 输入），编译器可以将 quantize 操作融合为 MatMul 的 epilogue：
+
+**融合前**：
+```
+X → MatMul → BiasAdd → ReLU → Quant → Y_int8
+```
+
+**融合后**：
+```
+X → FusedMatMulBiasReLUQuant → Y_int8
+```
+
+这个融合模式在 TensorRT 中被称为 **Post-Processing Fusion** 或 **Epilogue Fusion**。Tensor Core 完成矩阵乘后，结果留在寄存器中，接下来的 bias add、activation function、quantize（scale + round + clamp）全部在寄存器级别完成，只有最终的 INT8 结果写出到 global memory。
+
+关键优势：
+
+- **消除中间 FP16/FP32 tensor 的写出和读回**：节省了 3 次显存往返
+- **ReLU/GeLU 对量化的友好性**：ReLU 后的值非负，可以使用 unsigned INT8，范围从 [-128, 127] 变为 [0, 255]，精度提升一倍
+- **Quant 的 rounding mode 可优化**：融合 kernel 可以选择最优的 rounding（如 stochastic rounding），而独立 kernel 通常只能用标准 round-to-nearest-even
+
+TensorRT 的 IQuantizeLayer + IConvolutionLayer 自动融合就是这个模式的典型实现。编译器通过 pattern matching 识别 `MatMul → [optional BiasAdd] → [optional Activation] → Quantize` 序列，将其替换为单一的融合 kernel。
+
+### Pattern 3: Full Dequant-Compute-Quant Fusion（完整三明治融合）
+
+最激进的融合模式将输入 dequant、计算和输出 quant 全部合并：
+
+**融合前**：
+```
+X_int8 → Dequant → X_fp16 ─┐
+                              ├─ MatMul → Y_fp16 → LayerNorm → Quant → Y_int8
+W_int4 → Dequant → W_fp16 ─┘
+```
+
+**融合后**：
+```
+X_int8 ─┐
+         ├─ FusedDequantMatMulLNQuant → Y_int8
+W_int4 ─┘
+```
+
+这个融合消除了所有的中间 FP16 tensor，整个子图的输入和输出都是低精度整数。这是 W8A8（SmoothQuant 风格）方案的终极优化形态。
+
+然而，完整融合有重要的约束条件：
+
+1. **LayerNorm 精度要求**：LayerNorm 内部的方差计算需要 FP32 累积精度。融合 kernel 内部必须维持一个 FP32 的 reduction buffer。
+2. **Scale 参数处理**：dequant 和 quant 的 scale/zero_point 需要作为 kernel 参数传入，增加了 kernel 的参数复杂度。
+3. **Tile 大小约束**：LayerNorm 需要对整行做 reduction，这限制了 tiling 策略——行维度必须完整处理。
+4. **正确性验证**：多步融合增加了数值误差的积累风险。编译器需要证明融合后的数值结果在可接受的误差范围内。
+
+TensorRT 使用 **myelin** 编译器后端来搜索这类大范围融合机会。它通过 cost model 评估融合的收益（显存节省 vs kernel 复杂度），选择收益最大的融合方案。
+
+### 融合决策的 Cost Model
+
+编译器不会盲目融合所有可能的模式。融合带来的收益和代价需要权衡：
+
+**收益**：
+- 减少 kernel launch 次数
+- 消除中间 tensor 的显存往返
+- 提高数据在寄存器/shared memory 中的重用
+
+**代价**：
+- 增加单个 kernel 的寄存器压力（register pressure）
+- 降低 GPU 占用率（occupancy）
+- 增加编译时间
+
+TensorRT 的 cost model 考虑以下因素：
+- **Arithmetic intensity 变化**：融合后的 kernel 是否仍然 compute-bound？如果融合使 kernel 从 compute-bound 变为 memory-bound（因为寄存器不足导致 spill），融合可能是负优化。
+- **Occupancy 影响**：融合 kernel 使用更多寄存器/shared memory，可能导致每个 SM 上的 warp 数减少，降低延迟隐藏能力。
+- **数据复用机会**：如果中间 tensor 被多个消费者使用（fan-out > 1），融合会导致重复计算。
+
+一个实用的启发式规则是：**当中间 tensor 的大小超过 L2 cache 容量时，融合几乎总是值得的**。因为此时不融合意味着 DRAM 往返，而 DRAM 带宽是 GPU 最稀缺的资源。在 A100 上，L2 cache 为 40MB。一个 4096×4096 的 FP16 tensor 为 32MB，恰好在临界点附近；一个 8192×8192 的 tensor 为 128MB，远超 L2，融合收益巨大。
+
+## 混合精度编译策略
+
+混合精度编译（Mixed-Precision Compilation）处理的是更高层次的问题：在整个计算图范围内，如何为每个操作选择最优精度，如何在精度边界高效地插入类型转换。
+
+<MixedPrecisionGraph client:visible />
+
+### 精度传播算法
+
+编译器使用 **Precision Propagation**（精度传播）算法来确定图中每条边的数据类型。这个过程类似于类型推断（type inference），但加入了精度约束：
+
+**第一步：标注叶节点精度**
+
+从权重和输入的已知精度出发：
+- GPTQ 量化的权重标注为 INT4
+- 激活标注为 FP16（或 INT8，取决于量化方案）
+- LayerNorm 的 weight/bias 通常保持 FP32
+
+**第二步：向前传播**
+
+对每个算子，根据其语义确定输出精度：
+- **MatMul(INT4, FP16)**：输出 FP16（因为 INT4 需要先 dequant 到 FP16）
+- **MatMul(INT8, INT8)**：输出 INT32（整数 GEMM 的自然输出）
+- **Softmax(any)**：输出至少 FP16（数值要求）
+- **LayerNorm(any)**：输出至少 FP16（方差计算要求）
+- **ReLU(any)**：保持输入精度（无精度损失的操作）
+
+**第三步：向后传播约束**
+
+某些操作对输入精度有强约束：
+- Softmax 的输入必须 ≥ FP16（否则 $e^x$ 溢出）
+- LayerNorm 的内部累积必须 ≥ FP32
+- 最终输出（logits）通常要求 FP16
+
+**第四步：冲突解决**
+
+当向前传播和向后传播产生冲突时：
+- 以更高精度为准（保守策略）
+- 插入 cast 节点解决精度不匹配
+
+实际的编译器实现（如 TensorRT）会使用 **Calibration** 数据来辅助精度决策。通过在小规模校准数据集上运行模型，测量每层的激活分布（范围、outlier 比例），决定哪些层可以安全降低精度，哪些必须保持高精度。
+
+### AMP 与编译器的协作
+
+PyTorch 的 AMP（Automatic Mixed Precision）和编译器的混合精度优化虽然目标相似，但工作在不同层面：
+
+| 特性 | PyTorch AMP | 编译器 (TensorRT/TorchInductor) |
+|------|------------|-------------------------------|
+| 粒度 | 算子级 | 子图级 |
+| 精度选择 | 白名单/黑名单 | Cost model + Calibration |
+| Cast 插入 | 每个算子边界 | 融合后的最小集 |
+| 运行时开销 | 存在（autocast 检查） | 零（编译时确定） |
+
+编译器的优势在于它可以看到全局信息。例如，如果一个 MatMul → ReLU → MatMul 链中，两个 MatMul 都是 FP16，那么中间的 ReLU 无需任何 cast——而 AMP 的逐算子策略可能会在 ReLU 的输入输出各插入一次 cast。
+
+`torch.compile` 在处理量化模型时，会在 graph lowering 阶段进行精度传播。TorchInductor 后端识别 `torch.ops.quantized_decomposed.quantize_per_tensor` 等量化相关 op，将其视为图中的精度注解（annotation），而非独立计算节点。在后续的融合和 codegen 阶段，这些注解指导 kernel 的精度选择。
+
+### 精度-性能-质量三角
+
+混合精度策略的核心挑战是在三个目标之间寻找平衡：
+
+1. **精度**（Quality）：模型输出的数值准确性。通常用 perplexity（语言模型）或 accuracy（分类模型）衡量。
+2. **性能**（Throughput）：每秒处理的 token 数或每秒的推理次数。
+3. **显存**（Memory）：模型在 GPU 上的显存占用，决定了能部署的最大模型和最大 batch size。
+
+这三者之间存在根本性的 trade-off：
+
+- **降低精度** → 显存减少、吞吐提升，但质量可能下降
+- **保持高精度** → 质量有保障，但显存和吞吐受限
+- **混合精度** → 在关键路径保持高精度，在容忍路径降低精度——这是工程实践中的最优解
+
+编译器在这个三角中的角色是：**在用户指定的精度约束下，最大化性能**。用户通过量化方案指定了各层的目标精度（如 W4A16），编译器负责在保证精度方案的正确执行的同时，最小化执行开销。
+
+具体来说，编译器的精度决策遵循以下优先级：
+
+1. **安全第一**：Softmax、LayerNorm 等数值敏感操作，永远不降低到 FP16 以下
+2. **硬件对齐**：优先使用 Tensor Core 支持的精度组合（FP16×FP16, INT8×INT8, FP8×FP8）
+3. **最小 cast**：在满足上述约束后，选择插入 cast 节点最少的方案
+4. **带宽最优**：在 cast 节点数相同时，选择中间 tensor 占用显存最小的方案
+
+### 实战案例：W4A16 精度路由
+
+以 W4A16（权重 INT4，激活 FP16）为例，分析编译器的精度路由决策：
+
+```
+Input(FP16) → Embedding(FP16) → [TransformerBlock × N] → LMHead(FP16) → Logits(FP16)
+
+TransformerBlock:
+  RMSNorm(FP16, internal FP32)
+  → QKV_Proj: Dequant(W_INT4→FP16) → MatMul(FP16×FP16→FP32→FP16)
+  → Attention: Softmax(FP16, internal FP32) → AttnMatMul(FP16)
+  → O_Proj: Dequant(W_INT4→FP16) → MatMul(FP16×FP16→FP32→FP16)
+  → Residual Add(FP16)
+  → RMSNorm(FP16, internal FP32)
+  → Gate_Up: Dequant(W_INT4→FP16) → MatMul(FP16×FP16→FP32→FP16)
+  → SiLU × element_mul
+  → Down: Dequant(W_INT4→FP16) → MatMul(FP16×FP16→FP32→FP16)
+  → Residual Add(FP16)
+```
+
+在这个图中，编译器的决策是：
+- 所有 `Dequant(W_INT4→FP16)` 融合进后续 MatMul → **4 次 dequant 消除**
+- MatMul 的内部累积使用 FP32（Tensor Core 自动处理）
+- Softmax 内部使用 FP32 + online softmax 算法
+- RMSNorm 内部使用 FP32 累积
+- 不需要任何显式 cast 节点（因为激活全程 FP16）
+
+最终的执行图比原始的量化图简洁得多。每个 TransformerBlock 从 ~20 个算子压缩为 ~10 个算子。
+
+## 量化 Kernel 生成
+
+不同的量化方案需要完全不同的计算 kernel。编译器需要针对每种量化格式生成高效的专用 kernel，或者从 kernel 模板库中选择最优实现。
+
+<QuantKernelComparison client:visible />
+
+### Weight-Only INT4 Kernel
+
+Weight-only INT4（W4A16）是当前 LLM 推理最流行的量化方案。其 kernel 结构如下：
+
+```python
+# 伪代码：INT4 Weight-Only MatMul Kernel
+@triton.jit
+def w4a16_matmul(
+    x_ptr,          # FP16 activation [M, K]
+    w_packed_ptr,   # INT4 packed weight [K, N/2] (2 INT4 per byte)
+    scale_ptr,      # FP16 scale [K/group_size, N]
+    zeros_ptr,      # INT4 zero_point [K/group_size, N/2]
+    output_ptr,     # FP16 output [M, N]
+    ...
+):
+    # 1. Load packed INT4 weights (2 values per byte)
+    w_packed = tl.load(w_packed_ptr + offsets)
+
+    # 2. Unpack: shift + mask
+    w_lo = w_packed & 0x0F          # lower 4 bits
+    w_hi = (w_packed >> 4) & 0x0F   # upper 4 bits
+
+    # 3. Dequantize: (w_int4 - zero_point) * scale
+    w_fp16 = ((w_lo - zeros) * scales).to(tl.float16)
+
+    # 4. MatMul with Tensor Core
+    acc = tl.dot(x_tile, w_fp16)    # FP16 × FP16 → FP32 accumulate
+
+    # 5. Store result
+    tl.store(output_ptr + out_offsets, acc.to(tl.float16))
+```
+
+关键性能考量：
+
+- **Unpack 开销**：INT4 的解包需要 shift+mask，每两个元素需要 1 字节的 packed 数据。在 Triton 中，这些 bit 操作都在寄存器中完成，开销极低。
+- **Group Quantization**：scale 和 zero_point 通常按 group（如 128 个元素一组）共享。这意味着每 128 个 dequant 操作只需加载一组 scale/zero_point，分摊了 scale 的读取开销。
+- **显存带宽节省**：INT4 权重的大小是 FP16 的 1/4。对于 memory-bound 的推理场景（batch size = 1），INT4 的理论加速比是 FP16 的 ~3.5-4×（考虑 scale 和 unpack 开销后）。
+
+**NVIDIA Marlin Kernel**：vLLM 中使用的高性能 W4A16 kernel，通过以下优化达到接近 INT4 的理论带宽利用率：
+- 使用 128-bit `LDG.128` 指令一次性加载 32 个 INT4 值
+- 精心设计的 thread-to-data 映射消除 bank conflict
+- 异步加载（`cp.async`）隐藏 global memory 延迟
+- 权重预排列（weight permutation）匹配 Tensor Core 的数据布局
+
+### W8A8 Integer Kernel
+
+W8A8（SmoothQuant 风格）使用整数 GEMM，在硬件级别得到 Tensor Core 的原生支持：
+
+```
+INT8 activation × INT8 weight → INT32 accumulate → requantize → INT8 output
+```
+
+这是唯一真正利用 INT8 Tensor Core 指令（`imma`）的方案。其 kernel 结构：
+
+1. **Load**：直接从 global memory 加载 INT8 数据（无需 unpack）
+2. **Compute**：Tensor Core 执行 `INT8 × INT8 → INT32` 矩阵乘
+3. **Requantize**：INT32 累积结果 × output_scale → round → clamp → INT8
+4. **Store**：INT8 结果写出
+
+性能优势：
+- **Tensor Core 利用率**：INT8 TC 的峰值吞吐是 FP16 TC 的 2× (A100: 624 vs 312 TOPS)
+- **显存带宽**：INT8 的数据量是 FP16 的一半
+- **无 dequant 开销**：输入和输出都是 INT8，没有精度转换
+
+但 W8A8 有显著的精度挑战：
+- 激活的 INT8 量化比权重难得多（激活的分布更动态，outlier 更多）
+- 需要 SmoothQuant 或类似技术来平衡权重和激活的量化难度
+- per-token 的动态量化需要额外的 scale 计算 kernel
+
+### FP8 Kernel（Hopper 架构）
+
+NVIDIA H100（Hopper 架构）引入了 FP8 Tensor Core 支持，提供了两种 FP8 格式：
+
+- **E4M3**：4 位指数 + 3 位尾数，范围 [-448, 448]，精度约 0.0625
+- **E5M2**：5 位指数 + 2 位尾数，范围 [-57344, 57344]，精度约 0.25
+
+FP8 的核心优势是 **精度-性能的最佳平衡点**：
+
+| 特性 | FP16 | INT8 | FP8 (E4M3) |
+|------|------|------|------------|
+| H100 TC 吞吐 | 1,979 TOPS | 1,979 TOPS | 1,979 TOPS |
+| 显存带宽节省 | 1× | 2× | 2× |
+| 动态范围 | ±65504 | [-128, 127] | [-448, 448] |
+| 量化难度 | — | 高（需 calibration） | 中（FP 格式自然处理 outlier） |
+
+FP8 E4M3 在 H100 上达到与 INT8 相同的 Tensor Core 吞吐，但因为它是浮点格式，天然支持动态范围缩放，量化难度远低于 INT8。
+
+FP8 kernel 的编译器支持：
+
+```python
+# TensorRT-LLM 的 FP8 GEMM 调用
+# 编译器自动生成以下 cuBLAS 调用
+cublasLtMatmul(
+    handle,
+    matmulDesc,       # CUBLAS_COMPUTE_32F
+    alpha_ptr,        # FP32 scale
+    A_ptr,            # FP8 E4M3
+    Adesc,            # CUDA_R_8F_E4M3
+    B_ptr,            # FP8 E4M3
+    Bdesc,            # CUDA_R_8F_E4M3
+    beta_ptr,
+    C_ptr,            # FP16 or BF16
+    Cdesc,
+    D_ptr,            # output
+    Ddesc,
+    ...
+)
+```
+
+编译器在 FP8 kernel 生成中的关键决策：
+
+1. **E4M3 vs E5M2**：前向推理使用 E4M3（精度优先），反向传播（如果有）使用 E5M2（范围优先）
+2. **Scale 策略**：per-tensor scale（最快）vs per-channel scale（更准确）
+3. **Output precision**：FP8 GEMM 的输出可以是 FP16、BF16 或 FP32，取决于后续操作的精度需求
+
+### Triton 的量化 Kernel 支持
+
+Triton 作为 TorchInductor 的后端，对量化 kernel 的支持主要体现在：
+
+1. **Bit manipulation primitive**：`tl.load` 支持任意位宽的数据类型，Triton 编译器将 INT4 的 unpack 编译为高效的 shift+mask PTX 指令
+2. **Mixed-type dot**：`tl.dot(a, b)` 支持不同输入类型（如 FP16 × FP16 with FP32 accumulate），编译器自动选择对应的 `mma` 指令
+3. **Custom dequant fusion**：通过 Triton 的 kernel fusion pass，`tl.load` + bit操作 + `tl.dot` 可以被融合为单一的 load-compute pipeline
+
+`torch.compile` + TorchInductor 在处理量化模型时的流程：
+
+1. Dynamo 捕获包含 `quantize_per_tensor`、`dequantize_per_tensor` 等 op 的 FX graph
+2. TorchInductor 的 lowering pass 将这些 op 标注为 "quantization_annotation"
+3. Fusion pass 识别 dequant-matmul 模式，生成融合的 Triton kernel
+4. Triton 编译器完成最终的 PTX 代码生成
+
+截至 2025 年，`torch.compile` 对 W4A16 的支持已相当成熟（通过 `torch.ops.aten._weight_int4pack_mm`），但对 W8A8 和 FP8 的编译器路径仍在积极开发中。TensorRT-LLM 在这些高级量化格式上的编译支持更加完善。
+
+## 实战：LLaMA 7B 量化编译全流程
+
+让我们用一个具体的例子将前面的所有概念串联起来。假设我们要将 LLaMA-2 7B 部署在一张 A100 80GB 上，目标是最大化单卡吞吐量。
+
+### Step 1: 量化方案选择
+
+| 方案 | 模型大小 | Perplexity 退化 | 推理引擎支持 |
+|------|---------|----------------|-------------|
+| FP16 (baseline) | 14GB | 0 | 所有 |
+| GPTQ W4A16 g128 | 3.5GB | +0.1-0.3 | vLLM, TensorRT-LLM |
+| AWQ W4A16 g128 | 3.5GB | +0.05-0.2 | vLLM, TensorRT-LLM |
+| SmoothQuant W8A8 | 7GB | +0.05-0.1 | TensorRT-LLM |
+
+选择 AWQ W4A16 g128——最佳的显存-质量-兼容性平衡。
+
+### Step 2: 编译器优化流程
+
+以 TensorRT-LLM 为例，编译器对 AWQ 量化的 LLaMA 7B 执行以下优化：
+
+**a) Graph Import & Annotation**
+
+TensorRT-LLM 从 HuggingFace 的量化模型加载权重，构建 TensorRT network definition。每个 Linear 层被表示为：
+
+```
+INT4_weight → IConstantLayer
+scale/zeros → IConstantLayer
+Input(FP16) → IDequantizeLayer → IMatMulLayer → ...
+```
+
+**b) Quantization-Aware Fusion**
+
+TensorRT 的 optimizer 执行以下融合：
+- 32 个 Transformer block × 4 个 Linear 层 = **128 个 DequantMatMul 融合**
+- 每个 block 的 QKV projection 可进一步融合为 **QKV fused MatMul**（3 个 MatMul 合为 1 个）
+- Attention 的 scale + softmax 融合
+- FFN 的 Gate×Up element-wise 乘法融合
+
+**c) Precision Routing**
+
+编译器确定全图精度：
+- 所有 MatMul：INT4→FP16 dequant inside TC, FP32 accumulate
+- Softmax：FP32 internal
+- RMSNorm：FP32 internal
+- Residual add：FP16
+- 所有中间激活：FP16
+
+**d) Kernel Selection**
+
+对每个融合后的算子，编译器从 kernel 库中选择最优实现：
+- INT4 MatMul → Marlin-style W4A16 kernel
+- FlashAttention → FA2 kernel with FP16 Q/K/V
+- RMSNorm → fused kernel with FP32 variance computation
+
+### Step 3: 性能数据
+
+在 A100 80GB 上的典型性能数据（batch size = 1, sequence length = 2048）：
+
+| 配置 | Prefill (tok/s) | Decode (tok/s) | 显存占用 |
+|------|----------------|----------------|---------|
+| FP16 (baseline) | ~4000 | ~40 | 14GB |
+| AWQ W4A16 (naive) | ~5000 | ~80 | 3.5GB |
+| AWQ W4A16 (optimized) | ~6000 | ~140 | 3.5GB |
+
+- **Naive**：不融合，每个 dequant 作为独立 kernel
+- **Optimized**：全融合 + 优化 kernel
+
+关键观察：
+- Decode 阶段（memory-bound）从融合中受益最大：40 → 140 tok/s（3.5×）
+- Prefill 阶段（compute-bound）受益较小：4000 → 6000 tok/s（1.5×）
+- 显存占用大幅减少，允许更大 batch size 或更长 context
+
+### Step 4: 编译器优化的贡献拆解
+
+AWQ W4A16 (optimized) 相对于 FP16 baseline 的 decode 加速（40 → 140 tok/s = 3.5×）可拆解为：
+
+1. **权重大小减少 (4×)**：INT4 权重是 FP16 的 1/4 → 理论 4× 带宽节省 → 但需要 dequant 开销
+2. **Dequant 融合 (~0.9× overhead)**：融合后 dequant 的额外开销约 10%
+3. **实际加速**：4× × 0.9 × 0.97(其他 overhead) ≈ 3.5×
+
+如果不做融合（naive），dequant 的独立 kernel 开销约 40%，实际加速仅 4× × 0.6 ≈ 2.4×。**编译器融合贡献了约 45% 的额外加速**（从 2.4× 到 3.5×）。
+
+## 总结与展望
+
+量化编译是连接算法（量化方法）和硬件（Tensor Core、DRAM 带宽）的关键桥梁。本文覆盖了三个核心主题：
+
+1. **量化感知融合**：将 dequant/quant 节点吸收进计算 kernel，消除中间 tensor 的显存往返。三种融合模式——Weight Dequant Fusion、Epilogue Quant Fusion、Full Sandwich Fusion——分别适用于不同的量化方案。
+2. **混合精度编译**：通过精度传播算法确定全图的精度分配，在安全操作（Softmax、LayerNorm）保持高精度的同时，最小化类型转换开销。
+3. **量化 Kernel 生成**：针对 W4A16（INT4 dequant + FP16 TC）、W8A8（INT8 TC + requantize）、FP8（H100 native）三种主流方案，编译器需要选择或生成完全不同的 kernel 实现。
+
+这些优化在实践中对端到端推理性能的贡献是显著的。以 LLaMA 7B AWQ W4A16 为例，编译器优化将 decode 吞吐从 naive 的 ~80 tok/s 提升到 ~140 tok/s。
+
+**展望**：
+
+- **FP4（NF4）的编译支持**：随着 QLoRA 等技术的普及，FP4 格式的编译优化将成为下一个前沿
+- **Dynamic Quantization 的编译集成**：当前大多数编译器假设静态量化参数；支持 per-token 动态量化需要编译器和运行时的深度集成
+- **Speculative Decoding + Quantization**：将量化编译与投机解码结合，进一步提升推理吞吐
+
+下一篇文章将探讨[分布式编译](/zh/articles/distributed-compilation)——当模型跨多卡/多机部署时，编译器如何处理 tensor parallelism、pipeline parallelism 的通信与计算重叠优化。
+
+## 延伸阅读
+
+- Gholami et al., "A Survey of Quantization Methods for Efficient Neural Network Inference" (2021) — 量化方法的全面综述
+- Frantar et al., "GPTQ: Accurate Post-Training Quantization for Generative Pre-Trained Transformers" (2022) — GPTQ 算法详解
+- Lin et al., "AWQ: Activation-aware Weight Quantization for LLM Compression and Acceleration" (2023) — AWQ 算法与 kernel 设计
+- Micikevicius et al., "FP8 Formats for Deep Learning" (2022) — FP8 格式设计与硬件支持
+- NVIDIA TensorRT Developer Guide — 量化编译的工业实践
+- PyTorch Quantization Documentation — PyTorch 生态的量化编译支持

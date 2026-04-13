@@ -1,0 +1,518 @@
+---
+title: "Autotuning and End-to-End Practice"
+slug: autotuning-end-to-end
+locale: en
+tags: [compiler, autotuning, triton, mlir, transform-dialect, end-to-end, torch-compile]
+prerequisites: [scheduling-execution]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations"
+    url: "https://www.eecs.harvard.edu/~htk/publication/2019-mapl-tillet-kung-cox.pdf"
+  - type: paper
+    title: "Ansor: Generating High-Performance Tensor Programs for Deep Learning"
+    url: "https://arxiv.org/abs/2006.06762"
+  - type: paper
+    title: "Learning to Optimize Tensor Programs"
+    url: "https://arxiv.org/abs/1805.08166"
+  - type: website
+    title: "Triton Autotune Documentation"
+    url: "https://triton-lang.org/main/python-api/generated/triton.autotune.html"
+  - type: website
+    title: "MLIR Transform Dialect"
+    url: "https://mlir.llvm.org/docs/Dialects/Transform/"
+  - type: website
+    title: "torch.compile Troubleshooting"
+    url: "https://pytorch.org/docs/stable/torch.compiler_troubleshooting.html"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import AutotuneExplorer from '../../../components/interactive/AutotuneExplorer.tsx';
+import TransformDialectDemo from '../../../components/interactive/TransformDialectDemo.tsx';
+import CompileJourneyRecap from '../../../components/interactive/CompileJourneyRecap.tsx';
+
+<CompilerStackMap currentArticle="autotuning-end-to-end" mode="compact" locale="en" client:visible />
+
+## Introduction
+
+Over the course of the previous 16 articles, we have traversed the complete ML compiler stack: from [graph capture](/en/articles/graph-capture-dynamo) to [IR design](/en/articles/ir-design-basics), from [optimization passes](/en/articles/graph-passes-foundations) to [operator fusion](/en/articles/operator-fusion-taxonomy), from [tiling and memory optimization](/en/articles/tiling-memory-hierarchy) to [code generation](/en/articles/codegen-triton-backend), and finally to [scheduling and execution optimization](/en/articles/scheduling-execution). Each step addresses a core question: how to make GPUs execute deep learning computations more efficiently.
+
+But after all these optimizations are in place, one ultimate challenge remains: **How does the compiler know which parameter combinations are optimal?**
+
+A Triton matmul kernel has 5-8 tunable parameters (BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages, etc.), each with 3-6 reasonable values. Combined, these may produce thousands of configurations. On an A100, the optimal configuration might be `BLOCK_M=128, BLOCK_N=128, num_warps=4`; but on an H100, with its larger SMEM and different Tensor Core architecture, the optimum might shift to `BLOCK_M=256, BLOCK_N=128, num_stages=5`. Static cost models cannot fully capture these hardware differences — SMEM bank conflicts, L2 cache behavior, and TLB misses are microarchitectural details that are extremely difficult to model precisely.
+
+**Autotuning** addresses this by trial-running candidate configurations on actual hardware, using real benchmark results to make decisions. While this might seem brute-force, it is the most reliable engineering approach in practice. Triton's `@triton.autotune`, TVM's AutoScheduler (Ansor), and MLIR's Transform Dialect are all different implementations of this philosophy.
+
+As the capstone article of the entire [Graph Compilation and Optimization](/en/articles/ml-compiler-landscape) learning path, this article will dive deep into the principles and practice of autotuning, introduce MLIR Transform Dialect's programmable scheduling paradigm, share practical debugging techniques for torch.compile, and finally link all 17 articles together through a complete end-to-end case study.
+
+## Why Autotuning Is Necessary
+
+### The Combinatorial Explosion Problem
+
+Let us quantify the scale of the search space. For a typical matrix multiplication kernel, the tunable parameters include:
+
+| Parameter | Meaning | Typical Values | Options |
+|-----------|---------|----------------|---------|
+| BLOCK_M | M-dimension tile size | 32, 64, 128, 256 | 4 |
+| BLOCK_N | N-dimension tile size | 32, 64, 128, 256 | 4 |
+| BLOCK_K | K-dimension tile size | 16, 32, 64 | 3 |
+| num_warps | Number of warps | 2, 4, 8 | 3 |
+| num_stages | Pipeline stages | 2, 3, 4, 5 | 4 |
+
+These 5 parameters alone produce $4 \times 4 \times 3 \times 3 \times 4 = 576$ combinations. Adding parameters like `SPLIT_K` (2-8) and `GROUP_M` (1-8) easily pushes the search space beyond 10,000. A complete model may contain dozens of kernel shapes, each requiring independent tuning — this is a classic **combinatorial explosion** problem.
+
+### Hardware Differences Cannot Be Ignored
+
+Even within the same GPU generation, microarchitectural differences between models significantly affect optimal configurations:
+
+- **A100 (80GB)**: 192 KB SMEM per SM, 4 warp schedulers, 108 SMs
+- **H100 (80GB)**: 228 KB SMEM per SM, 4 warp schedulers + TMA engine, 132 SMs
+- **MI300X**: 64 KB LDS per CU, different wavefront scheduling, 304 CUs
+
+SMEM size directly determines the upper bound on tile sizes: larger SMEM allows larger tiles, reducing global memory access frequency. H100's TMA (Tensor Memory Accelerator) allows more pipeline stages to benefit, since TMA asynchronous prefetching does not consume warp resources. On AMD MI300X, the LDS (Local Data Share, equivalent to SMEM) size and bank structure are entirely different, requiring independent tuning.
+
+### Limitations of Cost Models
+
+In theory, we could build an analytical cost model to predict kernel performance without actual execution. In practice, this approach faces three major challenges:
+
+1. **Cache behavior is hard to model**: L2 cache hit rates depend on tile traversal order, interference from concurrent kernels, and hardware prefetcher behavior — these factors interact in complex ways.
+
+2. **Instruction-level pipeline effects**: The compiler backend's instruction scheduling produces different pipeline stall patterns for different tile sizes. For example, a seemingly larger tile might cause register spilling due to register pressure, and spilling to local memory has far higher latency than register access.
+
+3. **Bank conflicts and SMEM padding**: SMEM bank conflicts depend on the precise alignment of tile layout and access patterns. A BLOCK_K=32 configuration might have zero bank conflicts, while BLOCK_K=64 might suffer 4-way conflicts due to strided access — yielding up to 30% performance difference.
+
+Therefore, the most effective approach in practice is: use cost models for initial pruning to narrow the search space to a reasonable range, then use autotuning for the final selection.
+
+## Triton's Autotune Mechanism
+
+### The @triton.autotune Decorator
+
+Triton provides an elegant autotuning API. Developers simply declare candidate configurations with the `@triton.autotune` decorator:
+
+```python
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32},
+                      num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 32},
+                      num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 128, 'BLOCK_K': 32},
+                      num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 256, 'BLOCK_K': 64},
+                      num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 32},
+                      num_warps=4, num_stages=5),
+    ],
+    key=['M', 'N', 'K'],  # Re-tune when these dimensions change
+)
+@triton.jit
+def matmul_kernel(
+    A, B, C,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    # kernel implementation...
+```
+
+The `key` parameter is critical: it specifies which runtime parameters affect the optimal configuration. When `M`, `N`, `K` change (for example, switching from training's large batches to inference's small batches), Triton re-runs autotuning. Tuned results are cached to `~/.triton/cache/`.
+
+### Warmup and Benchmark Flow
+
+The actual execution flow of Triton autotune is as follows:
+
+1. **Compile all candidate kernels**: Each `Config` is fully compiled to PTX then cubin. This can be expensive — 5 configs x 2 seconds/config = 10 seconds of compile time.
+2. **Warmup runs**: Each kernel runs `warmup` times (default 25) to stabilize GPU state (fill caches, warm up clock frequencies).
+3. **Benchmark runs**: Then runs `rep` times (default 100), taking the median time.
+4. **Select best**: Compare median times across all configurations, select the fastest.
+5. **Cache result**: Persist the `(key, best_config)` mapping to disk cache.
+
+On subsequent calls with the same shape, the optimal configuration is read directly from cache, skipping all compilation and benchmarking overhead.
+
+### Compilation Overhead and Caching Strategies
+
+A major pain point of autotuning is **first-time compilation**. For a model containing 50 different shapes:
+
+- Each shape x 5 candidate configs = 250 compilations
+- Each compilation takes ~1-3 seconds (Triton -> TTIR -> TTGIR -> LLVM IR -> PTX -> cubin)
+- Total: **250-750 seconds** (4-12 minutes) of first-time compilation
+
+This is unacceptable in production environments. Practical solutions include:
+
+- **Ahead-of-time (AOT) compilation**: Pre-compile all candidate configurations before deployment
+- **Cache warming**: Distribute autotuning caches as part of the model artifact
+- **Configuration inheritance**: Reuse optimal configs for similar shapes, only re-tuning for significantly different cases
+
+The interactive component below lets you explore how different parameter combinations affect performance:
+
+<AutotuneExplorer locale="en" client:visible />
+
+In this heatmap, you can observe several key patterns:
+
+1. **The sweet spot is typically at medium tile sizes** (e.g., 128x128) — too small leads to low Tensor Core utilization (insufficient compute per warp), too large reduces occupancy (excessive SMEM usage)
+2. **num_warps and tile size should match**: Large tiles need more warps for parallel processing; too many warps for small tiles wastes resources
+3. **num_stages matters more for memory-bound kernels**: Pipeline prefetching hides latency while waiting for global memory
+
+## Search Strategies
+
+### Grid Search
+
+The simplest strategy: exhaustively evaluate all candidate configurations. The advantage is guaranteed global optimum; the disadvantage is linear time cost with search space size. For 576 configurations at 0.5 seconds per benchmark, total time is about 5 minutes. This is acceptable during development but too slow for deployment across multiple hardware targets.
+
+Triton's `@triton.autotune` is essentially Grid Search — it iterates through all manually specified `Config` entries. Developers typically pre-filter 5-15 "reasonable" configurations based on experience, rather than enumerating all permutations.
+
+### Random Search
+
+The classic paper by Bergstra & Bengio (2012) demonstrated that for high-dimensional parameter spaces, **random search is typically more efficient than grid search**. The reason is that most parameters have uneven influence — perhaps only BLOCK_M and BLOCK_N decisively affect performance, while num_stages has minor impact. Grid Search wastes many sample points on unimportant dimensions, while Random Search achieves denser coverage on important dimensions.
+
+In practice, randomly sampling 30 configurations finds a top-5% configuration with over 95% probability. Early versions of TVM (AutoTVM) relied heavily on this strategy.
+
+### Bayesian Optimization
+
+Bayesian Optimization (BO) is a smarter sequential search strategy:
+
+1. **Initial sampling**: Randomly select 5-10 configurations for benchmarking
+2. **Build surrogate model**: Fit a Gaussian Process (GP) or Tree-structured Parzen Estimator (TPE) to observed (configuration, performance) data
+3. **Acquisition function**: Use the surrogate model's predicted mean and uncertainty to select the next configuration most likely to improve results — balancing "exploit" (search near known good regions) and "explore" (investigate unknown regions)
+4. **Iterate**: Benchmark the new configuration, update the surrogate model, repeat until budget is exhausted
+
+BO's advantage is **sample efficiency**: typically only 15-30 benchmarks are needed to find a near-optimal configuration, while Grid Search may require hundreds. The overhead lies in training the surrogate model and solving the acquisition function — for low-dimensional spaces (5-8 parameters), this cost is negligible.
+
+TVM's AutoScheduler (Ansor) uses a hybrid strategy combining cost-model-guided search with evolutionary algorithms. Ansor first uses a learned cost model (based on XGBoost) to predict performance, generating many candidate schedules, then only benchmarks the top-k. This approach finds near-optimal solutions among 5000+ possible schedules while benchmarking only about 100.
+
+### Transfer Learning and Cost-Model-Guided Search
+
+More advanced methods leverage **transfer learning** to accelerate tuning. The core observation is that while optimal configurations differ across hardware, the relative ranking of configurations is correlated. If configuration A is 20% faster than B on A100, then A is likely also faster than B on H100 (though the magnitude may differ).
+
+TVM's MetaSchedule exploits this property: after tuning on one GPU, it transfers the cost model to a new GPU as initialization, requiring only a few benchmarks to adapt. This reduces cross-hardware tuning time from hours to minutes.
+
+## MLIR Transform Dialect
+
+### The Programmable Scheduling Paradigm
+
+The autotuning strategies discussed above (Grid Search, BO, etc.) all tune a set of **fixed-dimensional numerical parameters** (tile size, warp count, etc.). But many compiler optimization decisions are **structural**: should two operations be fused? Tile first or vectorize first? Which loop permutation to choose?
+
+MLIR's **Transform Dialect** offers a fundamentally different approach: **expressing optimization strategies as IR**. Developers write a "schedule script" using Transform Dialect operations to declare optimization steps. The compiler mechanically executes transformations according to this schedule, without relying on heuristic rules.
+
+This paradigm is directly inspired by Halide's schedule language, but Transform Dialect, as part of MLIR, has several unique advantages:
+
+1. **Type safety**: Each transform op has a precise type signature; the compiler can verify schedule legality before execution
+2. **Composability**: Multiple transforms compose freely, with explicit preconditions and postconditions for each
+3. **Debuggability**: Every step of schedule execution is traceable; on failure, the exact transform op that failed can be pinpointed
+
+### Core Transform Operations
+
+Key Transform Dialect operations include:
+
+- **`transform.structured.match`**: Matches target operations (e.g., `linalg.matmul`) in the IR, returning a handle
+- **`transform.structured.tile_using_for`**: Tiles the matched operation, generating `scf.for` loops
+- **`transform.structured.fuse_into_containing_op`**: Fuses one operation into another's loop body — this is key to epilogue fusion
+- **`transform.structured.vectorize`**: Converts scalar operations to vector operations (e.g., `linalg.matmul` to `vector.contract`)
+- **`transform.bufferization.one_shot_bufferize`**: Converts tensor-semantic IR to buffer (memref) semantics — the critical step from mathematical abstraction to actual memory operations
+
+The interactive component below demonstrates how three different schedules progressively optimize the same matmul + relu computation:
+
+<TransformDialectDemo locale="en" client:visible />
+
+### Complementarity with Polyhedral
+
+Transform Dialect and [polyhedral compilation](/en/articles/graph-passes-polyhedral) are complementary optimization approaches:
+
+- **Polyhedral**: Automatically analyzes loop dependencies to find optimal tile/permute/parallelize strategies. Advantage: fully automatic. Disadvantage: high analysis complexity, may not find optimal solutions
+- **Transform Dialect**: Developer explicitly specifies optimization strategies. Advantage: controllable, debuggable. Disadvantage: requires human expertise
+
+In practice, the most effective approach is: use Polyhedral analysis to **suggest** schedules, then use Transform Dialect to **execute** and **fine-tune** them. IREE (Google's ML compiler) does exactly this: its codegen pipeline uses Transform Dialect to drive the entire lowering process from linalg-on-tensor to vector to GPU.
+
+### Practical Application in IREE
+
+IREE's use of Transform Dialect demonstrates this technology's maturity in production environments. A typical IREE codegen pipeline includes:
+
+1. **Tile to workgroups**: Partition computation into GPU workgroup-level tiles
+2. **Tile to threads**: Further tile within workgroups to thread level
+3. **Vectorize**: Convert scalar loop bodies to vector operations
+4. **Bufferize**: Convert from tensor semantics to memref semantics
+5. **Map to GPU**: Map loops to GPU blockIdx/threadIdx
+
+Each step is a Transform Dialect operation, making the entire process fully declarative and reproducible. This makes debugging and performance analysis very intuitive — you can dump IR between any two steps to inspect intermediate results.
+
+## Compilation Debugging in Practice
+
+### torch.compile Debugging Tools
+
+When using `torch.compile` in practice, the most common problem is not "how to make it faster" but "why isn't it reaching expected speed." PyTorch provides a comprehensive debugging toolkit:
+
+**Environment variable debugging**:
+
+```python
+# View TorchDynamo graph capture logs
+import torch._dynamo
+torch._dynamo.config.log_level = logging.DEBUG
+
+# View TorchInductor code generation
+# Set env var: TORCH_LOGS="output_code"
+
+# View graph break reasons
+# Set env var: TORCH_LOGS="graph_breaks"
+
+# View complete compilation logs
+# Set env var: TORCH_LOGS="+dynamo,+inductor"
+```
+
+**The explain() method**:
+
+```python
+model = MyModel()
+explanation = torch.compile(model, fullgraph=False).explain(input_tensor)
+print(explanation)
+# Output: graph break locations, reasons, and op statistics for each subgraph
+```
+
+**compiler.disable() for precise isolation**:
+
+```python
+@torch.compiler.disable
+def problematic_function(x):
+    # This function will not be compiled
+    return x.numpy()  # Example: numpy conversion causing graph break
+```
+
+### Common Pitfalls
+
+**1. Graph Breaks**
+
+Graph breaks are the most common performance killer in torch.compile. When TorchDynamo encounters Python operations it cannot trace, it splits the computation graph into multiple subgraphs, each compiled and executed independently. Common graph break triggers include:
+
+- `print()` calls (including debug prints)
+- `.item()` or `.numpy()` conversions
+- Data-dependent control flow (e.g., `if x.sum() > 0`)
+- Unsupported third-party library calls
+- Custom `torch.autograd.Function` implementations
+
+**2. Dynamic Shape Recompilation**
+
+When shapes change, torch.compile by default recompiles for each new shape. If batch sizes vary frequently (e.g., different inference requests), this can cause massive recompilation overhead. Solutions include using `torch.compile(dynamic=True)` to enable [dynamic shape support](/en/articles/dynamic-shapes-challenge), or using `torch._dynamo.mark_dynamic()` to mark specific dynamic dimensions.
+
+**3. Excessive Compilation Time**
+
+First-time compilation (including autotuning) can take several minutes. For production serving:
+- Use `torch._inductor.config.max_autotune = False` to disable exhaustive autotuning
+- Use `torch.compile(mode="reduce-overhead")` to balance compilation time and runtime performance
+- Pre-compile models and cache compilation results
+
+**4. Numerical Precision Issues**
+
+Compilation optimizations (especially operator fusion and instruction reordering) may change the order of floating-point operations, causing minor numerical differences. For most training scenarios this is not an issue, but for applications sensitive to numerical precision (e.g., RL reward shaping):
+- Use `torch.compile(mode="default")` rather than `reduce-overhead` (which uses more aggressive optimizations)
+- Verify pre/post-compilation output consistency with `torch.testing.assert_close()`
+
+### Performance Analysis Tools
+
+Locating performance bottlenecks requires multi-level tools:
+
+**PyTorch Profiler**: End-to-end trace analysis, showing kernel-level execution times:
+
+```python
+with torch.profiler.profile(
+    activities=[torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA],
+    with_stack=True,
+) as prof:
+    compiled_model(input)
+print(prof.key_averages().table(sort_by="cuda_time_total"))
+```
+
+**Triton Benchmark**: Precisely measures individual kernel performance:
+
+```python
+import triton.testing
+
+@triton.testing.perf_report(
+    triton.testing.Benchmark(
+        x_names=['M'],
+        x_vals=[512 * i for i in range(1, 17)],
+        line_arg='provider',
+        line_vals=['triton', 'cublas'],
+        line_names=['Triton', 'cuBLAS'],
+        ylabel='TFLOPS',
+    )
+)
+def benchmark(M, provider):
+    ...
+```
+
+**NVIDIA Nsight Compute**: The lowest-level GPU performance analysis tool, providing warp occupancy, SMEM throughput, L2 cache hit rate, and other microarchitectural metrics. When Triton kernel performance falls short of cuBLAS, Nsight Compute is the key tool for identifying the gap.
+
+## End-to-End Practice: torch.compile on a Transformer Layer
+
+Now let us thread all 17 articles together, tracing a Transformer layer's complete journey from Python code to GPU execution.
+
+### Step 1: User Code (Articles 1-2)
+
+```python
+import torch
+
+class TransformerLayer(torch.nn.Module):
+    def __init__(self, d_model=1024, nhead=16):
+        super().__init__()
+        self.attn = torch.nn.MultiheadAttention(d_model, nhead, batch_first=True)
+        self.ff = torch.nn.Sequential(
+            torch.nn.Linear(d_model, 4096),
+            torch.nn.GELU(),
+            torch.nn.Linear(4096, d_model),
+        )
+        self.norm1 = torch.nn.LayerNorm(d_model)
+        self.norm2 = torch.nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        x = x + self.ff(self.norm2(x))
+        return x
+
+model = TransformerLayer().cuda().half()
+compiled = torch.compile(model, mode="max-autotune")
+```
+
+After calling `torch.compile`, TorchDynamo traces `forward()` execution through Python frame evaluation hooks ([Article 2: Graph Capture & Dynamo](/en/articles/graph-capture-dynamo)). It produces an FX Graph — a directed acyclic graph containing all operations and their dependencies.
+
+### Steps 2-3: IR and Optimization Passes (Articles 3-7)
+
+The FX Graph is passed to TorchInductor, which first applies a series of optimization passes ([Articles 5-7](/en/articles/graph-passes-foundations)):
+
+- **Constant folding**: Pre-computes weight matrix transposes (if column-major layout)
+- **Dead Code Elimination**: Removes the `attn_weights` returned by `MultiheadAttention` (since it is unused)
+- **Layout optimization**: Converts weight tensors from (out, in) to (in, out) or channels-last format to match Tensor Core access patterns
+- **Pattern matching**: Identifies LayerNorm + Residual Add patterns, merging them into a single fused kernel
+
+In the MLIR framework ([Articles 3-4](/en/articles/ir-design-basics)), this corresponds to progressive lowering from `linalg` dialect to `scf`/`vector` dialect.
+
+### Steps 4-5: Operator Fusion and Tiling (Articles 8-11)
+
+TorchInductor's fusion engine identifies the following fusion opportunities ([Articles 8-9](/en/articles/operator-fusion-taxonomy)):
+
+- **Pointwise fusion**: GELU activation fused onto Linear output
+- **Reduction fusion**: LayerNorm's mean/variance computation merged with subsequent normalization
+- **Epilogue fusion**: Residual Add fused onto attention and FFN output MatMuls
+
+Then Tiling is applied ([Articles 10-11](/en/articles/tiling-memory-hierarchy)):
+
+- MatMul is tiled to 128x128x32 blocks, mapped to the GPU's HBM -> SMEM -> Register memory hierarchy
+- For dynamic batch sizes, symbolic shapes generate parameterized tile boundaries
+
+### Step 6: Code Generation (Articles 12-13)
+
+Fused and tiled operations are converted to Triton kernel code ([Articles 12-13](/en/articles/codegen-instruction-selection)):
+
+```python
+# Triton kernel generated by TorchInductor (simplified)
+@triton.jit
+def fused_attention_residual(
+    Q, K, V, residual, output,
+    stride_qm, stride_qk,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    # Load Q tile from HBM to registers
+    q = tl.load(Q + offs_m[:, None] * stride_qm)
+    # Compute attention scores, softmax, weighted sum
+    # ... (FlashAttention-style tiled computation)
+    # Fused residual add (epilogue fusion!)
+    res = tl.load(residual + offs_m)
+    output_val = attn_out + res  # residual add in registers
+    tl.store(output + offs_m, output_val)
+```
+
+The Triton compiler lowers this Python-like kernel through the full TTIR -> TTGIR -> LLVM IR -> PTX -> cubin pipeline.
+
+### Step 7: Advanced Optimizations (Articles 14-16)
+
+If quantization is enabled ([Article 14](/en/articles/quantization-compilation)), MatMul uses INT8/FP8 Tensor Cores:
+
+- Weights stored in FP8, activations computed in FP8
+- The compiler automatically inserts scale/descale operations
+- Throughput improves ~2x (FP16 -> FP8)
+
+For multi-GPU scenarios ([Article 15](/en/articles/distributed-compilation)), the compiler inserts communication operations:
+
+- Tensor Parallel: QKV projections are sharded; AllReduce executes after output projection
+- The compiler overlaps AllReduce with the next layer's LayerNorm (communication-computation overlap)
+
+The scheduler ([Article 16](/en/articles/scheduling-execution)) determines kernel execution order:
+
+- FFN Up and FFN Gate can execute in parallel on different CUDA Streams
+- CUDA Graphs eliminate kernel launch overhead
+
+### Step 8: Autotuning and Execution (This Article)
+
+The final step is autotuning. For the fused attention kernel above, TorchInductor in `max-autotune` mode will:
+
+1. Generate multiple candidate configurations (different combinations of BLOCK_M, BLOCK_N, num_warps, num_stages)
+2. Simultaneously evaluate Triton-generated kernels and cuBLAS/cuDNN reference implementations (backend selection)
+3. Benchmark each configuration, selecting the fastest
+4. Cache the optimal result
+
+### Performance Data
+
+After the complete compilation optimization pipeline, typical speedups on A100 80GB:
+
+| Model | Scenario | Compiled Speedup | Key Optimizations |
+|-------|----------|------------------|-------------------|
+| GPT-2 (124M) | Training | ~1.5x | Fusion + CUDA Graph |
+| LLaMA 7B | Inference (BS=1) | ~1.8x | Fusion + Autotune |
+| LLaMA 7B | Inference (BS=32) | ~2.0x | Fusion + Tiling + Autotune |
+| LLaMA 70B + INT8 | Inference (TP=4) | ~2.5-3.0x | Quant + Fusion + Distributed |
+
+Note that these numbers vary with PyTorch version, GPU model, and workload characteristics. `torch.compile` optimization is most impactful in these scenarios:
+
+- **Multiple pointwise operations** (e.g., activation + bias + residual): fusion reduces memory bandwidth requirements by 3-5x
+- **Small batch inference**: CUDA Graph elimination of launch overhead has proportionally larger impact when kernel compute is small
+- **Long sequence attention**: FlashAttention-style tiling reduces $O(N^2)$ memory to $O(N)$
+
+The interactive component below visualizes the entire 17-article journey:
+
+<CompileJourneyRecap locale="en" client:visible />
+
+## Summary and Future Directions
+
+### The 17-Article Journey in Review
+
+Starting from [ML Compiler Landscape](/en/articles/ml-compiler-landscape), we progressively explored:
+
+1. **Infrastructure layer**: Graph capture (TorchDynamo), IR design (SSA/Dialect), progressive lowering
+2. **Optimization layer**: Graph optimization passes (DCE/CSE/Layout), polyhedral compilation, operator fusion and cost models
+3. **Execution layer**: Tiling and memory hierarchy, dynamic shapes, instruction selection, Triton backend
+4. **System layer**: Quantization compilation, distributed compilation, scheduling optimization
+5. **Capstone layer**: Autotuning and end-to-end practice (this article)
+
+These 17 articles cover the **complete path** from `torch.compile(model)` to optimized kernel execution on GPUs. Each layer addresses a core question: how to eliminate inefficiency between computation and data movement.
+
+### Future Trends
+
+ML compiler development is far from over. Several directions are worth watching:
+
+**1. LLM-Guided Search**: Using large language models (like GPT-4) to generate and evaluate optimization schedules, rather than relying on handcrafted rules or traditional search algorithms. Preliminary experiments show LLMs can understand kernel code semantics and propose reasonable optimization suggestions.
+
+**2. Hardware-Software Co-design**: Co-designing compilers and hardware. Google's TPU with XLA exemplifies this approach — hardware provides a clear programming model (systolic array) and the compiler fully exploits hardware features. Future AI chips may expose richer compiler interfaces.
+
+**3. Unified IR/MLIR Ecosystem**: As MLIR matures, different ML frameworks (PyTorch, JAX, TensorFlow) may converge on a unified compiler intermediate representation. This would enable optimization passes to be reused across frameworks, reducing duplicated engineering effort.
+
+**4. New Hardware Adaptation**: The rise of AMD MI300, Intel Gaudi, and various AI ASICs (Cerebras, Groq, SambaNova) means compilers must support increasingly diverse backends. MLIR's Dialect system and Transform Dialect's programmable scheduling provide a solid framework for this.
+
+**5. End-to-End Optimization**: Current compilers primarily optimize **single computation graph** execution. The future direction is extending the optimization scope to the **entire inference pipeline** — including tokenizers, preprocessing, multi-turn conversation management, and integration with serving systems.
+
+If you have read through all 17 articles, I encourage you to return to [ML Compiler Landscape](/en/articles/ml-compiler-landscape) for a re-read — with your understanding of every layer's details, you will have a much deeper appreciation of the ML compiler's overall architecture. It is like looking back at the path after reaching a summit: every step was for this moment's panoramic view.
+
+## Further Reading
+
+- Tillet, P., Kung, H.T., & Cox, D. (2019). *Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations*. Harvard University.
+- Zheng, L. et al. (2020). *Ansor: Generating High-Performance Tensor Programs for Deep Learning*. OSDI.
+- Chen, T. et al. (2018). *Learning to Optimize Tensor Programs*. NeurIPS.
+- [Triton Autotune API Documentation](https://triton-lang.org/main/python-api/generated/triton.autotune.html)
+- [MLIR Transform Dialect Documentation](https://mlir.llvm.org/docs/Dialects/Transform/)
+- [torch.compile Troubleshooting Guide](https://pytorch.org/docs/stable/torch.compiler_troubleshooting.html)

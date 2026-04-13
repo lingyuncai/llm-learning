@@ -1,0 +1,427 @@
+---
+title: "调度与执行优化"
+slug: scheduling-execution
+locale: zh
+tags: [compiler, scheduling, cuda-stream, cuda-graph, memory-planning, activation-checkpointing, multi-backend]
+prerequisites: [codegen-triton-backend, quantization-compilation, distributed-compilation]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: website
+    title: "CUDA C++ Programming Guide — Streams"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#streams"
+  - type: website
+    title: "CUDA Graphs"
+    url: "https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cuda-graphs"
+  - type: paper
+    title: "Checkmate: Breaking the Memory Wall with Optimal Tensor Rematerialization"
+    url: "https://arxiv.org/abs/1910.02653"
+  - type: paper
+    title: "Dynamic Tensor Rematerialization"
+    url: "https://arxiv.org/abs/2006.09616"
+  - type: website
+    title: "TorchInductor: A PyTorch Native Compiler"
+    url: "https://dev-discuss.pytorch.org/t/torchinductor-a-pytorch-native-compiler-with-define-by-run-ir-and-target-agnostic-codegen/747"
+  - type: website
+    title: "PyTorch Activation Checkpointing"
+    url: "https://pytorch.org/docs/stable/checkpoint.html"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import KernelSchedulerDemo from '../../../components/interactive/KernelSchedulerDemo.tsx';
+import MemoryScheduleVisualizer from '../../../components/interactive/MemoryScheduleVisualizer.tsx';
+import MultiBackendDispatch from '../../../components/interactive/MultiBackendDispatch.tsx';
+
+<CompilerStackMap currentArticle="scheduling-execution" mode="compact" client:visible />
+
+## 简介
+
+在前面的文章中，我们完成了编译器的 **代码生成** 阶段——从高层 IR 到 Triton kernel、LLVM IR、PTX 直至可执行的 GPU 二进制。但生成 kernel 只是故事的一半。当一个完整的 Transformer 模型被编译为数十甚至数百个 kernel 后，一个关键问题浮现：**这些 kernel 应该以什么顺序、在哪些硬件资源上执行？**
+
+这就是**调度（Scheduling）与执行优化（Execution Optimization）**的核心问题。调度器站在代码生成和硬件执行之间，需要同时优化三个相互竞争的目标：
+
+1. **最大化并行性**：独立的 kernel 应该同时在不同的 CUDA Stream 上执行，而不是串行等待
+2. **最小化内存峰值**：不同的执行顺序会导致 tensor 生命周期的巨大差异，进而影响 2-3 倍的 peak memory
+3. **高效的多 Backend 分发**：不同类型的操作需要分发到最适合的硬件后端（cuBLAS、Triton、FlashAttention），同时避免代价高昂的 CPU fallback
+
+调度是连接**编译时优化**和**运行时效率**的桥梁。一个优秀的调度器可以在不改变任何 kernel 代码的情况下，将端到端性能提升 20-40%。本文将深入探讨三种核心调度策略：kernel 级并行调度、内存感知调度、以及多 backend 分发机制。在最后，我们还将详细讨论 CUDA Graph 这一越来越重要的执行优化技术。
+
+## Kernel 调度策略
+
+### 依赖分析与拓扑排序
+
+调度的第一步是**依赖分析（Dependency Analysis）**。编译器在 fusion 阶段将计算图分成了若干 fusion group，每个 group 对应一个或多个 kernel。这些 kernel 之间存在数据依赖——kernel B 需要读取 kernel A 写入的 tensor。调度器首先构建一个**DAG（有向无环图）**来表达这些依赖关系。
+
+在一个典型的 Transformer layer 中，kernel DAG 的结构大致如下：
+
+- **QKV Projection**（MatMul）→ **Attention Score**（MatMul）→ **Softmax**（Reduction）→ **Attention × V**（MatMul）→ **Output Projection**（MatMul）→ **LayerNorm**
+
+这条主链是完全串行的——每个 kernel 都依赖前一个的输出。但在 FFN（Feed-Forward Network）块中，情况有所不同：
+
+- **FFN Up** 和 **FFN Gate** 两个 MatMul 可以**并行执行**，因为它们读取相同的输入但产生独立的输出
+- **GeLU/SiLU** 激活函数和 **element-wise multiply** 需要等待两个分支的结果
+
+对这个 DAG 进行**拓扑排序（Topological Sort）**可以得到多个合法的执行顺序。关键洞察是：**不同的拓扑排序结果对性能有显著影响**。选择哪种排序，取决于我们优化的目标——是最大化并行性还是最小化内存。
+
+### CUDA Stream 并行
+
+NVIDIA GPU 通过 **CUDA Stream** 机制支持 kernel 级并行执行。一个 CUDA Stream 是一系列按顺序执行的 GPU 操作；不同 Stream 上的操作可以并行执行（如果硬件资源允许）。
+
+**串行执行（Single Stream）**的问题很明显：即使两个 kernel 完全独立，它们也必须依次执行。更糟糕的是，每次 kernel launch 都有约 **5-15 微秒** 的 CPU 端开销（launch overhead）。对于计算量小但数量多的 kernel（如 element-wise 操作），launch overhead 可能占总时间的 30% 以上。
+
+**多 Stream 并行**的调度算法通常基于**贪心列表调度（Greedy List Scheduling）**：
+
+1. 构建 kernel 依赖 DAG
+2. 进行拓扑排序，得到就绪队列（所有依赖已满足的 kernel）
+3. 对每个就绪 kernel，选择**最早可用的 Stream**——即该 Stream 上最后一个 kernel 结束时间最早的那个
+4. 如果 kernel 有跨 Stream 的依赖，插入 **CUDA Event** 同步点
+5. 重复直到所有 kernel 被调度
+
+CUDA Event 是轻量级的 GPU 端同步原语。Stream A 可以 record 一个 event，Stream B 可以 wait 这个 event——这比 `cudaDeviceSynchronize()` 开销小得多，因为后者会同步所有 Stream。
+
+在实践中，使用 2-4 个 Stream 通常就能获得大部分并行收益。更多的 Stream 反而可能因为硬件资源竞争（SM 争用、内存带宽饱和）而降低性能。
+
+<KernelSchedulerDemo client:visible />
+
+上面的可视化展示了三种调度模式的对比。注意观察：
+
+- **串行执行**中每个 kernel 之间的红色间隙就是 launch overhead
+- **多 Stream 并行**中，独立 kernel 被分配到不同 Stream 上同时执行
+- **CUDA Graph** 模式下，整个 kernel 图被一次性提交，launch overhead 降至一次
+
+### CUDA Graph 基础
+
+CUDA Graph 是 NVIDIA 在 CUDA 10.0 引入的执行优化机制。其核心思想是将一系列 kernel launch **预先录制（capture）**为一个图结构，然后通过 **单次 launch** 重放整个图。
+
+```python
+# CUDA Graph capture 伪代码
+with torch.cuda.graph(graph):
+    # 这些操作被 capture 而非执行
+    y = model(x)
+
+# 重放：单次 launch，所有 kernel 按依赖关系自动执行
+graph.replay()
+```
+
+CUDA Graph 的性能优势来自三个方面：
+
+1. **消除 launch overhead**：N 个 kernel 的 N 次 CPU→GPU launch 变为 1 次
+2. **优化依赖调度**：GPU driver 可以看到完整的依赖图，做出比 runtime 更好的调度决策
+3. **减少 CPU-GPU 同步**：整个图在 GPU 端自主执行，CPU 无需逐个 kernel 等待
+
+但 CUDA Graph 也有明显的限制——**静态结构**。在 Pre-Hopper（< CC 9.0）架构上，一旦图被录制，其结构（kernel 数量、依赖关系、grid/block 配置）就不能改变。这意味着：
+
+- **Dynamic shape**：如果 batch size 或 sequence length 变化，需要重新录制
+- **条件逻辑**：`if-else` 分支在图内不可表达
+- **动态循环**：循环次数必须在录制时确定
+
+我们将在后面的章节详细讨论 Hopper 架构如何通过 Conditional Nodes 部分突破这些限制。
+
+## TorchInductor Scheduler 设计
+
+### Fusion Group DAG 作为输入
+
+TorchInductor 的 scheduler 接收的不是原始操作图，而是经过 fusion 决策后的 **fusion group DAG**。每个 fusion group 对应一个 Triton kernel（或 cuBLAS/cuDNN 调用）。这意味着 scheduler 的输入粒度已经比较粗——一个典型的 Transformer layer 可能只有 15-30 个 fusion group，而非数百个原子操作。
+
+### 双目标优化
+
+TorchInductor scheduler 需要同时优化两个目标：
+
+1. **执行时间最小化**：通过并行调度和减少同步等待
+2. **内存峰值最小化**：通过控制 tensor 的生命周期，尽早释放不再需要的中间结果
+
+这两个目标经常冲突。考虑以下场景：
+
+- 操作 A 产生 tensor T（256 MB），被 B 和 C 消费
+- 如果先执行 B 再执行 C（串行），T 可以在 C 执行后立即释放
+- 如果 B 和 C 并行执行（两个 Stream），T 必须一直保持到两者都完成
+
+更多的并行意味着更多的 tensor 同时存活，导致更高的内存峰值。TorchInductor 的做法是：**以时间为主要目标，以内存为约束条件**。scheduler 首先尝试最大化并行性，然后检查是否会超过内存预算。如果会，则回退到更保守的调度策略。
+
+### 调度启发式
+
+TorchInductor scheduler 使用的核心启发式包括：
+
+**优先级排序**：kernel 的调度优先级由以下因素决定：
+- **关键路径长度**：位于关键路径上的 kernel 优先级更高（类似项目管理中的关键路径法）
+- **后继数量**：有更多后继 kernel 的节点优先调度，以尽早 unblock 下游
+- **内存释放潜力**：如果调度一个 kernel 可以释放其最后一个输入 tensor，优先调度该 kernel
+
+**Buffer 复用**：scheduler 与内存分配器协作，识别可以复用 buffer 的情况。如果 kernel B 的输出与 kernel A 的输入大小相同，且 A 的 tensor 在 B 开始时已经不再需要，则 B 可以原地复用 A 的 buffer。
+
+**与融合决策的交互**：scheduler 和 fusion pass 之间存在重要的反馈循环。在某些情况下，scheduler 可能发现两个本应并行的 fusion group 因为 Stream 数量限制只能串行执行。此时，将它们进一步融合为一个更大的 kernel 可能反而更好——消除了 kernel launch 开销。TorchInductor 通过迭代地运行 fusion + scheduling 来处理这种情况。
+
+### Scheduler 的限制
+
+当前 TorchInductor scheduler 的主要限制包括：
+
+- **单 GPU 假设**：scheduler 不处理多 GPU 通信的调度（这由分布式框架负责）
+- **启发式为主**：调度决策基于启发式规则，而非精确的 cost model
+- **静态调度**：调度结果在编译时确定，不会根据运行时负载动态调整
+
+这些限制为未来的改进留下了空间。学术界已经有将调度问题建模为 ILP（Integer Linear Programming）的工作，可以在合理时间内找到最优解。
+
+## Memory 调度优化
+
+### Tensor 生命周期分析
+
+内存调度优化的核心是 **tensor 生命周期分析（Tensor Lifetime Analysis）**。对于计算图中的每个中间 tensor，我们需要确定：
+
+- **产生时间**：哪个操作创建了这个 tensor
+- **最后使用时间**：哪个操作最后读取了这个 tensor
+- **大小**：tensor 占用多少内存
+
+tensor 的生命周期从产生到最后使用。在生命周期结束后，其内存可以被释放或复用。关键洞察是：**不同的执行顺序会产生不同的 tensor 生命周期重叠模式，进而导致截然不同的 peak memory**。
+
+### 执行顺序对 Peak Memory 的影响
+
+考虑一个具有分支结构的计算图（这在 Transformer 中很常见，例如 attention 和 FFN 的残差连接）。同一个 DAG 的不同拓扑排序可以导致 **2-3 倍**的 peak memory 差异。
+
+**BFS（广度优先）调度**倾向于同时展开所有分支，导致所有分支的中间 tensor 同时存活。这最大化了并行性，但也最大化了内存占用。
+
+**DFS（深度优先）调度**优先完成一条分支后再开始下一条。这意味着一条分支的中间 tensor 可以在另一条分支开始前被释放。内存峰值更低，但可能牺牲一些并行性。
+
+<MemoryScheduleVisualizer client:visible />
+
+上面的可视化清晰展示了 BFS 和 DFS 调度在内存占用上的差异。注意 DFS 调度如何通过尽早完成一条分支来释放 tensor，显著降低 peak memory。启用 Activation Checkpointing 后，peak memory 进一步降低。
+
+### Recompute vs Store 权衡
+
+当内存不足以容纳所有中间 tensor 时，编译器面临一个经典权衡：**存储（store）还是重计算（recompute）**。
+
+**存储策略**：保留所有中间 tensor，用空间换时间。优点是不需要额外计算，缺点是内存开销大。
+
+**重计算策略**：释放某些中间 tensor，在需要时从上游重新计算。优点是节省内存，缺点是增加计算量。
+
+最优策略取决于具体的计算图结构和硬件约束。一些经验法则：
+
+- **廉价操作**（element-wise、activation）的输出 tensor 适合重计算——计算开销极小，但可能占用大量内存
+- **昂贵操作**（MatMul、Attention）的输出 tensor 应该尽量保留——重计算成本太高
+- **非确定性操作**（如 dropout）的输出必须保留——重计算会产生不同的结果
+
+### Activation Checkpointing
+
+**Activation Checkpointing**（也称 gradient checkpointing）是将 recompute-vs-store 权衡系统化的技术。在训练的前向传播中，不保留所有 layer 的激活值（activation），而是只保留部分 **检查点（checkpoint）**。在反向传播需要时，从最近的 checkpoint 重新计算丢失的激活值。
+
+**手动 Checkpointing**（PyTorch `torch.utils.checkpoint`）：
+
+```python
+# 手动在每个 Transformer block 设置 checkpoint
+class TransformerBlock(nn.Module):
+    def forward(self, x):
+        # 这个函数的中间激活不会被保存
+        # 反向传播时会重新计算
+        return checkpoint(self._forward, x)
+```
+
+手动 checkpointing 简单但粗粒度——它只能在模块边界设置 checkpoint。
+
+**Checkmate（最优 Tensor Rematerialization）**是一个学术工作，将 checkpointing 问题建模为**整数线性规划（ILP）**：
+
+- **变量**：对于每个时间步和每个 tensor，是否存储/释放/重计算
+- **约束**：内存峰值不超过预算；反向传播需要的 tensor 必须可获得
+- **目标**：最小化总重计算开销
+
+Checkmate 的 ILP 方法可以找到数学上的最优 checkpointing 策略，peak memory 节省可达 40-60%（相比无 checkpointing），而重计算开销仅增加 20-35%。但 ILP 求解时间随计算图大小指数增长，对于大型模型可能需要数分钟。
+
+**Dynamic Tensor Rematerialization (DTR)** 是另一种方法，它在运行时动态决定 evict 哪些 tensor：
+
+- 维护一个优先队列，按 tensor 的"性价比"排序——大 tensor + 低重计算成本 = 高优先 evict
+- 当内存不足时，evict 队列头部的 tensor
+- 与编译时的静态 checkpointing 互补
+
+### In-place 操作与 Buffer 复用
+
+除了 checkpointing，编译器还可以通过 **in-place 操作** 和 **buffer 复用** 来减少内存占用：
+
+**In-place 操作**：某些操作可以在原地修改输入 tensor，而不需要分配新的输出 buffer。例如，ReLU 可以原地将负值置零。条件是输入 tensor 在这次操作后不再被其他操作需要。
+
+**Buffer 复用**（也称 memory planning）：编译器分析所有 tensor 的生命周期，找到不重叠的 tensor 对，让它们共享同一块物理内存。这类似于编译器中的 **寄存器分配（Register Allocation）**——只不过分配的是 GPU 显存而非 CPU 寄存器。
+
+TorchInductor 的 buffer 复用策略：
+1. 对所有中间 tensor 按大小排序
+2. 对每个 tensor，检查是否有已分配但生命周期已结束的 buffer 可以复用
+3. 如果有大小匹配（或接近）的可用 buffer，复用之
+4. 否则，分配新的 buffer
+
+通过 buffer 复用，一个 GPT-2 规模的模型可以将中间 tensor 的总内存占用减少约 35-50%。
+
+## 多 Backend 支持
+
+### TorchInductor 的后端生态
+
+TorchInductor 并非只有一个代码生成后端。它根据操作类型和硬件能力，将不同的 fusion group 分发到不同的后端：
+
+| 操作类型 | 默认后端 | 说明 |
+|---------|---------|------|
+| MatMul/GEMM | cuBLAS | NVIDIA 高度优化的矩阵乘法库 |
+| Attention | FlashAttention | 融合的 fused attention kernel（通过 `torch.nn.functional.scaled_dot_product_attention`） |
+| Element-wise | Triton | 编译器生成的 fused kernel，灵活性高 |
+| Norm (LayerNorm, RMSNorm) | Triton | 可以与前后操作融合 |
+| Convolution | cuDNN | 卷积专用优化库 |
+| 自定义操作 | C++/CPU fallback | 无法在 GPU 上编译的操作 |
+
+这种混合策略是实践中的最优解。专用库（cuBLAS、FlashAttention）对特定操作有极致优化，而 Triton 提供灵活的 kernel 融合能力。两者结合可以覆盖绝大多数工作负载。
+
+### MLIR 多 Backend 架构
+
+MLIR（Multi-Level IR）生态的多 backend 支持更为系统化。通过 dialect 逐级降低（progressive lowering），同一份高层 IR 可以降低到不同的硬件后端：
+
+- **NVVM dialect** → NVIDIA GPU PTX → cubin
+- **ROCDL dialect** → AMD GPU GCN/CDNA ISA → hsaco
+- **SPIR-V dialect** → Intel GPU / Vulkan → SPIR-V 二进制
+- **IREE HAL（Hardware Abstraction Layer）** → 跨平台统一接口
+
+IREE 的 HAL 特别值得关注。它提供了一个 **统一的执行模型**——无论底层是 CUDA、Vulkan 还是 CPU，上层调度逻辑都保持一致。这使得同一个编译好的模型可以在不同硬件上运行，只需替换 HAL driver。
+
+### CPU Fallback 的代价
+
+当某个操作无法在 GPU 上执行时（例如自定义的 Python 操作、不支持的数据类型、或复杂的控制流），TorchInductor 会将其回退到 CPU 执行。这看起来是一个合理的 fallback 策略，但实际代价极其高昂。
+
+**CPU Fallback 的隐藏代价**：
+
+1. **GPU→CPU 数据传输**：将 tensor 从 GPU 显存拷贝到 CPU 内存。对于一个 `[batch, seq_len, hidden_dim]` 的 tensor（如 [32, 2048, 4096]），FP16 下约 512 MB，在 PCIe Gen4 x16（~25 GB/s）上需要约 20ms
+2. **CPU 计算**：即使是简单的操作，CPU 的计算速度也比 GPU 慢 10-100 倍
+3. **CPU→GPU 数据传输**：将结果拷贝回 GPU 显存，又需要约 20ms
+4. **Pipeline 打断**：在数据传输期间，GPU 处于空闲状态。如果使用了 CUDA Graph，一个 CPU fallback 就会破坏整个图的 capture
+
+**一个 CPU fallback 操作的总延迟可能是 40-60ms——而整个 Transformer layer 的 GPU 执行时间可能只有 2-5ms。** 这意味着一个 CPU fallback 可以让整体性能下降 10-30 倍。
+
+<MultiBackendDispatch client:visible />
+
+上面的可视化展示了不同分发策略的性能影响。特别注意"混合 + CPU Fallback"模式中，一个 CPU fallback 操作（Custom Norm）如何主导整体执行时间。
+
+### 异构调度策略
+
+避免 CPU fallback 的策略包括：
+
+1. **算子替换**：将不支持的操作替换为功能等价但 GPU 支持的操作组合。例如，某些自定义 norm 可以分解为标准的 reduce + element-wise 操作
+2. **Triton custom kernel**：对于真正无法分解的自定义操作，编写 Triton kernel 来替代 CPU 实现
+3. **Graph break**：TorchInductor 会在遇到无法编译的操作时"断开"图（graph break），将图分成多段。每段分别编译和执行。虽然引入了额外的 launch overhead，但避免了 CPU fallback
+4. **Eager fallback 消除**：`torch.compile` 的 `fullgraph=True` 模式会拒绝包含无法编译操作的图，强制开发者重写代码
+
+在生产部署中，消除所有 CPU fallback 是性能优化的首要任务。一个常见的检查方法是使用 `TORCH_COMPILE_DEBUG=1` 环境变量，检查编译日志中的 "graph break" 和 "fallback" 警告。
+
+## CUDA Graph 深入
+
+### 录制/重放机制
+
+CUDA Graph 的录制过程通过 **stream capture** 实现：
+
+```python
+# PyTorch CUDA Graph API
+g = torch.cuda.CUDAGraph()
+
+# Warmup（分配内存，确保所有 kernel 已编译）
+with torch.cuda.stream(s):
+    for _ in range(3):
+        out = model(static_input)
+
+# 录制
+with torch.cuda.graph(g, stream=s):
+    out = model(static_input)
+
+# 重放（可以重复多次）
+static_input.copy_(new_input)  # 必须原地更新输入
+g.replay()
+```
+
+录制过程中，所有的 CUDA API 调用（kernel launch、内存拷贝、event 同步）都被记录到图结构中，而非立即执行。重放时，GPU driver 将整个图作为一个整体提交给硬件调度器。
+
+**关键约束**：
+- **内存地址固定**：图内所有 tensor 的 GPU 内存地址在录制时确定，重放时不能改变。这意味着输入必须通过 `copy_()` 原地更新
+- **静态 shape**：所有 tensor 的形状在录制时确定
+- **无 CPU 逻辑**：图内不能有 CPU 端的 Python 逻辑（if/else、动态循环等）
+- **无动态内存分配**：不能在图内调用 `torch.empty()` 等分配函数
+
+### Hopper Conditional Nodes
+
+NVIDIA Hopper 架构（Compute Capability 9.0+）引入了 **Conditional Nodes**，部分突破了 CUDA Graph 的静态限制。Conditional Nodes 允许在图内表达有限的控制流：
+
+**If-Then 节点**：根据 GPU 端的标量值决定是否执行一个子图。例如，early stopping 检查可以在 GPU 端完成，无需 CPU 同步。
+
+**While 节点**：根据 GPU 端的条件值决定是否重复执行一个子图。这使得迭代算法（如迭代式 refinement）可以在图内完成。
+
+```cpp
+// CUDA Graph Conditional Node 伪代码 (CUDA C++ API)
+cudaGraphConditionalHandle handle;
+cudaGraphConditionalHandleCreate(&handle, graph, defaultLaunch, flags);
+
+// 条件子图：当 handle 值 > 0 时执行
+cudaGraphAddChildGraphNode(&condNode, graph, &deps, numDeps, conditionalGraph);
+```
+
+Conditional Nodes 的限制：
+- 条件值必须是 **GPU 端的标量**（不能依赖 CPU 端计算）
+- 支持的控制流模式有限（仅 if-then、while，不支持任意分支）
+- 子图本身仍然是静态的
+
+尽管有这些限制，Conditional Nodes 使得许多之前无法使用 CUDA Graph 的工作负载（如 speculative decoding 中的验证循环、自回归生成中的 early stopping）得以受益。
+
+### Dynamic Shape 挑战
+
+Dynamic shape 是 CUDA Graph 最大的实用性障碍。在 LLM 推理中，sequence length 几乎总是动态变化的。解决方案包括：
+
+1. **Padding + 固定 shape**：将输入 pad 到固定大小。简单但浪费计算
+2. **Shape buckets**：预录制几个常见 shape（如 seq_len = 128, 256, 512, 1024, 2048）的图，运行时选择最接近的。这是 TensorRT 采用的策略
+3. **图参数化**：CUDA Graph 支持在重放时修改某些节点参数（如 kernel 的 grid size），允许有限的 shape 变化
+4. **多图 pool**：维护一个图的 cache，按 (shape, dtype) 索引。新 shape 触发新图的录制
+
+### TorchInductor CUDA Graph Trees
+
+TorchInductor 实现了一种称为 **CUDA Graph Trees** 的机制来管理多个 CUDA Graph：
+
+```python
+# torch.compile 的 CUDA Graph 支持
+model = torch.compile(model, mode="reduce-overhead")
+```
+
+`mode="reduce-overhead"` 启用 CUDA Graph Trees。其工作原理：
+
+1. **树结构**：每个不同的执行路径（由 guard/shape 决定）对应树中的一个节点
+2. **懒录制**：第一次遇到新路径时录制图，后续直接重放
+3. **内存池共享**：不同图可以共享同一个内存池，减少显存碎片
+4. **自动 warmup**：TorchInductor 自动处理 warmup 迭代，确保内存分配稳定后再录制
+
+CUDA Graph Trees 使得开发者几乎不需要手动管理 CUDA Graph 的复杂性。但需要注意：
+
+- **首次编译延迟**：图的录制发生在运行时，前几次 iteration 会较慢
+- **内存开销**：每个图都固定了一套内存地址，多个图意味着多份内存
+- **兼容性**：不是所有 PyTorch 操作都兼容 CUDA Graph capture
+
+### 性能收益
+
+在典型的 LLM 推理工作负载中，CUDA Graph 的性能收益：
+
+| 场景 | 无 CUDA Graph | 有 CUDA Graph | 加速比 |
+|------|-------------|-------------|--------|
+| GPT-2 Decode (batch=1) | 2.8 ms/token | 1.2 ms/token | 2.3× |
+| LLaMA-7B Decode (batch=1) | 8.5 ms/token | 5.1 ms/token | 1.7× |
+| LLaMA-70B Decode (batch=32) | 45 ms/token | 38 ms/token | 1.2× |
+
+加速比在**小 batch、多 kernel** 的场景下最显著——因为此时 launch overhead 在总时间中的占比最高。对于大 batch 的大 kernel，kernel 计算本身已经占主导地位，CUDA Graph 的边际收益递减。
+
+## CUDA Graph 在推理框架中的实践
+
+主流推理框架对 CUDA Graph 的支持情况：
+
+- **vLLM**：在 decode 阶段默认启用 CUDA Graph，预录制常见 batch size 的图。通过 padding 处理动态 batch
+- **TensorRT-LLM**：深度集成 CUDA Graph，支持 inflight batching 场景下的图切换
+- **SGLang**：通过 `CUDAGraphRunner` 管理多个录制好的图，按 (batch_size, seq_len) 索引
+- **torch.compile**：`mode="reduce-overhead"` 自动使用 CUDA Graph Trees
+
+一个值得关注的趋势是 **CUDA Graph + Speculative Decoding** 的结合。在 speculative decoding 中，draft model 需要快速生成多个 candidate token，CUDA Graph 可以显著加速这个过程。Hopper 的 Conditional Nodes 使得验证+回退逻辑可以在图内完成，进一步减少 CPU-GPU 同步。
+
+## 总结
+
+调度与执行优化是编译器将 kernel 转化为高效运行时行为的最后一公里。本文讨论了三个核心维度：
+
+1. **Kernel 级调度**：通过依赖分析、拓扑排序和 CUDA Stream 并行，最大化硬件利用率。贪心列表调度是实践中的标准方法
+2. **内存调度**：不同的执行顺序可以导致 2-3 倍的 peak memory 差异。Activation Checkpointing（从手动到 ILP 最优）和 buffer 复用是关键技术
+3. **多 Backend 分发**：将每个操作分发到最适合的后端（cuBLAS、Triton、FlashAttention），同时竭力避免 CPU fallback。一次 CPU fallback 可能让性能下降 10-30 倍
+4. **CUDA Graph**：通过录制/重放消除 launch overhead，Hopper Conditional Nodes 部分突破静态限制。TorchInductor CUDA Graph Trees 提供自动化管理
+
+这些技术不是孤立的——一个优秀的编译器需要同时考虑融合决策、调度策略和执行优化之间的相互作用。例如，CUDA Graph 的使用会影响融合决策（因为图内不能有 graph break），而内存约束会反过来影响调度的并行度。
+
+在[下一篇文章](/zh/articles/autotuning-end-to-end)中，我们将讨论 **自动调优（Autotuning）与端到端评估**——如何通过搜索最优配置（tile size、fusion 策略、调度参数）来达到最终的性能极限。

@@ -1,0 +1,518 @@
+---
+title: "自动调优与端到端实战"
+slug: autotuning-end-to-end
+locale: zh
+tags: [compiler, autotuning, triton, mlir, transform-dialect, end-to-end, torch-compile]
+prerequisites: [scheduling-execution]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations"
+    url: "https://www.eecs.harvard.edu/~htk/publication/2019-mapl-tillet-kung-cox.pdf"
+  - type: paper
+    title: "Ansor: Generating High-Performance Tensor Programs for Deep Learning"
+    url: "https://arxiv.org/abs/2006.06762"
+  - type: paper
+    title: "Learning to Optimize Tensor Programs"
+    url: "https://arxiv.org/abs/1805.08166"
+  - type: website
+    title: "Triton Autotune Documentation"
+    url: "https://triton-lang.org/main/python-api/generated/triton.autotune.html"
+  - type: website
+    title: "MLIR Transform Dialect"
+    url: "https://mlir.llvm.org/docs/Dialects/Transform/"
+  - type: website
+    title: "torch.compile Troubleshooting"
+    url: "https://pytorch.org/docs/stable/torch.compiler_troubleshooting.html"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import AutotuneExplorer from '../../../components/interactive/AutotuneExplorer.tsx';
+import TransformDialectDemo from '../../../components/interactive/TransformDialectDemo.tsx';
+import CompileJourneyRecap from '../../../components/interactive/CompileJourneyRecap.tsx';
+
+<CompilerStackMap currentArticle="autotuning-end-to-end" mode="compact" client:visible />
+
+## 简介
+
+经过前 16 篇文章的旅程，我们已经走过了 ML 编译器的完整栈：从 [计算图捕获](/zh/articles/graph-capture-dynamo) 到 [IR 设计](/zh/articles/ir-design-basics)，从 [优化 Pass](/zh/articles/graph-passes-foundations) 到 [算子融合](/zh/articles/operator-fusion-taxonomy)，从 [Tiling 与内存优化](/zh/articles/tiling-memory-hierarchy) 到 [代码生成](/zh/articles/codegen-triton-backend)，最后到 [调度与执行优化](/zh/articles/scheduling-execution)。每一步都在回答一个核心问题：如何让 GPU 更高效地执行深度学习计算。
+
+但在所有这些优化完成之后，还有一个终极难题：**编译器如何知道哪些参数组合是最优的？**
+
+一个 Triton matmul kernel 有 5-8 个可调参数（BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages 等），每个参数有 3-6 个合理取值。组合起来可能产生数千个配置。对于 A100，最优配置可能是 `BLOCK_M=128, BLOCK_N=128, num_warps=4`；但在 H100 上，由于 SMEM 更大、Tensor Core 结构不同，最优可能变成 `BLOCK_M=256, BLOCK_N=128, num_stages=5`。静态的 cost model 无法完全捕捉这种硬件差异——SMEM bank conflict、L2 cache 行为、TLB miss 等微架构细节极难精确建模。
+
+**Autotuning（自动调优）** 通过在实际硬件上试运行候选配置，用真实的 benchmark 结果来做决策。这看似暴力，实则是工程上最可靠的方法。Triton 的 `@triton.autotune`、TVM 的 AutoScheduler (Ansor)、MLIR 的 Transform Dialect，都是这一思路的不同实现。
+
+本文作为整个 [图编译与优化](/zh/articles/ml-compiler-landscape) 学习路径的收束文章，将深入探讨 autotuning 的原理与实践，介绍 MLIR Transform Dialect 的可编程调度理念，分享 torch.compile 的调试实战技巧，最后通过一个完整的端到端案例将 17 篇文章串联起来。
+
+## 为什么需要 Autotuning
+
+### 组合爆炸问题
+
+让我们量化一下搜索空间的规模。对于一个典型的矩阵乘法 kernel，可调参数包括：
+
+| 参数 | 含义 | 典型取值 | 选项数 |
+|------|------|----------|--------|
+| BLOCK_M | M 维度 tile 大小 | 32, 64, 128, 256 | 4 |
+| BLOCK_N | N 维度 tile 大小 | 32, 64, 128, 256 | 4 |
+| BLOCK_K | K 维度 tile 大小 | 16, 32, 64 | 3 |
+| num_warps | Warp 数量 | 2, 4, 8 | 3 |
+| num_stages | Pipeline 阶段数 | 2, 3, 4, 5 | 4 |
+
+仅这 5 个参数就产生 $4 \times 4 \times 3 \times 3 \times 4 = 576$ 种组合。如果再加上 `SPLIT_K`（2-8）、`GROUP_M`（1-8）等参数，搜索空间轻松突破万级。而一个完整模型可能包含几十种不同 shape 的 kernel，每个都需要独立调优——这就是典型的**组合爆炸**问题。
+
+### 硬件差异不可忽略
+
+即使是同一代 GPU，不同型号的微架构差异也会显著影响最优配置：
+
+- **A100 (80GB)**: 192 KB SMEM per SM, 4 warp schedulers, 108 SMs
+- **H100 (80GB)**: 228 KB SMEM per SM, 4 warp schedulers + TMA engine, 132 SMs
+- **MI300X**: 64 KB LDS per CU, 不同的 wavefront 调度机制, 304 CUs
+
+SMEM 大小直接决定了 tile 大小的上限：更大的 SMEM 允许更大的 tile，减少全局内存访问次数。H100 的 TMA (Tensor Memory Accelerator) 可以让更多 pipeline stages 受益，因为 TMA 异步预取不占用 warp 资源。而在 AMD MI300X 上，LDS（Local Data Share，等价于 SMEM）的大小和 bank 结构完全不同，需要独立的调优。
+
+### Cost Model 的局限
+
+理论上，我们可以构建一个 analytical cost model 来预测 kernel 性能，而不需要实际运行。但在实践中，这种方法面临三大挑战：
+
+1. **缓存行为难以建模**：L2 cache 的命中率取决于 tile 的遍历顺序、并发 kernel 的干扰、以及硬件预取器的行为——这些因素之间存在复杂的交互作用。
+
+2. **指令级流水线效应**：编译器后端的指令调度（instruction scheduling）会因不同的 tile 大小产生不同的 pipeline stall 模式。例如，一个看起来更大的 tile 可能因为寄存器压力导致 register spill，而 spill 到 local memory 的延迟远高于寄存器访问。
+
+3. **Bank conflict 和 SMEM padding**：SMEM 的 bank conflict 取决于 tile layout 和访问模式的精确对齐。一个 BLOCK_K=32 的配置可能完全没有 bank conflict，而 BLOCK_K=64 可能因为跨 stride 访问导致 4-way conflict——性能差异可达 30%。
+
+因此，实践中最有效的做法是：用 cost model 做初步筛选（pruning），缩小搜索空间到合理范围，然后用 autotuning 做最终选择。
+
+## Triton 的 Autotune 机制
+
+### @triton.autotune 装饰器
+
+Triton 提供了一个极其优雅的 autotuning API。开发者只需用 `@triton.autotune` 装饰器声明候选配置：
+
+```python
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32},
+                      num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 32},
+                      num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 128, 'BLOCK_K': 32},
+                      num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 256, 'BLOCK_K': 64},
+                      num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 32},
+                      num_warps=4, num_stages=5),
+    ],
+    key=['M', 'N', 'K'],  # 当这些维度改变时，重新调优
+)
+@triton.jit
+def matmul_kernel(
+    A, B, C,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    # kernel implementation...
+```
+
+`key` 参数非常关键：它指定哪些运行时参数会影响最优配置。当 `M`, `N`, `K` 改变时（例如从 training 的大 batch 切换到 inference 的小 batch），Triton 会重新运行 autotuning。已调优的结果会被缓存到 `~/.triton/cache/` 目录。
+
+### Warmup 与 Benchmark 流程
+
+Triton autotune 的实际执行流程如下：
+
+1. **编译所有候选 kernel**：每个 `Config` 都会被完整编译成 PTX → cubin。这一步的开销可能很大——5 个配置 × 2 秒/配置 = 10 秒编译时间。
+2. **Warmup 运行**：每个 kernel 先运行 `warmup` 次（默认 25 次）来稳定 GPU 状态（填充缓存、预热频率）。
+3. **Benchmark 运行**：然后运行 `rep` 次（默认 100 次）并取中位数时间。
+4. **选择最优**：比较所有配置的中位数时间，选择最快的那个。
+5. **缓存结果**：将 `(key, best_config)` 映射持久化到磁盘缓存。
+
+下次调用同样 shape 的 kernel 时，直接从缓存读取最优配置，跳过所有编译和 benchmark 开销。
+
+### 编译开销与缓存策略
+
+Autotuning 的一大痛点是**首次编译时间**。对于一个包含 50 个不同 shape 的模型：
+
+- 每个 shape × 5 个候选配置 = 250 次编译
+- 每次编译约 1-3 秒（Triton → TTIR → TTGIR → LLVM IR → PTX → cubin）
+- 总计 **250-750 秒**（4-12 分钟）的首次编译时间
+
+这在生产环境中是不可接受的。实践中的解决方案包括：
+
+- **Ahead-of-time (AOT) 编译**：在部署前预编译所有候选配置
+- **缓存预热**：将 autotuning 缓存作为模型 artifact 的一部分分发
+- **配置继承**：对相似 shape 复用已有的最优配置，只对差异显著的情况重新调优
+
+下面的交互组件让你可以探索不同参数组合对性能的影响：
+
+<AutotuneExplorer client:visible />
+
+在这个热力图中，你可以观察到几个关键规律：
+
+1. **Sweet spot 通常在中等 tile 大小**（如 128×128）——太小导致 Tensor Core 利用率低（warp 内计算量不足），太大导致 occupancy 下降（SMEM 占用过多）
+2. **num_warps 和 tile 大小应该匹配**：大 tile 需要更多 warps 来并行处理，小 tile 用过多 warps 反而浪费
+3. **num_stages 对 memory-bound kernel 更重要**：pipeline 预取在等待全局内存时可以隐藏延迟
+
+## 搜索策略
+
+### Grid Search（网格搜索）
+
+最简单的策略：穷举所有候选配置。优点是保证找到全局最优；缺点是时间开销与搜索空间成线性关系。对于 576 个配置、每个 benchmark 0.5 秒的场景，总时间约 5 分钟。这在开发阶段是可接受的，但对于需要部署到多种硬件的场景就太慢了。
+
+Triton 的 `@triton.autotune` 本质上就是 Grid Search——它遍历所有手工指定的 `Config`。开发者通常会根据经验预先筛选出 5-15 个"合理"的配置，而不是枚举所有排列。
+
+### Random Search
+
+Bergstra & Bengio (2012) 的经典论文证明：对于高维参数空间，**随机搜索通常比网格搜索更高效**。原因在于，大多数参数的影响是不均匀的——可能只有 BLOCK_M 和 BLOCK_N 对性能有决定性影响，而 num_stages 的影响较小。Grid Search 在不重要的维度上浪费了大量采样点，而 Random Search 可以在重要维度上获得更密集的覆盖。
+
+在实践中，随机采样 30 个配置就能以 95% 以上的概率找到前 5% 的配置。TVM 的早期版本 (AutoTVM) 就大量使用了这一策略。
+
+### Bayesian Optimization
+
+贝叶斯优化（Bayesian Optimization, BO）是一种更智能的序列化搜索策略：
+
+1. **初始采样**：随机选择 5-10 个配置进行 benchmark
+2. **建立代理模型**：用高斯过程（Gaussian Process, GP）或 Tree-structured Parzen Estimator (TPE) 拟合已观测到的 (配置, 性能) 数据
+3. **Acquisition Function**：利用代理模型的预测均值和不确定性，选择下一个最有可能改善结果的配置——这在"exploit"（在已知好区域附近搜索）和"explore"（探索未知区域）之间取得平衡
+4. **迭代**：benchmark 新配置，更新代理模型，重复直到预算耗尽
+
+BO 的优势在于**样本效率**：通常只需 15-30 次 benchmark 就能找到接近最优的配置，而 Grid Search 可能需要数百次。但 BO 的开销在于代理模型的训练和 acquisition function 的求解——对于低维空间（5-8 个参数），这个开销可以忽略不计。
+
+TVM 的 AutoScheduler (Ansor) 使用了 cost model guided search + evolutionary algorithm 的混合策略。Ansor 先用 learned cost model（基于 XGBoost）预测性能，生成大量候选 schedule，然后只对 top-k 进行实际 benchmark。这种方法在 5000+ 个可能的 schedule 中，只需 benchmark 约 100 个就能找到接近最优的方案。
+
+### Transfer Learning 和 Cost Model Guided Search
+
+更先进的方法利用**迁移学习**来加速调优。核心观察是：不同硬件上的最优配置虽然不同，但配置之间的相对排序是有相关性的。如果在 A100 上配置 A 比配置 B 快 20%，那在 H100 上 A 很可能也比 B 快（虽然幅度可能不同）。
+
+TVM 的 MetaSchedule 就利用了这一特性：在一个 GPU 上完成调优后，将 cost model 迁移到新 GPU 上作为初始化，然后只需少量 benchmark 就能适应新硬件。这将跨硬件调优的时间从小时级缩短到分钟级。
+
+## MLIR Transform Dialect
+
+### 可编程调度的理念
+
+前面讨论的 autotuning 策略（Grid Search、BO 等）都在调优一组**固定维度的数值参数**（tile size、warp count 等）。但在编译器优化中，许多决策是**结构性的**：要不要 fuse 两个操作？先 tile 还是先 vectorize？选择哪种 loop permutation？
+
+MLIR 的 **Transform Dialect** 提供了一种全新的思路：**将优化策略本身表达为 IR**。开发者可以编写一个 "schedule script"，用 Transform Dialect 的操作来声明优化步骤。编译器按照这个 schedule 机械地执行变换，而不需要依赖启发式规则。
+
+这个理念直接受到 Halide 的 schedule language 启发，但 Transform Dialect 作为 MLIR 的一部分，具有几个独特优势：
+
+1. **类型安全**：每个 transform op 都有精确的类型签名，编译器可以在执行前验证 schedule 的合法性
+2. **可组合**：多个 transform 可以自由组合，而且每个 transform 的前置条件和后置条件是明确的
+3. **可调试**：schedule 执行的每一步都可以被追踪，失败时能精确定位到哪个 transform op 出了问题
+
+### 核心 Transform 操作
+
+Transform Dialect 的核心操作包括：
+
+- **`transform.structured.match`**：在 IR 中匹配目标操作（如 `linalg.matmul`），返回一个 handle
+- **`transform.structured.tile_using_for`**：对匹配到的操作进行 tiling，生成 `scf.for` 循环
+- **`transform.structured.fuse_into_containing_op`**：将一个操作 fuse 到另一个操作的循环体中——这是实现 epilogue fusion 的关键
+- **`transform.structured.vectorize`**：将标量操作转换为向量操作（如 `linalg.matmul` → `vector.contract`）
+- **`transform.bufferization.one_shot_bufferize`**：将 tensor 语义的 IR 转换为 buffer (memref) 语义——这是从数学抽象到实际内存操作的关键一步
+
+下面的交互组件展示了三种不同的 schedule 如何逐步优化同一个 matmul + relu 计算：
+
+<TransformDialectDemo client:visible />
+
+### 与 Polyhedral 的互补
+
+Transform Dialect 和 [多面体编译](/zh/articles/graph-passes-polyhedral) 是两种互补的优化方法：
+
+- **Polyhedral**：自动分析循环依赖，找到最优的 tile/permute/parallelize 方案。优点是全自动，缺点是分析复杂度高、可能找不到最优解
+- **Transform Dialect**：由开发者显式指定优化策略。优点是可控、可调试，缺点是需要人类专业知识
+
+在实践中，最有效的做法是：用 Polyhedral 分析来**建议** schedule，然后用 Transform Dialect 来**执行**和**微调**。IREE（Google 的 ML 编译器）正是这样做的：它的 codegen pipeline 使用 Transform Dialect 来驱动 linalg-on-tensor → vector → GPU 的整个降低过程。
+
+### IREE 中的实际应用
+
+IREE 的 Transform Dialect 使用展示了这一技术在生产环境中的成熟度。一个典型的 IREE codegen pipeline 包括：
+
+1. **Tile to workgroups**：将计算划分为 GPU workgroup 级别的 tile
+2. **Tile to threads**：在 workgroup 内进一步 tile 到线程级别
+3. **Vectorize**：将标量循环体转换为向量操作
+4. **Bufferize**：从 tensor 语义转换为 memref 语义
+5. **Map to GPU**：将循环映射到 GPU 的 blockIdx/threadIdx
+
+每一步都是一个 Transform Dialect 操作，整个过程是完全声明式和可重现的。这使得调试和性能分析变得非常直观——你可以在任意两步之间 dump IR，检查中间结果。
+
+## 编译调试实战
+
+### torch.compile 的调试工具
+
+在实际使用 `torch.compile` 时，最常遇到的问题不是 "怎样让它更快"，而是 "为什么它没有达到预期的速度"。PyTorch 提供了一套完善的调试工具：
+
+**环境变量调试**：
+
+```python
+# 查看 TorchDynamo 的图捕获日志
+import torch._dynamo
+torch._dynamo.config.log_level = logging.DEBUG
+
+# 查看 TorchInductor 的代码生成
+# 设置环境变量：TORCH_LOGS="output_code"
+
+# 查看 graph break 的原因
+# 设置环境变量：TORCH_LOGS="graph_breaks"
+
+# 查看完整的编译日志
+# 设置环境变量：TORCH_LOGS="+dynamo,+inductor"
+```
+
+**explain() 方法**：
+
+```python
+model = MyModel()
+explanation = torch.compile(model, fullgraph=False).explain(input_tensor)
+print(explanation)
+# 输出：graph break 位置、原因、以及每个子图的 op 统计
+```
+
+**compiler.disable() 精确排查**：
+
+```python
+@torch.compiler.disable
+def problematic_function(x):
+    # 这个函数不会被编译
+    return x.numpy()  # 例如：包含 numpy 转换，导致 graph break
+```
+
+### 常见 Pitfall
+
+**1. Graph Break（图断裂）**
+
+Graph break 是 torch.compile 最常见的性能杀手。当 TorchDynamo 遇到无法追踪的 Python 操作时，它会将计算图断开为多个子图，每个子图独立编译和执行。常见的 graph break 触发器包括：
+
+- `print()` 调用（包括 debug print）
+- `.item()` 或 `.numpy()` 转换
+- 数据依赖的控制流（如 `if x.sum() > 0`）
+- 不支持的第三方库调用
+- `torch.autograd.Function` 的自定义实现
+
+**2. Dynamic Shape 导致的重复编译**
+
+当 shape 变化时，torch.compile 默认会为每个新 shape 重新编译。如果 batch size 经常变化（如 inference 的不同请求），可能导致大量重复编译开销。解决方案是使用 `torch.compile(dynamic=True)` 启用 [动态 shape 支持](/zh/articles/dynamic-shapes-challenge)，或者使用 `torch._dynamo.mark_dynamic()` 标记特定的动态维度。
+
+**3. 编译时间过长**
+
+首次编译（包括 autotuning）可能需要数分钟。对于 production serving，应该：
+- 使用 `torch._inductor.config.max_autotune = False` 禁用 exhaustive autotuning
+- 使用 `torch.compile(mode="reduce-overhead")` 在编译时间和运行时性能之间取平衡
+- 预编译模型并缓存编译结果
+
+**4. 数值精度问题**
+
+编译优化（特别是算子融合和指令重排）可能改变浮点运算的顺序，导致微小的数值差异。对于大多数训练场景这不是问题，但对于某些对数值精度敏感的应用（如 RL 的 reward shaping），需要注意：
+- 使用 `torch.compile(mode="default")` 而非 `reduce-overhead`（后者会使用更激进的优化）
+- 用 `torch.testing.assert_close()` 验证编译前后的输出一致性
+
+### 性能分析工具
+
+定位性能瓶颈需要多层次的工具：
+
+**PyTorch Profiler**：端到端的 trace 分析，可以看到 kernel 级别的执行时间：
+
+```python
+with torch.profiler.profile(
+    activities=[torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA],
+    with_stack=True,
+) as prof:
+    compiled_model(input)
+print(prof.key_averages().table(sort_by="cuda_time_total"))
+```
+
+**Triton Benchmark**：精确测量单个 kernel 的性能：
+
+```python
+import triton.testing
+
+@triton.testing.perf_report(
+    triton.testing.Benchmark(
+        x_names=['M'],
+        x_vals=[512 * i for i in range(1, 17)],
+        line_arg='provider',
+        line_vals=['triton', 'cublas'],
+        line_names=['Triton', 'cuBLAS'],
+        ylabel='TFLOPS',
+    )
+)
+def benchmark(M, provider):
+    ...
+```
+
+**NVIDIA Nsight Compute**：最底层的 GPU 性能分析工具，可以看到 warp occupancy、SMEM throughput、L2 cache hit rate 等微架构级指标。当 Triton kernel 性能不如 cuBLAS 时，Nsight Compute 是定位差距的关键工具。
+
+## 端到端实战：torch.compile 一个 Transformer Layer
+
+现在让我们把 17 篇文章串联起来，追踪一个 Transformer layer 从 Python 代码到 GPU 执行的完整旅程。
+
+### 第 1 步：用户代码（文章 1-2）
+
+```python
+import torch
+
+class TransformerLayer(torch.nn.Module):
+    def __init__(self, d_model=1024, nhead=16):
+        super().__init__()
+        self.attn = torch.nn.MultiheadAttention(d_model, nhead, batch_first=True)
+        self.ff = torch.nn.Sequential(
+            torch.nn.Linear(d_model, 4096),
+            torch.nn.GELU(),
+            torch.nn.Linear(4096, d_model),
+        )
+        self.norm1 = torch.nn.LayerNorm(d_model)
+        self.norm2 = torch.nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        x = x + self.ff(self.norm2(x))
+        return x
+
+model = TransformerLayer().cuda().half()
+compiled = torch.compile(model, mode="max-autotune")
+```
+
+调用 `torch.compile` 后，TorchDynamo 通过 Python frame evaluation hook 追踪 `forward()` 的执行（[文章 2：图捕获与 Dynamo](/zh/articles/graph-capture-dynamo)）。它生成 FX Graph——一个包含所有操作及其依赖关系的有向无环图。
+
+### 第 2-3 步：IR 与优化 Pass（文章 3-7）
+
+FX Graph 被传递给 TorchInductor，后者首先进行一系列优化 Pass（[文章 5-7](/zh/articles/graph-passes-foundations)）：
+
+- **常量折叠**：预计算权重矩阵的 transpose（如果是 column-major layout）
+- **Dead Code Elimination**：移除 `MultiheadAttention` 返回的 `attn_weights`（因为没有被使用）
+- **Layout 优化**：将 weight tensor 从 (out, in) 转换为 (in, out) 或 channels-last 格式，以匹配 Tensor Core 的访问模式
+- **Pattern Matching**：识别 LayerNorm + Residual Add 模式，合并为单个 fused kernel
+
+在 MLIR 体系中（[文章 3-4](/zh/articles/ir-design-basics)），这对应从 `linalg` dialect 到 `scf`/`vector` dialect 的渐进式降低。
+
+### 第 4-5 步：算子融合与 Tiling（文章 8-11）
+
+TorchInductor 的 fusion 引擎识别出以下融合机会（[文章 8-9](/zh/articles/operator-fusion-taxonomy)）：
+
+- **Pointwise fusion**：GELU 激活函数 fuse 到 Linear 的输出上
+- **Reduction fusion**：LayerNorm 的 mean/variance 计算与后续的 normalize 合并
+- **Epilogue fusion**：Residual Add fuse 到 attention 和 FFN 的输出 MatMul 上
+
+然后进行 Tiling（[文章 10-11](/zh/articles/tiling-memory-hierarchy)）：
+
+- MatMul 被 tile 为 128×128×32 的块，映射到 GPU 的 HBM → SMEM → Register 内存层次
+- 对于动态 batch size，使用 symbolic shapes 来生成参数化的 tile 边界
+
+### 第 6 步：代码生成（文章 12-13）
+
+Fused 和 tiled 的操作被转换为 Triton kernel 代码（[文章 12-13](/zh/articles/codegen-instruction-selection)）：
+
+```python
+# TorchInductor 生成的 Triton kernel（简化版）
+@triton.jit
+def fused_attention_residual(
+    Q, K, V, residual, output,
+    stride_qm, stride_qk,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    # Load Q tile from HBM to registers
+    q = tl.load(Q + offs_m[:, None] * stride_qm)
+    # Compute attention scores, softmax, weighted sum
+    # ... (FlashAttention-style tiled computation)
+    # Fused residual add (epilogue fusion!)
+    res = tl.load(residual + offs_m)
+    output_val = attn_out + res  # residual add in registers
+    tl.store(output + offs_m, output_val)
+```
+
+Triton 编译器将这个 Python-like kernel 经过 TTIR → TTGIR → LLVM IR → PTX → cubin 的完整降低过程。
+
+### 第 7 步：进阶优化（文章 14-16）
+
+如果启用了量化（[文章 14](/zh/articles/quantization-compilation)），MatMul 会使用 INT8/FP8 Tensor Core：
+
+- Weight 使用 FP8 存储，activation 使用 FP8 计算
+- 编译器自动插入 scale/descale 操作
+- 吞吐量提升约 2x（FP16 → FP8）
+
+对于多 GPU 场景（[文章 15](/zh/articles/distributed-compilation)），编译器插入通信操作：
+
+- Tensor Parallel：在 Attention 的 QKV projection 上分片，AllReduce 在 output projection 后执行
+- 编译器将 AllReduce 与下一层的 LayerNorm 重叠（communication-computation overlap）
+
+调度器（[文章 16](/zh/articles/scheduling-execution)）确定 kernel 执行顺序：
+
+- FFN Up 和 FFN Gate 可以在不同 CUDA Stream 上并行执行
+- 使用 CUDA Graph 消除 kernel launch overhead
+
+### 第 8 步：Autotuning 与执行（本文）
+
+最后一步是 autotuning。对于上面的 fused attention kernel，TorchInductor 在 `max-autotune` 模式下会：
+
+1. 生成多个候选配置（BLOCK_M, BLOCK_N, num_warps, num_stages 的不同组合）
+2. 同时评估 Triton 生成的 kernel 和 cuBLAS/cuDNN 的参考实现（backend selection）
+3. 对每个配置运行 benchmark，选择最快的
+4. 将最优结果缓存
+
+### 性能数据
+
+经过完整的编译优化流水线，在 A100 80GB 上的典型加速比：
+
+| 模型 | 场景 | 编译加速比 | 关键优化 |
+|------|------|------------|----------|
+| GPT-2 (124M) | Training | ~1.5x | Fusion + CUDA Graph |
+| LLaMA 7B | Inference (BS=1) | ~1.8x | Fusion + Autotune |
+| LLaMA 7B | Inference (BS=32) | ~2.0x | Fusion + Tiling + Autotune |
+| LLaMA 70B + INT8 | Inference (TP=4) | ~2.5-3.0x | Quant + Fusion + Distributed |
+
+注意这些数字会随 PyTorch 版本、GPU 型号、workload 特征而变化。`torch.compile` 的优化效果在以下场景最显著：
+
+- **多个 pointwise 操作**（如 activation + bias + residual）：fusion 可以减少 3-5x 的内存带宽需求
+- **小 batch inference**：CUDA Graph 消除的 launch overhead 在 kernel 计算量小时占比更大
+- **长序列 attention**：FlashAttention 风格的 tiling 将 $O(N^2)$ 内存降到 $O(N)$
+
+下面的交互组件将整个 17 篇文章的旅程可视化：
+
+<CompileJourneyRecap client:visible />
+
+## 总结与展望
+
+### 17 篇文章的旅程回顾
+
+从 [ML 编译器全景](/zh/articles/ml-compiler-landscape) 出发，我们依次深入了：
+
+1. **基础设施层**：计算图捕获（TorchDynamo）、IR 设计（SSA/Dialect）、渐进式降低
+2. **优化层**：图优化 Pass（DCE/CSE/Layout）、多面体编译、算子融合与 Cost Model
+3. **执行层**：Tiling 与内存层次、动态 Shape、指令选择、Triton 后端
+4. **系统层**：量化编译、分布式编译、调度优化
+5. **收束层**：自动调优与端到端实战（本文）
+
+这 17 篇文章覆盖了从 `torch.compile(model)` 到 GPU 上优化 kernel 执行的**完整路径**。每一层都在回答一个核心问题：如何消除计算与数据搬运之间的低效。
+
+### 未来趋势
+
+ML 编译器的发展远未结束。以下几个方向值得关注：
+
+**1. LLM-Guided Search**：用大语言模型（如 GPT-4）来生成和评估优化 schedule，而不是依赖手工规则或传统搜索算法。初步实验显示，LLM 可以理解 kernel 代码的语义，并提出合理的优化建议。
+
+**2. Hardware-Software Co-design**：编译器和硬件的协同设计。Google TPU 的 XLA 就是这一思路的代表——硬件为编译器提供了明确的编程模型（systolic array），编译器则充分利用硬件特性。未来的 AI 芯片可能会提供更丰富的编译器接口。
+
+**3. 统一 IR/MLIR 生态**：随着 MLIR 的成熟，不同的 ML 框架（PyTorch、JAX、TensorFlow）可能会收敛到一个统一的编译器中间表示。这将使得优化 Pass 可以跨框架复用，减少重复开发。
+
+**4. 新硬件适配**：AMD MI300、Intel Gaudi、各种 AI ASIC（Cerebras、Groq、SambaNova）的兴起意味着编译器需要支持越来越多样化的后端。MLIR 的 Dialect 体系和 Transform Dialect 的可编程调度为此提供了良好的框架。
+
+**5. 端到端优化**：当前的编译器主要优化**单个计算图**的执行。未来的方向是将优化范围扩展到**整个推理 pipeline**——包括 tokenizer、前处理、多轮对话管理、以及与 serving 系统的集成。
+
+如果你已经读完了所有 17 篇文章，我鼓励你回到 [ML 编译器全景](/zh/articles/ml-compiler-landscape) 重新阅读——带着对每一层细节的理解，你会对 ML 编译器的全局架构有更深刻的认识。这就像登山后回望来时的路：每一步都是为了这一刻的全景视野。
+
+## 延伸阅读
+
+- Tillet, P., Kung, H.T., & Cox, D. (2019). *Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations*. Harvard University.
+- Zheng, L. et al. (2020). *Ansor: Generating High-Performance Tensor Programs for Deep Learning*. OSDI.
+- Chen, T. et al. (2018). *Learning to Optimize Tensor Programs*. NeurIPS.
+- [Triton Autotune API 文档](https://triton-lang.org/main/python-api/generated/triton.autotune.html)
+- [MLIR Transform Dialect 官方文档](https://mlir.llvm.org/docs/Dialects/Transform/)
+- [torch.compile Troubleshooting Guide](https://pytorch.org/docs/stable/torch.compiler_troubleshooting.html)
