@@ -5,7 +5,7 @@ locale: "en"
 tags: [ssm, mamba, state-space-model, selective-scan, sequence-modeling]
 difficulty: advanced
 created: "2026-04-05"
-updated: "2026-04-06"
+updated: "2026-04-13"
 prerequisites: [attention-computation]
 references:
   - type: paper
@@ -17,6 +17,15 @@ references:
   - type: paper
     title: "Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality"
     url: "https://arxiv.org/abs/2405.21060"
+  - type: paper
+    title: "HiPPO: Recurrent Memory with Optimal Polynomial Projections"
+    url: "https://arxiv.org/abs/2008.07669"
+  - type: paper
+    title: "Hungry Hungry Hippos: Towards Language Modeling with State Space Models (H3)"
+    url: "https://arxiv.org/abs/2212.14052"
+  - type: paper
+    title: "On the Parameterization and Initialization of Diagonal State Space Models (S4D)"
+    url: "https://arxiv.org/abs/2206.12037"
 ---
 
 import SSMStateRecurrence from '../../../components/interactive/SSMStateRecurrence.tsx';
@@ -24,12 +33,17 @@ import RecurrenceConvDuality from '../../../components/interactive/RecurrenceCon
 import SelectiveScanViz from '../../../components/interactive/SelectiveScanViz.tsx';
 import MambaBlockDiagram from '../../../components/interactive/MambaBlockDiagram.tsx';
 import SSDAttentionEquivalence from '../../../components/interactive/SSDAttentionEquivalence.tsx';
+import HiPPOMemoryViz from '../../../components/interactive/HiPPOMemoryViz.tsx';
+import ParallelScanViz from '../../../components/interactive/ParallelScanViz.tsx';
+import MambaBenchmarkChart from '../../../components/interactive/MambaBenchmarkChart.tsx';
 
 ## Introduction
 
-Standard Attention has $O(n^2)$ computational complexity, and the KV cache grows linearly with sequence length during inference. For long-context scenarios with 100K+ tokens, Attention's memory and compute costs become a critical bottleneck. Is there a sequence modeling method that can process sequences of arbitrary length in **linear time** while maintaining a fixed-size inference cache?
+Standard Attention has $O(L^2)$ computational complexity ($L$ = sequence length), and the KV cache grows linearly with sequence length during inference. A 100K-token context means the Attention matrix has $10^{10}$ elements — memory and compute costs become an unavoidable bottleneck.
 
-**State Space Models (SSMs)** are exactly such an approach. Originating from control theory and signal processing, the core idea is to compress the entire history of a sequence into a **fixed-size state vector**, updating the state for each new token rather than looking back over the full history.
+RNNs seem like a solution: $O(1)$ inference complexity, requiring only a fixed-size hidden state per step. But traditional RNNs have two fatal weaknesses: (1) vanishing/exploding gradients prevent learning long-range dependencies; (2) the inherently sequential nature of step-by-step recursion makes training unparallelizable.
+
+Is there an approach that **solves both problems simultaneously** — parallelizable training (like Attention) + $O(1)$ inference (like RNNs) + theoretically learnable arbitrary long-range dependencies? **State Space Models (SSMs)** are exactly such an approach. Originating from control theory and signal processing, the core idea is to compress the entire history of a sequence into a **fixed-size state vector**, updating the state for each new token rather than looking back over the full history. The key SSM evolution: HiPPO (2020) → S4 (2021) → H3 (2022) → **Mamba** (2023) → **Mamba-2** (2024).
 
 ---
 
@@ -43,18 +57,44 @@ $$
 
 Here $u(t)$ is the input signal, $x(t) \in \mathbb{R}^N$ is the hidden state, and $y(t)$ is the output. Matrix $A \in \mathbb{R}^{N \times N}$ governs how the state evolves, $B \in \mathbb{R}^{N \times 1}$ controls how input is written into the state, and $C \in \mathbb{R}^{1 \times N}$ controls how the output is read from the state.
 
+The $D$ term is a direct feedforward connection (skip connection). In S4 and Mamba implementations, it is typically set to 0 or identity, and does not affect the core SSM dynamics — we omit it hereafter.
+
 Intuition: **The state $x$ is a "compressed history summary."** Unlike Attention — which looks back over the entire token sequence at every step — an SSM maintains only a fixed-size state, with all historical information compressed into these $N$ dimensions. Think of it as a "filter with memory": the input signal passes through the system, gets remembered and mixed by the state, then produces the output.
+
+The above is the simplest single-input single-output (SISO) form. In practice, the SSM runs independently on each feature dimension $D$ of the model (similar to depth-wise convolution).
+
+Signal processing analogy: An SSM is like a "memoryful IIR filter." Input signal $u(t)$ passes through the system; state $x(t)$ acts as the filter's internal registers; $A$ controls feedback between registers (pole locations); $B$ controls the path from input to registers; $C$ controls the path from registers to output.
+
+Key question: **The initialization of the $A$ matrix determines the "mathematical structure of memory."** Randomly initialized $A$ causes exponential information decay, preventing the model from learning long-range dependencies. This is precisely the problem that HiPPO, covered in the next section, aims to solve.
 
 <SSMStateRecurrence client:visible locale="en" />
 
 ---
 
+## 1.5 HiPPO: The Mathematical Foundation of SSM Memory
+
+How can an $N$-dimensional state vector "optimally" compress the history of a continuous signal? A randomly initialized $A$ matrix causes exponential information decay — the state only remembers the most recent steps, and distant information is rapidly lost.
+
+**HiPPO** (High-order Polynomial Projection Operators, Gu et al., NeurIPS 2020) provides an elegant solution: approximate the signal history using an **orthogonal polynomial basis** (Legendre polynomials). The $n$-th component of the state vector = the projection coefficient of the signal onto the $n$-th Legendre polynomial. Thus, the $N$-dimensional state is an **$N$-th order polynomial approximation** of the signal history, rather than simple exponential decay.
+
+The HiPPO-LegS matrix (HiPPO paper Section 3.2) has a special lower-triangular + diagonal structure. This specific $A$ matrix makes the state update exactly equivalent to "online computation of Legendre projection coefficients" — with each new token processed, the state vector automatically maintains an optimal polynomial approximation of the entire signal history.
+
+<HiPPOMemoryViz client:visible locale="en" />
+
+**Why it matters**: S4 experiments demonstrated that S4 with HiPPO initialization achieved SoTA on Path-X (16384-step sequence classification), while random initialization completely failed. HiPPO provides the theoretical foundation for SSMs to learn arbitrarily long-range dependencies.
+
+**Mamba's simplification**: Mamba does not use the full HiPPO matrix, but instead uses the simpler S4D-Real initialization: $A = -\text{diag}(1, 2, ..., N)$. In code, `A_log = log([1,...,N])` is stored as a parameter, and at computation time `A = -exp(A_log)`. The negative sign ensures state decay (stability), and log-space storage ensures numerical stability. Mamba's selectivity mechanism (input-dependent $\Delta$, $B$, $C$) compensates for the reduced expressiveness of the simplified initialization.
+
+---
+
 ## 2. Discretization: From Continuous to Sequential
 
-Language models process discrete token sequences, so the continuous SSM must be discretized. Using the Zero-Order Hold (ZOH) method with step size $\Delta$:
+**Why discretize?** Language models process discrete token sequences, but the SSM's mathematics is in continuous time. Analogy: continuous signal → digital sampling, where step size $\Delta$ is the sampling interval.
+
+Starting from $\dot{x}(t) = Ax(t) + Bu(t)$, integrating over the interval $[k\Delta, (k+1)\Delta]$ and assuming $u(t)$ is constant within the interval (Zero-Order Hold assumption), we get:
 
 $$
-\bar{A} = e^{\Delta A}, \quad \bar{B} = (\Delta A)^{-1}(e^{\Delta A} - I) \cdot \Delta B
+\bar{A} = e^{\Delta A}, \quad \bar{B} = A^{-1}(e^{\Delta A} - I) \cdot B
 $$
 
 The discretized recurrence formula:
@@ -63,7 +103,9 @@ $$
 x_k = \bar{A} x_{k-1} + \bar{B} u_k, \quad y_k = C x_k
 $$
 
-The physical meaning of step size $\Delta$: it controls the system's "temporal resolution." A **large $\Delta$** means each step spans a longer time interval, making the system focus on long-range dependencies; a **small $\Delta$** makes the system focus on short-range details. In the subsequent Mamba model, $\Delta$ becomes an input-dependent learnable parameter — this is the key to the selectivity mechanism.
+The simplest discretization is first-order Euler approximation: $\bar{A} \approx I + \Delta A$, $\bar{B} \approx \Delta B$. Intuitive but low precision. **Mamba and S4 actually use ZOH** (higher precision). Different discretization methods produce different $\bar{A}$, $\bar{B}$, but all map the same continuous system to a discrete recurrence.
+
+The step size $\Delta$ in the LTI (Linear Time-Invariant) context controls the system's "temporal resolution": analogous to audio sample rate — 44.1kHz (small $\Delta$, high resolution) vs 8kHz (large $\Delta$, low resolution). Note: in Section 4 on Mamba's selective $\Delta$, the meaning differs — large $\Delta$ means "reset & focus," small $\Delta$ means "persist & ignore" (details in Section 4).
 
 ---
 
@@ -73,37 +115,75 @@ Discrete SSMs possess an elegant property: the same model can be computed in two
 
 **Recurrence mode**: Step-by-step recursion $x_k = \bar{A}x_{k-1} + \bar{B}u_k$, with $O(1)$ computation per step. Ideal for **inference** — each new token requires only a single state update.
 
-**Convolution mode**: Unrolling the recursion yields $y = \bar{K} * u$, where the convolution kernel is $\bar{K} = (C\bar{B}, C\bar{A}\bar{B}, C\bar{A}^2\bar{B}, ...)$. The entire sequence can be computed in parallel using FFT in $O(N \log N)$ time. Ideal for **training** — all tokens are processed simultaneously.
+**Convolution mode**: Unrolling the recursion reveals the convolution structure:
+
+$$
+y_0 = C\bar{B}u_0, \quad y_1 = C\bar{A}\bar{B}u_0 + C\bar{B}u_1, \quad y_k = \sum_{j=0}^{k} C\bar{A}^{k-j}\bar{B} \cdot u_j
+$$
+
+This is exactly convolution $y = \bar{K} * u$, with kernel $\bar{K}_i = C\bar{A}^i\bar{B}$. Using FFT acceleration (convolution in time domain = multiplication in frequency domain): $y = \text{IFFT}(\text{FFT}(\bar{K}) \cdot \text{FFT}(u))$, the entire sequence is computed in parallel in $O(L \log L)$ time ($L$ = sequence length). Ideal for **training** — all tokens are processed simultaneously.
 
 <RecurrenceConvDuality client:visible locale="en" />
 
-This duality is the core contribution of S4 (Structured State Spaces for Sequence Modeling): use convolution mode during training to fully exploit GPU parallelism, then switch to recurrence mode at inference for $O(1)$ incremental generation.
+This duality is the core contribution of **S4** (Structured State Spaces for Sequence Modeling, Gu et al., ICLR 2022): use convolution mode during training to fully exploit GPU parallelism, then switch to recurrence mode at inference for $O(1)$ incremental generation.
+
+**S4's technical key**: Computing the convolution kernel $\bar{K}_i = C\bar{A}^i\bar{B}$ requires high powers of $\bar{A}$ — expensive for general matrices. S4 uses NPLR/DPLR parameterization (decomposing $A$ into Diagonal + Low-Rank), leveraging the Cauchy kernel formula for efficient computation. The simplified S4D directly diagonalizes $A$, making $\bar{A}^i$ simply the $i$-th power of diagonal elements.
+
+S4's landmark results: SoTA on all Long Range Arena tasks, including **Path-X** (16384-step sequence classification) where all prior methods had failed; Sequential CIFAR-10 at 91% (no data augmentation); generation speed 60x faster than same-parameter Transformers.
+
+---
+
+## 3.5 From S4 to Mamba: Why Selectivity Is Needed
+
+Despite S4's excellent performance on long-sequence tasks, it has a fundamental limitation — **Linear Time-Invariance (LTI)**: all parameters ($A$, $B$, $C$, $\Delta$) remain fixed. This means the SSM processes "the" and "cat" in exactly the same way. From the convolution perspective: a fixed convolution kernel = a fixed filter, unable to select based on content.
+
+The **Selective Copying task** (Mamba paper Section 4.1) clearly exposes this problem: the task requires selecting colored tokens from noisy tokens and copying them in order, with variable spacing. S4 (LTI) achieves only 18.3% accuracy, while Mamba (selective) reaches 99.8%. The reason: a static convolution kernel cannot handle selective copying with variable spacing.
+
+**H3** (Hungry Hungry Hippos, Fu et al., 2022) attempted a transitional approach: adding some Attention layers outside the SSM layers to supplement retrieval capability. A 125M H3-Attention hybrid model outperformed a pure Transformer. But this raised a more fundamental question: rather than adding Attention externally to compensate for SSM limitations, why not make the SSM itself selective? This line of thinking directly led to Mamba.
 
 ---
 
 ## 4. Mamba's Selectivity Mechanism
 
-Early SSMs like S4 have a fundamental limitation: the parameters $A$, $B$, $C$ are **fixed** (input-independent). This means the system treats all input tokens identically — whether critical content words or noise filler words, the SSM processes them the same way.
-
-**Mamba** (Gu & Dao, 2023) introduces the core innovation of **Selectivity**: making key parameters dependent on the current input.
+**Mamba** (Gu & Dao, 2023) introduces the core innovation of **Selectivity**: making key parameters dependent on the current input, fundamentally solving the LTI limitation described in Section 3.5.
 
 - **Selective $B$**: $B_k = \text{Linear}(u_k)$ — controls "what to write into the state"
 - **Selective $C$**: $C_k = \text{Linear}(u_k)$ — controls "what to read from the state"
-- **Selective $\Delta$**: $\Delta_k = \text{softplus}(\text{Linear}(u_k))$ — controls "forgetting speed"
+- **Selective $\Delta$**: $\Delta_k = \text{softplus}(\text{Linear}(u_k))$ — controls "state update intensity"
 
-$\Delta$ is the most intuitive: for important tokens (e.g., content words like "cat", "mat"), the model learns to output a large $\Delta$, causing the information to **be retained**; for noise tokens (e.g., "the", "on"), it outputs a small $\Delta$, causing old information to **quickly forget** the new input.
+The mechanism of $\Delta$: since $A$ is initialized as negative, the behavior of $\bar{A} = e^{\Delta A}$ depends on the magnitude of $\Delta$. **Large $\Delta$** → $\Delta A$ is a large negative number → $\bar{A} \to 0$, old state is heavily decayed, while $\bar{B}$ increases and current input is strongly written in — the effect is **"reset & focus" (clear old state, focus on current token)**. **Small $\Delta$** → $\bar{A} \approx I$, old state is almost fully preserved, while $\bar{B} \to 0$ and current input is nearly ignored — the effect is **"persist & ignore" (keep old state, ignore current token)**.
+
+For content words ("cat", "mat"), the model outputs a large $\Delta$ to strongly write the current token into state; for function words ("the", "on"), it outputs a small $\Delta$ to leave the state nearly unchanged.
+
+**RNN gate equivalence**: Mamba paper Theorem 1 proves that when $N=1$, $A=-1$, $B=1$, the selective SSM degenerates exactly to a gated RNN: $g_t = \sigma(\text{Linear}(x_t))$, $h_t = (1-g_t)h_{t-1} + g_t x_t$. $(1-g_t)$ controls forgetting, $g_t$ controls writing — both coupled as a single scalar (unlike LSTM's independent forget and input gates). In other words, the SSM's discretization step $\Delta$ is the **theoretical foundation** for RNN's heuristic gating mechanisms.
 
 <SelectiveScanViz client:visible locale="en" />
 
-The cost of selectivity: once parameters depend on input, the SSM is no longer a linear time-invariant (LTI) system — the convolution kernel $\bar{K}$ changes with input, so FFT acceleration is no longer possible. Mamba uses a **hardware-aware parallel scan algorithm** instead — performing scan operations in GPU SRAM to avoid HBM reads/writes, achieving training efficiency close to convolution.
+### Parallel Scan: Parallel Training for Selective SSMs
+
+The cost of selectivity: once parameters depend on input, the SSM is no longer time-invariant (LTI), the convolution kernel $\bar{K}$ changes with input, and FFT acceleration is no longer possible. The recurrence $x_k = \bar{A}_k x_{k-1} + \bar{B}_k u_k$ has parameters varying with $k$ — how to parallelize?
+
+Key observation: the recurrence $(x_k, a_k) = (a_k \cdot x_{k-1} + b_k)$ is an **associative operation**. Two operations $(a_1, b_1)$ and $(a_2, b_2)$ can be combined as $(a_2 a_1, a_2 b_1 + b_2)$. Associativity means we can use the **parallel prefix sum** algorithm — similar to parallel reduction on GPUs:
+
+- **Work**: $O(L)$ (total computation same as sequential execution)
+- **Span**: $O(\log L)$ (critical path length, determines parallel time)
+
+<ParallelScanViz client:visible locale="en" />
+
+**Hardware-aware optimization** (Mamba paper Section 3.3.2): A naive implementation requires storing $(\bar{A}, \bar{B})$ tensors of size $(B, L, D, N)$ in HBM — memory explosion. Mamba's approach: load SSM parameters $(\Delta, A, B, C)$ directly from HBM to SRAM, perform discretization + scan in SRAM, and write only the final output $(B, L, D)$ back to HBM. During backpropagation, intermediate states are not stored but recomputed (similar to gradient checkpointing). Result: same memory footprint as an optimized Transformer with FlashAttention.
 
 ### Mamba Block Architecture
 
-Mamba replaces the traditional Attention + MLP structure with a more streamlined block:
+Mamba merges the functionality of Attention and MLP from Transformers into a more streamlined block:
 
-<MambaBlockDiagram />
+<MambaBlockDiagram locale="en" />
 
-The entire block has no Attention layer and no separate MLP layer. The input first goes through a linear projection to expand dimensions, then splits into two paths: one path through Conv1d + SSM for sequence processing, the other as a gate. The two paths are multiplied together, then dimensions are contracted for output.
+Architecture highlights:
+
+- **Role of Conv1d**: Provides local context (kernel size = 4), allowing the SSM to "see" neighboring tokens when making selective decisions. Without Conv1d, the SSM's $B$, $C$, $\Delta$ would make decisions based solely on individual token embeddings.
+- **Gating mechanism**: The SiLU gate on the right branch is similar to GLU (Gated Linear Unit). Output = SSM_output $\times$ $\sigma$(gate_input), controlling information flow and preventing over-activation.
+- **Dimension changes**: expand factor $E=2$, Linear$\uparrow$ maps $D \to 2D$, Linear$\downarrow$ maps $2D \to D$.
+- **Comparison with Transformer**: Transformer block = LayerNorm → Multi-Head Attention → Residual → LayerNorm → MLP → Residual; Mamba block = LayerNorm → Linear$\uparrow$ → (Conv1d → SiLU → SSM) $\times$ Gate → Linear$\downarrow$ → Residual.
 
 ---
 
@@ -111,13 +191,52 @@ The entire block has no Attention layer and no separate MLP layer. The input fir
 
 **Mamba-2** (Dao & Gu, ICML 2024) establishes a deep mathematical connection between SSMs and Attention — **State Space Duality (SSD)**.
 
-Core finding: unrolling the SSM recurrence into matrix form $Y = M \cdot U$, the matrix $M$ is a **semiseparable matrix**. Meanwhile, in standard Attention computation $Y = \text{softmax}(QK^T) \cdot V$, the score matrix $QK^T$ is a **dense matrix**.
+Core finding: unrolling the SSM recurrence into matrix form $Y = M \cdot U$, the matrix $M$ is a **semiseparable matrix**. Any submatrix of the lower-triangular part of $M$ has rank $\leq N$ (state dimension). Intuition: since each step has only an $N$-dimensional state "carrying" information, the matrix's "information bandwidth" is bounded by $N$. In contrast, for Attention: the rank of $QK^T$ = head dim, much higher than SSM's $N$, making it more expressive but also slower.
 
 <SSDAttentionEquivalence client:visible locale="en" />
 
-In other words: **SSM is a form of Attention with structural constraints.** The semiseparable structure = causal mask + exponential decay, and this structure allows the matrix multiplication to be completed in $O(N)$ time using chunk-wise algorithms — similar to Flash Attention's blocking strategy.
+**Chunk-wise algorithm**: Divide a length-$L$ sequence into $L/Q$ chunks, each of size $Q$. Within each chunk, use matrix multiplication ($Q \times Q$ matrix, leveraging tensor cores); between chunks, use SSM scan (passing only $N$-dimensional state). Total computation $O(LN^2)$ FLOPs, $O(LN)$ memory — similar to Flash Attention's blocking strategy.
 
-Practical significance: Mamba-2 is **2-8x** faster than Mamba-1, while introducing **multi-head SSM** (analogous to multi-head attention), which gives the model greater expressive power.
+**Multi-head SSM**: Mamba-1 has head dim $P=1$ (each feature dimension runs an independent SSM). Mamba-2 introduces head dim $P=64$ or $128$ (multiple dimensions share $A$, analogous to multi-head attention). Larger head dim makes matrix multiplication more efficient (GPUs prefer large matrices) while enhancing model expressiveness.
+
+**Structured masked attention perspective**: In SSD's dual form, $\Lambda_{ij} = \prod_{t=j+1}^{i} a_t$ is a product of input-dependent scalars. This can be seen as replacing Transformer's heuristic positional encoding with a data-dependent positional mask. The main source of speedup is that the semiseparable structure allows sub-quadratic chunk-wise algorithms, not merely the removal of softmax.
+
+**Performance**: Mamba-2's core layer is **2-8x** faster than Mamba-1's fused scan; the crossover with FlashAttention-2 occurs at sequence length ~2K, and at 16K sequence length, it is ~6x faster than FlashAttention-2.
+
+---
+
+## 6. Benchmarks and Practical Comparison
+
+All data below are from the Mamba paper (Gu & Dao, arXiv:2312.00752).
+
+### Language Model Quality
+
+On the Pile dataset, Mamba outperforms same-scale Pythia (Transformer baseline) across all parameter scales:
+
+| Model | Parameters | Perplexity |
+|---|---|---|
+| Pythia-1.4B | 1.4B | 7.51 |
+| RWKV-1.5B | 1.5B | 7.70 |
+| **Mamba-1.4B** | 1.4B | **6.80** |
+| Pythia-2.8B | 2.8B | 6.73 |
+| **Mamba-2.8B** | 2.8B | **6.22** |
+
+Downstream task average accuracy (Mamba paper Table 1): Mamba-1.4B achieves **59.7%**, surpassing the 2x-larger Pythia-2.8B (59.1%); Mamba-2.8B achieves **63.3%**, surpassing the 2.5x-larger Pythia-6.9B (61.7%). In other words, **Mamba roughly matches Transformer quality at half the parameters**.
+
+### Inference Throughput
+
+Mamba is **5x** faster than same-parameter Transformers (A100 80GB, prompt 2048 + gen 128).
+
+<MambaBenchmarkChart client:visible locale="en" />
+
+### SSM Weaknesses
+
+SSM's fixed $N$-dimensional state is inherently lossy compression. When precise recall of a specific token from a long sequence is needed (e.g., "what was the 3000th token?"), an $N$-dimensional vector cannot losslessly store all information from $L \gg N$ tokens. This is not a bug, it's a feature — SSMs excel at **summarization and pattern recognition**, not **exact retrieval**.
+
+Specific weaknesses include:
+- **Multi-Query Associative Recall (MQAR)**: Mamba-1 struggles on this task (Mamba-2 paper Figure 8)
+- **In-context learning**: Pure SSMs remain weaker than Attention; the Mamba-2 paper recommends hybrid architectures
+- **Long-sequence exact copying**: Fixed state dimensions limit exact copying capability
 
 ---
 
@@ -125,14 +244,16 @@ Practical significance: Mamba-2 is **2-8x** faster than Mamba-1, while introduci
 
 SSMs provide a fundamentally different sequence modeling paradigm from Attention:
 
-| | Attention | SSM |
-|---|---|---|
-| Training complexity | $O(N^2)$ | $O(N)$ or $O(N \log N)$ |
-| Inference cache | $O(N)$ (KV cache) | $O(1)$ (fixed state) |
-| History access | Exact (any token) | Compressed (fixed dimensions) |
-| Core bottleneck | Long-sequence memory/compute | Copying / ICL capability |
+| | Attention | SSM (LTI, e.g. S4) | SSM (Selective, e.g. Mamba) |
+|---|---|---|---|
+| Training complexity | $O(L^2)$ | $O(L \log L)$ (FFT) | $O(L)$ (parallel scan) |
+| Inference cache | $O(L)$ (KV cache) | $O(1)$ (fixed state) | $O(1)$ (fixed state) |
+| History access | Exact (any token pair) | Compressed + fixed pattern | Compressed + adaptive pattern |
+| Content awareness | Full ($QKV$ all input-dependent) | None (parameters fixed) | Partial ($B$, $C$, $\Delta$ input-dependent) |
+| Long-sequence ICL | Strong | Weak | Medium (still weaker than Attention) |
+| Core strength | Exact retrieval | Parallel training + efficient inference | Selectivity + linear complexity |
 
-SSM's advantages lie in linear complexity and constant inference cache, but a fixed-size state vector means information must be compressed — when precise recall of a specific distant token is needed (e.g., copying, in-context learning), SSMs fall short.
+The SSM development roadmap clearly shows the key problem solved at each step: **HiPPO** (2020) solved "how to initialize A to remember long history" → **S4** (2021) solved "how to train efficiently" (convolution mode) → **H3** (2022) discovered "SSMs need selectivity" → **Mamba** (2023) solved "how to make SSMs selectively process input" → **Mamba-2** (2024) unified the mathematical frameworks of SSMs and Attention.
 
 This fundamental limitation leads to the topic of the next article: how **Hybrid architectures** combine Attention's precise retrieval with SSM's efficient summarization, leveraging the strengths of both.
 

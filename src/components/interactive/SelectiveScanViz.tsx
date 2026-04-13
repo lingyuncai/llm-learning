@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
 const W = 580;
-const H = 380;
+const H = 400;
 
 interface TokenData {
   text: string;
@@ -27,21 +27,21 @@ export default function SelectiveScanViz({ locale = 'zh' }: { locale?: 'zh' | 'e
 
   const t = {
     zh: {
-      title: 'Mamba 选择性机制：Δ 控制记忆与遗忘',
+      title: 'Mamba 选择性机制：Δ 控制状态更新',
       subtitle: '点击 token 查看其对状态的影响',
       deltaLabel: 'Δ 值',
-      largeDelta: '大 Δ = 记住（内容词）',
-      smallDelta: '小 Δ = 遗忘（功能词）',
+      largeDelta: '大 Δ = reset & focus（写入当前）',
+      smallDelta: '小 Δ = persist & ignore（保留旧态）',
       stateProcessed: '状态 (处理到 "{token}")',
       stateCumulative: '累积状态 (全部 tokens)',
       annotation: '选择性 Δ 让 Mamba 自适应地关注重要 token，忽略噪声 — 类似 Attention 的"软选择"',
     },
     en: {
-      title: 'Mamba Selective Mechanism: Δ Controls Memory & Forgetting',
+      title: 'Mamba Selective Mechanism: Δ Controls State Update',
       subtitle: 'Click token to see its impact on state',
       deltaLabel: 'Δ value',
-      largeDelta: 'Large Δ = Remember (content words)',
-      smallDelta: 'Small Δ = Forget (function words)',
+      largeDelta: 'Large Δ = Reset & Focus (write current)',
+      smallDelta: 'Small Δ = Persist & Ignore (keep old state)',
       stateProcessed: 'State (processed to "{token}")',
       stateCumulative: 'Cumulative state (all tokens)',
       annotation: 'Selective Δ allows Mamba to adaptively focus on important tokens and ignore noise — similar to Attention\'s "soft selection"',
@@ -54,17 +54,20 @@ export default function SelectiveScanViz({ locale = 'zh' }: { locale?: 'zh' | 'e
   const tokensY = 60;
   const deltaY = 140;
   const deltaMaxH = 80;
-  const stateY = 280;
+  const stateY = 300;
   const stateCellW = 60;
   const stateCellH = 28;
 
-  // Cumulative state up to selected token
+  // Cumulative state up to selected token using Ā = exp(-delta * A_diag) model
   const cumulativeState = Array.from({ length: STATE_DIM }, () => 0);
   const limit = selected !== null ? selected + 1 : TOKENS.length;
-  for (let t = 0; t < limit; t++) {
-    const decay = Math.pow(0.9, limit - 1 - t); // older tokens decay
+  for (let ti = 0; ti < limit; ti++) {
+    // Ā ≈ exp(-delta * 2): large delta → Ā→0 (reset), small delta → Ā≈1 (persist)
+    const aBar = Math.exp(-TOKENS[ti].delta * 2);
+    // B̄ scales with delta: large delta → strong write, small delta → weak write
+    const bBar = TOKENS[ti].delta;
     for (let d = 0; d < STATE_DIM; d++) {
-      cumulativeState[d] += TOKENS[t].stateContrib[d] * TOKENS[t].delta * decay;
+      cumulativeState[d] = aBar * cumulativeState[d] + bBar * TOKENS[ti].stateContrib[d];
     }
   }
   const maxState = Math.max(...cumulativeState.map(Math.abs), 0.01);
@@ -118,10 +121,21 @@ export default function SelectiveScanViz({ locale = 'zh' }: { locale?: 'zh' | 'e
           </g>
         );
       })}
+      {/* Ā values under delta bars */}
+      {TOKENS.map((tok, i) => {
+        const x = tokensX + i * tokenW;
+        const aBarVal = Math.exp(-tok.delta * 2);
+        return (
+          <text key={`a-${i}`} x={x + tokenW / 2} y={deltaY + deltaMaxH + 14} textAnchor="middle"
+            fontSize="8" fill={COLORS.mid} fontFamily={FONTS.mono}>
+            Ā={aBarVal.toFixed(2)}
+          </text>
+        );
+      })}
       {/* Delta legend */}
-      <text x={tokensX} y={deltaY + deltaMaxH + 18} fontSize="9"
+      <text x={tokensX} y={deltaY + deltaMaxH + 30} fontSize="9"
         fill={COLORS.green} fontFamily={FONTS.sans}>■ {t.largeDelta}</text>
-      <text x={tokensX + 200} y={deltaY + deltaMaxH + 18} fontSize="9"
+      <text x={tokensX + 200} y={deltaY + deltaMaxH + 30} fontSize="9"
         fill={COLORS.red} fontFamily={FONTS.sans}>■ {t.smallDelta}</text>
 
       {/* State heatmap */}
