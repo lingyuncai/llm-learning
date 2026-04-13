@@ -4,6 +4,7 @@
 > **难度**: advanced
 > **前置路径**: ai-compute-stack
 > **文章数**: 17 篇
+> **交互组件**: ~55 个
 > **Phase 数**: 4（每 phase 一个独立 implementation plan）
 
 ## 1. 路径定位
@@ -290,8 +291,9 @@ ollama-internals / openvino-graph-pipeline（框架层：具体实现视角）
    - 内存分配决策：哪些 tensor 需要独立 buffer，哪些可以 in-place
 
 5. **实战案例：torch-mlir 的 Lowering Pipeline**
-   - Torch dialect → TCP dialect → Linalg-on-Tensors → Linalg-on-Buffers → LLVM
+   - 典型路径：Torch dialect → Linalg/Arith (on tensors) → Bufferization (Linalg on buffers) → LLVM
    - 每层解决什么问题
+   - 注：torch-mlir 演进较快，具体 pipeline 以写作时最新版本为准
 
 6. **对比单层 IR 的局限**
    - TVM 从 Relay（单层高级 IR）演进到 Relay + TIR（双层）的历史
@@ -371,7 +373,7 @@ ollama-internals / openvino-graph-pipeline（框架层：具体实现视角）
    - Shape specialization：固定 shape 后能解锁哪些优化
    - Shape propagation：op 的输出 shape 如何从输入 shape 推导
 
-3. **Memory Planning**
+3. **Memory Planning**（侧重 pass 阶段的静态分析，与文章 16 的执行阶段动态调度互补）
    - Tensor 生命周期分析（从定义到最后使用）
    - In-place operation 检测
    - Memory pool 分配策略
@@ -530,7 +532,7 @@ ollama-internals / openvino-graph-pipeline（框架层：具体实现视角）
 4. **FlashAttention 深度剖析**
    - 标准 Attention 的内存瓶颈分析：Q×K^T 产生 N×N 矩阵，必须写回 HBM
    - FlashAttention 的 tiling 策略：分块计算 softmax，避免 N×N 矩阵具现化
-   - I/O 复杂度分析：O(N²d) → O(N²d²/M)，M = SRAM 大小
+   - I/O 复杂度分析：标准 attention 的 HBM 访问量为 Θ(Nd + N²)，FlashAttention 降低至 O(N²d²/M)，M = SRAM 大小
    - 为什么这不是简单的 op fusion 而是**算法级重写**
    - FlashAttention 2 的改进：减少非 matmul FLOPs、更好的 warp 间工作分配
    - FlashAttention 3 的改进：利用 Hopper 架构的异步特性
@@ -711,7 +713,7 @@ ollama-internals / openvino-graph-pipeline（框架层：具体实现视角）
    - GPU register allocation 的特殊性：
      - GPU 的 register file 很大（每个 SM 256KB）但被所有 warp 共享
      - Register 使用量直接影响 occupancy
-     - 与 CPU 不同：没有 register spilling 到 stack（spill 到 local memory 很慢）
+     - 与 CPU 不同：GPU register 溢出（spill）到 local memory（经 L1/L2 cache 访问 DRAM），延迟远高于 register 访问，因此 register pressure 对性能影响更直接
    - Register pressure 分析：fusion 和 tiling 如何影响 register 使用量
    - Trade-off：少用 register → 高 occupancy → 更多并行 vs 多用 register → 低 occupancy → 更多数据复用
 
@@ -904,8 +906,8 @@ ollama-internals / openvino-graph-pipeline（框架层：具体实现视角）
    - 调度目标：最小化总执行时间 + 最小化 peak memory
    - 调度启发式
 
-3. **Memory 调度优化**
-   - Tensor 生命周期分析
+3. **Memory 调度优化**（侧重执行阶段的动态决策，与文章 6 的 pass 阶段静态 memory planning 互补）
+   - Tensor 生命周期分析（此处聚焦调度顺序对内存峰值的影响，而非 pass 阶段的 buffer 分配）
    - Recompute vs Store 决策：
      - 激活值保存（用内存换计算）vs 激活值重算（用计算换内存）
      - Activation checkpointing 的编译器自动化
@@ -1014,7 +1016,7 @@ ollama-internals / openvino-graph-pipeline（框架层：具体实现视角）
 
 ### 3.2 组件汇总
 
-共 **~40 个交互组件**，按文章分布：
+共 **~55 个交互组件**，按文章分布：
 
 | 文章 | 组件数 | 关键组件 |
 |------|--------|----------|
@@ -1061,6 +1063,8 @@ description:
     Dual-track coverage of PyTorch 2.0 (torch.compile / TorchInductor / Triton) and MLIR (Dialect system / Progressive Lowering).
     Prerequisite: AI Compute Stack.
 level: advanced
+prerequisites:
+  - ai-compute-stack
 articles:
   - ml-compiler-landscape
   - graph-capture-dynamo
