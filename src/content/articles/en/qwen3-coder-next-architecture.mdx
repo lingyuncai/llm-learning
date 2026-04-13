@@ -85,13 +85,13 @@ $$
 
 The term $\beta_t k_t k_t^\top H_{t-1}$ first "erases" old memory associated with the current key, then $\beta_t v_t k_t^\top$ writes a new key-value association — implementing **associative memory** that can precisely overwrite old values rather than simply accumulating.
 
-**Gated DeltaNet** (Yang, Kautz & Hatamizadeh, 2024) adds element-wise decay gating:
+**Gated DeltaNet** (Yang, Kautz & Hatamizadeh, 2024) adds element-wise decay gating on top of the delta rule:
 
 $$
-H_t = \exp(\alpha_t) \odot H_{t-1} + \beta_t \cdot k_t v_t^\top
+\tilde{H}_{t-1} = \exp(\alpha_t) \odot H_{t-1}, \quad H_t = \tilde{H}_{t-1} + \beta_t \cdot k_t \left(v_t - \tilde{H}_{t-1} k_t\right)^\top
 $$
 
-where $\alpha_t$ is an input-dependent decay gate with per-element granularity.
+First, the old state undergoes per-element exponential decay ($\alpha_t$ is input-dependent, giving each state element its own decay rate). Then the delta rule update is applied on the decayed state — retrieving the old value ($\tilde{H}_{t-1} k_t$), computing the correction, and writing it back. This combines flexible gating with precise associative memory.
 
 ### 2.2 Input Projections and Conv1d
 
@@ -110,15 +110,25 @@ $$
 \text{qkv}' = \text{SiLU}(\text{Conv1d}(\text{qkv}, \text{kernel}=4))
 $$
 
-### 2.3 Decay Gating
+### 2.3 Q/K Normalization and Beta Activation
 
-The gate computation involves three learnable SSM parameters:
+After Conv1d splits out Q, K, V, several additional processing steps are applied:
+
+- **L2 normalization**: Q and K are each L2-normalized, projecting them onto the unit sphere to stabilize delta rule key-value associations
+- **Q scaling**: $Q \leftarrow Q / \sqrt{d_v}$, preventing dot products from growing with dimension
+- **Beta sigmoid**: $\beta_t \leftarrow \sigma(\beta_t)$, constraining write strength to $[0, 1]$
+
+### 2.4 Decay Gating
+
+The decay gate $\alpha_t$ and write strength $\beta_t$ come from a single combined projection:
 
 | Parameter | Shape | Meaning |
 |-----------|-------|---------|
-| ssm_alpha | $2048 \to 32$ | Per-V-head decay factor (input-dependent) |
+| ssm_ba | $2048 \to 64$ | Combined beta+alpha projection (grouped by K-head) |
 | ssm_dt | $[32]$ | Time-step bias (learnable) |
 | ssm_a | $[32]$ | State decay coefficient, stored as $-\exp(A_{\log})$ |
+
+The 64-dimensional output of `ssm_ba` is split by K-head groups: 16 K-heads × 4 dims = 64, where each group of 4 contains 2 beta values (for the 2 V-heads mapped to that K-head) and 2 alpha values. After splitting, both beta and alpha have 32 values (one per V-head).
 
 $$
 \text{gate}_t = \text{softplus}(\alpha_t + \text{dt\_bias}) \times (-A)
@@ -126,12 +136,12 @@ $$
 
 This ensures $\exp(\text{gate}_t) < 1$ for exponential decay, similar to Mamba's $\Delta$ parameter.
 
-### 2.4 Chunked Parallel Computation
+### 2.5 Chunked Parallel Computation
 
 **Autoregressive mode** (decode, 1 token at a time) directly updates the state:
 
 $$
-H_t = \exp(\text{gate}_t) \odot H_{t-1} + \beta_t \cdot k_t v_t^\top, \quad \text{out}_t = H_t \cdot q_t
+\tilde{H} = \exp(\text{gate}_t) \odot H_{t-1}, \quad H_t = \tilde{H} + \beta_t \cdot k_t (v_t - \tilde{H} k_t)^\top, \quad \text{out}_t = H_t \cdot q_t
 $$
 
 **Chunked parallel mode** (prefill) splits the sequence into chunks of 64 tokens with decayed causal attention within each chunk:
@@ -142,7 +152,7 @@ $$
 
 State propagates across chunks, similar to [Mamba-2's SSD algorithm](./state-space-models).
 
-### 2.5 Output Gating
+### 2.6 Output Gating
 
 SSM output goes through RMSNorm then element-wise multiplication with the SiLU-activated gate:
 
@@ -152,7 +162,7 @@ $$
 
 Finally projected back to hidden dimension via `ssm_out` ($4096 \to 2048$).
 
-### 2.6 Cache
+### 2.7 Cache
 
 Each layer maintains two fixed-size states:
 

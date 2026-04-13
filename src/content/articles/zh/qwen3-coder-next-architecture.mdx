@@ -85,13 +85,13 @@ $$
 
 直觉：$\beta_t k_t k_t^\top H_{t-1}$ 先"擦除"与当前 key 相关的旧记忆，然后 $\beta_t v_t k_t^\top$ 写入新的 key-value 关联。相比 Mamba 的 additive update，delta rule 实现了一种 **联想记忆**（associative memory）——能精确覆盖旧值，而非简单叠加。
 
-**Gated DeltaNet** (Yang, Kautz & Hatamizadeh, 2024) 进一步增加逐元素衰减门控：
+**Gated DeltaNet** (Yang, Kautz & Hatamizadeh, 2024) 在 delta rule 基础上增加逐元素衰减门控：
 
 $$
-H_t = \exp(\alpha_t) \odot H_{t-1} + \beta_t \cdot k_t v_t^\top
+\tilde{H}_{t-1} = \exp(\alpha_t) \odot H_{t-1}, \quad H_t = \tilde{H}_{t-1} + \beta_t \cdot k_t \left(v_t - \tilde{H}_{t-1} k_t\right)^\top
 $$
 
-$\alpha_t$ 是依赖输入的衰减门控，$\odot$ 是逐元素乘法。每个状态元素有独立的衰减速率，模型可以学会对不同信息施加不同的遗忘速度。
+先对旧状态施加逐元素指数衰减（$\alpha_t$ 依赖输入，每个状态元素有独立衰减速率），然后在衰减后的状态上执行 delta rule 更新——检索旧 value ($\tilde{H}_{t-1} k_t$)，计算差值，写入修正。这同时获得了门控的灵活遗忘能力和 delta rule 的精确覆写能力。
 
 ### 2.2 输入投影与 Conv1d
 
@@ -116,15 +116,25 @@ $$
 
 这个 Conv1d 继承自 Mamba 的设计——在状态更新之前提供局部时序融合。卷积后再拆分为 Q、K、V 三组向量。
 
-### 2.3 衰减门控
+### 2.3 Q/K 归一化与 Beta 激活
 
-门控 $\alpha_t$ 的计算涉及三个可学习 SSM 参数：
+Conv1d 拆分出 Q、K、V 后，还需经过几步关键处理：
+
+- **L2 归一化**：Q 和 K 各自做 L2 norm，将向量投射到单位球面上，稳定 delta rule 的 key-value 关联
+- **Q 缩放**：$Q \leftarrow Q / \sqrt{d_v}$，防止点积随维度增大而过大
+- **Beta sigmoid**：$\beta_t \leftarrow \sigma(\beta_t)$，将写入强度限制在 $[0, 1]$ 范围内
+
+### 2.4 衰减门控
+
+门控 $\alpha_t$ 和写入强度 $\beta_t$ 来自同一个投影：
 
 | 参数 | 形状 | 含义 |
 |------|------|------|
-| ssm_alpha | $2048 \to 32$ | 每个 V head 一个衰减因子（输入依赖） |
+| ssm_ba | $2048 \to 64$ | Beta 和 Alpha 的合并投影（按 K-head 分组） |
 | ssm_dt | $[32]$ | 时间步偏置（可学习 bias） |
 | ssm_a | $[32]$ | 状态衰减系数，存储为 $-\exp(A_{\log})$ |
+
+`ssm_ba` 的 64 维输出按 K-head 分组后拆分：16 个 K-head × 4 维 = 64，每组 4 维中前 2 维是 beta（对应该 K-head 的 2 个 V-head），后 2 维是 alpha。拆分后 beta 和 alpha 各有 32 个值（每个 V-head 一个）。
 
 $$
 \text{gate}_t = \text{softplus}(\alpha_t + \text{dt\_bias}) \times (-A)
@@ -132,18 +142,12 @@ $$
 
 其中 $\text{softplus}(x) = \ln(1 + e^x)$。$-A$ 确保门控值为负，使 $\exp(\text{gate}_t) < 1$ 实现指数衰减。这类似于 Mamba 中 $\Delta$ 参数的作用——控制每步的信息保留程度。
 
-Beta ($\beta_t$) 控制 delta rule 的写入强度：
-
-| 参数 | 形状 | 含义 |
-|------|------|------|
-| ssm_beta | $2048 \to 32$ | 每个 V head 一个写入强度 |
-
-### 2.4 分块并行计算
+### 2.5 分块并行计算
 
 **自回归模式**（decode，每次 1 token）直接递推状态：
 
 $$
-H_t = \exp(\text{gate}_t) \odot H_{t-1} + \beta_t \cdot k_t v_t^\top, \quad \text{out}_t = H_t \cdot q_t
+\tilde{H} = \exp(\text{gate}_t) \odot H_{t-1}, \quad H_t = \tilde{H} + \beta_t \cdot k_t (v_t - \tilde{H} k_t)^\top, \quad \text{out}_t = H_t \cdot q_t
 $$
 
 **分块并行模式**（prefill，多 token）将序列分为长度 64 的 chunk。chunk 内构建带衰减的因果注意力矩阵：
@@ -158,7 +162,7 @@ $$
 
 chunk 之间通过状态矩阵累积传播。这种策略类似 [Mamba-2 的 SSD 算法](./state-space-models)——在保持线性递推语义的同时利用 GPU 并行性。
 
-### 2.5 输出门控
+### 2.6 输出门控
 
 SSM 输出先经过 RMSNorm，再与 SiLU 激活的门控向量 $z$ 逐元素相乘：
 
@@ -168,7 +172,7 @@ $$
 
 最后通过输出投影 `ssm_out` ($4096 \to 2048$) 回到隐藏维度。
 
-### 2.6 缓存
+### 2.7 缓存
 
 每层维护两种固定大小的状态：
 
