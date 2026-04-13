@@ -100,7 +100,7 @@ $$
 
 **优化后**：
 - 单趟扫描（single-pass）计算 L2 范数，只写出标量结果
-- **节省**：71% 内存流量
+- **节省**：67% 内存流量
 
 **实现要点**：
 - 利用 warp-level 或 block-level reduce primitives（如 CUDA 的 `__shfl_down_sync`、`__syncthreads`）。
@@ -119,7 +119,7 @@ $$
 
 **优化后**：
 - 每个 thread 先计算全局均值（通过 shared memory 共享），再直接计算 `x[i] - mean`
-- **节省**：58% 内存流量
+- **节省**：65% 内存流量
 
 **实现要点**：
 - On-the-fly broadcasting：均值存储在寄存器或 shared memory，每个 thread 重复使用。
@@ -138,7 +138,7 @@ $$
 
 **优化后**：
 - matmul kernel 直接按照 transpose + reshape 后的 stride 读取 `x`
-- **节省**：67% 内存流量
+- **节省**：71% 内存流量
 
 **实现要点**：
 - 现代 CUDA kernel（如 CUTLASS）支持任意 stride 的输入读取。

@@ -86,7 +86,7 @@ const FUSION_TYPES: FusionType[] = [
       { from: 'sum', to: 'sqrt' },
       { from: 'sqrt', to: 'out' },
     ],
-    savings: 71,
+    savings: 67,
     description: {
       zh: 'Reduction 算子链，避免中间 materialize',
       en: 'Reduction chain, avoid intermediate materialization'
@@ -119,7 +119,7 @@ const FUSION_TYPES: FusionType[] = [
       { from: 'x', to: 'sub' },
       { from: 'sub', to: 'out' },
     ],
-    savings: 58,
+    savings: 65,
     description: {
       zh: 'Reduce + Broadcast 模式，LayerNorm 核心',
       en: 'Reduce + Broadcast pattern, LayerNorm core'
@@ -151,7 +151,7 @@ const FUSION_TYPES: FusionType[] = [
       { from: 'reshape', to: 'mm' },
       { from: 'mm', to: 'out' },
     ],
-    savings: 67,
+    savings: 71,
     description: {
       zh: 'Layout 变换通过 stride 吸收',
       en: 'Layout changes absorbed via stride manipulation'
