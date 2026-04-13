@@ -1,0 +1,481 @@
+---
+title: "IR Design (Part 1): SSA, FX IR & MLIR Dialects"
+slug: ir-design-basics
+locale: en
+tags: [compiler, ir, ssa, pytorch, mlir, fx-graph, dialect]
+prerequisites: [graph-capture-dynamo]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "Efficiently Computing Static Single Assignment Form and the Control Dependence Graph"
+    url: "https://dl.acm.org/doi/10.1145/115372.115320"
+  - type: website
+    title: "torch.fx — PyTorch Documentation"
+    url: "https://pytorch.org/docs/stable/fx.html"
+  - type: paper
+    title: "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation"
+    url: "https://arxiv.org/abs/2002.11054"
+  - type: website
+    title: "MLIR Language Reference"
+    url: "https://mlir.llvm.org/docs/LangRef/"
+  - type: website
+    title: "MLIR Dialects"
+    url: "https://mlir.llvm.org/docs/Dialects/"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import SSAVisualizer from '../../../components/interactive/SSAVisualizer.tsx';
+import DialectExplorer from '../../../components/interactive/DialectExplorer.tsx';
+import IRLayerVisualizer from '../../../components/interactive/IRLayerVisualizer.tsx';
+
+<CompilerStackMap mode="compact" currentArticle="ir-design-basics" locale="en" client:visible />
+
+## Introduction: Why We Need Intermediate Representations
+
+In the previous article, we saw how TorchDynamo captures Python computation graphs through bytecode analysis, and how AOTAutograd jointly traces forward and backward passes. But a critical question emerges: **in what form should captured computation graphs be stored and manipulated?**
+
+This is the core problem of **Intermediate Representation (IR)** design. IR is one of the most important architectural decisions in a compiler — it determines which analyses and optimizations are possible and which are not; it determines the system's extensibility, maintainability, and performance ceiling.
+
+An intuitive analogy: IR is to a compiler what data structures are to algorithms. Choose the wrong data structure, and even the best algorithm cannot run efficiently. Similarly, choose the wrong IR, and even the cleverest optimization pass cannot deliver results.
+
+This article is the first part of our IR design series. Starting from compiler fundamentals, we will explore three core topics in depth:
+
+1. **SSA (Static Single Assignment)**: the foundation of virtually all modern compiler IRs
+2. **FX IR**: PyTorch 2.0's graph-level intermediate representation
+3. **MLIR Dialect System**: Google's multi-level IR framework
+
+## IR Fundamentals
+
+### The Translation Chain: Source to Machine Code
+
+Every compiler — whether a traditional C/C++ compiler or an ML compiler — follows the same basic pattern:
+
+$$
+\text{Source Code} \xrightarrow{\text{Frontend}} \text{IR} \xrightarrow{\text{Optimizer}} \text{IR'} \xrightarrow{\text{Backend}} \text{Machine Code}
+$$
+
+The frontend parses source code into IR, the optimizer transforms the IR, and the backend translates the optimized IR into target machine code. IR is the **pivot** of this chain — all analysis and optimization happens on the IR.
+
+For ML compilers, this chain becomes significantly more complex. The source language is Python (dynamically typed, rich control flow), and the targets are heterogeneous hardware like GPUs, TPUs, and NPUs. Multiple IR layers may be needed, each addressing a different level of abstraction:
+
+```
+Python source → FX Graph (high-level IR) → MLIR Linalg (tensor-level IR)
+  → MLIR MemRef (memory-level IR) → LLVM IR → PTX / SPIR-V → machine code
+```
+
+### Principles of Good IR Design
+
+Designing a good IR requires balancing multiple dimensions. Here are the core principles accumulated by the compiler community:
+
+**1. Appropriate Abstraction Level**
+
+An IR's abstraction level determines what can be expressed and what can be optimized. Too high — low-level information is lost, and hardware-specific optimizations become impossible. Too low — information is "flattened," and high-level patterns become hard to recognize.
+
+For example, at the `linalg.matmul` level, the compiler knows this is matrix multiplication and can select tiling strategies. Once lowered to nested loops, this semantic is obscured — the compiler only sees three nested loops with multiply-add operations and must perform pattern matching to recover the matmul semantics.
+
+**2. Amenable to Analysis and Transformation**
+
+The IR structure should make common compiler analyses (dataflow analysis, alias analysis, dominance tree analysis) easy to implement. This is why SSA form is so prevalent — it makes use-def chain construction trivial.
+
+**3. Extensibility**
+
+ML compilers face a rapidly evolving ecosystem: new operators, new hardware, and new optimization techniques constantly emerge. The IR must allow convenient addition of new operation types without modifying the entire compiler framework. MLIR's Dialect system was designed precisely for this.
+
+**4. Preserving Semantic Information**
+
+A good IR should not unnecessarily discard semantic information during translation. For example, type information (tensor shape, dtype) is critical for optimization — discarding it too early forces subsequent passes to re-derive this information.
+
+## SSA Form
+
+### What is SSA?
+
+**Static Single Assignment** is a constraint on IR form with an extremely simple core rule:
+
+> **Every variable is assigned (defined) exactly once.**
+
+This seemingly simple rule fundamentally changed compiler design. SSA was systematized by Cytron et al. in their 1991 landmark paper "Efficiently Computing Static Single Assignment Form and the Control Dependence Graph," and has since become the standard IR form for virtually all modern compilers — LLVM IR, GCC GIMPLE, Java HotSpot's Sea of Nodes, V8's TurboFan, without exception.
+
+### Why SSA?
+
+Consider this simple code:
+
+```python
+x = input
+if condition:
+    x = x + 1
+else:
+    x = x * 2
+return x
+```
+
+Variable `x` is assigned three times (initialization, if-branch, else-branch). When the compiler sees `return x`, it must answer a question: **where does this value of `x` come from?** Depending on the runtime `condition`, it could come from `x + 1` or `x * 2`.
+
+In non-SSA form, answering this question requires complex dataflow analysis — tracing back through control flow, considering all possible assignment paths. This analysis grows rapidly in complexity with program size.
+
+SSA solves this problem through an elegant mechanism: **give each assignment a unique version number**, and introduce **$\phi$ (phi) nodes** at control flow join points to merge values from different branches.
+
+<SSAVisualizer locale="en" client:visible />
+
+The transformed SSA form:
+
+```
+x₀ = input
+if condition:
+    x₁ = x₀ + 1
+else:
+    x₂ = x₀ * 2
+x₃ = φ(x₁, x₂)
+return x₃
+```
+
+Now, each variable version ($x_0, x_1, x_2, x_3$) has **exactly one definition point**. When you see `return x₃`, you can directly find $x_3$'s unique definition — the $\phi$ node. The $\phi$ node tells you: $x_3$'s value depends on which branch control flow came from.
+
+### The Nature of $\phi$ Nodes
+
+A $\phi$ node is not a real computation. It is a compiler-internal **selector**: based on which predecessor block control flow comes from, it selects the corresponding branch's value. In final machine code, $\phi$ nodes are typically eliminated through register allocation — different branches place their results in the same register.
+
+The formal definition of a $\phi$ node:
+
+$$
+x_k = \phi(x_i : B_i, x_j : B_j, \ldots)
+$$
+
+This means: if control flow reaches the current block from basic block $B_i$, then $x_k = x_i$; if from $B_j$, then $x_k = x_j$.
+
+### How SSA Simplifies Compiler Optimizations
+
+SSA form makes many classical optimizations concise and efficient. Here are several key examples:
+
+**1. Dead Code Elimination (DCE)**
+
+In SSA, if a variable version has no uses (empty use list), it is "dead" and can be safely removed. No complex liveness analysis needed.
+
+```
+x₁ = a + b    // x₁ is used by x₃ → keep
+x₂ = c * d    // x₂ has no users → delete!
+x₃ = x₁ + 1   // x₃ is used by return → keep
+return x₃
+```
+
+**2. Constant Propagation**
+
+If a variable's unique definition is a constant assignment, all use sites can be directly replaced with that constant. In SSA, "unique definition" is automatically guaranteed.
+
+```
+x₀ = 42        // constant definition
+y₀ = x₀ + 1    // can directly replace with y₀ = 42 + 1 = 43
+```
+
+**3. Use-Def Chains**
+
+SSA's most important property is: **every variable's use-def chain is trivial**. Given a use of a variable, its definition is exactly one. This reduces many dataflow analyses from $O(n^2)$ to $O(n)$.
+
+In non-SSA form, building complete use-def chains requires traversing all possible execution paths — a process that needs fixed-point iteration. In SSA form, use-def chains are directly encoded in the IR structure.
+
+**4. Global Value Numbering (GVN)**
+
+GVN is a powerful technique for discovering and eliminating redundant computations. In SSA form, if two operations have the same opcode and the same operands (note: the same variable version means the same value), they must compute the same result and can be merged.
+
+## FX IR In Depth
+
+### Origins and Purpose of FX Graph
+
+`torch.fx` is the graph-level intermediate representation framework introduced in PyTorch 2.0. It is not a "complete IR" in the traditional compiler sense, but rather a **lightweight, Python-native computation graph representation** designed to:
+
+1. **Be easily understood and debugged by PyTorch users and developers** — the IR itself is valid Python code
+2. **Provide programmatic graph transformation capabilities** — graph structure can be manipulated with Python code
+3. **Serve as TorchDynamo's output format** — captured computation graphs are stored as FX Graphs
+
+### Graph and Node Structure
+
+The core of FX IR is the `torch.fx.Graph` object, which contains an ordered sequence of `torch.fx.Node`s. Each Node represents one operation in the computation graph. A typical FX Graph looks like:
+
+```python
+graph():
+    %x : [#users=1] = placeholder[target=x]
+    %w : [#users=1] = placeholder[target=w]
+    %matmul : [#users=1] = call_function[target=torch.matmul](x, w)
+    %relu : [#users=1] = call_function[target=torch.relu](matmul)
+    return (relu,)
+```
+
+Each Node has the following key attributes:
+
+| Attribute | Description | Example |
+|-----------|-------------|---------|
+| `op` | Operation type (one of 6) | `call_function` |
+| `target` | Target function/module/attribute | `torch.matmul` |
+| `args` | Positional arguments (other Nodes or constants) | `(x, w)` |
+| `kwargs` | Keyword arguments | `{}` |
+| `name` | Node name (unique identifier) | `matmul` |
+| `users` | Set of nodes that use this node's output | `{relu}` |
+
+### Six Node Operation Types
+
+FX defines six Node operation types covering all scenarios in Python computation graphs:
+
+**1. `placeholder`** — Function arguments
+
+Represents graph inputs. Each `placeholder` corresponds to one parameter of the traced function.
+
+```python
+%x : [#users=1] = placeholder[target=x]
+```
+
+**2. `call_function`** — Free function calls
+
+Represents calls to Python functions, including `torch.*` operations, `operator.*`, etc.
+
+```python
+%matmul : [#users=1] = call_function[target=torch.matmul](x, w)
+```
+
+**3. `call_method`** — Method calls
+
+Represents calls to object methods such as `tensor.view()`, `tensor.permute()`, etc.
+
+```python
+%view : [#users=1] = call_method[target=view](x, 128, 768)
+```
+
+**4. `call_module`** — Submodule calls
+
+Represents calls to `nn.Module` submodules, where the target is the submodule's path in the model.
+
+```python
+%linear : [#users=1] = call_module[target=layers.0.linear](x)
+```
+
+**5. `get_attr`** — Attribute access
+
+Represents accessing model parameters or buffers.
+
+```python
+%weight : [#users=1] = get_attr[target=layers.0.linear.weight]
+```
+
+**6. `output`** — Return value
+
+Represents the graph's output.
+
+```python
+return (relu,)
+```
+
+### SSA Properties of FX Graph
+
+FX Graph naturally satisfies SSA constraints. Each Node defines exactly one value (its output), and Node names are unique within the graph. This means FX Graph automatically inherits all of SSA's advantages:
+
+- **Use-def chains are explicit**: `node.users` gives all consumers, `node.args` gives all dependencies
+- **DCE is trivial**: if `len(node.users) == 0` and the node is not an `output` node, it can be removed
+- **Traversal is linear**: the topological order of the Node list guarantees dependency relationships
+
+### Limitations of FX Graph
+
+FX IR's design chose "simplicity and Python-nativeness," which brings some inherent limitations:
+
+**1. Lack of Type System**
+
+FX Nodes have no built-in type information (shape, dtype). While tools like `ShapeProp` can infer types, type information is not part of the IR structure itself. This makes many optimizations that require shape information more complex.
+
+**2. Single Abstraction Level**
+
+FX Graph has only one level — all operations exist at the same "function call" abstraction. Unlike MLIR, which can mix operations at different abstraction levels within the same module.
+
+**3. No Control Flow Representation**
+
+In TorchDynamo's standard usage pattern, an FX Graph represents a "straight-line segment" of control flow (graph breaks occur at control flow boundaries). There are no branches, loops, or other control flow structures within the graph. This means FX Graph does not need $\phi$ nodes — but it also limits expressiveness.
+
+**4. Python Runtime Dependency**
+
+FX Graphs are fundamentally Python objects, and manipulating them requires the Python runtime. This makes serialization, cross-language transfer, or use in non-Python environments difficult.
+
+## MLIR's Design Philosophy
+
+### The IR Fragmentation Problem
+
+Before MLIR, the compiler ecosystem faced a severe problem: **IR fragmentation**.
+
+Every framework and hardware platform had its own IR: TensorFlow had HLO, PyTorch had FX/TorchScript, TVM had Relay/TIR, XLA had StableHLO... These IRs were mutually incompatible, leading to massive duplication of effort:
+
+- The same optimizations (constant folding, dead code elimination) had to be reimplemented for each IR
+- Supporting new hardware required writing independent backends for each IR
+- Cross-framework collaboration was virtually impossible
+
+The deeper problem was: **no single-level IR could satisfy all requirements simultaneously**. High-level IRs (like HLO) are good for operator fusion but lack the ability to express low-level transformations like tiling and vectorization. Low-level IRs (like LLVM IR) can generate efficient machine code but lose tensor-level semantics.
+
+### MLIR's Answer: An Extensible Multi-Level IR
+
+MLIR (Multi-Level Intermediate Representation) was initiated by Chris Lattner at Google, with the paper "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation" published in 2020. Its core innovation is:
+
+> **Rather than defining a fixed IR, provide a framework for building IRs.**
+
+MLIR's key design choices include:
+
+**1. Dialect System**
+
+MLIR organizes IR operations into **Dialects** — collections of related operations, types, and attributes. Each Dialect defines a "language" at a specific abstraction level. Different Dialects can coexist within the same module, enabling **Progressive Lowering**.
+
+For example, a module can simultaneously contain `linalg.matmul` (high-level tensor operation) and `arith.addf` (scalar arithmetic). The compiler progressively lowers high-level operations to low-level ones, rather than converting all at once.
+
+**2. Unified SSA + Region Semantics**
+
+All MLIR Operations follow SSA form: each operation produces zero or more SSA Values, and each Value has exactly one definition point. Additionally, operations can contain **Regions**, Regions contain **Blocks**, and Blocks contain an ordered sequence of operations — this enables nested representation of control flow and dataflow.
+
+```
+%result = "linalg.generic"(...) ({
+  ^bb0(%arg0: f32, %arg1: f32):
+    %0 = arith.addf %arg0, %arg1 : f32
+    linalg.yield %0 : f32
+}) : (tensor<...>, tensor<...>) -> tensor<...>
+```
+
+In this example, the `linalg.generic` operation contains a Region with one Block (`^bb0`), which contains concrete scalar computations.
+
+**3. Unified Operation Interface**
+
+All Operations in MLIR share a uniform internal representation:
+
+```
+%results = "dialect.op_name"(%operands) {attributes}
+    ({regions}) : (operand_types) -> result_types
+```
+
+This uniform structure means:
+- Generic analysis and transformation tools (like DCE, CSE) work on any Dialect
+- New Dialects can reuse existing pass infrastructure
+- Inter-Dialect interoperation is natural
+
+### The Dialect Hierarchy
+
+The MLIR ecosystem contains dozens of Dialects forming a hierarchy from high-level to low-level abstractions. For ML compilation, the most important Dialects include:
+
+<DialectExplorer locale="en" client:visible />
+
+Let us examine several key Dialects in detail:
+
+**Linalg Dialect**: This is the core Dialect for ML compilation. It provides two categories of operations:
+- **Named ops**: such as `linalg.matmul`, `linalg.conv_2d` — clear semantics, easy to pattern match
+- **Generic op**: `linalg.generic` can express arbitrary element-wise operations, describing access patterns through `indexing_maps` and `iterator_types`
+
+```
+// linalg.matmul expanded to its equivalent linalg.generic form
+%result = linalg.generic {
+    indexing_maps = [
+        affine_map<(m, n, k) -> (m, k)>,  // A's access pattern
+        affine_map<(m, n, k) -> (k, n)>,  // B's access pattern
+        affine_map<(m, n, k) -> (m, n)>   // C's access pattern
+    ],
+    iterator_types = ["parallel", "parallel", "reduction"]
+} ins(%A, %B : ...) outs(%C : ...) {
+    ^bb0(%a: f32, %b: f32, %c: f32):
+        %prod = arith.mulf %a, %b : f32
+        %sum = arith.addf %c, %prod : f32
+        linalg.yield %sum : f32
+} -> tensor<M x N x f32>
+```
+
+`indexing_maps` uses affine maps to describe how each operand is indexed through loop iterators, and `iterator_types` marks which dimensions are parallel and which are reductions. This structured information provides a solid foundation for tiling, fusion, parallelization, and other transformations.
+
+**Tensor vs MemRef**: The transition from "value semantics" to "reference semantics" in MLIR is achieved through **bufferization**.
+
+- `tensor<128x768xf32>` — **Value semantics**, immutable, like a mathematical tensor. Ideal for high-level optimization (fusion analysis need not worry about aliasing)
+- `memref<128x768xf32>` — **Reference semantics**, a reference to a memory buffer. Must consider aliasing, lifetime, and memory allocation
+
+This design lets high-level passes work in a "side-effect-free" value-semantic world, greatly simplifying analysis, while low-level passes operate in the reference-semantic world dealing with real memory layouts.
+
+**SCF vs CF**: Similarly, control flow has two abstraction levels:
+
+- `scf.for`, `scf.if` — **Structured control flow**, preserving the nesting structure of loops and branches. The compiler can directly identify loop bounds and perform loop transformations (tiling, unrolling)
+- `cf.br`, `cf.cond_br` — **Unstructured control flow**, reduced to jumps between basic blocks (similar to LLVM IR branches). Structural information is lost, but expressiveness is greater
+
+### Lowering Between Dialects
+
+Conversion between Dialects is called **lowering**. MLIR provides a **Conversion framework** to systematically implement lowering:
+
+```
+linalg.matmul → scf.for + arith ops + memref ops → cf.br + llvm ops → LLVM IR
+```
+
+Each lowering step is an independent pass that can be tested and debugged separately. This is the essence of **Progressive Lowering** — rather than jumping from high-level IR to machine code in one step, the compiler descends gradually, with each step making only a "small jump."
+
+The advantages of progressive lowering include:
+1. **Each transformation is local and verifiable** — no need to handle a massive abstraction gap
+2. **Optimization passes can be inserted at intermediate levels** — e.g., fusion at the Linalg level, buffer reuse at the MemRef level, loop tiling at the SCF level
+3. **New Dialects can be inserted into the existing lowering chain** — extremely extensible
+
+## Multi-Level IR Comparison
+
+Now let us use a concrete example to intuitively see the differences between IR levels. We will observe the same simple operation — matrix multiplication plus ReLU — represented at five different IR levels.
+
+<IRLayerVisualizer locale="en" client:visible />
+
+Observing these IRs from top to bottom reveals several key trends:
+
+**1. Code Volume Increases Dramatically**
+
+Python source is just 3 lines, while LLVM IR requires dozens of lines or more (hundreds when fully expanded). Each lowering step "expands" the details of high-level operations.
+
+**2. Abstraction Level Decreases Progressively**
+
+- Python: `torch.matmul` — a single function call
+- FX: `call_function[target=torch.matmul]` — an explicit graph node, but still "call matmul"
+- Linalg: `linalg.matmul` — with complete type information (`tensor<128x768xf32>`), expandable to `linalg.generic` with indexing_maps
+- MemRef: transitions from value semantics to reference semantics, explicit memory management appears
+- LLVM IR: loops, scalar operations, phi nodes — fully expanded to low-level operations
+
+**3. Type Information Goes from Implicit to Explicit**
+
+In Python, type information is entirely implicit. In MLIR, it becomes explicit and rich: `tensor<128x768xf32>` specifies not only the shape but also element type and semantics (value vs reference). In LLVM IR, types degrade to raw pointers (`float*`) with manual offset calculations.
+
+**4. Control Flow Goes from Implicit to Explicit**
+
+Python's `torch.matmul` implicitly contains three nested loops. In Linalg, the iteration structure is described through `iterator_types`. In LLVM IR, loops become explicit branches and phi nodes.
+
+## FX IR vs MLIR Dialect Comparison
+
+The table below summarizes the core differences between these two IR systems:
+
+| Dimension | FX IR | MLIR |
+|-----------|-------|------|
+| **Design Goal** | Graph capture and transformation within the PyTorch ecosystem | General-purpose compiler infrastructure |
+| **Implementation Language** | Python | C++ (with Python bindings) |
+| **Type System** | No built-in types (inferable via meta information) | Rich, extensible type system |
+| **Abstraction Levels** | Single level (operator calls) | Multiple levels (via Dialect composition) |
+| **SSA Form** | Implicitly satisfied (each Node, one output) | Explicit SSA (Value, Operation) |
+| **Control Flow** | Not supported (handled via graph breaks) | Full support (SCF, CF Dialects) |
+| **Extensibility** | Through custom ops and subgraphs | Through Dialect and Operation registration |
+| **Serialization** | Python pickle / export | MLIR text/binary format (cross-language) |
+| **Optimization Infrastructure** | Hand-written Python graph transforms | Pass Manager, Pattern Rewriting |
+| **Use Cases** | PyTorch model optimization, torch.compile | Cross-framework, cross-hardware compiler engineering |
+| **Learning Curve** | Low (Python developer friendly) | High (requires compiler background) |
+
+These two IRs are not substitutes but **complements**. In PyTorch 2.0's compilation pipeline:
+
+1. TorchDynamo captures the FX Graph
+2. AOTAutograd performs joint forward/backward tracing on the FX Graph
+3. Backend compilers (like Inductor or future MLIR-based backends) lower the FX Graph to lower-level IRs for optimization and code generation
+
+FX IR excels at "rapid prototyping and iteration within the Python ecosystem," while MLIR excels at "systematically building production-grade compiler pipelines."
+
+## Summary
+
+This article explored the fundamentals of IR design in ML compilers. Key takeaways:
+
+**SSA form** is the cornerstone of modern compiler IRs. The simple rule "every variable is assigned exactly once," combined with $\phi$ nodes for control flow merges, makes use-def chains, DCE, constant propagation, and other key analyses and optimizations concise and efficient. Both FX IR and MLIR fundamentally follow SSA principles.
+
+**FX IR** is PyTorch 2.0's graph-level representation, providing Python-native computation graph capture, inspection, and transformation. Its strengths lie in simplicity and debuggability, but its single abstraction level and lack of built-in type system limit its capability as a "final optimization IR."
+
+**The MLIR Dialect system** provides a framework for building multi-level IRs. By organizing operations into Dialects at different abstraction levels, progressively lowering high-level operations to low-level ones, and allowing generic analysis tools to work across Dialects through a unified operation interface, this design elegantly solves the IR fragmentation problem.
+
+In the next article, **IR Design (Part 2): Progressive Lowering**, we will dive deep into the complete lowering process from Linalg to LLVM IR, including bufferization, IR transformations for tiling, and how the Conversion framework works.
+
+## Further Reading
+
+- Cytron et al., "Efficiently Computing Static Single Assignment Form and the Control Dependence Graph" (1991) — The foundational SSA paper, detailing how to efficiently compute SSA form and dominance frontiers
+- Lattner et al., "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation" (2020) — The MLIR design paper, explaining the motivation and implementation of multi-level IR and the Dialect system
+- PyTorch `torch.fx` documentation — Complete API reference for FX Graph, including tutorials on symbolic tracing and graph transformations
+- MLIR official documentation — Especially the Language Reference and Dialects pages, providing detailed specifications for all Dialects
+- "Tutorial: Building a Compiler with MLIR" (MLIR official tutorial) — Building an MLIR-based compiler from scratch, the best entry point for understanding MLIR engineering practice
