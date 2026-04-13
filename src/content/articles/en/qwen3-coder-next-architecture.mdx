@@ -22,7 +22,7 @@ references:
     url: "https://github.com/ollama/ollama"
 ---
 
-The previous three articles introduced [MoE](./mixture-of-experts), [SSM](./state-space-models), and [Hybrid architectures](./hybrid-architectures) as separate concepts. This article uses a real production model — **Qwen3-Coder-Next 80B** — to show how all three work together in a single architecture.
+The previous three articles introduced [MoE](/en/articles/mixture-of-experts), [SSM](/en/articles/state-space-models), and [Hybrid architectures](/en/articles/hybrid-architectures) as separate concepts. This article uses a real production model — **Qwen3-Coder-Next 80B** — to show how all three work together in a single architecture.
 
 Qwen3-Coder-Next is a **79.7B parameter Hybrid MoE model** that activates only ~3B parameters per token (3.8% utilization). It fuses GatedDeltaNet (a delta-rule-based linear attention), standard full attention, and 512-expert MoE across 48 layers — one of the most complex hybrid architectures to date.
 
@@ -131,7 +131,7 @@ The 36 recurrent layers use **GatedDeltaNet** rather than standard Mamba — a l
 
 ### 2.1 From Mamba to Delta Rule
 
-Recall Mamba's state update from the [SSM article](./state-space-models):
+Recall Mamba's state update from the [SSM article](/en/articles/state-space-models):
 
 $$
 h_t = \bar{A}_t \cdot h_{t-1} + \bar{B}_t \cdot x_t
@@ -264,7 +264,7 @@ Each layer performs three parallel projections on input $x$:
 
 Note the **asymmetric head structure**: Q heads = K heads = 16, V heads = 32, head_dim = 128. Q and K share the same head count, but V has 2x more.
 
-This creates a mismatch: the delta rule state update operates **per-head**, so Q/K/V head counts must align. The solution is to **repeat Q and K from 16 heads to 32 heads** — each Q/K-head is duplicated twice to match V's 32 heads. This mirrors the [GQA](./gqa-mqa) approach from full attention: fewer K-heads are shared across multiple "working heads," saving Q/K projection parameters.
+This creates a mismatch: the delta rule state update operates **per-head**, so Q/K/V head counts must align. The solution is to **repeat Q and K from 16 heads to 32 heads** — each Q/K-head is duplicated twice to match V's 32 heads. This mirrors the [GQA](/en/articles/gqa-mqa) approach from full attention: fewer K-heads are shared across multiple "working heads," saving Q/K projection parameters.
 
 After expansion, the model has 32 independent delta rule states, each $H^{(i)} \in \mathbb{R}^{128 \times 128}$, for a total state size of $32 \times 128 \times 128 = 128 \times 4096$. More V-heads mean larger state capacity, while Q/K serve only as "addresses" and need fewer parameters.
 
@@ -285,7 +285,7 @@ This provides two key benefits:
 
 `ssm_conv1d.weight [4, 8192]` is a **depthwise convolution kernel** — each of the 8192 channels has its own independent 4-element kernel. It doesn't mix information across Q/K/V channels; it only fuses along the time dimension. At runtime, a `conv_state [3, 8192]` cache (see section 2.7) stores the previous 3 tokens' qkv values.
 
-This project → conv1d → recurrence three-stage pipeline is inherited from Mamba — the same pattern introduced in the [SSM article](./state-space-models). After Conv1d + SiLU, the output is split into Q, K, V vectors for subsequent normalization and state update.
+This project → conv1d → recurrence three-stage pipeline is inherited from Mamba — the same pattern introduced in the [SSM article](/en/articles/state-space-models). After Conv1d + SiLU, the output is split into Q, K, V vectors for subsequent normalization and state update.
 
 ### 2.3 Q/K Normalization and Beta Activation
 
@@ -333,7 +333,7 @@ $$
 M_{ij} = \exp\!\left(\sum_{l=j+1}^{i} \text{gate}_l\right), \quad \text{intra\_chunk} = (M \odot Q K^\top) \cdot V
 $$
 
-State propagates across chunks, similar to [Mamba-2's SSD algorithm](./state-space-models).
+State propagates across chunks, similar to [Mamba-2's SSD algorithm](/en/articles/state-space-models).
 
 ### 2.6 Output Gating
 
@@ -387,7 +387,7 @@ $$
 | attn_k | $2048 \to 512$ | Q4_K | 2 heads × 256 head_dim |
 | attn_v | $2048 \to 512$ | Q6_K | 2 heads × 256 head_dim |
 
-This is **8:1 GQA** ([Grouped-Query Attention](./gqa-mqa)) — 16 Q heads share 2 KV groups.
+This is **8:1 GQA** ([Grouped-Query Attention](/en/articles/gqa-mqa)) — 16 Q heads share 2 KV groups.
 
 ### 3.3 Partial RoPE
 
@@ -413,7 +413,7 @@ Essential for stabilizing attention scores at head_dim = 256.
 
 ## 4. MoE: 512 Expert Top-10 Routing
 
-All 48 layers use the same [MoE](./mixture-of-experts) FFN structure.
+All 48 layers use the same [MoE](/en/articles/mixture-of-experts) FFN structure.
 
 ### 4.1 Router
 
@@ -446,7 +446,7 @@ $$
 
 ### 4.3 Shared Expert
 
-A [DeepSeek-style](./mixture-of-experts) shared expert that all tokens pass through, with sigmoid gating:
+A [DeepSeek-style](/en/articles/mixture-of-experts) shared expert that all tokens pass through, with sigmoid gating:
 
 $$
 \text{shared\_out} = \sigma(W_{\text{gate}} \cdot x) \cdot \text{FFN}_{\text{shared}}(x)
@@ -584,8 +584,8 @@ This design reflects the current trend: **combining complementary mechanisms rat
 
 ## Further Reading
 
-- [Mixture of Experts](./mixture-of-experts) — MoE routing, load balancing, DeepSeek innovations
-- [State Space Models and Mamba](./state-space-models) — SSM basics, selective mechanism, SSD duality
-- [Hybrid Architectures](./hybrid-architectures) — Jamba, Zamba2, Hymba design comparison
-- [GQA and MQA](./gqa-mqa) — Grouped-Query Attention principles
-- [KV Cache](./kv-cache) — Caching mechanisms and optimization
+- [Mixture of Experts](/en/articles/mixture-of-experts) — MoE routing, load balancing, DeepSeek innovations
+- [State Space Models and Mamba](/en/articles/state-space-models) — SSM basics, selective mechanism, SSD duality
+- [Hybrid Architectures](/en/articles/hybrid-architectures) — Jamba, Zamba2, Hymba design comparison
+- [GQA and MQA](/en/articles/gqa-mqa) — Grouped-Query Attention principles
+- [KV Cache](/en/articles/kv-cache) — Caching mechanisms and optimization
