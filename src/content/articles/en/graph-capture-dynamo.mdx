@@ -1,0 +1,411 @@
+---
+title: "Graph Capture: TorchDynamo, AOTAutograd & Functionalization"
+slug: graph-capture-dynamo
+locale: en
+tags: [compiler, pytorch, torchdynamo, aotautograd, fx-graph]
+prerequisites: [ml-compiler-landscape]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: blog
+    title: "TorchDynamo: An Experiment in Dynamic Python Bytecode Transformation"
+    url: "https://dev-discuss.pytorch.org/t/torchdynamo-an-experiment-in-dynamic-python-bytecode-transformation/361"
+  - type: website
+    title: "PEP 523 – Adding a frame evaluation API to CPython"
+    url: "https://peps.python.org/pep-0523/"
+  - type: blog
+    title: "PyTorch 2.0: Our next generation release"
+    url: "https://pytorch.org/blog/pytorch-2.0-release/"
+  - type: website
+    title: "torch.compiler — PyTorch Documentation"
+    url: "https://pytorch.org/docs/stable/torch.compiler.html"
+  - type: blog
+    title: "AOTAutograd: Ahead-of-Time Autograd for PyTorch 2.0"
+    url: "https://dev-discuss.pytorch.org/t/functorch-primitives-aotautograd-and-functionalize/707"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import DynamoTracingFlow from '../../../components/interactive/DynamoTracingFlow.tsx';
+import FXGraphExplorer from '../../../components/interactive/FXGraphExplorer.tsx';
+import GuardSystemDemo from '../../../components/interactive/GuardSystemDemo.tsx';
+import AOTAutogradFlow from '../../../components/interactive/AOTAutogradFlow.tsx';
+
+<CompilerStackMap mode="compact" currentArticle="graph-capture-dynamo" locale="en" client:visible />
+
+## Introduction
+
+The first and most critical step in an ML compiler is **graph capture** — extracting a computational graph from user code. Without a computational graph, all subsequent compiler techniques — optimization passes, operator fusion, code generation — have nothing to work with.
+
+This problem is particularly challenging in PyTorch. PyTorch's core design philosophy is **eager execution**: every line of code the user writes executes immediately, and tensor operations directly return results. This makes PyTorch extremely developer-friendly — you can use standard Python debugging tools (print, pdb) to inspect intermediate results line by line, use arbitrary Python control flow (if/else, for loops), and even dynamically modify network structure at runtime.
+
+But this also means the **framework never knows "what the entire program is doing"**. PyTorch only sees individual tensor operations and cannot see the dependency relationships and global structure between operations. Compiler optimization requires precisely this global perspective: only by knowing that matmul's output feeds into add, which feeds into relu, can the compiler fuse them into a single kernel.
+
+PyTorch 2.0 elegantly solves this problem through **TorchDynamo**: without changing user code semantics, it intercepts and analyzes user code at the Python bytecode level to extract the largest possible computational graphs. This article provides a deep dive into every stage of this process.
+
+## Problem Definition: Why Is Graph Capture from Python So Hard?
+
+To understand the difficulty of graph capture, consider several Python characteristics:
+
+**1. Dynamic Typing.** Python variables have no static types. The meaning of `x + y` depends on the runtime types of `x` and `y` — it could be integer addition, floating-point addition, string concatenation, or a call to the `__add__` magic method. A compiler cannot assume `x + y` is always tensor addition.
+
+**2. Arbitrary Control Flow.** Python allows data-dependent branches like `if tensor.sum() > 0:` — the branch condition depends on actual tensor values and cannot be determined at compile time. This breaks static analysis.
+
+**3. Side Effects.** Python functions can modify global variables, print logs, write files, and even monkey-patch class definitions. These side effects cannot be represented in a computational graph.
+
+**4. Dynamic Attributes and Metaprogramming.** Python object attributes can be dynamically added or modified at runtime. Mechanisms like `getattr`, `__getattr__`, and metaclasses make static analysis extremely difficult.
+
+These characteristics mean that **perfect graph capture is impossible** — no approach can guarantee converting arbitrary Python code 100% into a computational graph. Every approach must trade off between **coverage** (how many Python code patterns it can handle) and **correctness** (whether it guarantees semantic equivalence with the original code).
+
+## Tracing Strategy Comparison
+
+Before TorchDynamo, the industry already had multiple graph capture strategies. Understanding their design trade-offs helps appreciate TorchDynamo's innovations.
+
+| Strategy | Representative | Mechanism | Pros | Cons |
+|----------|---------------|-----------|------|------|
+| **Value Tracing** | `torch.jit.trace` | Run once with concrete inputs, record all tensor ops | Simple, reliable | Cannot handle control flow; different inputs may take different paths |
+| **AST Analysis** | `torch.jit.script` / TorchScript | Parse Python AST, convert to strongly-typed IR | Supports control flow | Requires type annotations; many Python features unsupported |
+| **Source-to-Source** | JAX `jit` | Replace concrete values with tracers (abstract values), trace functional transforms | Clean functional semantics | Requires pure functional code; side effects cause errors |
+| **Define-by-Run** | `tf.function` | Decorator triggers tracing, Python control flow executes once at trace time | High coverage within TF ecosystem | Confusing trace-time vs run-time semantics |
+| **Bytecode Transform** | **TorchDynamo** | CPython frame evaluation hook intercepts bytecode, symbolic execution | Near 100% Python compatibility; auto graph break on issues | Extremely high implementation complexity |
+
+TorchDynamo's core insight: **don't try to understand Python source code or AST; operate directly at the CPython bytecode level**. No matter how complex the Python code (decorators, generators, context managers), it all gets compiled to bytecode by CPython. At the bytecode level, "complexity" has already been flattened.
+
+## Deep Dive into TorchDynamo
+
+### CPython Frame Evaluation Hook (PEP 523)
+
+TorchDynamo is built on [PEP 523](https://peps.python.org/pep-0523/), a C API introduced in Python 3.6:
+
+```c
+// CPython internal
+typedef PyObject* (*_PyFrameEvalFunction)(
+    PyThreadState *tstate,
+    PyFrameObject *frame,
+    int throwflag
+);
+```
+
+PEP 523 allows C extensions to **replace CPython's default frame evaluation function**. Normally, CPython creates a frame object for each function call and uses the built-in `_PyEval_EvalFrameDefault` to execute bytecode instructions one by one. TorchDynamo registers a custom evaluation function that intercepts frames before execution.
+
+This means TorchDynamo can:
+1. **Inspect** the bytecode of the function about to execute
+2. **Analyze** the bytecode and extract a computational graph
+3. **Replace** the original bytecode with an optimized version (calling compiled code)
+4. **Fall back** to standard CPython execution (for code it cannot handle)
+
+Key point: PEP 523 is a **completely transparent mechanism**. User code requires no modifications whatsoever. `torch.compile(fn)` internally just registers a frame evaluation hook, then calls `fn` normally.
+
+### Bytecode Analysis and Symbolic Execution
+
+When TorchDynamo intercepts a frame, it begins **symbolic execution** of that frame's bytecode.
+
+The core idea of symbolic execution: **don't actually perform computations; instead track the symbolic representation of operations**. For example:
+
+```python
+def fn(x, w):
+    y = x @ w       # don't execute matmul; record "y = matmul(x, w)"
+    y = y + 1       # record "y = add(y, 1)"
+    return y.relu() # record "result = relu(y)"
+```
+
+TorchDynamo maintains a **VariableTracker** object for each variable, recording its symbolic information (which tensor it is, what operation produced it, its shape/dtype). When it encounters a tensor operation (like the `BINARY_MATMUL` bytecode), Dynamo doesn't execute the computation but instead adds a corresponding node to the FX Graph.
+
+CPython is a stack-based virtual machine. Bytecode operations (like `LOAD_FAST`, `BINARY_ADD`, `CALL_METHOD`) pass arguments and results through a value stack. TorchDynamo maintains a **shadow stack** where each element isn't a real Python value but a VariableTracker (symbolic value). Dynamo follows CPython bytecode semantics, executing each instruction symbolically on the shadow stack while simultaneously building the FX Graph.
+
+### Guard System
+
+Symbolic execution has a fundamental problem: **its results depend on runtime conditions**. For example:
+
+```python
+def fn(x, flag):
+    if flag:
+        return x + 1
+    return x - 1
+```
+
+On the first call with `flag=True`, Dynamo traces `x + 1`. But if the next call has `flag=False`, the same compiled result would be incorrect.
+
+TorchDynamo solves this through the **Guard System**. During compilation, Dynamo records all **assumptions** (guards) that affect graph structure:
+
+- **Shape guards**: `x.shape[0] == 4`, `x.dim() == 2`
+- **Dtype guards**: `x.dtype == torch.float32`
+- **Value guards**: `flag == True` (for Python scalars)
+- **Type guards**: `type(x) == torch.Tensor`
+
+These guards form a **fast check function**. On each call to the compiled function, the guard check executes first:
+- If all guards pass: **cache hit** — directly execute compiled code
+- If any guard fails: **recompile** — re-trace and recompile
+
+<GuardSystemDemo locale="en" client:visible />
+
+The guard system is carefully designed. Dynamo tries to generate the **weakest possible guards** (fewest constraints) to maximize cache hit rates. For instance:
+- If the code doesn't use the specific value of `x.shape[0]`, no guard is generated for that dimension
+- If all shapes are dynamic (via `torch._dynamo.mark_dynamic`), Dynamo generates symbolic shape guards (e.g., `x.shape[0] >= 1`) instead of exact value guards
+
+`torch._dynamo.config.cache_size_limit` (default 8) controls how many compiled versions can be cached per function. Beyond this limit, Dynamo gives up compiling the function and falls back to eager execution.
+
+### Graph Break
+
+When Dynamo encounters an **operation it cannot handle** during symbolic execution, it performs a **graph break**: submits the current subgraph for compilation, falls back to standard CPython execution for the unhandled portion, then attempts to resume tracing.
+
+Common causes of graph breaks include:
+
+1. **Data-dependent control flow**: `if x.sum() > 0:` — branch condition depends on tensor values, undetermined at compile time
+2. **Unsupported Python built-ins**: some CPython built-in function behaviors cannot be symbolically traced
+3. **Unsupported third-party library calls**: such as `numpy` operations, `print` calls
+4. **Dynamic Python features**: certain uses of `exec`, `eval`, `getattr`
+5. **Generator/Coroutine**: Python's yield semantics are difficult to represent in a graph
+
+A graph break is not a failure — it is Dynamo's **graceful degradation strategy**. A single function may be split into multiple subgraphs:
+
+```
+[Subgraph 1] → [CPython executes Python code] → [Subgraph 2] → [CPython executes] → [Subgraph 3]
+```
+
+Each subgraph is compiled and optimized independently. While graph breaks reduce optimization effectiveness (the compiler cannot fuse across breaks), they guarantee **correctness** — user code will never produce incorrect results because of Dynamo.
+
+<DynamoTracingFlow locale="en" client:visible />
+
+You can use `torch._dynamo.explain(fn)(inputs)` to see how many graph breaks a function produces and why:
+
+```python
+explanation = torch._dynamo.explain(fn)(x, flag)
+print(explanation.break_reasons)
+# Shows the reason and location of each graph break
+```
+
+### FX Graph Structure
+
+TorchDynamo's output computational graph uses **torch.fx** representation. FX (Function Transformation) is PyTorch's graph intermediate representation (IR), essentially a DAG (directed acyclic graph) composed of the following node types:
+
+| Node Type | Meaning | Example |
+|-----------|---------|---------|
+| `placeholder` | Graph input parameter | `x = placeholder('x')` |
+| `call_function` | Call a Python function | `torch.add(x, y)` |
+| `call_method` | Call an object method | `x.relu()` |
+| `call_module` | Call an nn.Module | `self.linear(x)` |
+| `get_attr` | Get an attribute | `self.weight` |
+| `output` | Graph output | `return result` |
+
+Each node also carries rich **metadata**:
+- **Shape/Dtype information**: inferred via fake tensor propagation (running a fake tensor through the graph)
+- **Source code location**: traceable back to the original Python source line number
+- **Stack trace**: complete Python call stack
+
+The FX Graph can be printed as readable Python code:
+
+```python
+@torch.compile
+def fn(x, w):
+    y = x @ w
+    y = y + 1
+    return y.relu()
+
+# After compilation, the FX Graph looks like:
+# graph():
+#     %x : [B, 64] = placeholder[target=x]
+#     %w : [64, 128] = placeholder[target=w]
+#     %matmul : [B, 128] = call_function[target=torch.matmul](x, w)
+#     %add : [B, 128] = call_function[target=torch.add](matmul, 1)
+#     %relu : [B, 128] = call_method[target=relu](add)
+#     return relu
+```
+
+<FXGraphExplorer locale="en" client:visible />
+
+The FX Graph is designed to be **analyzable and transformable**. Downstream passes (like AOTAutograd, Inductor) can traverse the graph, match patterns, replace subgraphs, insert nodes, and more. This is the foundation of the PyTorch 2.0 compiler pipeline.
+
+## AOTAutograd
+
+The FX Graph captured by TorchDynamo contains only **forward computation**. But deep learning training requires backpropagation, i.e., automatic differentiation (autograd). Traditional PyTorch eager autograd dynamically constructs the backward graph at runtime.
+
+**AOTAutograd** (Ahead-of-Time Autograd) **moves autograd tracing to compile time**: it takes the forward FX Graph captured by Dynamo, uses `functorch`'s autograd tracing capability, and generates a **joint graph containing both forward and backward computation**.
+
+The specific flow:
+
+1. **Receive forward graph**: Get the forward FX Graph from TorchDynamo
+2. **Trace backward computation**: Use `functorch.grad` to trace autograd, recording all gradient computation operations
+3. **Generate joint graph**: Merge forward and backward operations into a single graph
+4. **Partitioning**: Split the joint graph into a forward subgraph and a backward subgraph
+   - Forward subgraph: executes forward computation + saves intermediate results needed by backward (saved tensors)
+   - Backward subgraph: uses saved tensors to perform gradient computation
+5. **Optimize separately**: Forward and backward subgraphs are each passed to the backend (e.g., Inductor) for compilation and optimization
+
+<AOTAutogradFlow locale="en" client:visible />
+
+Key benefits of AOTAutograd:
+
+**1. Cross-forward/backward global optimization.** In eager autograd, forward and backward are completely separate. AOTAutograd lets the compiler see the entire computation, enabling global optimization. For example:
+- **Recomputation vs Saved Tensors**: the compiler can choose to recompute certain intermediate results (instead of saving them) to conserve memory
+- **Dead code elimination**: if a forward operation's gradient is never used, it can be safely deleted
+
+**2. Backends don't need to understand autograd.** Inductor and other backends only need to process **pure tensor computation graphs** without understanding the complex semantics of autograd (gradient accumulation, DetachOp, SavedVariable, etc.).
+
+**3. More precise shape inference.** Since forward and backward are in the same graph, shape information can propagate directly from forward nodes to backward nodes without runtime inference.
+
+Partitioning is one of the most complex parts of AOTAutograd. The core question is: **which forward intermediate results need to be saved?** Saving too many wastes memory; saving too few requires recomputation that wastes time. AOTAutograd uses a min-cut based algorithm to find the optimal save set, balancing memory and computation overhead.
+
+## Functionalization
+
+There is another critical step in the AOTAutograd pipeline: **Functionalization**.
+
+PyTorch has numerous **in-place operations** such as `x.add_(1)`, `x[:, 0] = 0`, and `x.relu_()`. These operations directly modify tensor data rather than creating new tensors. In-place operations pose a massive challenge for compilers:
+
+1. **Break SSA form**: Compiler IRs typically require that each value is assigned only once (Static Single Assignment). In-place operations violate this assumption.
+2. **Introduce aliasing problems**: After `y = x.view(...)`, `x` and `y` share underlying data. An in-place modification to `x` affects `y`, and vice versa. The compiler must track all alias relationships.
+3. **Affect autograd correctness**: If a tensor is modified in-place and then needs to participate in backpropagation, autograd requires special handling.
+
+Functionalization **replaces all in-place operations with their out-of-place counterparts**:
+
+```python
+# Before functionalization:
+def fn(x):
+    x.add_(1)        # in-place
+    y = x.view(2, 4) # creates alias
+    y.mul_(2)         # in-place on alias
+    return x
+
+# After functionalization:
+def fn(x):
+    x_1 = x + 1           # out-of-place
+    y = x_1.view(2, 4)    # view creates new tensor
+    y_1 = y * 2           # out-of-place
+    x_2 = x_1.clone()     # resolve alias: propagate y's mutation back
+    x_2[...] = y_1.view_as(x_2)
+    return x_2
+```
+
+Functionalization solves three problems:
+- **Eliminates mutation**: all operations become pure functions, satisfying SSA requirements
+- **Resolves aliases**: tracks view/reshape alias chains, ensuring mutations propagate correctly
+- **Simplifies backends**: downstream compilers only need to handle functional operations without understanding PyTorch's complex alias semantics
+
+In the PyTorch 2.0 compilation pipeline, Functionalization occurs inside AOTAutograd, completed before the joint graph is generated. This ensures the graph passed to partitioning and backends is fully functional.
+
+## torch.compile End-to-End Flow
+
+Now we can connect the entire flow. When a user writes `model = torch.compile(model)` and calls `model(x)`:
+
+**Step 1: Frame Interception (TorchDynamo)**
+- `torch.compile` registers PEP 523 frame evaluation hook
+- When `model.forward(x)` is called, Dynamo intercepts the frame
+
+**Step 2: Bytecode Analysis (TorchDynamo)**
+- Dynamo analyzes the `forward` method's bytecode instruction by instruction
+- Maintains shadow stack and VariableTrackers
+- Encounters tensor operation: adds FX Graph node
+- Encounters unhandled operation: Graph Break
+
+**Step 3: Guard Generation (TorchDynamo)**
+- Records all compilation assumptions (shape, dtype, type, etc.)
+- Generates fast guard check function
+
+**Step 4: FX Graph Output**
+- Outputs one or more FX Graphs (depending on graph breaks)
+- Each graph comes with guard conditions
+
+**Step 5: Functionalization (AOTAutograd)**
+- Eliminates in-place operations
+- Resolves tensor alias relationships
+
+**Step 6: Joint Graph Tracing (AOTAutograd)**
+- Traces forward + backward, generates joint graph
+- Infers shape and dtype for all nodes
+
+**Step 7: Partitioning (AOTAutograd)**
+- Splits joint graph into forward and backward subgraphs
+- Uses min-cut algorithm to determine saved tensors
+
+**Step 8: Backend Compilation (Inductor / Triton)**
+- Forward and backward subgraphs are separately passed to the backend
+- Inductor performs fusion, Triton kernel generation, and other optimizations
+- Outputs executable compiled code
+
+**Step 9: Execution**
+- First call: executes the full compilation flow (Steps 1-8)
+- Subsequent calls: check guards, cache hit, directly execute compiled code
+
+The entire flow is completely transparent to the user. The only code modification needed is adding `torch.compile`:
+
+```python
+model = torch.compile(model)
+output = model(x)  # first call triggers compilation
+output = model(x)  # second call hits cache, directly runs optimized code
+```
+
+### Compilation Overhead and Debugging
+
+Compilation has a cost. On the first call, the full compilation flow can take **seconds to tens of seconds** (depending on model size and backend choice). This is why the guard system and caching are so important — compilation happens only once, and subsequent calls benefit from compilation-driven performance gains.
+
+When debugging compilation issues, PyTorch provides rich tooling:
+
+```python
+# View compilation logs
+torch._dynamo.config.log_level = logging.DEBUG
+
+# View graph break reasons
+torch._dynamo.explain(model)(x)
+
+# View generated FX Graph
+torch._dynamo.config.output_code = True
+
+# Disable compilation (compare performance)
+torch._dynamo.config.suppress_errors = True
+
+# View Triton code generated by Inductor
+torch._inductor.config.debug = True
+```
+
+Common compilation pitfalls:
+- **Too many graph breaks**: check if unnecessary Python operations are mixed into tensor computation
+- **Too many recompilations**: check for unnecessary dynamic shapes; use `torch._dynamo.mark_dynamic` to mark dynamic dimensions
+- **Excessively long compilation time**: consider `torch.compile(mode="reduce-overhead")` or reducing model complexity
+
+## Dynamic Shapes
+
+Dynamic shapes are an ongoing challenge for TorchDynamo. In NLP workloads, batch size and sequence length may differ on every inference call. If the system recompiles for every new shape, compilation overhead would exceed the benefits.
+
+TorchDynamo supports **symbolic shape guards**:
+
+```python
+# Mark the batch_size dimension as dynamic
+torch._dynamo.mark_dynamic(x, 0)
+
+# Dynamo generates symbolic guards:
+# x.shape[0] >= 1  (instead of x.shape[0] == 4)
+# x.shape[1] == 64 (static dimensions still get exact guards)
+```
+
+Symbolic shapes allow compiled code to handle **arbitrary batch sizes** without recompiling for each one. However, this increases compiler complexity — the backend must generate code that handles symbolic dimensions (e.g., loop bounds are symbolic expressions rather than constants).
+
+PyTorch 2.1+ introduced the `torch.export` API for more precise dynamic shape control:
+
+```python
+from torch.export import export, Dim
+
+batch = Dim("batch", min=1, max=256)
+exported = export(model, (x,), dynamic_shapes={"x": {0: batch}})
+```
+
+`torch.export` produces graphs with strict shape contracts, suitable for deployment scenarios (ONNX export, mobile deployment, etc.).
+
+## Summary
+
+Graph capture is the entry point of the ML compiler pipeline. PyTorch 2.0 achieves the transformation from dynamic Python code to optimizable computational graphs through three key technologies:
+
+1. **TorchDynamo**: Bytecode-level interception and symbolic execution based on PEP 523, with graph breaks as a safety net, achieving maximum compatibility with arbitrary Python code
+2. **AOTAutograd**: Moving autograd tracing to compile time, generating joint graphs containing both forward and backward computation, enabling backends to perform global optimization
+3. **Functionalization**: Eliminating in-place operations and aliases, converting graphs to purely functional representation, simplifying backend processing
+
+The combination of these three components enables `torch.compile` to automatically compile eager PyTorch code into high-performance optimized code while maintaining full compatibility with user code.
+
+The next article will dive deep into FX Graph IR design, exploring SSA form, MLIR Dialects, and how IRs progressively lower across different abstraction levels.
+
+## Further Reading
+
+- [TorchDynamo Deep Dive](https://dev-discuss.pytorch.org/t/torchdynamo-an-experiment-in-dynamic-python-bytecode-transformation/361) — Original TorchDynamo design article
+- [PEP 523 — Adding a frame evaluation API to CPython](https://peps.python.org/pep-0523/) — The CPython API that TorchDynamo relies on
+- [PyTorch 2.0 Release Blog](https://pytorch.org/blog/pytorch-2.0-release/) — Overall PyTorch 2.0 architecture and performance data
+- [AOTAutograd Design Document](https://dev-discuss.pytorch.org/t/functorch-primitives-aotautograd-and-functionalize/707) — Design principles of AOTAutograd and Functionalization
+- [torch.compiler Official Documentation](https://pytorch.org/docs/stable/torch.compiler.html) — Complete API reference and usage guide

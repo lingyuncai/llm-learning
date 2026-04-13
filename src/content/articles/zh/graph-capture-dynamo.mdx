@@ -1,0 +1,411 @@
+---
+title: "计算图捕获：TorchDynamo、AOTAutograd 与 Functionalization"
+slug: graph-capture-dynamo
+locale: zh
+tags: [compiler, pytorch, torchdynamo, aotautograd, fx-graph]
+prerequisites: [ml-compiler-landscape]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: blog
+    title: "TorchDynamo: An Experiment in Dynamic Python Bytecode Transformation"
+    url: "https://dev-discuss.pytorch.org/t/torchdynamo-an-experiment-in-dynamic-python-bytecode-transformation/361"
+  - type: website
+    title: "PEP 523 – Adding a frame evaluation API to CPython"
+    url: "https://peps.python.org/pep-0523/"
+  - type: blog
+    title: "PyTorch 2.0: Our next generation release"
+    url: "https://pytorch.org/blog/pytorch-2.0-release/"
+  - type: website
+    title: "torch.compiler — PyTorch Documentation"
+    url: "https://pytorch.org/docs/stable/torch.compiler.html"
+  - type: blog
+    title: "AOTAutograd: Ahead-of-Time Autograd for PyTorch 2.0"
+    url: "https://dev-discuss.pytorch.org/t/functorch-primitives-aotautograd-and-functionalize/707"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import DynamoTracingFlow from '../../../components/interactive/DynamoTracingFlow.tsx';
+import FXGraphExplorer from '../../../components/interactive/FXGraphExplorer.tsx';
+import GuardSystemDemo from '../../../components/interactive/GuardSystemDemo.tsx';
+import AOTAutogradFlow from '../../../components/interactive/AOTAutogradFlow.tsx';
+
+<CompilerStackMap mode="compact" currentArticle="graph-capture-dynamo" client:visible />
+
+## 简介
+
+ML 编译器的第一步，也是最关键的一步，是从用户代码中**提取计算图**（graph capture）。没有计算图，后续的优化 pass、算子融合、代码生成等一切编译器技术都无从谈起。
+
+这个问题在 PyTorch 中尤为困难。PyTorch 的核心设计哲学是 **eager execution**（即时执行）：用户写的每一行代码都立即执行，tensor 操作直接返回结果。这让 PyTorch 对开发者极其友好 — 可以用标准 Python 调试工具（print、pdb）逐行检查中间结果，使用任意 Python 控制流（if/else、for 循环），甚至在运行时动态改变网络结构。
+
+但这也意味着 **框架从来不知道"整个程序在做什么"**。PyTorch 只看到一个个独立的 tensor 操作，无法看到操作之间的依赖关系和全局结构。而编译器优化恰恰需要这个全局视角：只有知道 matmul 的输出会被 add 消费，add 的输出会被 relu 消费，编译器才能将它们融合为一个 kernel。
+
+PyTorch 2.0 通过 **TorchDynamo** 优雅地解决了这个问题：在不改变用户代码语义的前提下，从 Python 字节码层面截获并分析用户代码，提取出尽可能大的计算图。本文深入解析这一过程的每个环节。
+
+## 问题定义：为什么从 Python 中提取计算图如此困难
+
+要理解图捕获的困难程度，先看 Python 的几个特性：
+
+**1. 动态类型（Dynamic Typing）。** Python 变量没有静态类型。`x + y` 的含义取决于运行时 `x` 和 `y` 的实际类型 — 可能是整数加法、浮点加法、字符串拼接、或者调用 `__add__` 魔法方法。编译器不能假设 `x + y` 一定是 tensor 加法。
+
+**2. 任意控制流（Arbitrary Control Flow）。** Python 允许 `if tensor.sum() > 0:` 这样的 data-dependent 分支 — 分支条件取决于 tensor 的实际值，编译时无法确定走哪条分支。这打断了静态分析。
+
+**3. Side Effects。** Python 函数可以修改全局变量、打印日志、写文件、甚至 monkey-patch 类定义。这些副作用无法在编译图中表示。
+
+**4. 动态属性和元编程。** Python 对象的属性可以在运行时动态添加/修改。`getattr`、`__getattr__`、metaclass 等机制使得静态分析极其困难。
+
+这些特性使得**完美的图捕获是不可能的** — 没有任何方案能保证将任意 Python 代码 100% 转换为计算图。所有方案都需要在**覆盖率**（能处理多少种 Python 代码模式）和**正确性**（是否保证与原始代码语义一致）之间做权衡。
+
+## Tracing 策略对比
+
+在 TorchDynamo 之前，业界已经有多种 graph capture 策略。理解它们的设计权衡有助于理解 TorchDynamo 的创新之处。
+
+| 策略 | 代表 | 机制 | 优点 | 缺点 |
+|------|------|------|------|------|
+| **Value Tracing** | `torch.jit.trace` | 用具体输入运行一次，记录所有 tensor 操作 | 简单、可靠 | 无法处理控制流；不同输入可能走不同路径，trace 结果不一致 |
+| **AST 分析** | `torch.jit.script` / TorchScript | 解析 Python AST，转换为强类型 IR | 支持控制流 | 需要类型注解；大量 Python 特性不支持（动态属性、第三方库） |
+| **Source-to-Source** | JAX `jit` | 用 tracer（抽象值）替换具体值，追踪函数式变换 | 函数式语义清晰 | 要求用户代码是纯函数式的；side effect 会导致错误 |
+| **图定义即执行** | `tf.function` | 装饰器触发 tracing，Python 控制流在 trace 时执行一次 | TensorFlow 生态内高覆盖率 | "trace-time vs run-time" 语义混淆；Python 控制流不会再次执行 |
+| **字节码转换** | **TorchDynamo** | CPython frame evaluation hook 截获字节码，符号执行 | Python 代码几乎 100% 兼容；遇到问题自动 graph break | 实现复杂度极高 |
+
+TorchDynamo 的核心洞察是：**不要试图理解 Python 源码或 AST，直接在 CPython 字节码层面操作**。Python 代码无论多复杂（装饰器、生成器、上下文管理器），最终都会被 CPython 编译为字节码。在字节码层面，"复杂性"已经被展平了。
+
+## TorchDynamo 深入
+
+### CPython Frame Evaluation Hook（PEP 523）
+
+TorchDynamo 的基础是 [PEP 523](https://peps.python.org/pep-0523/)，这是 Python 3.6 引入的一个 C API：
+
+```c
+// CPython 内部
+typedef PyObject* (*_PyFrameEvalFunction)(
+    PyThreadState *tstate,
+    PyFrameObject *frame,
+    int throwflag
+);
+```
+
+PEP 523 允许 C 扩展**替换 CPython 的默认 frame evaluation 函数**。正常情况下，CPython 对每个函数调用创建一个 frame 对象，然后用内置的 `_PyEval_EvalFrameDefault` 逐条执行字节码。TorchDynamo 注册了一个自定义的 evaluation function，在 frame 执行之前拦截它。
+
+这意味着 TorchDynamo 可以：
+1. **检查**即将执行的函数的字节码
+2. **分析**字节码，提取计算图
+3. **替换**原始字节码为优化后的版本（调用编译后的代码）
+4. **回退**到标准 CPython 执行（对于无法处理的代码）
+
+关键点：PEP 523 是一个**完全透明的机制**。用户代码不需要任何修改。`torch.compile(fn)` 内部只是注册了一个 frame evaluation hook，然后正常调用 `fn`。
+
+### 字节码分析与符号执行
+
+当 TorchDynamo 拦截到一个 frame 时，它开始**符号执行（symbolic execution）**该 frame 的字节码。
+
+符号执行的核心思想：**不真正执行计算，而是跟踪操作的符号表示**。例如：
+
+```python
+def fn(x, w):
+    y = x @ w       # 不真正执行 matmul，而是记录 "y = matmul(x, w)"
+    y = y + 1       # 记录 "y = add(y, 1)"
+    return y.relu() # 记录 "result = relu(y)"
+```
+
+TorchDynamo 为每个变量维护一个 **VariableTracker** 对象，记录它的符号信息（是哪个 tensor、来自哪个操作、shape/dtype 是什么）。当遇到 tensor 操作（如 `BINARY_MATMUL` 字节码），Dynamo 不执行计算，而是在 FX Graph 中添加一个对应的节点。
+
+CPython 是一个基于栈的虚拟机。字节码操作（如 `LOAD_FAST`、`BINARY_ADD`、`CALL_METHOD`）都通过一个值栈来传递参数和结果。TorchDynamo 维护一个**影子栈（shadow stack）**，栈上的每个元素不是真实的 Python 值，而是 VariableTracker（符号值）。Dynamo 按照 CPython 字节码的语义，逐条指令推演这个影子栈的变化，同时构建 FX Graph。
+
+### Guard 系统
+
+符号执行有一个根本问题：**它的结果依赖于运行时的条件**。例如：
+
+```python
+def fn(x, flag):
+    if flag:
+        return x + 1
+    return x - 1
+```
+
+第一次调用时 `flag=True`，Dynamo 追踪到 `x + 1`。但下一次调用如果 `flag=False`，同样的编译结果就是错误的。
+
+TorchDynamo 通过 **Guard 系统** 解决这个问题。编译时，Dynamo 会记录所有影响图结构的**假设条件**（guards）：
+
+- **Shape guards**: `x.shape[0] == 4`, `x.dim() == 2`
+- **Dtype guards**: `x.dtype == torch.float32`
+- **Value guards**: `flag == True`（对于 Python 标量）
+- **Type guards**: `type(x) == torch.Tensor`
+
+这些 guard 形成一个**快速检查函数**。每次调用编译后的函数时，先执行 guard 检查：
+- 如果所有 guard 都通过 → **cache hit**，直接执行编译后的代码
+- 如果任何 guard 失败 → **recompile**，重新追踪并编译
+
+<GuardSystemDemo client:visible />
+
+Guard 系统的设计非常精巧。Dynamo 尽量生成**最弱的 guard**（最少的约束），以最大化 cache hit 率。例如：
+- 如果代码没有用到 `x.shape[0]` 的具体值，就不生成对应的 shape guard
+- 如果所有 shape 都是动态的（通过 `torch._dynamo.mark_dynamic` 标记），Dynamo 会生成符号化的 shape guard（例如 `x.shape[0] >= 1`），而不是具体值的 guard
+
+`torch._dynamo.config.cache_size_limit`（默认 8）控制每个函数最多缓存多少个编译版本。超过限制后，Dynamo 会放弃编译该函数并回退到 eager 执行。
+
+### Graph Break
+
+当 Dynamo 在符号执行过程中遇到**无法处理的操作**时，它会执行 **graph break**（图断裂）：将当前已构建的子图提交编译，然后回退到标准 CPython 执行未处理的部分，之后再尝试继续追踪。
+
+触发 graph break 的常见原因包括：
+
+1. **Data-dependent 控制流**：`if x.sum() > 0:` — 分支条件取决于 tensor 值，编译时无法确定
+2. **不支持的 Python 内建函数**：某些 CPython 内建函数的行为无法符号化追踪
+3. **不支持的第三方库调用**：如 `numpy` 操作、`print` 调用
+4. **动态 Python 特性**：`exec`、`eval`、`getattr` 的某些用法
+5. **Generator/Coroutine**：Python 的 yield 语义难以图化
+
+Graph break 不是失败 — 它是 Dynamo 的**优雅降级策略**。一个函数可能被分成多个子图：
+
+```
+[子图 1] → [CPython 执行 Python 代码] → [子图 2] → [CPython 执行] → [子图 3]
+```
+
+每个子图独立编译优化。虽然 graph break 降低了优化效果（编译器无法跨 break 做融合），但保证了**正确性** — 用户代码永远不会因为 Dynamo 而产生错误的结果。
+
+<DynamoTracingFlow client:visible />
+
+可以使用 `torch._dynamo.explain(fn)(inputs)` 来查看一个函数产生了多少 graph break 以及原因：
+
+```python
+explanation = torch._dynamo.explain(fn)(x, flag)
+print(explanation.break_reasons)
+# 显示每个 graph break 的原因和位置
+```
+
+### FX Graph 结构
+
+TorchDynamo 输出的计算图使用 **torch.fx** 表示。FX（Function Transformation）是 PyTorch 的图中间表示（IR），本质上是一个 DAG（有向无环图），由以下类型的节点组成：
+
+| 节点类型 | 含义 | 示例 |
+|----------|------|------|
+| `placeholder` | 图的输入参数 | `x = placeholder('x')` |
+| `call_function` | 调用一个 Python 函数 | `torch.add(x, y)` |
+| `call_method` | 调用一个对象的方法 | `x.relu()` |
+| `call_module` | 调用一个 nn.Module | `self.linear(x)` |
+| `get_attr` | 获取一个属性 | `self.weight` |
+| `output` | 图的输出 | `return result` |
+
+每个节点还携带丰富的**元数据**（metadata）：
+- **Shape/Dtype 信息**：通过 fake tensor propagation（用假 tensor 跑一遍图）推断
+- **Source code location**：可追溯到原始 Python 代码的行号
+- **Stack trace**：完整的 Python 调用栈
+
+FX Graph 可以被打印为可读的 Python 代码：
+
+```python
+@torch.compile
+def fn(x, w):
+    y = x @ w
+    y = y + 1
+    return y.relu()
+
+# 编译后，FX Graph 类似于：
+# graph():
+#     %x : [B, 64] = placeholder[target=x]
+#     %w : [64, 128] = placeholder[target=w]
+#     %matmul : [B, 128] = call_function[target=torch.matmul](x, w)
+#     %add : [B, 128] = call_function[target=torch.add](matmul, 1)
+#     %relu : [B, 128] = call_method[target=relu](add)
+#     return relu
+```
+
+<FXGraphExplorer client:visible />
+
+FX Graph 的设计目标是**可分析、可变换**。下游的 pass（如 AOTAutograd、Inductor）可以遍历图、匹配模式、替换子图、插入节点等。这是 PyTorch 2.0 编译器管线的基础。
+
+## AOTAutograd
+
+TorchDynamo 捕获的 FX Graph 只包含**前向计算**。但深度学习训练需要反向传播（backpropagation），即自动微分（autograd）。传统的 PyTorch eager autograd 在运行时动态构建反向图。
+
+**AOTAutograd**（Ahead-of-Time Autograd）将 autograd 的追踪**提前到编译时**：它接收 Dynamo 捕获的前向 FX Graph，使用 `functorch` 的 autograd tracing 功能，生成一个包含**前向和反向计算的联合图（joint graph）**。
+
+具体流程：
+
+1. **接收前向图**：从 TorchDynamo 获得前向 FX Graph
+2. **追踪反向计算**：使用 `functorch.grad` 追踪 autograd，记录所有梯度计算操作
+3. **生成联合图**：将前向和反向操作合并到一个图中
+4. **分区（Partitioning）**：将联合图切分为前向子图和反向子图
+   - 前向子图：执行前向计算 + 保存反向需要的中间结果（saved tensors）
+   - 反向子图：使用 saved tensors 执行梯度计算
+5. **分别优化**：前向和反向子图各自传递给后端（如 Inductor）编译优化
+
+<AOTAutogradFlow client:visible />
+
+AOTAutograd 带来的关键好处：
+
+**1. 跨前向/反向的全局优化。** eager autograd 中，前向和反向是完全分离的。AOTAutograd 让编译器能看到整个计算过程，做全局优化。例如：
+- **Recomputation（重计算）vs Saved Tensors**：编译器可以选择重新计算某些中间结果（而不是保存它们），以节省内存
+- **Dead code elimination**：如果某个前向操作的梯度从未被使用，可以安全删除
+
+**2. 后端无需了解 autograd。** Inductor 等后端只需要处理**纯粹的 tensor 计算图**，不需要理解 autograd 的复杂语义（如梯度累积、DetachOp、SavedVariable 等）。
+
+**3. 更精确的 shape 推断。** 因为前向和反向在同一个图中，shape 信息可以从前向节点直接传播到反向节点，不需要运行时推断。
+
+分区（Partitioning）是 AOTAutograd 中最复杂的部分之一。核心问题是：**哪些前向中间结果需要保存？** 保存得太多浪费内存，保存得太少需要重计算浪费时间。AOTAutograd 使用基于 min-cut 的算法来找到最优的保存集合，平衡内存和计算开销。
+
+## Functionalization
+
+AOTAutograd 管线中还有一个关键步骤：**Functionalization**（函数化）。
+
+PyTorch 有大量**in-place 操作**（就地操作），如 `x.add_(1)`、`x[:, 0] = 0`、`x.relu_()`。这些操作直接修改 tensor 的数据，而不是创建新的 tensor。In-place 操作对编译器是巨大的挑战：
+
+1. **破坏 SSA 形式**：编译器 IR 通常要求每个值只被赋值一次（Static Single Assignment）。In-place 操作违反了这个假设。
+2. **引入别名（Aliasing）问题**：`y = x.view(...)` 后，`x` 和 `y` 共享底层数据。对 `x` 的 in-place 修改会影响 `y`，反之亦然。编译器必须追踪所有别名关系。
+3. **影响 autograd 正确性**：如果一个 tensor 被 in-place 修改后还需要参与反向传播，autograd 需要特殊处理。
+
+Functionalization 将所有 in-place 操作**替换为对应的 out-of-place 版本**：
+
+```python
+# Before functionalization:
+def fn(x):
+    x.add_(1)       # in-place
+    y = x.view(2, 4) # creates alias
+    y.mul_(2)        # in-place on alias
+    return x
+
+# After functionalization:
+def fn(x):
+    x_1 = x + 1           # out-of-place
+    y = x_1.view(2, 4)    # view creates new tensor
+    y_1 = y * 2           # out-of-place
+    x_2 = x_1.clone()     # resolve alias: propagate y's mutation back
+    x_2[...] = y_1.view_as(x_2)
+    return x_2
+```
+
+Functionalization 解决了三个问题：
+- **消除 mutation**：所有操作变为纯函数，满足 SSA 要求
+- **解析别名**：追踪 view/reshape 的别名链，确保 mutation 正确传播
+- **简化后端**：下游编译器只需处理函数式的操作，不需要理解 PyTorch 的复杂别名语义
+
+在 PyTorch 2.0 的编译管线中，Functionalization 发生在 AOTAutograd 内部，在生成联合图之前完成。这确保了传递给分区和后端的图是完全函数式的。
+
+## torch.compile 端到端流程
+
+现在我们可以串联整个流程。当用户写下 `model = torch.compile(model)` 并调用 `model(x)` 时：
+
+**Step 1: Frame Interception（TorchDynamo）**
+- `torch.compile` 注册 PEP 523 frame evaluation hook
+- 当 `model.forward(x)` 被调用时，Dynamo 拦截 frame
+
+**Step 2: Bytecode Analysis（TorchDynamo）**
+- Dynamo 逐条分析 `forward` 方法的字节码
+- 维护影子栈和 VariableTracker
+- 遇到 tensor 操作 → 添加 FX Graph 节点
+- 遇到无法处理的操作 → Graph Break
+
+**Step 3: Guard Generation（TorchDynamo）**
+- 记录所有编译假设（shape、dtype、type 等）
+- 生成快速 guard 检查函数
+
+**Step 4: FX Graph Output**
+- 输出一个或多个 FX Graph（取决于是否有 graph break）
+- 每个图附带 guard 条件
+
+**Step 5: Functionalization（AOTAutograd）**
+- 消除 in-place 操作
+- 解析 tensor 别名关系
+
+**Step 6: Joint Graph Tracing（AOTAutograd）**
+- 追踪前向 + 反向，生成联合图
+- 推断所有节点的 shape 和 dtype
+
+**Step 7: Partitioning（AOTAutograd）**
+- 将联合图分为前向子图和反向子图
+- 使用 min-cut 算法确定 saved tensors
+
+**Step 8: Backend Compilation（Inductor / Triton）**
+- 前向和反向子图分别传递给后端
+- Inductor 进行融合、Triton kernel 生成等优化
+- 输出可执行的 compiled code
+
+**Step 9: Execution**
+- 首次调用：执行完整的编译流程（步骤 1-8）
+- 后续调用：检查 guard → cache hit → 直接执行编译后的代码
+
+整个流程对用户完全透明。唯一需要的代码修改是加上 `torch.compile`：
+
+```python
+model = torch.compile(model)
+output = model(x)  # 第一次调用触发编译
+output = model(x)  # 第二次调用命中缓存，直接执行优化后的代码
+```
+
+### 编译开销和调试
+
+编译是有代价的。首次调用时，完整的编译流程可能需要**数秒到数十秒**（取决于模型大小和后端选择）。这就是为什么 guard 系统和缓存如此重要 — 编译只发生一次，后续调用享受编译带来的性能加速。
+
+调试编译问题时，PyTorch 提供了丰富的工具：
+
+```python
+# 查看编译日志
+torch._dynamo.config.log_level = logging.DEBUG
+
+# 查看 graph break 原因
+torch._dynamo.explain(model)(x)
+
+# 查看生成的 FX Graph
+torch._dynamo.config.output_code = True
+
+# 禁用编译（对比性能）
+torch._dynamo.config.suppress_errors = True
+
+# 查看 Inductor 生成的 Triton 代码
+torch._inductor.config.debug = True
+```
+
+常见的编译陷阱：
+- **过多 graph break**：检查是否有不必要的 Python 操作混在 tensor 计算中
+- **过多 recompile**：检查是否有不必要的 dynamic shape；使用 `torch._dynamo.mark_dynamic` 标记动态维度
+- **编译时间过长**：考虑使用 `torch.compile(mode="reduce-overhead")` 或减少模型复杂度
+
+## Dynamic Shapes
+
+Dynamic shapes（动态形状）是 TorchDynamo 面临的一个持续挑战。在 NLP 领域，batch size 和 sequence length 在每次推理时可能不同。如果为每个新形状重新编译，编译开销会超过收益。
+
+TorchDynamo 支持**符号化的 shape guard**：
+
+```python
+# 标记 batch_size 维度为动态
+torch._dynamo.mark_dynamic(x, 0)
+
+# Dynamo 会生成符号化的 guard：
+# x.shape[0] >= 1  (而不是 x.shape[0] == 4)
+# x.shape[1] == 64 (静态维度仍然是精确 guard)
+```
+
+符号化 shape 使得编译后的代码可以处理**任意 batch size**，而不需要为每个 batch size 重编译。但这也增加了编译器的复杂度 — 后端必须生成能处理符号化维度的代码（例如循环边界是符号表达式而不是常量）。
+
+PyTorch 2.1+ 引入了 `torch.export` API，提供更精确的动态 shape 控制：
+
+```python
+from torch.export import export, Dim
+
+batch = Dim("batch", min=1, max=256)
+exported = export(model, (x,), dynamic_shapes={"x": {0: batch}})
+```
+
+`torch.export` 产生的图具有严格的 shape 契约，适合部署场景（如 ONNX 导出、移动端部署）。
+
+## 总结
+
+计算图捕获是 ML 编译器管线的入口。PyTorch 2.0 通过三个关键技术实现了从动态 Python 代码到可优化计算图的转换：
+
+1. **TorchDynamo**：基于 PEP 523 的字节码级拦截和符号执行，以 graph break 为安全网，实现了对任意 Python 代码的最大兼容性
+2. **AOTAutograd**：将 autograd 追踪提前到编译时，生成包含前向和反向的联合图，使后端可以做全局优化
+3. **Functionalization**：消除 in-place 操作和别名，将图转换为纯函数式表示，简化后端处理
+
+这三个组件的组合使得 `torch.compile` 能够自动将 eager PyTorch 代码编译为高性能的优化代码，同时保持对用户代码的完全兼容。
+
+下一篇文章将深入 FX Graph 的 IR 设计，探讨 SSA 形式、MLIR Dialect、以及 IR 如何在不同抽象层级之间逐步降低（progressive lowering）。
+
+## 延伸阅读
+
+- [TorchDynamo 深度解析](https://dev-discuss.pytorch.org/t/torchdynamo-an-experiment-in-dynamic-python-bytecode-transformation/361) — TorchDynamo 原始设计文章
+- [PEP 523 — Adding a frame evaluation API to CPython](https://peps.python.org/pep-0523/) — TorchDynamo 依赖的 CPython API
+- [PyTorch 2.0 Release Blog](https://pytorch.org/blog/pytorch-2.0-release/) — PyTorch 2.0 整体架构和性能数据
+- [AOTAutograd 设计文档](https://dev-discuss.pytorch.org/t/functorch-primitives-aotautograd-and-functionalize/707) — AOTAutograd 和 Functionalization 的设计原理
+- [torch.compiler 官方文档](https://pytorch.org/docs/stable/torch.compiler.html) — 完整的 API 参考和使用指南
