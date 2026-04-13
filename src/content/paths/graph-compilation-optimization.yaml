@@ -1,0 +1,34 @@
+id: graph-compilation-optimization
+title:
+  zh: "图编译与优化"
+  en: "Graph Compilation & Optimization"
+description:
+  zh: >-
+    深入 ML 编译器的核心：从计算图捕获到优化执行的完整旅程。
+    双主线覆盖 PyTorch 2.0（torch.compile / TorchInductor / Triton）和 MLIR（Dialect 体系 / Progressive Lowering）。
+    前置路径：AI 计算栈。
+  en: >-
+    Deep dive into ML compiler internals: the complete journey from graph capture to optimized execution.
+    Dual-track coverage of PyTorch 2.0 (torch.compile / TorchInductor / Triton) and MLIR (Dialect system / Progressive Lowering).
+    Prerequisite: AI Compute Stack.
+level: advanced
+prerequisites:
+  - ai-compute-stack
+articles:
+  - ml-compiler-landscape
+  - graph-capture-dynamo
+  - ir-design-basics
+  - ir-progressive-lowering
+  - graph-passes-foundations
+  - graph-passes-advanced
+  - graph-passes-polyhedral
+  - operator-fusion-taxonomy
+  - operator-fusion-cost-model
+  - tiling-memory-hierarchy
+  - dynamic-shapes-challenge
+  - codegen-instruction-selection
+  - codegen-triton-backend
+  - quantization-compilation
+  - distributed-compilation
+  - scheduling-execution
+  - autotuning-end-to-end
