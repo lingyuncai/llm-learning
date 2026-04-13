@@ -55,8 +55,8 @@ In deep learning, the same logical tensor can have multiple memory layout repres
 
 Mathematically, these two layouts are completely equivalent — both represent the same 4D tensor. But **performance differences can reach 2-5x**. The reasons:
 
-1. **Hardware access patterns**: Different hardware has varying optimization levels for contiguous memory access. GPU Tensor Cores require the K dimension of matrix multiplication to be contiguous; NHWC naturally satisfies this when K=C
-2. **Cache utilization**: Convolution operations slide over spatial dimensions; NHWC keeps adjacent spatial positions in cache
+1. **Hardware access patterns**: GPU Tensor Cores map convolutions to implicit GEMM; NHWC layout stores the channel dimension (K dimension) contiguously, enabling efficient Tensor Core fragment loading
+2. **Cache utilization**: NCHW stores spatial positions of the same channel contiguously, benefiting channel-wise operations; NHWC stores all channels at the same position contiguously, benefiting cross-channel operations
 3. **Fusion opportunities**: Different layouts affect which operators can be fused. Layout conversion has overhead; too many conversions can negate fusion benefits
 
 <LayoutOptimizationDemo locale="en" client:visible />
@@ -137,7 +137,7 @@ For ResNet-50, in TensorRT's optimization:
 2. **Fully-Connected layers** use NHWC (after flattening to 2D, NHWC is equivalent to row-major)
 3. Insert a **single transpose** at Conv-FC boundary
 
-This mixed layout strategy is about 15-20% faster than pure NCHW or pure NHWC.
+This mixed layout strategy typically provides significant improvement over pure NCHW or pure NHWC (exact gains depend on model structure and hardware configuration).
 
 ## Shape Inference and Specialization
 
@@ -438,7 +438,7 @@ Final HBM access drops to 60%, peak memory usage reduced by about 40%.
 
 ### Real Performance Comparison
 
-On A100 GPU, for typical GPT-3 attention (`B=1, H=96, S=2048, D=128`):
+On A100 GPU, for typical GPT-3 attention (`B=1, H=96, S=2048, D=128`), below are **educational estimates** based on the Roofline model (actual latencies vary with driver versions, kernel implementations, etc.):
 
 | Stage | Latency (ms) | Relative Speedup |
 |-------|--------------|------------------|

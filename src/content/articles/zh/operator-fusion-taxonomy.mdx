@@ -119,7 +119,7 @@ $$
 
 **优化后**：
 - 每个 thread 先计算全局均值（通过 shared memory 共享），再直接计算 `x[i] - mean`
-- **节省**：65% 内存流量
+- **节省**：60% 内存流量
 
 **实现要点**：
 - On-the-fly broadcasting：均值存储在寄存器或 shared memory，每个 thread 重复使用。

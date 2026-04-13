@@ -55,8 +55,8 @@ import TransformerPassPipeline from '../../../components/interactive/Transformer
 
 数学上这两种布局完全等价——都表示同一个 4D tensor。但**性能差异可能高达 2-5 倍**。原因在于：
 
-1. **硬件访问模式**：不同硬件对连续内存访问的优化程度不同。GPU Tensor Core 要求矩阵乘法的 K 维连续存储，NHWC 在 K=C 时天然满足这个要求
-2. **Cache 利用率**：卷积操作在空间维度上滑动，NHWC 能让相邻位置的数据在 cache 中
+1. **硬件访问模式**：GPU Tensor Core 将卷积映射为隐式 GEMM，NHWC 布局使通道维（K 维）连续存储，有利于高效加载 Tensor Core fragment
+2. **Cache 利用率**：NCHW 将同一通道的空间位置连续存储，有利于通道级操作的 cache 命中；NHWC 将同一位置的所有通道连续存储，有利于需要跨通道访问的操作
 3. **算子融合机会**：不同 layout 影响哪些算子能融合。Layout 转换是有代价的，过多的转换会抵消融合带来的收益
 
 <LayoutOptimizationDemo client:visible />
@@ -137,7 +137,7 @@ for edge in graph.edges:
 2. **Fully-Connected 层**使用 NHWC（展平为 2D 后，NHWC 等价于行优先）
 3. 在 Conv 和 FC 的边界插入 **single transpose**
 
-这种混合 layout 策略比纯 NCHW 或纯 NHWC 快约 15-20%。
+这种混合 layout 策略通常比纯 NCHW 或纯 NHWC 有显著提升（具体取决于模型结构和硬件配置）。
 
 ## Shape 推导与 Specialization
 
@@ -438,7 +438,7 @@ $$
 
 ### 实际性能对比
 
-在 A100 GPU 上，对于典型的 GPT-3 attention（`B=1, H=96, S=2048, D=128`）：
+在 A100 GPU 上，对于典型的 GPT-3 attention（`B=1, H=96, S=2048, D=128`），以下是基于 Roofline 模型的**教学估算值**（实际延迟因驱动版本、kernel 实现等因素而异）：
 
 | 阶段 | 延迟（ms） | 相对加速 |
 |------|-----------|---------|

@@ -81,7 +81,7 @@ export default function LayoutOptimizationDemo({ locale = 'zh' }: Props) {
       low: '低',
       yes: '是',
       no: '否',
-      explanation: 'NCHW 将同一通道的所有空间位置放在一起，适合通道级操作（如 Conv）。NHWC 将每个空间位置的所有通道放在一起，适合 Tensor Core（需要连续的 K 维）。',
+      explanation: 'NCHW 将同一通道的空间位置连续存储，cache 命中率高。NHWC 将同一位置的所有通道连续存储，适合 Tensor Core 的隐式 GEMM 加载。',
     },
     en: {
       title: 'Data Layout Optimization: NCHW vs NHWC',
@@ -100,7 +100,7 @@ export default function LayoutOptimizationDemo({ locale = 'zh' }: Props) {
       low: 'Low',
       yes: 'Yes',
       no: 'No',
-      explanation: 'NCHW groups all spatial positions of the same channel together, ideal for channel-wise ops (e.g., Conv). NHWC groups all channels at each spatial position, ideal for Tensor Core (requires contiguous K dimension).',
+      explanation: 'NCHW stores spatial positions of the same channel contiguously, yielding high cache hit rates. NHWC stores all channels at each position contiguously, ideal for Tensor Core implicit GEMM loading.',
     },
   }[locale]!;
 

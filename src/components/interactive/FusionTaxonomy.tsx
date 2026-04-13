@@ -37,16 +37,16 @@ const FUSION_TYPES: FusionType[] = [
     name: { zh: 'Element-wise 融合', en: 'Element-wise Fusion' },
     category: 'simple',
     before: [
-      { id: 'x', label: 'x', color: COLORS.mid, memReads: 12, memWrites: 0 },
+      { id: 'x', label: 'x', color: COLORS.mid },
       { id: 'relu', label: 'ReLU', color: COLORS.primary, memReads: 12, memWrites: 12 },
       { id: 'mul', label: '×', color: COLORS.primary, memReads: 12, memWrites: 12 },
       { id: 'add', label: '+', color: COLORS.primary, memReads: 12, memWrites: 12 },
-      { id: 'out', label: 'output', color: COLORS.mid, memReads: 0, memWrites: 0 },
+      { id: 'out', label: 'output', color: COLORS.mid },
     ],
     after: [
-      { id: 'x', label: 'x', color: COLORS.mid, memReads: 12, memWrites: 0 },
+      { id: 'x', label: 'x', color: COLORS.mid },
       { id: 'fused', label: 'ReLU+×+add', color: COLORS.green, memReads: 12, memWrites: 12, isFused: true },
-      { id: 'out', label: 'output', color: COLORS.mid, memReads: 0, memWrites: 0 },
+      { id: 'out', label: 'output', color: COLORS.mid },
     ],
     edges: [
       { from: 'x', to: 'relu' },
@@ -60,8 +60,8 @@ const FUSION_TYPES: FusionType[] = [
       en: 'Element-wise operator chain, eliminate intermediate buffers'
     },
     detail: {
-      zh: '融合前：3 次内核启动，12+12 MB HBM 读写 × 3。融合后：1 次启动，4+4 MB。节省 67% 内存流量。',
-      en: 'Before: 3 kernel launches, 12+12 MB HBM R/W × 3. After: 1 launch, 4+4 MB. 67% memory saved.'
+      zh: '融合前：3 次内核启动，(12+12) MB HBM 读写 × 3 = 72 MB。融合后：1 次启动，12+12 = 24 MB。节省 67% 内存流量。',
+      en: 'Before: 3 kernel launches, (12+12) MB HBM R/W × 3 = 72 MB. After: 1 launch, 12+12 = 24 MB. 67% memory saved.'
     }
   },
   {
@@ -69,16 +69,16 @@ const FUSION_TYPES: FusionType[] = [
     name: { zh: 'Reduction 融合', en: 'Reduction Fusion' },
     category: 'simple',
     before: [
-      { id: 'x', label: 'x', color: COLORS.mid, memReads: 12, memWrites: 0 },
+      { id: 'x', label: 'x', color: COLORS.mid },
       { id: 'sq', label: 'x²', color: COLORS.primary, memReads: 12, memWrites: 12 },
-      { id: 'sum', label: 'sum', color: COLORS.primary, memReads: 12, memWrites: 4 },
-      { id: 'sqrt', label: '√', color: COLORS.primary, memReads: 4, memWrites: 4 },
-      { id: 'out', label: 'norm', color: COLORS.mid, memReads: 0, memWrites: 0 },
+      { id: 'sum', label: 'sum', color: COLORS.primary, memReads: 12, memWrites: 0 },
+      { id: 'sqrt', label: '√', color: COLORS.primary, memReads: 0, memWrites: 0 },
+      { id: 'out', label: 'norm', color: COLORS.mid },
     ],
     after: [
-      { id: 'x', label: 'x', color: COLORS.mid, memReads: 12, memWrites: 0 },
-      { id: 'fused', label: 'L2-norm', color: COLORS.green, memReads: 12, memWrites: 4, isFused: true },
-      { id: 'out', label: 'norm', color: COLORS.mid, memReads: 0, memWrites: 0 },
+      { id: 'x', label: 'x', color: COLORS.mid },
+      { id: 'fused', label: 'L2-norm', color: COLORS.green, memReads: 12, memWrites: 0, isFused: true },
+      { id: 'out', label: 'norm', color: COLORS.mid },
     ],
     edges: [
       { from: 'x', to: 'sq' },
@@ -101,16 +101,16 @@ const FUSION_TYPES: FusionType[] = [
     name: { zh: 'Broadcast 融合', en: 'Broadcast Fusion' },
     category: 'simple',
     before: [
-      { id: 'x', label: 'x', color: COLORS.mid, memReads: 12, memWrites: 0 },
-      { id: 'mean', label: 'reduce_mean', color: COLORS.primary, memReads: 12, memWrites: 4 },
-      { id: 'bc', label: 'broadcast', color: COLORS.primary, memReads: 4, memWrites: 12 },
+      { id: 'x', label: 'x', color: COLORS.mid },
+      { id: 'mean', label: 'reduce_mean', color: COLORS.primary, memReads: 12, memWrites: 0 },
+      { id: 'bc', label: 'broadcast', color: COLORS.primary, memReads: 0, memWrites: 12 },
       { id: 'sub', label: 'subtract', color: COLORS.primary, memReads: 24, memWrites: 12 },
-      { id: 'out', label: 'centered', color: COLORS.mid, memReads: 0, memWrites: 0 },
+      { id: 'out', label: 'centered', color: COLORS.mid },
     ],
     after: [
-      { id: 'x', label: 'x', color: COLORS.mid, memReads: 12, memWrites: 0 },
+      { id: 'x', label: 'x', color: COLORS.mid },
       { id: 'fused', label: 'center', color: COLORS.green, memReads: 12, memWrites: 12, isFused: true },
-      { id: 'out', label: 'centered', color: COLORS.mid, memReads: 0, memWrites: 0 },
+      { id: 'out', label: 'centered', color: COLORS.mid },
     ],
     edges: [
       { from: 'x', to: 'mean' },
@@ -119,7 +119,7 @@ const FUSION_TYPES: FusionType[] = [
       { from: 'x', to: 'sub' },
       { from: 'sub', to: 'out' },
     ],
-    savings: 65,
+    savings: 60,
     description: {
       zh: 'Reduce + Broadcast 模式，LayerNorm 核心',
       en: 'Reduce + Broadcast pattern, LayerNorm core'
@@ -134,16 +134,16 @@ const FUSION_TYPES: FusionType[] = [
     name: { zh: 'Transpose/Reshape 消除', en: 'Transpose/Reshape Elimination' },
     category: 'simple',
     before: [
-      { id: 'x', label: 'x', color: COLORS.mid, memReads: 12, memWrites: 0 },
+      { id: 'x', label: 'x', color: COLORS.mid },
       { id: 'trans', label: 'transpose', color: COLORS.primary, memReads: 12, memWrites: 12 },
       { id: 'reshape', label: 'reshape', color: COLORS.primary, memReads: 12, memWrites: 12 },
       { id: 'mm', label: 'matmul', color: COLORS.primary, memReads: 24, memWrites: 12 },
-      { id: 'out', label: 'output', color: COLORS.mid, memReads: 0, memWrites: 0 },
+      { id: 'out', label: 'output', color: COLORS.mid },
     ],
     after: [
-      { id: 'x', label: 'x', color: COLORS.mid, memReads: 12, memWrites: 0 },
+      { id: 'x', label: 'x', color: COLORS.mid },
       { id: 'fused', label: 'matmul (stride)', color: COLORS.green, memReads: 12, memWrites: 12, isFused: true },
-      { id: 'out', label: 'output', color: COLORS.mid, memReads: 0, memWrites: 0 },
+      { id: 'out', label: 'output', color: COLORS.mid },
     ],
     edges: [
       { from: 'x', to: 'trans' },
@@ -166,18 +166,18 @@ const FUSION_TYPES: FusionType[] = [
     name: { zh: 'FlashAttention（算法改写）', en: 'FlashAttention (Algorithmic Rewrite)' },
     category: 'complex',
     before: [
-      { id: 'q', label: 'Q', color: COLORS.mid, memReads: 8, memWrites: 0 },
-      { id: 'k', label: 'K', color: COLORS.mid, memReads: 8, memWrites: 0 },
+      { id: 'q', label: 'Q', color: COLORS.mid },
+      { id: 'k', label: 'K', color: COLORS.mid },
       { id: 'mm1', label: 'Q×Kᵀ', color: COLORS.purple, memReads: 16, memWrites: 32 },
       { id: 'sm', label: 'softmax', color: COLORS.purple, memReads: 32, memWrites: 32 },
-      { id: 'v', label: 'V', color: COLORS.mid, memReads: 8, memWrites: 0 },
+      { id: 'v', label: 'V', color: COLORS.mid },
       { id: 'mm2', label: 'attn×V', color: COLORS.purple, memReads: 40, memWrites: 8 },
-      { id: 'out', label: 'output', color: COLORS.mid, memReads: 0, memWrites: 0 },
+      { id: 'out', label: 'output', color: COLORS.mid },
     ],
     after: [
-      { id: 'qkv', label: 'Q/K/V', color: COLORS.mid, memReads: 24, memWrites: 0 },
+      { id: 'qkv', label: 'Q/K/V', color: COLORS.mid },
       { id: 'fused', label: 'FlashAttention', color: COLORS.purple, memReads: 24, memWrites: 8, isFused: true },
-      { id: 'out', label: 'output', color: COLORS.mid, memReads: 0, memWrites: 0 },
+      { id: 'out', label: 'output', color: COLORS.mid },
     ],
     edges: [
       { from: 'q', to: 'mm1' },
@@ -187,7 +187,7 @@ const FUSION_TYPES: FusionType[] = [
       { from: 'v', to: 'mm2' },
       { from: 'mm2', to: 'out' },
     ],
-    savings: 75,
+    savings: 80,
     description: {
       zh: 'Tiling + online softmax，消除 N² attention matrix',
       en: 'Tiling + online softmax, eliminate N² attention matrix'

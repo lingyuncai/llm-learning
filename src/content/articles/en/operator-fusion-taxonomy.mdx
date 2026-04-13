@@ -119,7 +119,7 @@ Based on fusion patterns and implementation complexity, operator fusion can be c
 
 **After optimization**:
 - Each thread first computes global mean (shared via shared memory), then directly computes `x[i] - mean`
-- **Savings**: 65% memory traffic
+- **Savings**: 60% memory traffic
 
 **Implementation key points**:
 - On-the-fly broadcasting: mean stored in register or shared memory, reused by each thread.
