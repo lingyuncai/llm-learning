@@ -1,0 +1,890 @@
+---
+title: "Graph Optimization Passes (Part 1): Data Flow Analysis & Pass Fundamentals"
+slug: graph-passes-foundations
+locale: en
+tags: [compiler, optimization, pass, dataflow-analysis, dce, cse]
+prerequisites: [ir-design-basics]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "Efficiently Computing Static Single Assignment Form and the Control Dependence Graph"
+    url: "https://dl.acm.org/doi/10.1145/115372.115320"
+  - type: website
+    title: "MLIR Pass Infrastructure"
+    url: "https://mlir.llvm.org/docs/PassManagement/"
+  - type: website
+    title: "torch.fx — Graph Manipulation"
+    url: "https://pytorch.org/docs/stable/fx.html"
+  - type: paper
+    title: "A Unified Approach to Global Program Optimization"
+    url: "https://dl.acm.org/doi/10.1145/512927.512945"
+  - type: website
+    title: "MLIR Canonicalization"
+    url: "https://mlir.llvm.org/docs/Canonicalization/"
+  - type: paper
+    title: "Constant Propagation with Conditional Branches"
+    url: "https://dl.acm.org/doi/10.1145/103135.103136"
+  - type: website
+    title: "PyTorch FX Subgraph Rewriter"
+    url: "https://pytorch.org/docs/stable/fx.html#torch.fx.subgraph_rewriter.replace_pattern"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import PassPipelineSimulator from '../../../components/interactive/PassPipelineSimulator.tsx';
+import DCEAnimation from '../../../components/interactive/DCEAnimation.tsx';
+import CSEAnimation from '../../../components/interactive/CSEAnimation.tsx';
+import DataFlowAnalysisDemo from '../../../components/interactive/DataFlowAnalysisDemo.tsx';
+
+<CompilerStackMap mode="compact" currentArticle="graph-passes-foundations" locale="en" client:visible />
+
+## Introduction: From IR to Optimizer
+
+In previous articles, we explored the design of Intermediate Representations (IRs)—SSA form, FX Graph, and MLIR Dialect systems. These IRs provide structures for expressing program semantics, but IR itself is just the "data format" for compilers. What truly empowers compilers is the **analysis** and **transformation** performed on IR.
+
+This brings us to the core concept of compiler optimization: **Pass**.
+
+A **Pass** is an independent module in a compiler that takes IR as input, performs analysis or transformation, and outputs modified IR (or analysis results). Passes are the fundamental organizational unit of compiler optimization—they make complex compilation pipelines modular, testable, and reusable.
+
+This article is Part 1 of the graph optimization pass series. Starting from fundamental concepts, we'll deeply explore:
+
+1. **What is a Pass**: Pass types, organization, design principles
+2. **Data Flow Analysis Foundations**: Lattice Theory, Transfer Functions, Worklist Algorithm
+3. **Classic Pass Deep Dive**: Dead Code Elimination (DCE), Common Subexpression Elimination (CSE), Constant Folding
+4. **Pass Management Infrastructure**: PyTorch FX graph transformation tools, MLIR Pass Manager
+5. **Fixed-Point Iteration**: How to guarantee data flow analysis convergence
+
+Through this article, you'll understand the systematic thinking of compiler optimization and master core techniques for implementing basic passes.
+
+## What is a Pass
+
+### The Essence of a Pass
+
+From the simplest perspective, a Pass is a function:
+
+$$
+\text{Pass} : \text{IR} \to \text{IR}
+$$
+
+Or more accurately:
+
+$$
+\text{Pass} : \text{IR} \to \text{IR} \times \text{Metadata}
+$$
+
+A Pass receives an IR as input, performs analysis or transformation, and outputs modified IR along with possible metadata (e.g., "whether modifications were made", "analysis results").
+
+This simple definition hides the core idea of compiler optimization: **divide and conquer**. Complex optimization pipelines are decomposed into a series of independent passes, each focusing on a specific optimization or analysis task. This modular design brings multiple advantages:
+
+- **Testability**: Each pass can be tested independently without running the entire compilation pipeline
+- **Reusability**: Generic passes (like DCE, CSE) can be reused across different compilers
+- **Debuggability**: Individual passes can be disabled to quickly identify which optimization introduced a problem
+- **Extensibility**: Adding new optimizations only requires implementing new passes without modifying the compiler framework
+
+### Analysis Pass vs Transform Pass
+
+Passes fall into two major categories:
+
+**1. Analysis Pass**
+
+Read-only IR analysis. Its goal is to extract information for subsequent passes.
+
+Examples:
+- **Dominator Tree Analysis**: Computes the dominator tree of the control flow graph
+- **Alias Analysis**: Determines if two pointers may point to the same memory location
+- **Shape Inference**: Infers tensor shapes
+
+Analysis pass outputs are typically data structures (like maps, graph structures) stored in the compiler's analysis cache. Subsequent transform passes can query these analysis results.
+
+**2. Transform Pass**
+
+Modifies IR to implement specific optimizations.
+
+Examples:
+- **Dead Code Elimination**: Removes unreachable or useless code
+- **Common Subexpression Elimination**: Eliminates redundant computation
+- **Loop Tiling**: Splits loops into smaller blocks to improve cache locality
+
+Transform passes may depend on analysis pass results. For example, DCE needs to know which nodes are "live", information that comes from liveness analysis.
+
+### Local Pass vs Global Pass
+
+Passes can also be classified by scope:
+
+**1. Local Pass**
+
+Works only within a single basic block or single function. No need to consider cross-block control flow.
+
+Examples:
+- **Constant Folding**: If seeing `x = 2 + 3`, directly replace with `x = 5`
+- **Algebraic Simplification**: Like `x + 0 → x`, `x * 1 → x`
+
+Local passes are simple and fast. But their optimization capability is limited—many optimization opportunities require cross-block information.
+
+**2. Global Pass**
+
+Requires analyzing the entire function or entire program (Interprocedural Pass). Usually involves traversing the control flow graph (CFG).
+
+Examples:
+- **Global Value Numbering**: Discovers redundant computation across basic blocks
+- **Loop Invariant Code Motion**: Moves constant computation from inside loops to outside
+- **Inlining**: Replaces function calls with function bodies
+
+Global passes are more powerful but also more complex. They require data flow analysis to track how information propagates through the control flow graph.
+
+### Pass Example in PyTorch FX
+
+In PyTorch FX, a pass is typically a Python function that receives a `GraphModule` and returns a modified `GraphModule`.
+
+```python
+import torch
+from torch.fx import GraphModule
+
+def dead_code_elimination(gm: GraphModule) -> GraphModule:
+    """
+    Remove unused nodes (dead code).
+    """
+    graph = gm.graph
+    # Collect all used nodes
+    used_nodes = set()
+    for node in graph.nodes:
+        if node.op == 'output':
+            # Start from output node, recursively mark all inputs
+            def mark_used(n):
+                if n not in used_nodes:
+                    used_nodes.add(n)
+                    for inp in n.all_input_nodes:
+                        mark_used(inp)
+            for arg in node.args:
+                if isinstance(arg, torch.fx.Node):
+                    mark_used(arg)
+    
+    # Delete unused nodes
+    for node in list(graph.nodes):
+        if node not in used_nodes and node.op not in ('placeholder', 'output'):
+            graph.erase_node(node)
+    
+    gm.recompile()
+    return gm
+```
+
+This simple DCE pass demonstrates the basic pattern of FX graph transformation: traverse nodes, check conditions, modify graph structure.
+
+## Data Flow Analysis Foundations
+
+Many global optimizations need to know "the state at a program point"—for example, what value does a variable have here? Which variables are live here? This is what **Data Flow Analysis** solves.
+
+Data flow analysis is one of the core techniques of compiler optimization. It provides a mathematical framework for systematically deriving program state at each point.
+
+### Lattice Theory Basics
+
+The mathematical foundation of data flow analysis is **Lattice**. A lattice is a partially ordered set where any two elements have a least upper bound and greatest lower bound.
+
+For compiler optimization, lattices define "information precision". We'll use a classic example—constant propagation—to illustrate.
+
+**Constant Propagation Lattice**
+
+For each variable, we want to know its value at a program point. Three possibilities exist:
+
+1. **⊤ (Top)**: We don't yet know this variable's value (initial state)
+2. **Constant c**: We know this variable's value is constant c
+3. **⊥ (Bottom)**: This variable's value is not constant (may have different values on different paths)
+
+These three cases form a lattice with partial order:
+
+$$
+\top \sqsupseteq c \sqsupseteq \bot
+$$
+
+Meaning: ⊤ is "most imprecise" information (know nothing), constant is "precise" information, ⊥ is "conflicting" information (definitely not constant).
+
+**Meet Operation (∧)**
+
+When two control flow paths merge, we need to combine their information. This merge operation is called **Meet**, denoted $\land$.
+
+For constant propagation, meet is defined as:
+
+$$
+\begin{aligned}
+\top \land x &= x \\
+c \land c &= c \quad \text{(same constant)} \\
+c_1 \land c_2 &= \bot \quad \text{(different constants)} \\
+\bot \land x &= \bot
+\end{aligned}
+$$
+
+Intuition: If two paths give the same constant, we know the variable is that constant. If two paths give different constants, we know the variable is not constant.
+
+### Transfer Function
+
+Transfer functions describe "how a statement changes data flow information".
+
+For constant propagation, transfer function $F_s$ depends on statement $s$ type:
+
+**1. Assignment `x = c` (constant assignment)**
+
+$$
+F_{x=c}(\sigma) = \sigma[x \mapsto c]
+$$
+
+Meaning: Variable $x$ becomes constant $c$, other variables unchanged.
+
+**2. Assignment `x = y + z`**
+
+$$
+F_{x=y+z}(\sigma) = \begin{cases}
+\sigma[x \mapsto c_1 + c_2] & \text{if } \sigma(y) = c_1, \sigma(z) = c_2 \\
+\sigma[x \mapsto \bot] & \text{otherwise}
+\end{cases}
+$$
+
+Meaning: If $y$ and $z$ are both constants, $x$ is their sum; otherwise $x$ is not constant.
+
+**3. Branch statement `if condition`**
+
+For branch statements, both branch transfer functions are identical (identity function), but meet operation is applied at join points.
+
+### Worklist Algorithm
+
+Data flow analysis typically uses the **Worklist Algorithm** (also called Iterative Data Flow Analysis) to compute fixed points.
+
+The core idea:
+
+1. Initialize data flow information for all basic blocks (usually ⊤)
+2. Add all basic blocks to Worklist
+3. Remove a basic block $B$ from Worklist
+4. Apply transfer function to $B$, compute $B$'s output state
+5. If $B$'s output state changed, add all of $B$'s successors to Worklist
+6. Repeat steps 3-5 until Worklist is empty
+
+This algorithm guarantees convergence because:
+- Lattice height is finite (for constant propagation, at most 3 levels)
+- Transfer functions are monotonic (information only becomes more precise, doesn't regress)
+
+**Pseudocode**
+
+```
+Input: CFG with basic blocks B₁, B₂, ..., Bₙ
+Output: IN[B] and OUT[B] for each basic block B
+
+// Initialize
+for each block B:
+    IN[B] = ⊤  // Initial state: no information
+    OUT[B] = ⊤
+
+Worklist = {B₁, B₂, ..., Bₙ}
+
+// Iterate
+while Worklist is not empty:
+    B = Worklist.pop()
+    
+    // Compute B's input state (from predecessors)
+    IN[B] = ⋀(OUT[P] for P in predecessors(B))
+    
+    // Apply transfer function
+    old_OUT = OUT[B]
+    OUT[B] = TransferFunction(B, IN[B])
+    
+    // If output changed, add successors to Worklist
+    if OUT[B] ≠ old_OUT:
+        for S in successors(B):
+            Worklist.add(S)
+```
+
+### Forward vs Backward Analysis
+
+Data flow analysis has two directions:
+
+**1. Forward Analysis**
+
+Information propagates along control flow from front to back. A basic block's input state is determined by predecessor blocks' output states.
+
+Examples:
+- **Constant Propagation**: Propagate from definition points to use points
+- **Available Expressions**: Which expressions have been computed at this point
+
+**2. Backward Analysis**
+
+Information propagates along control flow from back to front. A basic block's output state is determined by successor blocks' input states.
+
+Examples:
+- **Liveness Analysis**: Which variables will be used after this point
+- **Dead Code Elimination**: Which code doesn't affect program output
+
+For backward analysis, the Worklist algorithm is slightly different: we start from exit blocks and traverse backward along control flow.
+
+<DataFlowAnalysisDemo locale="en" client:visible />
+
+## Classic Pass Deep Dive
+
+Now let's dive into three classic passes to see their algorithms, implementations, and effects.
+
+### Dead Code Elimination (DCE)
+
+**Problem Definition**
+
+Dead Code is code that "doesn't affect program observable behavior". Two types exist:
+
+1. **Unreachable Code**: Code control flow never reaches
+2. **Useless Code**: Computes values but the values are never used
+
+DCE's goal is to safely delete all dead code.
+
+**Algorithm**
+
+DCE is a backward data flow analysis problem. We start from program "outputs" (return values, I/O operations, externally visible side effects) and trace backward which computations contribute to output.
+
+For SSA-form IR, the DCE algorithm is extremely concise:
+
+```
+Input: SSA-form program
+Output: Program with dead code removed
+
+// Step 1: Mark phase
+worklist = {output node}
+live_set = {}
+
+while worklist is not empty:
+    node = worklist.pop()
+    if node not in live_set:
+        live_set.add(node)
+        for operand in node.inputs:
+            worklist.add(operand)
+
+// Step 2: Sweep phase
+for node in program:
+    if node not in live_set:
+        delete node
+```
+
+**SSA Advantage**
+
+In SSA form, each variable has only one definition point, and use-def chains are explicit. This makes DCE trivial: just check if a node's `users` list is empty. If empty and not an output node, it's dead code.
+
+In non-SSA form, DCE requires complex liveness analysis—tracing backward along control flow for each variable's usage, a process requiring fixed-point iteration.
+
+<DCEAnimation locale="en" client:visible />
+
+**Implementing DCE in PyTorch FX**
+
+```python
+def dce_pass(gm: torch.fx.GraphModule) -> torch.fx.GraphModule:
+    graph = gm.graph
+    live_nodes = set()
+    
+    # Mark from output nodes
+    for node in graph.nodes:
+        if node.op == 'output':
+            worklist = list(node.all_input_nodes)
+            while worklist:
+                n = worklist.pop()
+                if n not in live_nodes:
+                    live_nodes.add(n)
+                    worklist.extend(n.all_input_nodes)
+    
+    # Delete dead nodes
+    for node in list(graph.nodes):
+        if node not in live_nodes and node.op not in ('placeholder', 'output'):
+            graph.erase_node(node)
+    
+    gm.recompile()
+    return gm
+```
+
+**Effect Example**
+
+Before:
+```python
+def forward(x, y):
+    a = x + 1          # Used → Keep
+    b = x * 2          # Dead code → Delete
+    c = a + y          # Used → Keep
+    d = b - y          # Dead code → Delete
+    return c
+```
+
+After DCE:
+```python
+def forward(x, y):
+    a = x + 1
+    c = a + y
+    return c
+```
+
+### Common Subexpression Elimination (CSE)
+
+**Problem Definition**
+
+Common Subexpression is when "the same expression is computed in multiple places". CSE's goal is to identify and eliminate redundant computation.
+
+**Algorithm**
+
+CSE's core is computing a "hash value" (also called Value Number) for each operation. If two operations have the same hash, they compute the same result and can be merged.
+
+For SSA-form IR, hash computation is very simple:
+
+$$
+\text{hash}(\text{op}, \text{operands}) = (\text{op\_type}, \text{operand\_ids})
+$$
+
+Two operations have the same hash if and only if:
+1. Operation types are the same (both `add`)
+2. Operands are the same (in SSA, same variable version means same value)
+
+**Algorithm Pseudocode**
+
+```
+Input: SSA-form program
+Output: Program with common subexpressions eliminated
+
+hash_table = {}  // hash → canonical node
+
+for node in topological_order(program):
+    if node.op in ['input', 'const']:
+        continue  // Inputs and constants don't participate in CSE
+    
+    hash_val = (node.op, tuple(node.inputs))
+    
+    if hash_val in hash_table:
+        // Found redundant computation, replace all users
+        canonical_node = hash_table[hash_val]
+        replace_all_uses(node, canonical_node)
+        delete node
+    else:
+        hash_table[hash_val] = node
+```
+
+**Implementation in MLIR**
+
+MLIR's Canonicalization Pass includes CSE. MLIR's Operation class provides an `isIdenticalTo()` method for judging operation equivalence.
+
+```cpp
+// MLIR CSE core logic (simplified)
+DenseMap<Operation*, Operation*> cseDominanceMap;
+
+for (Operation &op : block) {
+    // Check if equivalent operation already exists
+    for (auto &entry : cseDominanceMap) {
+        Operation *existingOp = entry.second;
+        if (op.isIdenticalTo(existingOp)) {
+            // Replace all uses
+            op.replaceAllUsesWith(existingOp->getResults());
+            op.erase();
+            break;
+        }
+    }
+    // Record this operation
+    cseDominanceMap[&op] = &op;
+}
+```
+
+<CSEAnimation locale="en" client:visible />
+
+**Effect Example**
+
+Before:
+```python
+def forward(x, y):
+    a = x + y          # First computation of x + y
+    b = x * 2
+    c = x + y          # Redundant computation of x + y
+    d = a + c
+    return d
+```
+
+After CSE:
+```python
+def forward(x, y):
+    a = x + y          # Computed only once
+    b = x * 2
+    d = a + a          # c replaced by a
+    return d
+```
+
+**Considerations**
+
+CSE needs to carefully handle:
+
+1. **Side Effects**: If operations have side effects (I/O, modifying global state), they cannot be merged even if they look the same
+2. **Dominance**: Can only replace an operation with one that dominates it. If two operations are in different control flow branches, need to check dominance
+
+### Constant Folding
+
+**Problem Definition**
+
+Constant folding means "computing constant expressions at compile time". If an operation's inputs are all compile-time constants, the operation's result can also be computed at compile time.
+
+**Algorithm**
+
+Constant folding is a forward data flow analysis problem. We start from inputs and constant definitions, propagating constant information along data flow.
+
+For SSA-form IR, the algorithm is very straightforward:
+
+```
+Input: SSA-form program
+Output: Program with constants folded
+
+for node in topological_order(program):
+    if node.op == 'const':
+        continue  // Already constant
+    
+    // Check if all inputs are constants
+    all_const = True
+    const_inputs = []
+    for inp in node.inputs:
+        if inp.op != 'const':
+            all_const = False
+            break
+        const_inputs.append(inp.value)
+    
+    if all_const:
+        // Compute at compile time
+        result = evaluate(node.op, const_inputs)
+        // Replace with constant
+        const_node = create_const(result)
+        replace_all_uses(node, const_node)
+        delete node
+```
+
+**Implementation in PyTorch FX**
+
+```python
+def constant_fold_pass(gm: torch.fx.GraphModule) -> torch.fx.GraphModule:
+    graph = gm.graph
+    
+    for node in graph.nodes:
+        if node.op == 'call_function' and node.target in FOLDABLE_OPS:
+            # Check if all inputs are constants
+            all_const = True
+            const_values = []
+            for arg in node.args:
+                if isinstance(arg, torch.fx.Node) and arg.op == 'get_attr':
+                    # Get constant parameter from model
+                    const_values.append(getattr(gm, arg.target))
+                elif isinstance(arg, (int, float)):
+                    const_values.append(arg)
+                else:
+                    all_const = False
+                    break
+            
+            if all_const:
+                # Execute at compile time
+                result = node.target(*const_values)
+                # Create constant node
+                with graph.inserting_before(node):
+                    const_node = graph.create_node(
+                        'get_attr', 
+                        f'_folded_const_{node.name}',
+                        args=(), kwargs={}
+                    )
+                    setattr(gm, const_node.target, result)
+                node.replace_all_uses_with(const_node)
+                graph.erase_node(node)
+    
+    gm.recompile()
+    return gm
+```
+
+**Effect Example**
+
+Before:
+```python
+def forward(x):
+    a = 2 + 3          # Compile-time constant
+    b = x * a
+    c = 10 / 2         # Compile-time constant
+    d = b + c
+    return d
+```
+
+After Constant Folding:
+```python
+def forward(x):
+    a = 5              # Folded to constant
+    b = x * 5          # a inlined
+    c = 5.0            # Folded to constant
+    d = b + 5.0
+    return d
+```
+
+**Constant Propagation vs Constant Folding**
+
+These terms are often used interchangeably but have subtle differences:
+
+- **Constant Folding**: Computing constant expression values
+- **Constant Propagation**: Propagating constant values to use points
+
+Usually they work together: constant propagation identifies which variables are constants, constant folding computes constant expressions, then constant propagation again... iterating until fixed point.
+
+## Pass Pipeline Interactive Demo
+
+Now let's intuitively experience pass effects through an interactive demo, and how different pass orderings affect final results.
+
+<PassPipelineSimulator locale="en" client:visible />
+
+**Observation Points**
+
+1. **Pass order matters**: Running Constant Folding then DCE may be more effective than reverse. Because folding may produce new dead code.
+
+2. **Fixed-point iteration**: Sometimes need to run the same pass multiple times. For example:
+   - CSE may expose new dead code (after merging, some nodes become useless)
+   - DCE may expose new CSE opportunities (after deleting nodes, discover new duplicates)
+
+3. **Special status of Canonicalize**: Canonicalization is not a single optimization, but a collection of "local pattern rewrites". It's usually placed at the front of the pipeline or run multiple times.
+
+## Pass Management Infrastructure
+
+Real compilers need complete infrastructure for managing pass execution. This includes pass registration, dependency management, caching, debugging tools, etc.
+
+### PyTorch FX Graph Transformation Tools
+
+PyTorch FX provides lightweight graph transformation tools. Most important is `subgraph_rewriter`—it allows implementing passes through pattern matching and replacement.
+
+**Subgraph Rewriter Example**
+
+```python
+from torch.fx import subgraph_rewriter
+
+def pattern(x):
+    """Pattern to match: x + 0"""
+    return x + 0
+
+def replacement(x):
+    """Replace with: x"""
+    return x
+
+# Apply rewrite on GraphModule
+subgraph_rewriter.replace_pattern(gm, pattern, replacement)
+```
+
+This tool automatically identifies all subgraphs in the graph matching `pattern` and replaces with `replacement`. This is a declarative pass implementation—you only describe "what" (match what, replace with what), the framework handles "how" (how to traverse, how to modify graph).
+
+**More Complex Example: Fusing ReLU into Conv**
+
+```python
+def fuse_conv_relu(gm: GraphModule) -> GraphModule:
+    def pattern(x, weight):
+        conv = torch.nn.functional.conv2d(x, weight)
+        relu = torch.nn.functional.relu(conv)
+        return relu
+    
+    def replacement(x, weight):
+        # Use fused conv_relu operator
+        return torch.ops.my_ops.conv_relu(x, weight)
+    
+    subgraph_rewriter.replace_pattern(gm, pattern, replacement)
+    return gm
+```
+
+### MLIR Pass Manager
+
+MLIR provides complete pass management infrastructure, including:
+
+**1. Pass Registration**
+
+Each pass inherits from `OperationPass<OpT>` and is registered to the system via macro.
+
+```cpp
+// Define a pass
+struct MyCSEPass : public OperationPass<MyCSEPass, ModuleOp> {
+    void runOnOperation() override {
+        // Pass implementation
+        ModuleOp module = getOperation();
+        // ... perform CSE on module
+    }
+};
+
+// Register pass
+void registerMyCSEPass() {
+    PassRegistration<MyCSEPass>("my-cse", "My CSE Pass");
+}
+```
+
+**2. Pass Manager**
+
+Pass Manager executes pass pipelines, manages analysis cache, handles pass failures, etc.
+
+```cpp
+PassManager pm(&context);
+
+// Add passes
+pm.addPass(createCSEPass());
+pm.addPass(createDCEPass());
+pm.addPass(createCanonicalizerPass());
+
+// Run pipeline
+if (failed(pm.run(module))) {
+    llvm::errs() << "Pass failed\n";
+}
+```
+
+**3. Nested Pass**
+
+MLIR supports running passes at different levels. For example, can run a pass on each function instead of the entire module.
+
+```cpp
+pm.addNestedPass<FuncOp>(createCSEPass());  // Run CSE on each function
+```
+
+**4. Pass Pipeline Configuration**
+
+MLIR supports configuring pass pipelines via text format, convenient for experimentation and debugging.
+
+```bash
+mlir-opt input.mlir --pass-pipeline='
+  builtin.module(
+    func.func(cse, canonicalize),
+    inline,
+    func.func(cse, dce)
+  )'
+```
+
+This pipeline means:
+1. Run CSE and Canonicalize on each function
+2. Run Inlining (function inlining)
+3. Run CSE and DCE on each function again
+
+### Pass Dependencies and Analysis Preservation
+
+Passes may have dependencies. For example, some pass needs dominator tree analysis results. MLIR's pass system provides mechanisms for declaring and managing these dependencies.
+
+```cpp
+struct MyPass : public OperationPass<MyPass, FuncOp> {
+    void getDependentDialects(DialectRegistry &registry) const override {
+        // Declare dependent dialects
+        registry.insert<arith::ArithDialect, scf::SCFDialect>();
+    }
+    
+    void runOnOperation() override {
+        FuncOp func = getOperation();
+        // Query analysis results
+        auto &dominatorTree = getAnalysis<DominatorTree>();
+        // ...
+    }
+};
+```
+
+**Analysis Preservation**
+
+After transform passes modify IR, some analysis results may become invalid. The pass system needs to know which analyses are still valid.
+
+```cpp
+void runOnOperation() override {
+    // ... modify IR
+    
+    // Mark preserved analyses
+    markAnalysesPreserved<DominatorTree>();
+    // Or mark all analyses invalid
+    markAllAnalysesPreserved();
+}
+```
+
+## Fixed-Point Iteration and Convergence Guarantee
+
+Many optimizations need multiple runs to achieve best effect. For example:
+
+```
+Initial: a = x + 0; b = a * 1; return b
+Round 1 Canonicalize: a = x; b = a * 1; return b  // Remove + 0
+Round 2 Canonicalize: a = x; b = a; return b      // Remove * 1
+Round 3 Copy Propagation: return x                 // Propagate a, b
+```
+
+This is **Fixed-Point Iteration**: repeatedly running optimizations until IR no longer changes (reaches fixed point).
+
+### Why Convergence
+
+Fixed-point iteration convergence depends on two key properties:
+
+**1. Monotonicity**
+
+Each optimization makes IR "better" (e.g., fewer nodes, lower computational complexity), and this "better/worse" is orderable.
+
+For data flow analysis, monotonicity manifests as: information monotonically descends on the lattice (from ⊤ toward ⊥).
+
+**2. Boundedness**
+
+Optimization space is finite. For example:
+- Node count cannot decrease infinitely (minimum is input and output nodes)
+- Lattice height is finite (for constant propagation, at most 3 levels)
+
+These two properties guarantee iteration must stop in finite steps.
+
+### Practical Convergence Strategies
+
+Real compilers usually don't "iterate to fixed point"—it may require too many iterations. Common strategies include:
+
+**1. Fixed Number of Iterations**
+
+Run optimization pipeline a fixed number of times (like 2-3), usually sufficient to capture most optimization opportunities.
+
+```cpp
+PassManager pm(&context);
+for (int i = 0; i < 3; ++i) {
+    pm.addPass(createCSEPass());
+    pm.addPass(createDCEPass());
+    pm.addPass(createCanonicalizerPass());
+}
+```
+
+**2. Detect Changes**
+
+Each time a pass runs, record whether modifications were made. If several consecutive rounds make no modifications, stop iteration.
+
+```cpp
+bool changed = true;
+int round = 0;
+while (changed && round < MAX_ROUNDS) {
+    changed = false;
+    for (auto pass : passes) {
+        if (pass.run(module)) {
+            changed = true;
+        }
+    }
+    round++;
+}
+```
+
+**3. Heuristic Ordering**
+
+Carefully design pass ordering so most optimizations take effect in the first round. Rule of thumb:
+- Run Canonicalize first (cleanup)
+- Then run high-level optimizations (like operator fusion)
+- Finally run low-level optimizations (like DCE, CSE)
+
+### Worklist Algorithm Convergence Analysis
+
+For Worklist algorithm, we can strictly prove convergence.
+
+**Theorem**: If lattice height is $h$, number of basic blocks is $n$, then Worklist algorithm time complexity is $O(h \cdot n \cdot e)$, where $e$ is the number of edges.
+
+**Proof sketch**:
+- Each basic block's state descends at most $h$ times on the lattice
+- Each descent adds at most successor blocks to Worklist
+- Total at most $h \cdot n \cdot e$ Worklist operations
+
+For constant propagation, $h = 3$ (⊤, constant, ⊥), so complexity is $O(n \cdot e)$, i.e., linear in graph size.
+
+## Summary
+
+This article systematically introduced compiler optimization pass fundamentals. Core points recap:
+
+**Pass is the fundamental organizational unit of compiler optimization**. By decomposing complex optimization pipelines into independent passes, we gain modular, testable, reusable compiler architecture. Passes are divided into Analysis Pass (read-only analysis) and Transform Pass (modify IR), as well as Local Pass (single block) and Global Pass (cross-block).
+
+**Data flow analysis provides systematic optimization framework**. Through lattice theory, transfer functions, and Worklist algorithm, we can mathematically derive program state at each point. Forward analysis and backward analysis suit different types of optimization problems.
+
+**Classic passes demonstrate SSA power**. Dead Code Elimination (DCE), Common Subexpression Elimination (CSE), Constant Folding are extremely concise to implement on SSA-form IR—use-def chains are explicit, variable version uniqueness guarantees analysis correctness.
+
+**Pass management infrastructure systematizes optimization**. PyTorch FX's subgraph_rewriter provides declarative graph rewriting capability, MLIR Pass Manager provides complete pass registration, dependency management, analysis caching mechanisms. Carefully designed pass pipelines and fixed-point iteration strategies are key to efficient optimization.
+
+In the next article **Graph Optimization Passes (Part 2): Operator Fusion & Pattern Rewriting**, we'll explore more advanced optimization techniques—various operator fusion patterns (horizontal fusion, vertical fusion, loop fusion), pattern-matching-based rewrite systems, and MLIR's Declarative Rewrite Rules (DRR) framework.
+
+## Further Reading
+
+- Kildall, "A Unified Approach to Global Program Optimization" (1973) — Foundational paper on data flow analysis, first systematic description of lattice theory and Worklist algorithm
+- Wegman & Zadeck, "Constant Propagation with Conditional Branches" (1991) — Sparse constant propagation algorithm, more efficient than traditional Worklist
+- Cytron et al., "Efficiently Computing Static Single Assignment Form" (1991) — SSA construction algorithm, foundation for efficient DCE/CSE implementation
+- MLIR Pass Infrastructure Documentation — Detailed description of MLIR pass system design and API
+- PyTorch FX Graph Manipulation Documentation — FX graph transformation tools and subgraph_rewriter usage
+- LLVM Programmer's Manual: Writing an LLVM Pass — LLVM pass writing guide, classic tutorial for learning pass implementation

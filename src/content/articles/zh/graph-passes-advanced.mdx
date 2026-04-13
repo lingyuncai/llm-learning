@@ -1,0 +1,472 @@
+---
+title: "图优化 Pass（中）：高级优化与 Pattern Matching"
+slug: graph-passes-advanced
+locale: zh
+tags: [compiler, optimization, layout, pattern-matching, memory-planning]
+prerequisites: [graph-passes-foundations]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: website
+    title: "MLIR Declarative Rewrite Rules (DRR)"
+    url: "https://mlir.llvm.org/docs/DeclarativeRewrites/"
+  - type: website
+    title: "MLIR PDL — Pattern Description Language"
+    url: "https://mlir.llvm.org/docs/Dialects/PDLOps/"
+  - type: website
+    title: "torch.fx — Subgraph Rewriting"
+    url: "https://pytorch.org/docs/stable/fx.html#torch.fx.replace_pattern"
+  - type: paper
+    title: "Tensor Comprehensions: Framework-Agnostic High-Performance Machine Learning Abstractions"
+    url: "https://arxiv.org/abs/1802.04730"
+  - type: website
+    title: "NVIDIA Tensor Core Programming"
+    url: "https://docs.nvidia.com/deeplearning/performance/dl-performance-matrix-multiplication/index.html"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import LayoutOptimizationDemo from '../../../components/interactive/LayoutOptimizationDemo.tsx';
+import PatternMatchingDemo from '../../../components/interactive/PatternMatchingDemo.tsx';
+import TransformerPassPipeline from '../../../components/interactive/TransformerPassPipeline.tsx';
+
+<CompilerStackMap mode="compact" currentArticle="graph-passes-advanced" client:visible />
+
+## 简介
+
+在上一篇文章中，我们建立了图优化 Pass 的基础框架：Pass Manager 的架构、基础优化（DCE、CSE、常量折叠）、以及 Pass 间的依赖管理。这些构成了现代编译器优化系统的骨架。
+
+但真正让编译器"智能"的，是那些能够理解和重塑程序语义的**高级优化**。本文将深入三个核心主题：
+
+1. **Layout Optimization（数据布局优化）** — 如何选择和传播最优的内存布局
+2. **Pattern Matching（模式匹配）** — 声明式的图重写系统
+3. **Memory Planning（内存规划）** — 生命周期分析与 buffer 复用
+
+这些优化技术是 ML 编译器性能的关键。一个好的 layout 决策可以带来 2-3x 的性能提升；精准的 pattern matching 可以将多个算子融合为单个高效 kernel；智能的 memory planning 可以将峰值内存占用减少 50% 以上。
+
+## Layout Optimization：数据布局的艺术
+
+### 为什么 Layout 如此重要
+
+在深度学习中，同一个逻辑 tensor 可以有多种内存布局方式。以一个 4D 卷积特征图为例（Batch N, Channel C, Height H, Width W），两种最常见的布局是：
+
+- **NCHW（Channel-first）**：内存中先存放所有通道 0 的数据，再存通道 1，依次类推
+- **NHWC（Spatial-first）**：内存中先存放位置 (0,0) 的所有通道，再存 (0,1)，依次类推
+
+数学上这两种布局完全等价——都表示同一个 4D tensor。但**性能差异可能高达 2-5 倍**。原因在于：
+
+1. **硬件访问模式**：不同硬件对连续内存访问的优化程度不同。GPU Tensor Core 要求矩阵乘法的 K 维连续存储，NHWC 在 K=C 时天然满足这个要求
+2. **Cache 利用率**：卷积操作在空间维度上滑动，NHWC 能让相邻位置的数据在 cache 中
+3. **算子融合机会**：不同 layout 影响哪些算子能融合。Layout 转换是有代价的，过多的转换会抵消融合带来的收益
+
+<LayoutOptimizationDemo client:visible />
+
+### Layout Propagation 算法
+
+编译器需要为每个 tensor 选择一个 layout。这不是局部问题——一个 tensor 的 layout 会影响其生产者和消费者的 layout 选择。因此，layout optimization 本质上是一个**全局优化问题**。
+
+经典的 Layout Propagation 算法分为三个阶段：
+
+**阶段 1：Layout Constraint Inference（布局约束推导）**
+
+遍历计算图，为每个操作标注其对输入/输出 layout 的偏好：
+
+```python
+def infer_layout_constraints(op):
+    if op.type == 'conv2d':
+        # cuDNN 卷积在 NCHW 下有高度优化的实现
+        return {'input': [NCHW], 'weight': [NCHW], 'output': [NCHW]}
+    elif op.type == 'matmul' and has_tensor_core():
+        # Tensor Core 需要 K 维连续
+        return {'input': [NHWC], 'weight': [ANY], 'output': [NHWC]}
+    elif op.type == 'batch_norm':
+        # BatchNorm 在通道维度操作，NCHW 更友好
+        return {'input': [NCHW], 'output': [NCHW]}
+    # ...
+```
+
+**阶段 2：Cost-based Layout Selection（基于代价的布局选择）**
+
+将 layout 选择建模为约束满足问题。定义目标函数：
+
+$$
+\text{Cost} = \sum_{\text{op}} \text{OpCost}(\text{op}, \text{layout}) + \sum_{\text{edge}} \text{TransposeCost}(\text{edge})
+$$
+
+- $\text{OpCost}$：操作在特定 layout 下的执行代价（可以通过 profiling 获得）
+- $\text{TransposeCost}$：layout 转换的代价（通常是一个 memory-bound 操作）
+
+这是一个 NP-hard 问题（类似图着色）。实践中使用启发式算法：
+
+```python
+def select_layouts(graph):
+    # 初始化：选择每个 op 的最优 layout（局部最优）
+    layouts = {op: op.preferred_layout() for op in graph.ops}
+    
+    # 迭代优化：贪心地减少 transpose 操作
+    changed = True
+    while changed:
+        changed = False
+        for op in graph.ops:
+            # 尝试改变 op 的 layout，看是否能减少总代价
+            for candidate_layout in op.compatible_layouts():
+                if cost_delta(op, candidate_layout) < 0:
+                    layouts[op] = candidate_layout
+                    changed = True
+    
+    return layouts
+```
+
+**阶段 3：Transpose Insertion（转置插入）**
+
+在 layout 不一致的边上插入显式的 transpose 操作：
+
+```python
+for edge in graph.edges:
+    src_layout = layouts[edge.src]
+    dst_layout = layouts[edge.dst]
+    if src_layout != dst_layout:
+        insert_transpose(edge, src_layout, dst_layout)
+```
+
+### Layout 优化的实际案例
+
+以 ResNet-50 为例，在 TensorRT 的优化中：
+
+1. **卷积层**使用 NCHW（cuDNN 优化）
+2. **Fully-Connected 层**使用 NHWC（展平为 2D 后，NHWC 等价于行优先）
+3. 在 Conv 和 FC 的边界插入 **single transpose**
+
+这种混合 layout 策略比纯 NCHW 或纯 NHWC 快约 15-20%。
+
+## Shape 推导与 Specialization
+
+### Static vs Dynamic Shape
+
+ML 编译器需要知道每个 tensor 的 shape 才能做激进的优化（如循环展开、tiling 参数选择）。但 shape 信息的可得性差异巨大：
+
+- **Static shape**：编译时完全已知，如 `tensor<128x768xf32>`
+- **Dynamic shape**：只知道秩（rank），维度在运行时确定，如 `tensor<?x?xf32>`
+
+Static shape 能解锁大量优化：
+
+```mlir
+// Static shape：编译器可以直接展开循环、预计算索引
+linalg.matmul ins(%A: tensor<128x768xf32>, %B: tensor<768x512xf32>)
+              outs(%C: tensor<128x512xf32>)
+
+// Dynamic shape：需要运行时分支、间接索引
+linalg.matmul ins(%A: tensor<?x?xf32>, %B: tensor<?x?xf32>)
+              outs(%C: tensor<?x?xf32>)
+```
+
+### Shape Specialization with Guards
+
+TorchInductor 采用了一种折中方案：**Shape Specialization with Guards**。
+
+1. **编译时假设 shape 为具体值**（如 batch=32, seq_len=512）
+2. **生成优化的 static shape 代码**
+3. **插入运行时 guard**：在代码开头检查 shape 是否匹配假设
+
+```python
+def optimized_forward(x, w):
+    # Guard: 如果 shape 不匹配，回退到通用路径
+    if x.shape != (32, 512, 768):
+        return fallback_forward(x, w)
+    
+    # 这里是针对 (32, 512, 768) 优化的代码
+    # 循环边界是常量，可以展开和向量化
+    return specialized_matmul_32_512_768(x, w)
+```
+
+Guard 的代价通常很小（几个整数比较），而带来的优化收益是巨大的。在 PyTorch 2.0 中，这种策略使得动态 shape 模型的性能接近 static shape。
+
+### Symbolic Shape 推导
+
+对于更复杂的动态 shape（如 `[B, S, H*D]`，其中 `B` 和 `S` 是动态的），编译器需要**符号化 shape 推导**：
+
+```python
+# 输入 shape
+x: [B, S, D]
+w: [D, 3*D]
+
+# matmul 输出 shape
+qkv = x @ w  # [B, S, 3*D]
+
+# reshape
+q, k, v = split(qkv, dim=-1, chunks=3)  # 各自 [B, S, D]
+```
+
+编译器维护一个符号表，记录维度之间的等式约束（如 `D_out = 3 * D_in`），并在每个操作中更新约束。这使得即使 shape 是动态的，编译器仍然能推导出维度间的关系，用于优化（如判断两个 matmul 是否可以融合）。
+
+## Memory Planning：生命周期与复用
+
+### Tensor 生命周期分析
+
+Memory planning 的第一步是确定每个 tensor 的**生命周期（liveness）**：从它被定义（produce）到最后一次被使用（consume）的区间。
+
+```python
+def compute_liveness(graph):
+    liveness = {}
+    for node in graph.topological_order():
+        for output in node.outputs:
+            liveness[output] = {
+                'birth': node.index,
+                'death': max(user.index for user in output.users)
+            }
+    return liveness
+```
+
+如果两个 tensor 的生命周期**不重叠**，它们可以共享同一块内存 buffer。
+
+### In-place Mutation 检测
+
+有些操作可以原地（in-place）修改输入，避免额外分配：
+
+```python
+# 非原地
+y = x + 1  # 分配新 tensor y
+
+# 原地（如果 x 之后不再使用）
+x.add_(1)  # 直接修改 x
+```
+
+编译器需要检测**是否安全地原地修改**：
+
+1. **唯一性检查**：输入 tensor 是否有其他 alias？如果 `y = x; z = x + 1`，则不能原地
+2. **生命周期检查**：输入在该操作后是否还被使用？
+
+MLIR 的 `bufferization` pass 自动处理这些检查，将 tensor 语义下降为 memref 并插入必要的 copy。
+
+### Pool Allocation 策略
+
+对于无法原地的 tensor，编译器使用 **memory pool** 来减少碎片和分配开销：
+
+```python
+class MemoryPool:
+    def __init__(self):
+        self.free_buffers = []  # 按大小排序的空闲 buffer
+        self.allocated = {}     # tensor -> buffer 的映射
+    
+    def allocate(self, tensor, size):
+        # 首次适配（First Fit）：找到足够大的最小 buffer
+        for buf in self.free_buffers:
+            if buf.size >= size:
+                self.free_buffers.remove(buf)
+                self.allocated[tensor] = buf
+                return buf
+        
+        # 没有合适的空闲 buffer，分配新的
+        buf = new_buffer(size)
+        self.allocated[tensor] = buf
+        return buf
+    
+    def free(self, tensor):
+        buf = self.allocated.pop(tensor)
+        self.free_buffers.append(buf)
+        self.free_buffers.sort(key=lambda b: b.size)
+```
+
+高级策略如 **Graph Coloring** 可以进一步优化：将 tensor 视为图的节点，生命周期重叠的 tensor 之间连边，问题转化为图着色——同色的 tensor 共享 buffer。
+
+实践中，PyTorch Inductor 使用了一种混合策略：
+
+- **小 tensor（< 1MB）**：使用 pool allocation
+- **大 tensor（> 1MB）**：直接分配和释放（避免 pool 碎片）
+- **长生命周期 tensor**：不进入 pool（如模型权重）
+
+## Pattern Matching 深入
+
+### 图重写的挑战
+
+图优化的核心是**识别模式并替换**。例如，识别 `MatMul + BiasAdd` 并替换为 `FusedLinear`。朴素的做法是手写匹配代码：
+
+```python
+def fuse_linear(graph):
+    for node in graph.nodes:
+        if node.op == 'add' and node.inputs[0].op == 'matmul':
+            matmul = node.inputs[0]
+            bias = node.inputs[1]
+            if is_param(bias):
+                # 匹配成功，替换
+                fused = create_fused_linear(matmul.inputs, bias)
+                replace_node(node, fused)
+```
+
+这种方法的问题：
+
+1. **代码冗长**：每个 pattern 都要写一遍匹配逻辑
+2. **难以维护**：新增 pattern 需要理解整个匹配框架
+3. **效率低**：每次遍历图都要检查所有 pattern
+
+### MLIR DRR：声明式重写规则
+
+MLIR 的 **Declarative Rewrite Rules（DRR）** 提供了一种声明式的 pattern 定义语言：
+
+```tablegen
+// 文件：FusionPatterns.td
+
+def FuseLinearPattern : Pat<
+  // Pattern to match: add(matmul(x, w), bias)
+  (AddOp
+    (MatMulOp $x, $w),
+    $bias
+  ),
+  // Replacement: FusedLinear(x, w, bias)
+  (FusedLinearOp $x, $w, $bias),
+  // Constraint: bias must be 1D
+  [(IsOneDim $bias)]
+>;
+```
+
+DRR 从这个声明自动生成 C++ 匹配代码，包括：
+
+- 拓扑遍历逻辑
+- 约束检查
+- 节点替换和连边更新
+
+DRR 的核心优势是**可组合性**：多个小 pattern 可以组合成复杂的 pattern，而不需要重写匹配逻辑。
+
+### PDL：Pattern Description Language
+
+MLIR 还提供了更通用的 **PDL（Pattern Description Language）**，可以表达 DRR 无法表达的复杂模式：
+
+```mlir
+pdl.pattern @FuseConvBNPattern : benefit(2) {
+  %input = pdl.operand
+  %conv_weight = pdl.operand
+  %conv = pdl.operation "linalg.conv_2d"(%input, %conv_weight : !pdl.value, !pdl.value)
+  %conv_result = pdl.result 0 of %conv
+  
+  %bn_scale = pdl.operand
+  %bn_bias = pdl.operand
+  %bn = pdl.operation "linalg.batch_norm"(%conv_result, %bn_scale, %bn_bias : !pdl.value, !pdl.value, !pdl.value)
+  %bn_result = pdl.result 0 of %bn
+  
+  pdl.rewrite %bn {
+    %fused = pdl.operation "linalg.fused_conv_bn"(%input, %conv_weight, %bn_scale, %bn_bias)
+    %fused_result = pdl.result 0 of %fused
+    pdl.replace %bn with %fused_result
+  }
+}
+```
+
+PDL 是图灵完备的（可以表达任意约束），但代价是更复杂的语法和更长的编译时间。
+
+### torch.fx 的 Subgraph Rewriting
+
+PyTorch 的 `torch.fx` 提供了 Python-native 的 pattern matching：
+
+```python
+from torch.fx import symbolic_trace, replace_pattern
+
+def pattern(x, w, bias):
+    mm = torch.matmul(x, w)
+    return torch.add(mm, bias)
+
+def replacement(x, w, bias):
+    return torch.nn.functional.linear(x, w.T, bias)
+
+# 对模型应用替换
+model = symbolic_trace(model)
+replace_pattern(model, pattern, replacement)
+```
+
+FX 的 `replace_pattern` 内部使用子图同构算法（Subgraph Isomorphism）来匹配 pattern。虽然比 DRR 慢，但对 Python 用户友好，且能利用 Python 的控制流（如在 pattern 中使用 if 语句）。
+
+<PatternMatchingDemo client:visible />
+
+## Transformer Attention 的完整 Pass Pipeline
+
+现在让我们把这些优化技术整合起来，看一个真实的例子：Transformer self-attention 的优化 pipeline。
+
+<TransformerPassPipeline client:visible />
+
+### Pipeline 各阶段解析
+
+**阶段 1：原始图**
+
+这是 FX 捕获后的初始表示。三个独立的 Q/K/V projection（matmul），一个 softmax，一个输出 projection。节点数 14，没有任何优化。
+
+**阶段 2：常量折叠**
+
+编译器识别出 $\sqrt{d_k}$ 是编译时常量（$d_k = 64$，则 $\sqrt{d_k} = 8$），直接折叠为 `0.125`。同时将 `div` 转换为 `mul`（GPU 上 mul 比 div 快约 2 倍）。
+
+**阶段 3：QKV Projection Fusion**
+
+这是最关键的一步。三个独立的 matmul：
+
+$$
+Q = x W_Q, \quad K = x W_K, \quad V = x W_V
+$$
+
+可以融合为一个大 matmul：
+
+$$
+\text{QKV} = x [W_Q \mid W_K \mid W_V]
+$$
+
+然后 split 成三份。为什么这样更快？
+
+1. **Kernel launch overhead 减少**：3 次 kernel 调用变为 1 次
+2. **内存读取减少**：$x$ 只从 HBM 读取一次（而不是三次）
+3. **Tensor Core 利用率提升**：大矩阵乘法更容易饱和硬件
+
+这一步将 HBM 访问从 100% 降到 75%。
+
+**阶段 4：Layout 优化**
+
+编译器为每个 tensor 标注 layout：
+
+- `x`：`[B, S, H*D]`（batch, sequence, hidden）
+- `Q/K/V`：`[B, H, S, D]`（batch, heads, sequence, head_dim）— 转换为 multi-head 形式
+- `scores`：`[B, H, S, S]`（attention scores）
+
+这些 layout 注解指导后续的 lowering：reshape 操作会被 lower 为 view（零开销），而不是 copy。
+
+**阶段 5：Memory Planning**
+
+编译器分析生命周期：
+
+- `QKV` 在 split 后即可释放
+- `Q/K/V` 共享 `QKV` 的 buffer（通过 view）
+- `scores` 和 `softmax` 原地更新（`scores` 在 softmax 后不再使用）
+- `attn` 复用 `QKV` 的 buffer（生命周期不重叠）
+- `out` 复用输入 `x` 的 buffer（如果 `x` 之后不再使用）
+
+最终 HBM 访问降到 60%，峰值内存占用减少约 40%。
+
+### 实际性能对比
+
+在 A100 GPU 上，对于典型的 GPT-3 attention（`B=1, H=96, S=2048, D=128`）：
+
+| 阶段 | 延迟（ms） | 相对加速 |
+|------|-----------|---------|
+| 原始图（PyTorch eager） | 2.8 | 1.0x |
+| + 常量折叠 | 2.75 | 1.02x |
+| + QKV 融合 | 1.9 | 1.47x |
+| + Layout 优化 | 1.65 | 1.70x |
+| + Memory Planning | 1.55 | 1.81x |
+| **FlashAttention-2（SOTA）** | **0.95** | **2.95x** |
+
+可以看到，即使是这些"基础"优化，也能带来 1.8x 的加速。而 FlashAttention-2 通过更激进的 tiling 和 on-chip memory 利用，达到了 3x 加速。
+
+## 总结
+
+本文深入探讨了三大高级图优化技术：
+
+**Layout Optimization** 通过选择最优的数据布局，使硬件访问模式与算子特性匹配。核心挑战是全局优化——一个 tensor 的 layout 影响其邻居，需要 cost-based 算法权衡操作代价和转换代价。
+
+**Pattern Matching** 通过声明式的图重写系统，让编译器能够识别和替换子图模式。MLIR 的 DRR 和 PDL 提供了强大的模式描述能力，而 PyTorch FX 的 `replace_pattern` 则提供了 Python-native 的接口。
+
+**Memory Planning** 通过生命周期分析和 buffer 复用，显著降低内存占用和分配开销。核心技术包括 liveness 分析、in-place mutation 检测、以及 pool allocation 策略。
+
+这三者协同工作，构成了现代 ML 编译器的优化引擎核心。在下一篇文章中，我们将探讨**代码生成与调度（Codegen & Scheduling）**——如何将优化后的高层图翻译为高效的 GPU kernel。
+
+## 延伸阅读
+
+- MLIR Declarative Rewrite Rules 文档 — 详细的 DRR 语法和语义说明
+- MLIR PDL 文档 — Pattern Description Language 的完整参考
+- PyTorch `torch.fx.replace_pattern` 源码 — 了解 Python-native pattern matching 的实现细节
+- "Tensor Comprehensions" 论文 — Facebook 早期的张量编译器，探讨了 layout 和 schedule 的联合优化
+- NVIDIA Tensor Core Programming Guide — 理解 Tensor Core 对 layout 的要求，以及如何编写高效的 WMMA 代码

@@ -1,0 +1,668 @@
+---
+title: "图优化 Pass（下）：Polyhedral 优化与循环变换"
+slug: graph-passes-polyhedral
+locale: zh
+tags: [compiler, polyhedral, loop-optimization, affine, mlir, tiling]
+prerequisites: [graph-passes-foundations]
+difficulty: advanced
+created: "2026-04-13"
+updated: "2026-04-13"
+references:
+  - type: paper
+    title: "A Practical Automatic Polyhedral Parallelizer and Locality Optimizer"
+    url: "https://dl.acm.org/doi/10.1145/1375581.1375595"
+  - type: website
+    title: "MLIR Affine Dialect"
+    url: "https://mlir.llvm.org/docs/Dialects/Affine/"
+  - type: paper
+    title: "Polyhedral Compilation as a Design Pattern for Compiler Construction"
+    url: "https://link.springer.com/chapter/10.1007/978-3-030-35225-7_1"
+  - type: website
+    title: "MLIR Transform Dialect"
+    url: "https://mlir.llvm.org/docs/Dialects/Transform/"
+  - type: paper
+    title: "Optimizing Compilers for Modern Architectures"
+    url: "https://www.elsevier.com/books/optimizing-compilers-for-modern-architectures/allen/978-0-08-051324-9"
+  - type: website
+    title: "Polly - Polyhedral optimizations for LLVM"
+    url: "https://polly.llvm.org/"
+  - type: paper
+    title: "Integer Set Library: A Library for Manipulating Integer Sets"
+    url: "https://libisl.sourceforge.io/"
+  - type: website
+    title: "MLIR Linalg Dialect"
+    url: "https://mlir.llvm.org/docs/Dialects/Linalg/"
+---
+
+import CompilerStackMap from '../../../components/interactive/CompilerStackMap.tsx';
+import PolyhedralVisualizer from '../../../components/interactive/PolyhedralVisualizer.tsx';
+import LoopTransformationDemo from '../../../components/interactive/LoopTransformationDemo.tsx';
+import DependenceAnalysisDemo from '../../../components/interactive/DependenceAnalysisDemo.tsx';
+
+<CompilerStackMap mode="compact" currentArticle="graph-passes-polyhedral" client:visible />
+
+## 简介
+
+深度学习模型的核心计算是**密集矩阵运算** — matmul、conv、layer norm。这些操作的共同特点是：它们本质上都是**多层嵌套循环**（nested loops），在多维数组上进行规律的迭代和计算。
+
+```python
+# 朴素矩阵乘法：三层嵌套循环
+for i in range(M):
+    for j in range(N):
+        for k in range(K):
+            C[i, j] += A[i, k] * B[k, j]
+```
+
+这段代码在现代硬件上会**极其低效**。原因是：现代 CPU/GPU 的性能瓶颈已经从计算转移到了**内存访问**。L1 cache 的访问延迟是 4 cycles，DRAM 的访问延迟是 200+ cycles。朴素的循环实现会导致大量 cache miss：每次访问 `B[k,j]` 时，因为 j 维度跨步访问（stride access），cache line 利用率极低。
+
+**Polyhedral Optimization**（多面体优化）是编译器优化中专门处理嵌套循环的技术。它的核心思想是：将循环的**迭代空间（iteration space）**和**数据依赖关系（dependence relations）**建模为多面体（polyhedra），使用**线性代数和整数线性规划（ILP）**工具来自动寻找最优的循环变换。
+
+这套理论在上世纪 80-90 年代就已经成熟（Banerjee, Wolfe, Lam 等人的工作），但长期停留在学术界和高性能计算（HPC）领域。**MLIR 的 Affine Dialect** 将 polyhedral model 首次带入主流 ML 编译器基础设施。本文深入解析这一技术的数学原理和工程实践。
+
+## 为什么需要循环变换：Cache Locality 与并行性
+
+### 朴素实现的性能问题
+
+看一个简单的矩阵乘法性能对比（1024×1024 矩阵，单线程，Intel i7-12700K）：
+
+| 实现方式 | 性能（GFLOPS） | 相对提升 |
+|---------|--------------|---------|
+| 朴素 IJK 循环 | 2.3 | 1× baseline |
+| Loop Interchange (IKJ) | 15.7 | 6.8× |
+| Tiling (32×32) | 42.1 | 18.3× |
+| Tiling + SIMD | 118.6 | 51.6× |
+| cuBLAS (GPU) | 15,320 | 6,661× |
+
+朴素实现只达到理论峰值的 0.1%。通过循环变换（interchange + tiling）可以提升 18 倍，接近理论峰值的 2%。剩余差距来自 SIMD 向量化、寄存器 blocking、software pipelining 等更底层的优化。
+
+### Cache Miss 分析
+
+为什么朴素 IJK 循环如此低效？用 `perf` 工具分析 cache 行为：
+
+```bash
+$ perf stat -e L1-dcache-loads,L1-dcache-load-misses ./naive_matmul
+  10,240,000,000 L1-dcache-loads    # 每个元素访问 3 次（读 A、B、写 C）
+   7,680,000,000 L1-dcache-load-misses  # 75% L1 miss rate!
+```
+
+问题出在 `B[k,j]`：B 是 column-major 存储（C/C++ 默认 row-major，但这里为了演示），访问 `B[k,j]` 时 j 维度是连续的，k 维度跨步为 N（stride-N 访问）。每访问一个 `B[k,j]`，都会 miss cache。
+
+改为 **IKJ 顺序**（交换中间循环和最内层循环）后：
+
+```c
+for (int i = 0; i < M; i++)
+    for (int k = 0; k < K; k++)
+        for (int j = 0; j < N; j++)
+            C[i][j] += A[i][k] * B[k][j];  // 现在 j 循环在最内层，B[k,j] 连续访问
+```
+
+```bash
+$ perf stat -e L1-dcache-loads,L1-dcache-load-misses ./ikj_matmul
+  10,240,000,000 L1-dcache-loads
+     512,000,000 L1-dcache-load-misses  # 5% L1 miss rate — 15× 改善！
+```
+
+这就是 **loop interchange**（循环交换）的威力：通过改变循环顺序，将 stride-N 访问变为 stride-1（连续）访问，显著提升 cache locality。
+
+### Tiling 与 Cache Blocking
+
+但即使是 IKJ，当矩阵很大时（如 8192×8192），整个 B 矩阵无法放入 L1 cache（典型 L1 大小 32-64 KB）。解决方案是 **Tiling**（分块）：将大矩阵切分为小块（tile），确保每个 tile 可以放入 cache。
+
+<LoopTransformationDemo client:visible locale="zh" />
+
+Tiling 将原始的三层循环变为**六层循环**：外三层遍历 tile，内三层在 tile 内计算。通过选择合适的 tile 大小（通常 32×32 或 64×64），可以让 tile 完全驻留在 L1 cache，从而接近理论峰值性能。
+
+## Polyhedral Model 基础
+
+### 迭代空间（Iteration Space）
+
+一个 n 层嵌套循环对应一个 n 维**迭代空间**：
+
+```c
+for (int i = 0; i < M; i++)
+    for (int j = 0; j < N; j++)
+        S: C[i][j] = A[i][j] + B[i][j];
+```
+
+这个循环的迭代空间是一个 2D 多面体（长方形）：
+
+$$
+\mathcal{D} = \{ (i, j) \mid 0 \le i < M, \, 0 \le j < N \}
+$$
+
+每个点 $(i, j)$ 对应一次语句 S 的执行（称为一个 **statement instance**）。
+
+### Affine 约束（Affine Constraints）
+
+Polyhedral model 只能处理**仿射（affine）**约束的循环：循环边界和数组下标都必须是迭代变量的线性函数。
+
+**合法的仿射循环**：
+```c
+for (int i = 0; i < N; i++)
+    for (int j = i; j < 2*i + N; j++)
+        A[i+j][2*i-j] = ...;
+```
+
+迭代域：$\mathcal{D} = \{ (i,j) \mid 0 \le i < N, \, i \le j < 2i+N \}$  
+访问函数：$f_A(i,j) = (i+j, 2i-j)$
+
+**非法的非仿射循环**：
+```c
+for (int i = 0; i < N; i++)
+    for (int j = 0; j < i*i; j++)  // i*i 是二次项，非仿射
+        A[i*j] = ...;              // i*j 是二次项，非仿射
+```
+
+限制看似严格，但实际上 **95% 以上的 ML workload 都满足仿射约束**：matmul、conv、pooling、layer norm、softmax 的核心计算都可以用仿射循环表达。
+
+### 数据依赖关系（Dependence Relations）
+
+**依赖（dependence）**描述两个语句实例之间的先后执行顺序约束：
+
+```c
+for (int i = 1; i < N; i++)
+    A[i] = A[i-1] + 1;  // S
+```
+
+语句 S 的实例 $(i)$ 依赖于实例 $(i-1)$，因为它读取 `A[i-1]`，而 `A[i-1]` 由上一次迭代写入。这是一个 **flow dependence**（流依赖，RAW: Read After Write）。
+
+用依赖向量（dependence vector）表示：$\mathbf{d} = (1)$，表示"当前迭代依赖于前一次迭代"。
+
+在二维迭代空间中：
+
+```c
+for (int i = 1; i < N; i++)
+    for (int j = 1; j < N; j++)
+        A[i][j] = A[i-1][j-1] * 2;  // S
+```
+
+语句 S 的实例 $(i,j)$ 依赖于实例 $(i-1, j-1)$，依赖向量 $\mathbf{d} = (1, 1)$（对角线依赖）。
+
+**依赖类型**：
+- **Flow (RAW)**: 先写后读，必须保证顺序
+- **Anti (WAR)**: 先读后写，可通过寄存器重命名消除
+- **Output (WAW)**: 两次写，需保证写的顺序
+
+<DependenceAnalysisDemo client:visible locale="zh" />
+
+## 循环变换的数学表示
+
+### Affine Transformation Matrix
+
+循环变换可以表示为一个**仿射变换矩阵** $\mathbf{T}$：
+
+$$
+\begin{pmatrix} i' \\ j' \end{pmatrix} = \mathbf{T} \begin{pmatrix} i \\ j \end{pmatrix} + \mathbf{b}
+$$
+
+其中 $\mathbf{T}$ 是 $n \times n$ 整数矩阵（unimodular matrix，$|\det \mathbf{T}| = 1$，保证变换可逆），$\mathbf{b}$ 是偏移向量。
+
+**循环交换（Loop Interchange）**：交换第 1 和第 2 层循环
+
+$$
+\mathbf{T}_{\text{interchange}} = \begin{pmatrix} 0 & 1 \\ 1 & 0 \end{pmatrix}
+$$
+
+$(i, j) \to (j, i)$
+
+**Skewing**：将迭代空间沿对角线方向倾斜，用于实现 wavefront parallelism
+
+$$
+\mathbf{T}_{\text{skew}} = \begin{pmatrix} 1 & 0 \\ 1 & 1 \end{pmatrix}
+$$
+
+$(i, j) \to (i, i+j)$
+
+**Tiling**：分为外循环（tile 索引）和内循环（tile 内索引），通过 strip-mining + permutation 实现
+
+$$
+(i, j) \to (i_{\text{outer}}, j_{\text{outer}}, i_{\text{inner}}, j_{\text{inner}})
+$$
+
+其中 $i = i_{\text{outer}} \cdot T_i + i_{\text{inner}}$，$T_i$ 是 tile 大小。
+
+<PolyhedralVisualizer client:visible locale="zh" />
+
+### 变换合法性（Legality）
+
+**合法性准则**：一个循环变换 $\mathbf{T}$ 是合法的，当且仅当它**保持所有依赖关系**：对于每个依赖向量 $\mathbf{d}$，变换后的依赖向量 $\mathbf{d}' = \mathbf{T} \mathbf{d}$ 必须**词典序非负（lexicographically non-negative）**。
+
+**词典序非负**：向量 $(d_1, d_2, \ldots, d_n)$ 词典序非负 $\iff$ 第一个非零分量 $d_i > 0$。
+
+直观理解：变换后，依赖的源（source）必须在依赖的目标（target）之前执行。如果 $\mathbf{d}' = (0, 0, \ldots, 0, d_k, \ldots)$ 且 $d_k > 0$，则源在第 $k$ 层循环的前面迭代，保证了先执行。
+
+**例子**：对于依赖向量 $\mathbf{d} = (1, 0)$（i 维度依赖）：
+- **循环交换** $\mathbf{T} = \begin{pmatrix} 0 & 1 \\ 1 & 0 \end{pmatrix}$：  
+  $\mathbf{d}' = \begin{pmatrix} 0 & 1 \\ 1 & 0 \end{pmatrix} \begin{pmatrix} 1 \\ 0 \end{pmatrix} = \begin{pmatrix} 0 \\ 1 \end{pmatrix}$  
+  词典序非负（第一个分量为 0，第二个为正） → **合法**
+
+- **Skewing** $\mathbf{T} = \begin{pmatrix} 1 & 0 \\ 1 & 1 \end{pmatrix}$：  
+  $\mathbf{d}' = \begin{pmatrix} 1 & 0 \\ 1 & 1 \end{pmatrix} \begin{pmatrix} 1 \\ 0 \end{pmatrix} = \begin{pmatrix} 1 \\ 1 \end{pmatrix}$  
+  词典序非负（第一个分量为正） → **合法**
+
+## MLIR Affine Dialect
+
+### 核心概念
+
+MLIR 的 [Affine Dialect](https://mlir.llvm.org/docs/Dialects/Affine/) 提供了专门表达仿射循环和内存访问的 IR。
+
+**核心 operations**：
+- **`affine.for`**: 仿射循环
+- **`affine.load` / `affine.store`**: 带仿射下标的内存访问
+- **`affine.apply`**: 应用仿射映射（affine map）
+- **`affine.if`**: 仿射条件分支
+- **`affine.parallel`**: 并行循环
+
+**Affine Map**：仿射映射是 Affine Dialect 的核心抽象，表示一组仿射表达式：
+
+```mlir
+// (d0, d1)[s0] -> (d0 + s0, d1 * 2, d0 + d1)
+// d0, d1 是维度变量（dimensions），s0 是符号（symbol）
+#map = affine_map<(d0, d1)[s0] -> (d0 + s0, d1 * 2, d0 + d1)>
+```
+
+**Dimension vs Symbol**：
+- **Dimensions**（维度）：对应循环迭代变量，依赖分析时视为变化的
+- **Symbols**（符号）：对应常量参数（如矩阵大小 N），依赖分析时视为不变的
+
+### 示例：Matmul 的 Affine IR
+
+朴素矩阵乘法的 Affine IR：
+
+```mlir
+func.func @matmul(%A: memref<1024x1024xf32>, 
+                  %B: memref<1024x1024xf32>,
+                  %C: memref<1024x1024xf32>) {
+  %c0 = arith.constant 0.0 : f32
+  affine.for %i = 0 to 1024 {
+    affine.for %j = 0 to 1024 {
+      affine.for %k = 0 to 1024 {
+        %a = affine.load %A[%i, %k] : memref<1024x1024xf32>
+        %b = affine.load %B[%k, %j] : memref<1024x1024xf32>
+        %c = affine.load %C[%i, %j] : memref<1024x1024xf32>
+        %prod = arith.mulf %a, %b : f32
+        %sum = arith.addf %c, %prod : f32
+        affine.store %sum, %C[%i, %j] : memref<1024x1024xf32>
+      }
+    }
+  }
+  return
+}
+```
+
+**关键信息**：
+1. 所有循环边界都是常量（0 to 1024），编译器可以完全确定迭代空间
+2. 所有内存访问下标都是仿射表达式（`%i`, `%k`, `%j`）
+3. 没有 side effect（除了 memref 访问），便于分析和变换
+
+### Affine Pass Pipeline
+
+MLIR 提供了一系列 Affine 优化 pass（在 `mlir-opt` 中）：
+
+```bash
+mlir-opt matmul.mlir \
+  -affine-loop-fusion \           # 循环融合
+  -affine-loop-tile="tile-size=32" \  # Tiling
+  -affine-loop-unroll="unroll-factor=4" \  # 循环展开
+  -affine-data-copy-generate \    # 插入显式 scratchpad copy
+  -affine-scalrep \                # 标量替换（scalar replacement）
+  -canonicalize -cse              # 标准化 + 公共子表达式消除
+```
+
+**`-affine-loop-fusion`**：融合相邻的仿射循环，减少内存往返次数
+
+```mlir
+// Before
+affine.for %i = 0 to N {
+  %x = affine.load %A[%i]
+  affine.store %x, %B[%i]
+}
+affine.for %i = 0 to N {
+  %y = affine.load %B[%i]
+  %z = arith.mulf %y, %c : f32
+  affine.store %z, %C[%i]
+}
+
+// After
+affine.for %i = 0 to N {
+  %x = affine.load %A[%i]
+  %z = arith.mulf %x, %c : f32
+  affine.store %z, %C[%i]
+}
+// B 的中间结果直接在寄存器中传递，无需写回内存
+```
+
+**`-affine-loop-tile`**：对循环进行 tiling 变换
+
+```mlir
+// Before
+affine.for %i = 0 to 1024 {
+  affine.for %j = 0 to 1024 {
+    // body
+  }
+}
+
+// After (tile-size=32)
+affine.for %i0 = 0 to 1024 step 32 {
+  affine.for %j0 = 0 to 1024 step 32 {
+    affine.for %i1 = 0 to min(32, 1024-%i0) {
+      affine.for %j1 = 0 to min(32, 1024-%j0) {
+        // %i = %i0 + %i1, %j = %j0 + %j1
+        // body
+      }
+    }
+  }
+}
+```
+
+**`-affine-data-copy-generate`**：为 tile 生成显式的 scratchpad buffer
+
+```mlir
+// Before (tiled loop)
+affine.for %i0 = 0 to 1024 step 32 {
+  affine.for %k0 = 0 to 1024 step 32 {
+    affine.for %i1 = 0 to 32 {
+      affine.for %k1 = 0 to 32 {
+        %a = affine.load %A[%i0+%i1, %k0+%k1]  // 每次都从 DRAM 读
+        // ...
+      }
+    }
+  }
+}
+
+// After
+%A_tile = memref.alloc() : memref<32x32xf32>  // L1 scratchpad
+affine.for %i0 = 0 to 1024 step 32 {
+  affine.for %k0 = 0 to 1024 step 32 {
+    // DMA copy: A[i0:i0+32, k0:k0+32] -> A_tile
+    affine.for %i1 = 0 to 32 {
+      affine.for %k1 = 0 to 32 {
+        %a = affine.load %A_tile[%i1, %k1]  // 从 L1 读
+        // ...
+      }
+    }
+  }
+}
+```
+
+这对于 GPU shared memory、NPU SRAM 等显式管理的内存层次至关重要。
+
+### 依赖分析基础设施
+
+MLIR Affine 的核心价值在于其内置的**依赖分析（dependence analysis）**框架。
+
+编译器通过 [Integer Set Library (ISL)](https://libisl.sourceforge.io/) 求解以下问题：
+
+**问题**：给定两个内存访问 $A[\mathbf{f}_1(\mathbf{i})]$ 和 $A[\mathbf{f}_2(\mathbf{j})]$，它们是否访问同一地址？
+
+**数学形式**：求解整数约束系统
+
+$$
+\begin{cases}
+\mathbf{i} \in \mathcal{D}_1 \\
+\mathbf{j} \in \mathcal{D}_2 \\
+\mathbf{f}_1(\mathbf{i}) = \mathbf{f}_2(\mathbf{j})
+\end{cases}
+$$
+
+如果有解，则存在依赖；依赖向量为 $\mathbf{d} = \mathbf{j} - \mathbf{i}$。
+
+**例子**：
+```mlir
+affine.for %i = 0 to N {
+  affine.for %j = 0 to N {
+    %1 = affine.load %A[%i + %j, %i - %j]
+    %2 = affine.load %A[%j, %i]
+    // Q: %1 和 %2 是否可能访问同一地址？
+  }
+}
+```
+
+需要求解：$(i+j, i-j) = (j, i)$，即 $i+j=j$ 且 $i-j=i$  
+→ $i=0$ 且 $j=0$，只有一个解  
+→ 存在依赖，但只在 $(0,0)$ 点
+
+ISL 使用 **parametric integer programming** 技术高效求解这类问题。依赖分析的结果直接用于指导：
+- **循环变换合法性检查**：是否所有依赖都满足词典序约束？
+- **循环融合判定**：两个循环之间是否存在阻碍融合的依赖？
+- **向量化判定**：最内层循环是否存在跨迭代依赖？
+
+## 具体循环变换实战
+
+### 1. Loop Interchange（循环交换）
+
+**目标**：改善 cache locality，将 stride-N 访问变为 stride-1。
+
+**适用场景**：
+- 数组访问模式不符合内存布局（如 column-major 访问 row-major 数组）
+- 向量化需要（将可向量化的维度移到最内层）
+
+**MLIR 示例**：
+
+```mlir
+// Before
+affine.for %i = 0 to M {
+  affine.for %j = 0 to N {
+    %a = affine.load %A[%j, %i]  // stride-M 访问
+    // ...
+  }
+}
+
+// After (interchange)
+affine.for %j = 0 to N {
+  affine.for %i = 0 to M {
+    %a = affine.load %A[%j, %i]  // stride-1 访问（假设 row-major）
+    // ...
+  }
+}
+```
+
+**Pass 使用**：`-affine-loop-interchange` 或手动用 Transform Dialect
+
+### 2. Loop Tiling（循环分块）
+
+**目标**：将大迭代空间分为小块，使每块数据驻留在 cache。
+
+**Tile 大小选择原则**：
+- **L1 tiling**: tile 大小约为 L1 cache 大小的 1/3（因为通常有 A、B、C 三个数组）
+- **L2 tiling**: 对外层再次 tiling
+- **Register blocking**: 最内层 micro-kernel tiling（如 4×4 或 8×8）
+
+**MLIR Pass**：
+
+```bash
+mlir-opt -affine-loop-tile="tile-sizes=32,32,32" matmul.mlir
+```
+
+生成的 IR 将三层循环变为六层：
+
+```mlir
+affine.for %i0 = 0 to 1024 step 32 {
+  affine.for %j0 = 0 to 1024 step 32 {
+    affine.for %k0 = 0 to 1024 step 32 {
+      affine.for %i1 = ... {
+        affine.for %j1 = ... {
+          affine.for %k1 = ... {
+            // body
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### 3. Loop Unrolling（循环展开）
+
+**目标**：减少循环控制开销，暴露指令级并行性（ILP）。
+
+**MLIR Pass**：
+
+```bash
+mlir-opt -affine-loop-unroll="unroll-factor=4" matmul.mlir
+```
+
+```mlir
+// Before
+affine.for %i = 0 to N {
+  %x = affine.load %A[%i]
+  affine.store %x, %B[%i]
+}
+
+// After (unroll-factor=4)
+affine.for %i = 0 to N step 4 {
+  %x0 = affine.load %A[%i]
+  affine.store %x0, %B[%i]
+  %x1 = affine.load %A[%i+1]
+  affine.store %x1, %B[%i+1]
+  %x2 = affine.load %A[%i+2]
+  affine.store %x2, %B[%i+2]
+  %x3 = affine.load %A[%i+3]
+  affine.store %x3, %B[%i+3]
+}
+// + tail loop for N % 4
+```
+
+展开后，CPU 可以并行执行多个独立的 load，隐藏内存延迟。
+
+### 4. Loop Fusion（循环融合）
+
+**目标**：减少中间数组的内存往返，提升 temporal locality。
+
+```mlir
+// Before
+func.func @separate_loops(%A: memref<1024xf32>) {
+  %B = memref.alloc() : memref<1024xf32>
+  affine.for %i = 0 to 1024 {
+    %a = affine.load %A[%i]
+    %b = arith.mulf %a, %a : f32
+    affine.store %b, %B[%i]
+  }
+  affine.for %i = 0 to 1024 {
+    %b = affine.load %B[%i]
+    %c = arith.addf %b, %b : f32
+    affine.store %c, %A[%i]
+  }
+  return
+}
+
+// After (-affine-loop-fusion)
+func.func @fused_loops(%A: memref<1024xf32>) {
+  affine.for %i = 0 to 1024 {
+    %a = affine.load %A[%i]
+    %b = arith.mulf %a, %a : f32
+    %c = arith.addf %b, %b : f32
+    affine.store %c, %A[%i]
+  }
+  return
+}
+// %B 被完全消除，中间结果停留在寄存器
+```
+
+融合的**合法性条件**：
+- 两个循环的迭代域相同（或可以对齐）
+- 第二个循环不能依赖第一个循环写入的跨迭代数据
+
+## Polyhedral 在 ML 中的应用与局限
+
+### 应用场景
+
+**1. 高维 Tensor 操作**  
+Conv、pooling、batch norm 等操作都是高维仿射循环，polyhedral 优化可自动寻找最优 tiling 策略。
+
+**2. Tensor Contraction**  
+Einstein summation（`einsum`）和 generalized matrix multiplication (GEMM) 是 polyhedral 的理想应用场景。MLIR Linalg Dialect 就是基于这一思想设计的。
+
+**3. Automatic Scheduling**  
+[Tiramisu](https://github.com/Tiramisu-Compiler/tiramisu)、[Tensor Comprehensions](https://facebookresearch.github.io/TensorComprehensions/) 等项目尝试用 polyhedral model 自动生成高性能 kernel。
+
+**4. NPU/Accelerator Codegen**  
+许多定制硬件（TPU、Graphcore IPU、Cerebras WSE）有显式的内存层次（SRAM、DRAM）和 DMA 控制。Affine Dialect 的 `affine.dma_start` / `affine.dma_wait` 可以直接建模这种硬件。
+
+### 局限性
+
+**1. 非仿射代码**  
+Polyhedral model 无法处理：
+- 间接访问（`A[B[i]]`）
+- 数据依赖的控制流（`if (A[i] > 0)`）
+- 稀疏矩阵运算
+
+这些场景需要其他技术（如 inspector-executor、sparse polyhedral model）。
+
+**2. 编译时间**  
+ISL 求解整数线性规划问题的复杂度可能很高（最坏情况 NP-hard）。对于超大规模模型（100+ 层），polyhedral 分析可能成为编译瓶颈。
+
+**3. 启发式搜索空间巨大**  
+Tiling 大小、循环顺序、展开因子等参数的组合空间是指数级的。虽然有自动调优工具（如 [Pluto](http://pluto-compiler.sourceforge.net/)），但仍需要大量 trial-and-error。
+
+**4. 与其他优化的交互**  
+Polyhedral 优化与后端优化（寄存器分配、指令调度、向量化）的交互很复杂。过度 unrolling 可能导致寄存器溢出；过度 tiling 可能增加循环控制开销。
+
+## MLIR Transform Dialect 预览
+
+MLIR 的 [Transform Dialect](https://mlir.llvm.org/docs/Dialects/Transform/) 提供了一种**可编程的变换框架**，允许用户用 MLIR IR 本身来描述优化策略。
+
+```mlir
+// Transform script
+transform.sequence failures(propagate) {
+^bb0(%arg0: !transform.any_op):
+  %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg0
+    : (!transform.any_op) -> !transform.any_op
+  
+  // Tile 外两层 (32x32)
+  %tiled, %loops:2 = transform.structured.tile %matmul [32, 32, 0]
+    : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
+  
+  // 向量化最内层
+  %vectorized = transform.structured.vectorize %tiled
+    : (!transform.any_op) -> !transform.any_op
+  
+  transform.yield
+}
+```
+
+这将 matmul tiling + vectorization 策略**声明式地表达为 IR**，可以：
+- 版本管理和复用（将调优策略保存为 `.mlir` 文件）
+- 与 Python 绑定，实现自动调优（autotuning）
+- 通过 pattern matching 匹配不同的 IR 结构，应用不同策略
+
+Transform Dialect 是 MLIR 区别于传统编译器的核心创新，它使得**编译策略本身成为头等公民（first-class）**，而不是硬编码在编译器中的 pass。
+
+## 总结
+
+Polyhedral optimization 是编译器优化中最强大的技术之一，它将循环变换问题形式化为整数线性规划问题，使得自动化优化成为可能。
+
+**核心思想**：
+1. **迭代空间建模**：将嵌套循环表示为多面体
+2. **依赖关系分析**：用仿射约束描述数据依赖
+3. **变换合法性**：通过词典序检查保证变换正确性
+4. **优化目标**：通过 tiling、interchange、fusion 等变换优化 cache locality 和并行性
+
+**MLIR Affine Dialect 的价值**：
+- 提供了**统一的 IR 表示**（affine.for、affine.load）
+- 内置**依赖分析框架**（基于 ISL）
+- **可组合的 pass 流水线**（tiling → fusion → unroll → vectorize）
+- **Transform Dialect** 使优化策略可编程
+
+在 ML 编译器中，polyhedral 优化主要应用于 **dense tensor 操作的 kernel 生成**（matmul、conv、pooling）。它与其他技术（算子融合、内存规划、指令选择）共同构成了完整的编译流水线。
+
+## 延伸阅读
+
+**入门教程**：
+- [MLIR Affine Dialect Documentation](https://mlir.llvm.org/docs/Dialects/Affine/)
+- [MLIR: Scaling Compiler Infrastructure for Domain Specific Computation (论文)](https://arxiv.org/abs/2002.11054)
+
+**经典论文**：
+- [A Practical Automatic Polyhedral Parallelizer (Pluto)](https://dl.acm.org/doi/10.1145/1375581.1375595)
+- [Optimizing Compilers for Modern Architectures (Allen & Kennedy 经典教材)](https://www.elsevier.com/books/optimizing-compilers-for-modern-architectures/allen/978-0-08-051324-9)
+
+**进阶主题**：
+- [Polly - Polyhedral optimizations for LLVM](https://polly.llvm.org/)
+- [ISL: An Integer Set Library for the Polyhedral Model](https://libisl.sourceforge.io/)
+- [MLIR Transform Dialect Tutorial](https://mlir.llvm.org/docs/Tutorials/transform/)
+- [Tiramisu: A Polyhedral Compiler for Dense and Sparse Deep Learning](https://arxiv.org/abs/1804.10694)
+
+**相关工具**：
+- [Tensor Comprehensions](https://facebookresearch.github.io/TensorComprehensions/)
+- [Halide (另一种 domain-specific scheduling 语言)](https://halide-lang.org/)
+- [TVM Schedule Primitives](https://tvm.apache.org/docs/tutorial/optimize.html)

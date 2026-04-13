@@ -45,7 +45,7 @@ const HW_PRESETS: { [key: string]: HardwareConfig } = {
 const SCENARIOS: FusionScenario[] = [
   {
     id: 'beneficial',
-    name: { zh: 'GELU + Dropout（融合有利）', en: 'GELU + Dropout (Beneficial)' },
+    name: { zh: 'GELU + Dropout（融合有利）', en: 'GELU + Dropout (Fusion Beneficial)' },
     unfused: [
       { name: { zh: 'GELU', en: 'GELU' }, flops: 2, hbmReads: 4, hbmWrites: 4, registersPerThread: 16, sharedMemoryKB: 0, blockSize: 256 },
       { name: { zh: 'Dropout', en: 'Dropout' }, flops: 1, hbmReads: 4, hbmWrites: 4, registersPerThread: 12, sharedMemoryKB: 0, blockSize: 256 },
@@ -58,29 +58,29 @@ const SCENARIOS: FusionScenario[] = [
   },
   {
     id: 'harmful',
-    name: { zh: '大 Reduction + 小 Pointwise（融合有害）', en: 'Reduction + Pointwise (Harmful)' },
+    name: { zh: '大 Reduction + 小 Pointwise（融合有害）', en: 'Large Reduction + Small Pointwise (Fusion Harmful)' },
     unfused: [
       { name: { zh: 'LayerNorm', en: 'LayerNorm' }, flops: 10, hbmReads: 4, hbmWrites: 4, registersPerThread: 32, sharedMemoryKB: 8, blockSize: 256 },
       { name: { zh: 'Scale', en: 'Scale' }, flops: 0.5, hbmReads: 4, hbmWrites: 4, registersPerThread: 8, sharedMemoryKB: 0, blockSize: 256 },
     ],
     fused: { name: { zh: 'LayerNorm+Scale', en: 'LayerNorm+Scale' }, flops: 10.5, hbmReads: 4, hbmWrites: 4, registersPerThread: 40, sharedMemoryKB: 8, blockSize: 256 },
     description: {
-      zh: '融合后 register pressure 增加（32+8→40），可能导致 occupancy 下降。LayerNorm 需要 shared memory 做 cross-thread reduction，而 Scale 不需要——融合后整个 kernel 都被 shared memory 约束。某些 GPU 上融合反而更慢。',
-      en: 'Fusion increases register pressure (32+8→40), potentially reducing occupancy. LayerNorm needs shared memory for reduction; Scale doesn\'t — fusion constrains the entire kernel. On some GPUs, fusion is actually slower.',
+      zh: '融合后 register pressure 增加（32+8→40），可能导致 occupancy 下降。LayerNorm 需要 shared memory 做 cross-thread reduction，而 Scale 不需要——融合后整个 kernel 都被 shared memory 约束了。在某些 GPU 上融合反而更慢（occupancy 从 4 blocks/SM 降到 3）。',
+      en: 'Fusion increases register pressure (32+8→40), potentially reducing occupancy. LayerNorm needs shared memory for cross-thread reduction; Scale doesn\'t — fusion constrains the entire kernel by shared memory. On some GPUs, fusion is actually slower (occupancy drops from 4 to 3 blocks/SM).',
     },
   },
   {
     id: 'tradeoff',
-    name: { zh: 'MatMul + BiasAdd + ReLU（权衡）', en: 'MatMul + Bias + ReLU (Tradeoff)' },
+    name: { zh: 'MatMul + BiasAdd + ReLU（权衡）', en: 'MatMul + BiasAdd + ReLU (Tradeoff)' },
     unfused: [
       { name: { zh: 'MatMul', en: 'MatMul' }, flops: 200, hbmReads: 20, hbmWrites: 4, registersPerThread: 40, sharedMemoryKB: 32, blockSize: 128 },
       { name: { zh: 'BiasAdd', en: 'BiasAdd' }, flops: 0.5, hbmReads: 4, hbmWrites: 4, registersPerThread: 8, sharedMemoryKB: 0, blockSize: 256 },
       { name: { zh: 'ReLU', en: 'ReLU' }, flops: 0.5, hbmReads: 4, hbmWrites: 4, registersPerThread: 8, sharedMemoryKB: 0, blockSize: 256 },
     ],
-    fused: { name: { zh: 'MatMul+Bias+ReLU', en: 'MatMul+Bias+ReLU' }, flops: 201, hbmReads: 20, hbmWrites: 4, registersPerThread: 48, sharedMemoryKB: 32, blockSize: 128 },
+    fused: { name: { zh: 'MatMul+BiasAdd+ReLU', en: 'MatMul+BiasAdd+ReLU' }, flops: 201, hbmReads: 20, hbmWrites: 4, registersPerThread: 48, sharedMemoryKB: 32, blockSize: 128 },
     description: {
-      zh: 'BiasAdd 和 ReLU 作为 MatMul 的 epilogue fusion。消除 8+8=16 MB 中间读写，register 增加可控（cuBLAS 已为 epilogue 预留空间）。',
-      en: 'BiasAdd + ReLU as MatMul epilogue. Eliminates 16 MB intermediate access, register increase manageable (cuBLAS reserves space for epilogues).',
+      zh: 'BiasAdd 和 ReLU 作为 MatMul 的 epilogue fusion——在 GEMM tile 写回 HBM 之前做 bias+relu。这是最有价值的融合之一：消除 8+8=16 MB 中间读写，register 增加可控（cuBLAS 已为 epilogue 预留了 register 空间）。',
+      en: 'BiasAdd + ReLU as MatMul epilogue — compute bias+relu before GEMM tile writes to HBM. One of the most valuable fusions: eliminates 16 MB intermediate access, register increase manageable (cuBLAS reserves register space for epilogues).',
     },
   },
 ];
