@@ -65,7 +65,8 @@ grid-cols-1 md:grid-cols-2 lg:grid-cols-3
 
 ### 搜索实现
 
-- **数据来源**：`Navigation.astro` 在 frontmatter 中直接调用 `getCollection('articles')` + `getAllPaths()` 获取数据，构造搜索数据后通过 props 传给 React 搜索组件
+- **数据来源**：`Navigation.astro` 在 frontmatter 中直接调用 `getCollection('articles')` + `getAllPaths()` 获取数据。Tags 列表从文章集合中提取去重得到（与 `index.astro` 中 `allTags` 逻辑一致）。构造搜索数据后通过 props 传给 React 搜索组件
+- **Hydration**：SearchDialog 必须使用 `client:load`（不是 `client:visible`），因为需要在页面加载后立即注册 `Ctrl+K` 全局键盘监听器
 - **搜索引擎**：客户端使用 Fuse.js 进行模糊匹配
 - **语言范围**：只搜索当前 locale 的内容
 
@@ -88,8 +89,7 @@ grid-cols-1 md:grid-cols-2 lg:grid-cols-3
 
 ### 新增组件
 
-- `src/components/common/SearchDialog.tsx`：React 搜索面板组件（含输入框、结果列表、键盘导航逻辑）
-- `src/components/common/SearchButton.astro`（或内联在 Navigation 中）：导航栏搜索触发按钮
+- `src/components/common/SearchDialog.tsx`：React 搜索面板组件（含输入框、结果列表、键盘导航逻辑）。搜索按钮（放大镜图标）直接内联在 `Navigation.astro` 中，不单独建组件
 
 ### 涉及文件
 
