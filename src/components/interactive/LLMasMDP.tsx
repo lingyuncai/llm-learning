@@ -81,6 +81,7 @@ export default function LLMasMDP({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
     episodeEnd: 'Episode 结束 — 生成 <EOS>',
     prompt: '提示词 (初始状态 s₀)',
     chosenToken: '选中',
+    deterministicConcat: '确定性拼接',
   } : {
     title: 'LLM Generation = MDP Decision Process',
     subtitle: 'Token-by-token: State → Action → Transition → Reward',
@@ -97,6 +98,7 @@ export default function LLMasMDP({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
     episodeEnd: 'Episode ends — generated <EOS>',
     prompt: 'Prompt (initial state s₀)',
     chosenToken: 'chosen',
+    deterministicConcat: 'Deterministic concat',
   };
 
   const [step, setStep] = useState(0);
@@ -218,7 +220,7 @@ export default function LLMasMDP({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
           </text>
           <text x={barX + 445} y={290} textAnchor="middle" fontSize={9}
             fill={COLORS.mid}>
-            确定性拼接
+            {t.deterministicConcat}
           </text>
         </g>
 
