@@ -117,16 +117,17 @@ export default function EvalProtocolFlow({ locale = 'zh' }: { locale?: 'zh' | 'e
     }
     setPlaying(true);
     setActiveStep(0);
-    let step = 0;
     timerRef.current = setInterval(() => {
-      step++;
-      if (step < stepCount) {
-        setActiveStep(step);
-      } else {
-        if (timerRef.current) clearInterval(timerRef.current);
-        timerRef.current = null;
-        setPlaying(false);
-      }
+      setActiveStep(prev => {
+        const next = prev + 1;
+        if (next >= stepCount) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          timerRef.current = null;
+          setPlaying(false);
+          return prev;
+        }
+        return next;
+      });
     }, 1200);
   };
 
