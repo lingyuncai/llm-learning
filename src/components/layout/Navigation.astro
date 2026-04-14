@@ -100,14 +100,15 @@ const searchTranslations = {
 
 <script>
   // Detect macOS and update shortcut label
-  if (navigator.platform.includes('Mac')) {
+  const isMac = navigator.userAgentData?.platform === 'macOS'
+    || navigator.platform?.includes('Mac');
+  if (isMac) {
     const el = document.getElementById('search-shortcut');
     if (el) el.textContent = '⌘ K';
   }
 
   // Wire up the search trigger button to open the dialog
-  // The SearchDialog listens for Ctrl+K globally, but we also need the button click
   document.getElementById('search-trigger')?.addEventListener('click', () => {
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }));
+    document.dispatchEvent(new CustomEvent('open-search'));
   });
 </script>

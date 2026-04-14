@@ -109,8 +109,15 @@ export default function SearchDialog({ data, translations }: Props) {
         setIsOpen(prev => !prev);
       }
     }
+    function handleOpenSearch() {
+      setIsOpen(true);
+    }
     document.addEventListener('keydown', handleGlobalKey);
-    return () => document.removeEventListener('keydown', handleGlobalKey);
+    document.addEventListener('open-search', handleOpenSearch);
+    return () => {
+      document.removeEventListener('keydown', handleGlobalKey);
+      document.removeEventListener('open-search', handleOpenSearch);
+    };
   }, []);
 
   // Lock body scroll when dialog is open
@@ -175,7 +182,10 @@ export default function SearchDialog({ data, translations }: Props) {
           return (
             <a
               key={item.type === 'tag' ? item.name : item.type === 'path' ? item.id : item.slug}
+              id={`search-item-${globalIndex}`}
               href={item.url}
+              role="option"
+              aria-selected={isSelected}
               data-search-item
               className={`block px-3 py-2 text-sm cursor-pointer ${
                 isSelected
@@ -206,6 +216,10 @@ export default function SearchDialog({ data, translations }: Props) {
   const hasResults = results.flat.length > 0;
   const hasQuery = query.trim().length > 0;
 
+  const activeDescendantId = results.flat.length > 0
+    ? `search-item-${selectedIndex}`
+    : undefined;
+
   return (
     <div
       className="fixed inset-0 z-[100] flex items-start justify-center pt-[20vh]"
@@ -216,6 +230,9 @@ export default function SearchDialog({ data, translations }: Props) {
 
       {/* Dialog */}
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={translations.search_placeholder}
         className="relative w-full max-w-lg mx-4 bg-white rounded-lg shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleDialogKey}
@@ -227,6 +244,10 @@ export default function SearchDialog({ data, translations }: Props) {
           </svg>
           <input
             ref={inputRef}
+            role="combobox"
+            aria-expanded={hasQuery}
+            aria-controls="search-results"
+            aria-activedescendant={activeDescendantId}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -239,7 +260,7 @@ export default function SearchDialog({ data, translations }: Props) {
         </div>
 
         {/* Results */}
-        <div ref={listRef} className="max-h-80 overflow-y-auto">
+        <div ref={listRef} id="search-results" role="listbox" className="max-h-80 overflow-y-auto">
           {hasQuery && !hasResults && (
             <div className="px-3 py-8 text-center text-sm text-gray-500">
               {translations.search_no_results}
