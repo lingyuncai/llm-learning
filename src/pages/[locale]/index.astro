@@ -37,7 +37,7 @@ const allTags = [...new Set(articles.flatMap(a => a.data.tags))].sort();
   <!-- 学习路径 -->
   <section class="mb-12">
     <h2 class="text-2xl font-bold mb-6">{t(locale, 'learning_paths')}</h2>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
       {paths.map(p => (
         <a href={`${import.meta.env.BASE_URL}${locale}/paths/${p.id}`}
            class="block p-6 border border-gray-200 rounded-lg hover:border-primary-400 hover:shadow-md transition-all">
