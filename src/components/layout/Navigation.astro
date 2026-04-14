@@ -1,5 +1,8 @@
 ---
 import { t, getOtherLocale, type Locale } from '../../i18n/utils';
+import { getCollection } from 'astro:content';
+import { getAllPaths } from '../../utils/paths';
+import SearchDialog from '../common/SearchDialog.tsx';
 
 interface Props {
   locale?: Locale;
@@ -9,10 +12,44 @@ interface Props {
 const { locale = 'zh', currentPath = '' } = Astro.props;
 const otherLocale = getOtherLocale(locale);
 
-// Compute the other-locale URL by replacing the locale segment
 const switchPath = currentPath
   ? currentPath.replace(`/${locale}/`, `/${otherLocale}/`)
   : `${import.meta.env.BASE_URL}${otherLocale}/`;
+
+// Prepare search data
+const allPaths = getAllPaths();
+const allArticles = await getCollection('articles');
+const localeArticles = allArticles.filter(a => a.data.locale === locale);
+const allTags = [...new Set(localeArticles.flatMap(a => a.data.tags))].sort();
+
+const searchData = {
+  paths: allPaths.map(p => ({
+    type: 'path' as const,
+    id: p.id,
+    title: p.title[locale],
+    url: `${import.meta.env.BASE_URL}${locale}/paths/${p.id}`,
+  })),
+  tags: allTags.map(tag => ({
+    type: 'tag' as const,
+    name: tag,
+    url: `${import.meta.env.BASE_URL}${locale}/tags/${tag}`,
+  })),
+  articles: localeArticles.map(a => ({
+    type: 'article' as const,
+    slug: a.data.slug,
+    title: a.data.title,
+    tags: a.data.tags,
+    url: `${import.meta.env.BASE_URL}${locale}/articles/${a.data.slug}`,
+  })),
+};
+
+const searchTranslations = {
+  search_placeholder: t(locale, 'search_placeholder'),
+  search_no_results: t(locale, 'search_no_results'),
+  search_group_paths: t(locale, 'search_group_paths'),
+  search_group_tags: t(locale, 'search_group_tags'),
+  search_group_articles: t(locale, 'search_group_articles'),
+};
 ---
 <nav class="border-b border-gray-200 bg-white sticky top-0 z-50">
   <div class="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -27,6 +64,18 @@ const switchPath = currentPath
         <a href={`${import.meta.env.BASE_URL}${locale}/resources`} class="text-sm text-gray-600 hover:text-gray-900">
           {t(locale, 'nav_resources')}
         </a>
+        <button
+          id="search-trigger"
+          class="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900 transition-colors"
+          aria-label={t(locale, 'search_shortcut')}
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <kbd id="search-shortcut" class="hidden sm:inline-block px-1.5 py-0.5 text-xs text-gray-400 bg-gray-100 rounded border border-gray-200">
+            Ctrl K
+          </kbd>
+        </button>
         <span class="text-sm">
           {locale === 'zh' ? (
             <>
@@ -46,3 +95,19 @@ const switchPath = currentPath
     </div>
   </div>
 </nav>
+
+<SearchDialog client:load data={searchData} translations={searchTranslations} />
+
+<script>
+  // Detect macOS and update shortcut label
+  if (navigator.platform.includes('Mac')) {
+    const el = document.getElementById('search-shortcut');
+    if (el) el.textContent = '⌘ K';
+  }
+
+  // Wire up the search trigger button to open the dialog
+  // The SearchDialog listens for Ctrl+K globally, but we also need the button click
+  document.getElementById('search-trigger')?.addEventListener('click', () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }));
+  });
+</script>
