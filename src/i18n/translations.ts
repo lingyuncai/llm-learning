@@ -50,6 +50,13 @@ export const translations = {
     coming_soon_title: 'Coming Soon',
     coming_soon_body: '这篇文章的英文版本正在准备中。',
     coming_soon_link: '查看中文版 →',
+    // Search
+    search_placeholder: '搜索学习路径、文章、标签...',
+    search_no_results: '没有找到匹配的结果',
+    search_group_paths: '学习路径',
+    search_group_tags: '标签',
+    search_group_articles: '文章',
+    search_shortcut: '搜索',
   },
   en: {
     nav_home: 'Home',
@@ -91,6 +98,13 @@ export const translations = {
     coming_soon_title: 'Coming Soon',
     coming_soon_body: 'The English version of this article is being prepared.',
     coming_soon_link: 'View Chinese version →',
+    // Search
+    search_placeholder: 'Search paths, articles, tags...',
+    search_no_results: 'No matching results found',
+    search_group_paths: 'Learning Paths',
+    search_group_tags: 'Tags',
+    search_group_articles: 'Articles',
+    search_shortcut: 'Search',
   },
 } as const;
 
