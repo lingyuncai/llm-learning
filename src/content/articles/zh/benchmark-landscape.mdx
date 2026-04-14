@@ -273,6 +273,19 @@ lm_eval --model hf \
 - **Few-shot**：工具自动处理 few-shot 示例的选择和拼接，你只需指定 `--num_fewshot`
 - **Metrics**：内置 accuracy、perplexity、BLEU 等通用指标，每个 task 定义了自己使用哪些指标
 
+### lm-eval 覆盖不到的场景
+
+lm-eval 擅长的是**文本输入→文本输出→与标准答案比对**这类评估。以下场景需要专用工具：
+
+| 场景 | 为什么 lm-eval 不够 | 专用工具 |
+|------|---------------------|----------|
+| **代码执行**（HumanEval、SWE-bench） | 需要沙箱运行生成的代码并检查测试用例 | [EvalPlus](https://github.com/evalplus/evalplus)、[SWE-bench harness](https://github.com/princeton-nlp/SWE-bench) |
+| **Agent/工具调用**（WebArena、BFCL） | 需要模拟浏览器、API 等交互环境 | 各 benchmark 自带的评估框架 |
+| **LLM-as-Judge**（MT-Bench、AlpacaEval） | 需要调用另一个强模型（如 GPT-4）打分 | [FastChat](https://github.com/lm-sys/FastChat)、[AlpacaEval](https://github.com/tatsu-lab/alpaca_eval) |
+| **人类偏好对战**（Chatbot Arena） | 众包平台，需要真人实时评判 | [Chatbot Arena](https://chat.lmsys.org/) |
+
+**简单记忆**：知识/推理类的选择题和精确匹配类 benchmark（MMLU、GSM8K、MATH、BBH 等）用 lm-eval 一个工具就够了。需要执行环境、外部交互、或人类/LLM 评审的 benchmark 各有专用工具。
+
 ### 关键认知
 
 - lm-eval 的 **prompt 模板**会影响分数——同一模型在不同 prompt 模板下可能差 3-5%。因此对比两个模型时，必须确保使用相同的 task 配置
