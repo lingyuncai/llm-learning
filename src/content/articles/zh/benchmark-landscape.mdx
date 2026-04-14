@@ -237,25 +237,45 @@ LLM-as-Judge 并非完美，存在多种系统性偏差：
 
 [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness)（简称 lm-eval）是 EleutherAI 开发的开源 LLM 评估框架。它是目前**使用最广泛的评估工具**，GitHub 星标数超过 12,000，支持 60+ 种标准学术 benchmark 及数百个子任务变体。
 
+它的核心价值是：**你不需要自己为每个 benchmark 找数据集、写 prompt 模板、解析输出、计算指标**。lm-eval 把这些全部封装好了——数据集自动从 Hugging Face 下载，prompt 模板、few-shot 示例拼接、输出解析、评分函数全部内置。你只需要指定模型和要跑的 benchmark，一条命令就能跑完。
+
 Hugging Face 的 Open LLM Leaderboard 底层就使用 lm-eval-harness 作为评估引擎。
+
+### 实际使用
+
+一条典型的评估命令：
+
+```bash
+# 在 MMLU 和 GSM8K 上评估一个 HuggingFace 模型
+lm_eval --model hf \
+    --model_args pretrained=meta-llama/Llama-3-8B \
+    --tasks mmlu,gsm8k \
+    --num_fewshot 5 \
+    --batch_size auto \
+    --output_path results/
+```
+
+这条命令背后，lm-eval 自动完成了：下载 MMLU 的 57 个学科子集和 GSM8K 数据集、为每道题构建 5-shot prompt、将 prompt 送入模型、解析模型输出并与标准答案比对、计算并输出各子任务和总体的 accuracy。
+
+支持的模型后端非常广泛：本地 HuggingFace 模型、vLLM/TGI 等推理框架、OpenAI/Anthropic 等 API 模型、GGUF 量化模型。这意味着你可以用**完全相同的评估配置**公平对比本地部署的开源模型和闭源 API 模型。
 
 ### 为什么重要？
 
 1. **标准化**：统一了 prompt 格式、few-shot 示例选择、输出解析等环节，让不同模型的分数可以公平对比
-2. **可复现**：任何人都可以用相同配置复现评测结果
-3. **覆盖全面**：一个工具跑完大部分标准 benchmark，无需为每个 benchmark 单独写脚本
+2. **可复现**：任何人都可以用相同配置复现评测结果——这也是为什么论文和 leaderboard 普遍采用它
+3. **覆盖全面**：一个工具跑完大部分标准 benchmark，无需为每个 benchmark 单独搭环境写脚本
 4. **社区驱动**：持续添加新 benchmark，与学术前沿同步
 
 ### 核心概念
 
-- **Task**：一个评估任务的完整定义，包括数据集加载、prompt 构建、输出解析、评分函数
+- **Task**：一个评估任务的完整定义，包括数据集加载、prompt 构建、输出解析、评分函数。每个 benchmark 是一个或一组 task（如 `mmlu` 实际包含 57 个子任务）
 - **Model**：被评估的 LLM，支持 HuggingFace 模型、API 模型（OpenAI、Anthropic 等）、本地推理框架（vLLM、GGUF 等）
-- **Few-shot**：工具自动处理 few-shot 示例的选择和拼接
-- **Metrics**：内置 accuracy、perplexity、BLEU 等通用指标
+- **Few-shot**：工具自动处理 few-shot 示例的选择和拼接，你只需指定 `--num_fewshot`
+- **Metrics**：内置 accuracy、perplexity、BLEU 等通用指标，每个 task 定义了自己使用哪些指标
 
 ### 关键认知
 
-- lm-eval 的 **prompt 模板**会影响分数——同一模型在不同 prompt 模板下可能差 3-5%
+- lm-eval 的 **prompt 模板**会影响分数——同一模型在不同 prompt 模板下可能差 3-5%。因此对比两个模型时，必须确保使用相同的 task 配置
 - 要理解某个 leaderboard 的分数，首先要看它用的是哪个版本的 lm-eval 和哪个 task 配置
 - 本学习路径的第 6 篇文章会详细讲解如何使用 lm-eval 进行实际评估，包括自定义 task 和与 OpenVINO 的集成
 
