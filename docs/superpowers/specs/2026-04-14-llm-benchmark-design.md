@@ -597,7 +597,7 @@ Web Agent 类:
 | 12 | PerplexityVsTaskAccuracy | Art.6 | 双轴图 | 中 |
 | 13 | ModelSelectionDecisionTree | Art.7 | 决策流程 | 中 |
 
-总计 13 个组件。高复杂度 3 个、中复杂度 8 个、低复杂度 2 个。
+总计 13 个组件。高复杂度 3 个、中复杂度 9 个、低复杂度 1 个。
 
 ---
 
