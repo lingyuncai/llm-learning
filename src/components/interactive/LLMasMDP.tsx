@@ -4,6 +4,7 @@ import { COLORS, FONTS } from './shared/colors';
 
 const W = 580;
 const H = 500;
+const PROMPT_PREFIX = '中国的首都是';
 
 interface GenerationStep {
   state: string;        // current text so far
@@ -126,9 +127,9 @@ export default function LLMasMDP({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
         {/* Highlight prompt vs generated */}
         <text x={barX + 12} y={99} fontSize={13} fill={COLORS.dark}
           fontFamily={FONTS.mono}>
-          <tspan fill={COLORS.mid}>{'中国的首都是'}</tspan>
+          <tspan fill={COLORS.mid}>{PROMPT_PREFIX}</tspan>
           <tspan fill={COLORS.primary} fontWeight={700}>
-            {current.state.slice('中国的首都是'.length)}
+            {current.state.slice(PROMPT_PREFIX.length)}
           </tspan>
         </text>
         {step === 0 && (
