@@ -1,5 +1,5 @@
 id: intel-igpu-inference
-order: 11
+order: 12
 title:
   zh: "Intel iGPU 推理深度解析：Xe2 架构、oneDNN 与 OpenVINO"
   en: "Intel iGPU Inference Deep Dive: Xe2 Architecture, oneDNN & OpenVINO"

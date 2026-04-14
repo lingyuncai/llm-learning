@@ -87,6 +87,7 @@ export default function ComponentName({ locale = 'zh' }: { locale?: 'zh' | 'en' 
 
 ```yaml
 id: llm-evaluation-benchmarks
+order: 7
 title:
   zh: "LLM 评估与 Benchmark 深度解析"
   en: "LLM Evaluation and Benchmarks Deep Dive"
