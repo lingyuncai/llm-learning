@@ -261,7 +261,7 @@ export default function BenchmarkTaxonomy({ locale = 'zh' }: { locale?: 'zh' | '
 - [ ] **Step 2: Create EvalProtocolFlow.tsx**
 
 ```tsx
-import { useState, useCallback } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { COLORS, FONTS } from './shared/colors';
 
@@ -414,7 +414,8 @@ import EvalProtocolFlow from '../../../components/interactive/EvalProtocolFlow.t
 5. **LLM-as-Judge 专节**: 什么是、应用场景、与人类评估一致性、已知偏差、成本优势
 6. **数据污染专节**: 什么是 contamination、如何发生、检测方法、动态 benchmark 的应对
 7. **关键工具简介 lm-eval-harness**: 定位、重要性、核心概念、关键认知 (简要，详见 Art.6)
-8. **过渡**: 引导读者根据兴趣选择 Art.2 (推理)、Art.3 (代码)、Art.4 (Agent)
+8. **推荐学习资源**: 经典论文（MMLU 原始论文、Judging LLM-as-a-Judge）/ 课程（Stanford CS324 Evaluation 章节）/ 工具（lm-eval-harness GitHub、Open LLM Leaderboard）/ 社区资源（与现有 7 条路径首篇格式一致）
+9. **过渡**: 引导读者根据兴趣选择 Art.2 (推理)、Art.3 (代码)、Art.4 (Agent)
 
 - [ ] **Step 4: Validate and verify**
 
@@ -809,7 +810,7 @@ export default function CodeBenchmarkEvolution({ locale = 'zh' }: { locale?: 'zh
 - [ ] **Step 2: Create SWEbenchFlow.tsx**
 
 ```tsx
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { COLORS, FONTS } from './shared/colors';
 
@@ -991,12 +992,13 @@ interface ModelScores {
 
 type Dimension = 'functionCalling' | 'multiStep' | 'planning' | 'errorRecovery' | 'efficiency';
 
-const DIMENSION_LABELS: Record<Dimension, { zh: string; en: string }> = {
-  functionCalling: { zh: 'Function Calling\n准确率', en: 'Function Calling\nAccuracy' },
-  multiStep:       { zh: '多步任务\n成功率', en: 'Multi-Step\nSuccess Rate' },
-  planning:        { zh: '规划能力', en: 'Planning\nAbility' },
-  errorRecovery:   { zh: '纠错恢复', en: 'Error\nRecovery' },
-  efficiency:      { zh: '效率\n(步骤/token)', en: 'Efficiency\n(Steps/Tokens)' },
+// Use string[] for multi-line labels — render each item as a <tspan> in SVG <text>
+const DIMENSION_LABELS: Record<Dimension, { zh: string[]; en: string[] }> = {
+  functionCalling: { zh: ['Function Calling', '准确率'], en: ['Function Calling', 'Accuracy'] },
+  multiStep:       { zh: ['多步任务', '成功率'], en: ['Multi-Step', 'Success Rate'] },
+  planning:        { zh: ['规划能力'], en: ['Planning', 'Ability'] },
+  errorRecovery:   { zh: ['纠错恢复'], en: ['Error', 'Recovery'] },
+  efficiency:      { zh: ['效率', '(步骤/token)'], en: ['Efficiency', '(Steps/Tokens)'] },
 };
 
 const DIMENSIONS: Dimension[] = ['functionCalling', 'multiStep', 'planning', 'errorRecovery', 'efficiency'];
@@ -1279,19 +1281,66 @@ const BENCHMARKS: BenchmarkColumn[] = [
   { id: 'ifeval', name: 'IFEval', category: 'knowledge' },
 ];
 
-// [🔍 WEB SEARCH] ALL data below must come from official technical reports
+// [🔍 WEB SEARCH] ALL data below must be verified from official technical reports
+// Values below are approximate plan guidance — executor MUST verify each score
+// null = model did not report this benchmark (important heatmap signal)
 const MODELS: ModelRow[] = [
   // Frontier models
-  { name: 'GPT-4o', tier: 'frontier', family: 'GPT', scores: { /* [verify all] */ }, source: '[verify]' },
-  { name: 'Claude 3.5 Sonnet', tier: 'frontier', family: 'Claude', scores: { /* [verify all] */ }, source: '[verify]' },
-  { name: 'Gemini 1.5 Pro', tier: 'frontier', family: 'Gemini', scores: { /* [verify all] */ }, source: '[verify]' },
-  { name: 'Llama 3.1 405B', tier: 'frontier', family: 'Llama', params: '405B', scores: { /* [verify all] */ }, source: '[verify]' },
-  // Small models
-  { name: 'Gemma 2 9B', tier: 'small', family: 'Gemma', params: '9B', scores: { /* [verify all] */ }, source: '[verify]' },
-  { name: 'Phi-3 Mini', tier: 'small', family: 'Phi', params: '3.8B', scores: { /* [verify all] */ }, source: '[verify]' },
-  { name: 'Qwen 2.5 7B', tier: 'small', family: 'Qwen', params: '7B', scores: { /* [verify all] */ }, source: '[verify]' },
-  { name: 'Llama 3.1 8B', tier: 'small', family: 'Llama', params: '8B', scores: { /* [verify all] */ }, source: '[verify]' },
-  { name: 'Mistral 7B', tier: 'small', family: 'Mistral', params: '7B', scores: { /* [verify all] */ }, source: '[verify]' },
+  { name: 'GPT-4o', tier: 'frontier', family: 'GPT',
+    scores: {
+      'mmlu-pro': 72, 'gpqa': 53, 'math500': 76, 'aime': 13, 'bbh': 83,
+      'humaneval': 90, 'swe-bench': 38, 'livecodebench': null, 'bfcl': 88,
+      'gaia': 40, 'arena-elo': 1280, 'mmlu': 88, 'arc': 96, 'ifeval': 83,
+    }, source: '[verify — OpenAI blog/system card]' },
+  { name: 'Claude 3.5 Sonnet', tier: 'frontier', family: 'Claude',
+    scores: {
+      'mmlu-pro': 68, 'gpqa': 60, 'math500': 78, 'aime': 16, 'bbh': 82,
+      'humaneval': 92, 'swe-bench': 49, 'livecodebench': null, 'bfcl': 85,
+      'gaia': 43, 'arena-elo': 1270, 'mmlu': 89, 'arc': 95, 'ifeval': 88,
+    }, source: '[verify — Anthropic blog]' },
+  { name: 'Gemini 1.5 Pro', tier: 'frontier', family: 'Gemini',
+    scores: {
+      'mmlu-pro': 70, 'gpqa': 50, 'math500': 74, 'aime': null, 'bbh': 80,
+      'humaneval': 84, 'swe-bench': null, 'livecodebench': null, 'bfcl': 82,
+      'gaia': null, 'arena-elo': 1260, 'mmlu': 86, 'arc': 94, 'ifeval': 80,
+    }, source: '[verify — Google DeepMind blog]' },
+  { name: 'Llama 3.1 405B', tier: 'frontier', family: 'Llama', params: '405B',
+    scores: {
+      'mmlu-pro': 66, 'gpqa': 46, 'math500': 73, 'aime': null, 'bbh': 80,
+      'humaneval': 89, 'swe-bench': null, 'livecodebench': null, 'bfcl': 75,
+      'gaia': null, 'arena-elo': 1200, 'mmlu': 87, 'arc': 95, 'ifeval': 80,
+    }, source: '[verify — Meta Llama 3.1 blog]' },
+  // Small models — null for benchmarks they typically don't report
+  { name: 'Gemma 2 9B', tier: 'small', family: 'Gemma', params: '9B',
+    scores: {
+      'mmlu-pro': 38, 'gpqa': null, 'math500': null, 'aime': null, 'bbh': null,
+      'humaneval': 55, 'swe-bench': null, 'livecodebench': null, 'bfcl': null,
+      'gaia': null, 'arena-elo': null, 'mmlu': 72, 'arc': 89, 'ifeval': 70,
+    }, source: '[verify — Google Gemma 2 tech report]' },
+  { name: 'Phi-3 Mini', tier: 'small', family: 'Phi', params: '3.8B',
+    scores: {
+      'mmlu-pro': 35, 'gpqa': null, 'math500': null, 'aime': null, 'bbh': null,
+      'humaneval': 58, 'swe-bench': null, 'livecodebench': null, 'bfcl': null,
+      'gaia': null, 'arena-elo': null, 'mmlu': 69, 'arc': 85, 'ifeval': null,
+    }, source: '[verify — Microsoft Phi-3 tech report]' },
+  { name: 'Qwen 2.5 7B', tier: 'small', family: 'Qwen', params: '7B',
+    scores: {
+      'mmlu-pro': 42, 'gpqa': null, 'math500': null, 'aime': null, 'bbh': null,
+      'humaneval': 65, 'swe-bench': null, 'livecodebench': null, 'bfcl': null,
+      'gaia': null, 'arena-elo': null, 'mmlu': 74, 'arc': 90, 'ifeval': 72,
+    }, source: '[verify — Alibaba Qwen 2.5 tech report]' },
+  { name: 'Llama 3.1 8B', tier: 'small', family: 'Llama', params: '8B',
+    scores: {
+      'mmlu-pro': 36, 'gpqa': null, 'math500': null, 'aime': null, 'bbh': null,
+      'humaneval': 60, 'swe-bench': null, 'livecodebench': null, 'bfcl': null,
+      'gaia': null, 'arena-elo': null, 'mmlu': 68, 'arc': 83, 'ifeval': 76,
+    }, source: '[verify — Meta Llama 3.1 blog]' },
+  { name: 'Mistral 7B', tier: 'small', family: 'Mistral', params: '7B',
+    scores: {
+      'mmlu-pro': 30, 'gpqa': null, 'math500': null, 'aime': null, 'bbh': null,
+      'humaneval': 48, 'swe-bench': null, 'livecodebench': null, 'bfcl': null,
+      'gaia': null, 'arena-elo': null, 'mmlu': 63, 'arc': 82, 'ifeval': null,
+    }, source: '[verify — Mistral AI blog]' },
 ];
 
 const CATEGORY_LABELS: Record<BenchCategory, { zh: string; en: string }> = {
@@ -1853,6 +1902,8 @@ const QUESTIONS: Question[] = [
 function getRecommendation(answers: Record<string, string>): Recommendation {
   const task = answers['task'];
   const deploy = answers['deployment'];
+  const latency = answers['latency'];
+  const budget = answers['budget'];
 
   // Build benchmark recommendations based on task type
   const benchmarks: { zh: string; en: string }[] = [];
@@ -1904,13 +1955,51 @@ function getRecommendation(answers: Record<string, string>): Recommendation {
     modelRange = { zh: '混合: 本地 7B + 云端 Frontier → 见 model-routing 路径', en: 'Hybrid: local 7B + cloud Frontier → see model-routing path' };
   }
 
-  const rationale = deploy === 'hybrid'
+  // Adjust modelRange based on latency constraints
+  if (latency === 'realtime') {
+    if (deploy === 'local') {
+      const hw = answers['hardware'];
+      if (hw === 'nvidia-gpu') {
+        modelRange = { zh: '7B-13B (INT4/INT8 量化，确保低延迟)', en: '7B-13B (INT4/INT8 quantized for low latency)' };
+      }
+      // Other hardware options already recommend small models — no override needed
+    } else if (deploy === 'cloud') {
+      benchmarks.push({ zh: '关注 TTFT 和 tokens/s 指标 (Artificial Analysis)', en: 'Focus on TTFT and tokens/s metrics (Artificial Analysis)' });
+    }
+  }
+
+  // Adjust based on budget constraints
+  if (budget === 'low') {
+    if (deploy === 'cloud') {
+      modelRange = { zh: '轻量 API (GPT-4o-mini / Gemini Flash / Claude Haiku) 或考虑本地部署',
+                     en: 'Lightweight API (GPT-4o-mini / Gemini Flash / Claude Haiku) or consider local deployment' };
+    } else if (deploy === 'hybrid') {
+      modelRange = { zh: '本地为主 (7B INT4) + 低成本 API 兜底 → 见 model-routing 路径',
+                     en: 'Local-first (7B INT4) + low-cost API fallback → see model-routing path' };
+    }
+  }
+
+  // Build rationale incorporating all factors
+  let rationaleBase = deploy === 'hybrid'
     ? { zh: '混合部署的关键是确定 routing 策略——什么任务走本地，什么走云端。这正是 model-routing 路径的内容。',
         en: 'The key to hybrid deployment is determining routing strategy — which tasks go local vs cloud. This is exactly what the model-routing path covers.' }
     : { zh: '根据你的任务和部署条件，建议关注以上 benchmark 组合来评估候选模型。不要只看总分——关注与你场景最匹配的类别分数。',
         en: 'Based on your task and deployment, focus on the benchmark combination above. Don\'t just look at overall scores — focus on category scores most relevant to your scenario.' };
 
-  return { benchmarks, modelRange, rationale, nextPath: deploy === 'hybrid' ? { zh: '→ 继续阅读 Model Routing 路径', en: '→ Continue to Model Routing path' } : undefined };
+  if (latency === 'realtime') {
+    rationaleBase = {
+      zh: rationaleBase.zh + ' ⚡ 实时场景下，还需关注 TTFT（首 token 延迟）和吞吐量——量化模型通常是必要的。',
+      en: rationaleBase.en + ' ⚡ For real-time use, also monitor TTFT (time to first token) and throughput — quantized models are usually necessary.',
+    };
+  }
+  if (budget === 'low') {
+    rationaleBase = {
+      zh: rationaleBase.zh + ' 💰 预算有限时，优先评估轻量模型（Haiku/Flash/mini 系列），或用本地部署替代 API 调用。',
+      en: rationaleBase.en + ' 💰 On a tight budget, prioritize lightweight models (Haiku/Flash/mini series) or replace API calls with local deployment.',
+    };
+  }
+
+  return { benchmarks, modelRange, rationale: rationaleBase, nextPath: deploy === 'hybrid' ? { zh: '→ 继续阅读 Model Routing 路径', en: '→ Continue to Model Routing path' } : undefined };
 }
 
 export default function ModelSelectionDecisionTree({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
