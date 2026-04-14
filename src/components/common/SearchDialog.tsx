@@ -48,15 +48,45 @@ interface Props {
 // --- Constants ---
 
 const MAX_ARTICLES = 10;
+const MAX_TAGS = 10;
+const DEBOUNCE_MS = 150;
 
 // --- Component ---
 
 export default function SearchDialog({ data, translations }: Props) {
   const [isOpen, setIsOpen] = useState(false);
-  const [query, setQuery] = useState('');
+  const [inputValue, setInputValue] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const isOpenRef = useRef(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const openDialog = useCallback(() => {
+    isOpenRef.current = true;
+    setInputValue('');
+    setSearchQuery('');
+    setSelectedIndex(0);
+    setIsOpen(true);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+  }, []);
+
+  const closeDialog = useCallback(() => {
+    isOpenRef.current = false;
+    setIsOpen(false);
+  }, []);
+
+  const handleInputChange = useCallback((value: string) => {
+    setInputValue(value);
+    setSelectedIndex(0);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!value.trim()) {
+      setSearchQuery('');
+    } else {
+      debounceRef.current = setTimeout(() => setSearchQuery(value), DEBOUNCE_MS);
+    }
+  }, []);
 
   // Build Fuse instances once
   const fusePaths = useMemo(
@@ -74,25 +104,13 @@ export default function SearchDialog({ data, translations }: Props) {
 
   // Search results
   const results = useMemo(() => {
-    if (!query.trim()) return { paths: [], tags: [], articles: [], flat: [] };
-
-    const paths = fusePaths.search(query).map(r => r.item);
-    const tags = fuseTags.search(query).map(r => r.item);
-    const articles = fuseArticles.search(query).map(r => r.item).slice(0, MAX_ARTICLES);
-
-    const flat: SearchItem[] = [
-      ...paths,
-      ...tags,
-      ...articles,
-    ];
-
+    if (!searchQuery.trim()) return { paths: [], tags: [], articles: [], flat: [] };
+    const paths = fusePaths.search(searchQuery).map(r => r.item);
+    const tags = fuseTags.search(searchQuery).map(r => r.item).slice(0, MAX_TAGS);
+    const articles = fuseArticles.search(searchQuery).map(r => r.item).slice(0, MAX_ARTICLES);
+    const flat: SearchItem[] = [...paths, ...tags, ...articles];
     return { paths, tags, articles, flat };
-  }, [query, fusePaths, fuseTags, fuseArticles]);
-
-  // Reset selection when query changes
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [query]);
+  }, [searchQuery, fusePaths, fuseTags, fuseArticles]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -106,11 +124,15 @@ export default function SearchDialog({ data, translations }: Props) {
     function handleGlobalKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        setIsOpen(prev => !prev);
+        if (isOpenRef.current) {
+          closeDialog();
+        } else {
+          openDialog();
+        }
       }
     }
     function handleOpenSearch() {
-      setIsOpen(true);
+      openDialog();
     }
     document.addEventListener('keydown', handleGlobalKey);
     document.addEventListener('open-search', handleOpenSearch);
@@ -118,7 +140,7 @@ export default function SearchDialog({ data, translations }: Props) {
       document.removeEventListener('keydown', handleGlobalKey);
       document.removeEventListener('open-search', handleOpenSearch);
     };
-  }, []);
+  }, [openDialog, closeDialog]);
 
   // Lock body scroll when dialog is open
   useEffect(() => {
@@ -133,12 +155,16 @@ export default function SearchDialog({ data, translations }: Props) {
   // Focus input when dialog opens
   useEffect(() => {
     if (isOpen) {
-      setQuery('');
-      setSelectedIndex(0);
-      // Small delay to ensure DOM is ready
       requestAnimationFrame(() => inputRef.current?.focus());
     }
   }, [isOpen]);
+
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, []);
 
   // Navigate to selected item
   const navigateTo = useCallback((item: SearchItem) => {
@@ -158,7 +184,7 @@ export default function SearchDialog({ data, translations }: Props) {
       e.preventDefault();
       navigateTo(results.flat[selectedIndex]);
     } else if (e.key === 'Escape') {
-      setIsOpen(false);
+      closeDialog();
     }
   }
 
@@ -211,10 +237,8 @@ export default function SearchDialog({ data, translations }: Props) {
     );
   }
 
-  if (!isOpen) return null;
-
   const hasResults = results.flat.length > 0;
-  const hasQuery = query.trim().length > 0;
+  const hasQuery = searchQuery.trim().length > 0;
 
   const activeDescendantId = results.flat.length > 0
     ? `search-item-${selectedIndex}`
@@ -222,8 +246,8 @@ export default function SearchDialog({ data, translations }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-start justify-center pt-[20vh]"
-      onClick={() => setIsOpen(false)}
+      className={`fixed inset-0 z-[100] flex items-start justify-center pt-[20vh] ${isOpen ? '' : 'hidden'}`}
+      onClick={closeDialog}
     >
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/50" />
@@ -249,8 +273,8 @@ export default function SearchDialog({ data, translations }: Props) {
             aria-controls="search-results"
             aria-activedescendant={activeDescendantId}
             type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            value={inputValue}
+            onChange={(e) => handleInputChange(e.target.value)}
             placeholder={translations.search_placeholder}
             className="w-full px-3 py-3 text-sm outline-none"
           />
