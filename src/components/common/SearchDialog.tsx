@@ -75,6 +75,7 @@ export default function SearchDialog({ data, translations }: Props) {
   const closeDialog = useCallback(() => {
     isOpenRef.current = false;
     setIsOpen(false);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
   }, []);
 
   const handleInputChange = useCallback((value: string) => {
