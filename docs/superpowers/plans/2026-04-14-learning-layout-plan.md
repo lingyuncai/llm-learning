@@ -298,10 +298,10 @@ export default function SearchDialog({ data, translations }: Props) {
     return { paths, tags, articles, flat };
   }, [query, fusePaths, fuseTags, fuseArticles]);
 
-  // Reset selection when results change
+  // Reset selection when query changes
   useEffect(() => {
     setSelectedIndex(0);
-  }, [results.flat.length]);
+  }, [query]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -321,6 +321,16 @@ export default function SearchDialog({ data, translations }: Props) {
     document.addEventListener('keydown', handleGlobalKey);
     return () => document.removeEventListener('keydown', handleGlobalKey);
   }, []);
+
+  // Lock body scroll when dialog is open
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => { document.body.style.overflow = ''; };
+  }, [isOpen]);
 
   // Focus input when dialog opens
   useEffect(() => {
@@ -557,7 +567,7 @@ const searchTranslations = {
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
-          <kbd class="hidden sm:inline-block px-1.5 py-0.5 text-xs text-gray-400 bg-gray-100 rounded border border-gray-200">
+          <kbd id="search-shortcut" class="hidden sm:inline-block px-1.5 py-0.5 text-xs text-gray-400 bg-gray-100 rounded border border-gray-200">
             Ctrl K
           </kbd>
         </button>
@@ -584,6 +594,12 @@ const searchTranslations = {
 <SearchDialog client:load data={searchData} translations={searchTranslations} />
 
 <script>
+  // Detect macOS and update shortcut label
+  if (navigator.platform.includes('Mac')) {
+    const el = document.getElementById('search-shortcut');
+    if (el) el.textContent = '⌘ K';
+  }
+
   // Wire up the search trigger button to open the dialog
   // The SearchDialog listens for Ctrl+K globally, but we also need the button click
   document.getElementById('search-trigger')?.addEventListener('click', () => {
@@ -596,6 +612,7 @@ const searchTranslations = {
 - `SearchDialog` 使用 `client:load`（不是 `client:visible`），确保 `Ctrl+K` 快捷键立即可用
 - 搜索按钮通过 dispatch 一个 `Ctrl+K` KeyboardEvent 来触发 SearchDialog 打开
 - 搜索数据在 Astro 构建时准备好，通过 props 传给 React 组件
+- `<kbd>` 快捷键提示在 macOS 上自动显示为 `⌘ K`
 
 - [ ] **Step 2: 验证构建**
 
