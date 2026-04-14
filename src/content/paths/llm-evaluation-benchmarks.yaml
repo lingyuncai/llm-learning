@@ -1,0 +1,24 @@
+id: llm-evaluation-benchmarks
+order: 7
+title:
+  zh: "LLM 评估与 Benchmark 深度解析"
+  en: "LLM Evaluation and Benchmarks Deep Dive"
+description:
+  zh: >-
+    系统化理解 LLM 评估体系：从 benchmark 设计原理到具体 benchmark 深入剖析，
+    从量化优化的精度评估方法到模型选型决策。覆盖知识推理、代码、Agent 与 Tool Use
+    等维度，重点关注 OpenVINO 工具链和小模型评估。
+  en: >-
+    Systematic understanding of LLM evaluation: from benchmark design principles
+    to specific benchmark deep dives, from optimization accuracy assessment to
+    model selection decisions. Covers knowledge, reasoning, code, and agent
+    evaluation with focus on OpenVINO toolchain and small model assessment.
+level: intermediate
+articles:
+  - benchmark-landscape
+  - reasoning-benchmarks
+  - code-benchmarks
+  - agent-benchmarks
+  - benchmark-standard-set
+  - optimization-accuracy
+  - leaderboard-model-selection
