@@ -10,6 +10,7 @@ articles:
   - rl-foundations
   - policy-gradient
   - ppo-actor-critic
+  - rl-for-llm
   - rlhf
   - direct-preference-optimization
   - reward-modeling

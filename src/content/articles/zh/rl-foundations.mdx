@@ -69,6 +69,8 @@ RL 的数学基础是**马尔可夫决策过程**（Markov Decision Process, MDP
 
 <MDPGridWorld client:visible />
 
+> **LLM 连接**：在后续文章 [当 RL 遇上 LLM](/llm-learning/zh/articles/rl-for-llm) 中我们会看到,LLM 的文本生成过程可以完美地建模为 MDP——state 是 prompt + 已生成的 token 序列,action 是从词汇表中选择下一个 token,policy 就是 LLM 本身。这里先建立直觉,详细映射见那篇文章。
+
 ## 策略与价值函数
 
 有了 MDP 的框架，我们需要定义 Agent 的行为模式和评估标准：
