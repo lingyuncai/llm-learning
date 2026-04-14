@@ -7,6 +7,9 @@
 
 /* 自定义全局样式 */
 @layer base {
+  html {
+    scrollbar-gutter: stable;
+  }
   body {
     @apply bg-white text-gray-900 antialiased;
   }
