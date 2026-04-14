@@ -1,0 +1,199 @@
+---
+title: "模型发布 Benchmark 标配解析"
+slug: benchmark-standard-set
+locale: zh
+tags: [benchmark, model-release, standard-set, small-models, gemma, phi, qwen]
+prerequisites: [benchmark-landscape]
+difficulty: intermediate
+created: "2026-04-14"
+updated: "2026-04-14"
+references:
+  - type: website
+    title: "Google Gemma 2 Technical Report"
+    url: "https://ai.google.dev/gemma/docs/core/model_card_2"
+  - type: website
+    title: "Microsoft Phi-3 Technical Report"
+    url: "https://arxiv.org/abs/2404.14219"
+  - type: paper
+    title: "Qwen2.5 Technical Report"
+    url: "https://arxiv.org/abs/2412.15115"
+  - type: website
+    title: "Meta Llama 3.1 Model Card"
+    url: "https://huggingface.co/meta-llama/Llama-3.1-405B-Instruct"
+  - type: website
+    title: "Open LLM Leaderboard"
+    url: "https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard"
+---
+
+import ModelBenchmarkMatrix from '../../../components/interactive/ModelBenchmarkMatrix.tsx';
+
+## 开篇：为什么每次发布都是这些 Benchmark？
+
+每当一个新模型发布，技术报告里总会附上一张大表——MMLU 多少分、HumanEval 多少分、GPQA Diamond 多少分……如果你仔细观察会发现，**不同厂商选择报告的 benchmark 高度重叠**，但又不完全相同。这背后隐藏着两个关键问题：
+
+1. **共同的选择**：为什么这些 benchmark 而不是别的？它们如何成为"标配"？
+2. **刻意的遗漏**：某个模型不报某个分数，往往不是忘了，而是分数不好看——**不报什么，和报什么一样重要**。
+
+本文将系统梳理当前模型发布的 benchmark 标配集，分析 frontier 模型和小模型的评估体系差异，并通过一个交互矩阵让你一目了然地看到各模型的优劣势和"空白地带"。
+
+> **时效性声明**：本文内容基于截至 2025 年初的模型发布情况。Benchmark 生态演变迅速，具体分数和流行的评测集会随时间变化。我们关注的是**选择逻辑和分析方法**，而非追踪最新排名。
+
+## 标配集的演进：从"四大件"到全面覆盖
+
+### 2023 年："四大件"时代
+
+在 ChatGPT 掀起 LLM 热潮的初期，模型技术报告通常只需要报告四个核心 benchmark：
+
+| Benchmark | 测什么 | 为什么是标配 |
+|-----------|--------|-------------|
+| MMLU | 57 学科知识广度 | 最广泛引用的知识基准 |
+| HumanEval | 函数级代码生成 | pass@1 范式简洁明确 |
+| GSM8K | 小学数学推理 | 推理能力的"入门考" |
+| HellaSwag | 常识推理/语言理解 | NLU 基线，早期区分度高 |
+
+这四个 benchmark 加上 Chatbot Arena 的 ELO 排名，基本就构成了一个模型的"简历"。
+
+### 2024 年：扩展与分化
+
+随着模型能力提升，原有的基准开始**饱和**（ceiling effect）。GPT-4 级别的模型在 MMLU 和 GSM8K 上都达到了 90%+，区分度急剧下降。于是：
+
+- **MMLU → MMLU-Pro**：4 选项扩到 10 选项，引入更强推理需求，prompt 敏感性从 4-5% 降至 2%
+- **GSM8K → MATH-500 / AIME**：从小学数学到竞赛级，重新拉开差距
+- **HumanEval → SWE-bench Verified**：从函数级到项目级，测试真实软件工程能力
+- **新增 Agent 维度**：BFCL（函数调用）和 GAIA（多步交互）开始出现
+- **新增 IFEval**：指令遵循能力专项测试
+
+### 2025 年：当前标配
+
+到目前为止，一个 frontier 模型的发布**至少需要覆盖**以下维度：
+
+| 维度 | 必报 Benchmark | 加分项 |
+|------|---------------|--------|
+| **知识** | MMLU / MMLU-Pro | IFEval |
+| **推理** | GPQA Diamond, MATH-500 | AIME, BBH |
+| **代码** | HumanEval, SWE-bench Verified | LiveCodeBench |
+| **Agent** | BFCL 或类似 | GAIA, WebArena |
+| **偏好** | Chatbot Arena ELO | MT-Bench |
+
+这就是"benchmark 标配集"——它不是某个机构规定的，而是通过**竞争性均衡**自然形成的：你不报的，竞争对手会替你分析为什么不报。
+
+## Frontier 模型对比：必报交集与战略遗漏
+
+### 四家的共同必报项
+
+分析 GPT-4o（OpenAI）、Claude 3.5 Sonnet（Anthropic）、Gemini 1.5 Pro（Google）和 Llama 3.1 405B（Meta）四款 frontier 模型的技术报告，可以提取出**所有四家都报告**的 benchmark：
+
+- **MMLU**（或 MMLU-Pro）：知识广度的"共识基线"
+- **GPQA Diamond**：博士级推理的新标杆
+- **MATH**（或 MATH-500）：数学推理的核心指标
+- **HumanEval**：代码生成的"事实标准"
+- **BBH**：综合推理的重要补充
+
+这五个组成了当前 frontier 模型的**最小必报集**。
+
+### "不报什么"分析
+
+更有意思的是各家的**战略性遗漏**：
+
+**Claude 3.5 Sonnet** 不报 AIME 和 ARC-C。Claude 在 SWE-bench 上以 49.0% 大幅领先（GPT-4o 为 38.4%），但不报 AIME 分数——暗示在超高难度数学竞赛上可能不占优。同样不报 BFCL，在 function calling 维度给出的信号是"我们更侧重代码和推理"。
+
+**Gemini 1.5 Pro** 大量 benchmark 未报告具体分数，特别是 SWE-bench、BFCL、GAIA 和 IFEval。Google 的策略是强调多模态和长上下文（百万 token context window），而非在文本 benchmark 上逐一对标。
+
+**GPT-4o** 是覆盖最全的——几乎所有主流 benchmark 都有分数，这反映了 OpenAI 作为行业标杆的自信：不存在"需要隐藏"的弱项。
+
+**Llama 3.1 405B** 作为开源模型报告了非常全面的分数，但缺少 AIME 和 GAIA。开源模型有独特优势：即使你不报，社区也会帮你跑出来。
+
+> **关键认知**：当你看到一个模型的评测报告，先数它报了哪些 benchmark，再想想它**没报**哪些。遗漏本身就是信息。
+
+## 小模型评估体系：不同的游戏规则
+
+Frontier 模型和小模型（≤10B 参数）面临的是**不同层次的竞争**。小模型的评估有几个关键差异：
+
+### 1. Benchmark 选择更保守
+
+小模型通常不报 SWE-bench、GAIA 等需要复杂多步推理的 benchmark——不是因为想隐藏，而是因为这些任务对小模型来说**难度过高**，报了也是个位数的分数，没有参考价值。
+
+### 2. 对手不同
+
+小模型的对比对象是**同级别**的其他小模型，而非 GPT-4o。所以你会在 Gemma 2 9B 的报告中看到它与 Llama 3 8B、Mistral 7B 的对比，而不是与 Claude 3.5 Sonnet 的对比。
+
+### 3. "效率比"成为核心叙事
+
+小模型的卖点不是绝对分数最高，而是"**用 9B 参数达到了某个 30B 模型的水平**"。因此评估重点是：
+- 在相同参数量级内谁最好
+- 相比上一代同级别模型提升了多少
+- 哪些任务的"性价比"最高
+
+### 4. 部署场景导向
+
+小模型更关注在端侧和边缘设备上的实用性。因此有些报告会额外测试：
+- 推理速度和内存占用
+- 量化后的精度保持
+- 特定语言或领域的表现
+
+## 各家小模型全景对比
+
+下面的交互矩阵展示了 9 个代表性模型（4 个 frontier + 5 个小模型）在 14 个主流 benchmark 上的分数。**灰色条纹格表示该模型未报告此分数**——请特别关注这些空白区域。
+
+<ModelBenchmarkMatrix client:visible />
+
+> **使用提示**：将鼠标悬停在任意格子上查看精确分数和来源。点击切换按钮可以按模型族分组查看同一家族的大小模型对比。注意每列的颜色是**独立归一化**的，绿色表示该列内相对高分。
+
+### Gemma 2 9B（Google）
+
+Google 的 Gemma 2 报告了一组相对传统的 benchmark：MMLU、ARC-C、BBH (BIG-Bench Hard)、HumanEval、MATH。值得注意的是 **Gemma 没有报告 MMLU-Pro、GPQA Diamond 或 IFEval**。其 HumanEval 仅 40.2%，显著低于同级别的 Qwen 2.5 7B (84.8%) 和 Llama 3.1 8B (72.6%)——代码生成是 Gemma 2 9B 的明显短板。
+
+### Phi-3 Mini 3.8B（Microsoft）
+
+微软的 Phi-3 以仅 3.8B 的参数量实现了令人印象深刻的 MMLU 70.9%——几乎与 9B 级别的 Gemma 2 (71.3%) 持平。Phi-3 的 ARC-C 86.3% 在小模型中最高，BBH 73.5% 也很突出。但 Phi-3 **没有报告 MMLU-Pro、IFEval、MATH-500**，且 HumanEval 仅 57.3%。微软的叙事是"用极小参数量实现高质量推理"，但代码和指令遵循维度被有意弱化。
+
+### Qwen 2.5 7B（阿里巴巴）
+
+Qwen 2.5 是报告最全面的小模型之一——覆盖了 MMLU、MMLU-Pro、IFEval、GPQA Diamond、MATH-500、BBH、HumanEval。特别突出的是 **MATH-500 达到 75.5%**，在小模型中遥遥领先，甚至接近 frontier 模型的水平（GPT-4o 为 76.6%）。HumanEval 84.8% 同样是小模型中的最高分。Qwen 的短板在 GPQA Diamond（34.2%），但至少它选择了报告而非隐藏。
+
+### Llama 3.1 8B（Meta）
+
+Meta 的 Llama 3.1 8B 受益于开源生态，是被第三方测试最全面的模型。官方报告覆盖了 MMLU、MMLU-Pro、GPQA Diamond、MATH-500、BBH、HumanEval、IFEval、ARC-C——几乎是小模型中覆盖最全的。分数均衡但没有特别突出的领域：MMLU 69.4%（小模型最低），但 IFEval 80.4% 较为突出。
+
+### Mistral 7B（Mistral AI）
+
+作为较早期的模型，Mistral 7B 报告的 benchmark 最少——仅有 MMLU (62.5%)、ARC-C (78.5%) 和 HumanEval (32.9%)。大量"N/R"反映了 Mistral 7B 发布时（2023 年底）benchmark 标配集尚未形成。这也说明了标配集的**时间演变**：2023 年不需要报的分数，2024 年已经成为必报项。
+
+## 分数可比性的三大陷阱
+
+在对比矩阵中的数字时，有几个关键的可比性问题需要注意：
+
+### 1. Prompt 模板差异
+
+同一个 benchmark，不同的 prompt 模板可能导致 **3-5% 的分数差异**。例如 MMLU 的经典问题格式：
+
+```
+The following is a multiple choice question...
+A. ...  B. ...  C. ...  D. ...
+Answer:
+```
+
+但有些厂商会在 prompt 前加 system prompt，有些会调整选项格式，有些使用 chat template 而非 raw prompt。HuggingFace 的 Open LLM Leaderboard 之所以重要，就是因为它**统一了评测管道**。
+
+### 2. Few-shot 数量不一致
+
+MMLU 有 0-shot 和 5-shot 两种常用协议，分数差 3-8%。当你看到 "MMLU: 88%" 时，必须确认是哪种。本文矩阵中的分数尽量使用各模型官方报告的数值和协议，但不同模型间的协议可能不完全一致——这也是为什么**我们的颜色是列内相对排名，而非绝对值对比**。
+
+### 3. 评测工具版本
+
+lm-evaluation-harness 的不同版本对某些 benchmark 的实现有差异。特别是 Harness v0.3 到 v0.4 的升级改变了多个 task 的 prompt 模板。如果你想做严格的苹果对苹果比较，务必使用**同一版本的 harness 从头评测**。
+
+> **实践建议**：不要过度追求第三位小数的分数差异。如果两个模型在某个 benchmark 上差距在 2% 以内，基本可以认为"水平相当"。真正有意义的是 **5% 以上的差距**和整体能力的覆盖范围。
+
+## 延伸思考：标配集的未来
+
+当前的 benchmark 标配集仍在快速演变。几个值得关注的趋势：
+
+1. **MMLU 的退场**：MMLU 因数据质量问题和饱和效应正在被 MMLU-Pro 替代。Open LLM Leaderboard v2 已经用 MMLU-Pro 替换了 MMLU
+2. **Agent 评估的崛起**：随着 LLM 从"回答问题"走向"执行任务"，BFCL、GAIA、SWE-bench 类的 benchmark 越来越重要
+3. **动态 benchmark 成为标配**：LiveCodeBench 和 LiveBench 的动态更新策略正在成为反污染的标准做法
+4. **多模态扩展**：MMMU、MathVista 等多模态 benchmark 开始出现在技术报告中
+
+## 下一步
+
+本文建立了模型发布 benchmark 的全局认知。下一篇文章 [优化对精度的影响](/llm-learning/zh/articles/optimization-accuracy) 将从不同角度审视 benchmark 分数——当我们对模型做量化、蒸馏等优化时，不同 benchmark 上的精度损失差异巨大。这对选择边缘部署方案至关重要。
