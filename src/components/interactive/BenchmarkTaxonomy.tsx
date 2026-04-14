@@ -1,7 +1,7 @@
 // src/components/interactive/BenchmarkTaxonomy.tsx
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { COLORS } from './shared/colors';
+import { COLORS, FONTS } from './shared/colors';
 
 type Category = 'knowledge' | 'reasoning' | 'code' | 'agent' | 'preference';
 type EvalMethod = 'exact_match' | 'execution' | 'llm_judge' | 'human_eval' | 'elo';
@@ -184,7 +184,7 @@ export default function BenchmarkTaxonomy({ locale = 'zh' }: { locale?: 'zh' | '
   });
 
   return (
-    <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+    <div style={{ fontFamily: FONTS.sans }}>
       {/* Title */}
       <div style={{ textAlign: 'center', marginBottom: 12 }}>
         <span style={{ fontSize: 16, fontWeight: 700, color: COLORS.dark }}>
