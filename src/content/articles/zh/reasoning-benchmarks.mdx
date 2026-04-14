@@ -1,0 +1,231 @@
+---
+title: "知识与推理 Benchmark"
+slug: reasoning-benchmarks
+locale: zh
+tags: [benchmark, reasoning, mmlu, gpqa, math]
+prerequisites: [benchmark-landscape]
+difficulty: intermediate
+created: "2026-04-14"
+updated: "2026-04-14"
+references:
+  - type: paper
+    title: "MMLU-Pro: A More Robust and Challenging Multi-Task Language Understanding Benchmark"
+    url: "https://arxiv.org/abs/2406.01574"
+  - type: paper
+    title: "GPQA: A Graduate-Level Google-Proof Q&A Benchmark"
+    url: "https://arxiv.org/abs/2311.12022"
+  - type: paper
+    title: "Measuring Mathematical Problem Solving With the MATH Dataset"
+    url: "https://arxiv.org/abs/2103.03874"
+---
+
+import ReasoningBenchmarkMap from '../../../components/interactive/ReasoningBenchmarkMap.tsx';
+import MMLUProEvalDemo from '../../../components/interactive/MMLUProEvalDemo.tsx';
+
+## 开篇：模型说自己推理能力强，到底是怎么测出来的？
+
+当 OpenAI 发布 o1 并宣布"在 AIME 2024 上达到 83%"时，这个数字意味着什么？当 Google 说 Gemini 2.5 Pro 在 GPQA Diamond 上超过 90% 时，这是否说明 AI 已经达到了博士级别的科学推理能力？
+
+在[上一篇文章](/llm-learning/zh/articles/benchmark-landscape)中，我们建立了 benchmark 评估的全局框架。现在是时候深入**知识与推理**这个最基础、最被广泛引用的评估维度了。本文将回答：
+
+1. 知识类和推理类 benchmark 各有哪些？它们分别在测什么？
+2. 从 2018 年到 2025 年，benchmark 的饱和趋势是怎样的？
+3. MMLU-Pro 为什么要把选项从 4 个扩展到 10 个？CoT 评估有何不同？
+4. GPQA Diamond 为什么被称为"Google-Proof"？它的对抗验证流程是什么？
+
+## 知识类 Benchmark 全景
+
+知识类 benchmark 测试模型**掌握了多少事实知识**——从人文社科到 STEM，从本科水平到研究生水平。
+
+### MMLU（2021）
+
+**Measuring Massive Multitask Language Understanding** (Hendrycks et al., 2021) 是影响力最大的知识评估基准。它包含来自 57 个学科的约 15,908 道 4 选 1 选择题，覆盖 STEM、人文、社会科学和其他领域。
+
+- **评估方式**：5-shot exact match（给 5 个示例，模型输出选项字母）
+- **当前 SOTA**：约 90-92%（GPT-4o、Claude 3.5 Sonnet 等均达到约 88%，o1 等推理模型超过 90%）
+- **人类基线**：领域专家约 89.8%
+- **现状**：**已基本饱和**。顶级模型已接近甚至超过人类专家水平。Wikipedia 指出，截至 2025 年 MMLU 已被部分弃用，转向更难的替代方案
+
+MMLU 的主要问题是**噪声题目**和 **4 选项的随机猜测概率太高**（25%），这催生了它的升级版。
+
+### MMLU-Pro（2024）
+
+**MMLU-Pro** (Wang et al., 2024) 是 NeurIPS 2024 Spotlight 论文，专门针对 MMLU 的缺陷设计：
+
+- 选项从 4 个扩展到 **10 个**，随机猜测概率降至 10%
+- 移除了噪声和过于简单的题目
+- 增加了需要多步推理的题目
+- 约 12,032 道题
+
+关键发现：模型在 MMLU-Pro 上的准确率比 MMLU 下降了 **16% 到 33%**，同时 prompt 敏感性从 4-5% 降至 2%，说明 MMLU-Pro 更稳健。
+
+### ARC-Challenge（2018）
+
+**AI2 Reasoning Challenge** (Clark et al., 2018) 包含 2,590 道小学科学选择题，筛选出检索和统计方法难以解决的子集。这是最早的推理基准之一，当前 SOTA 已超过 96%，**完全饱和**，主要用作基线对比。
+
+## 推理类 Benchmark 全景
+
+推理类 benchmark 测试模型的**逻辑推理、数学计算和科学推理能力**。这个领域的 benchmark 演进最为剧烈——从 2021 年到 2024 年，社区不断推出更难的基准来保持区分度。
+
+### GSM8K（2021）
+
+**Grade School Math 8K** 包含约 8,500 道（1,319 道测试集）需要 2-8 步推理的小学数学应用题。曾经是推理能力的入门基准，但当前 SOTA 已达 **约 97%**，**完全饱和**。
+
+### MATH / MATH-500（2021）
+
+**MATH** (Hendrycks et al., 2021) 包含 12,500 道竞赛级数学题，覆盖代数、几何、数论等 7 个领域，难度分 1-5 级。**MATH-500** 是常用的 500 题测试子集。
+
+- **当前 SOTA**：约 95%（o1 达到 94.8%，o3 更高）
+- **两年前**：GPT-4 仅约 52%
+- **现状**：顶级推理模型已接近饱和，但普通模型仍有较大差距
+
+### AIME 2024
+
+**American Invitational Mathematics Examination** 2024 年真题，共 30 道题（2 套 × 15 题），答案为 0-999 整数，天然防猜测。
+
+- **当前 SOTA**：约 87%（o3-mini high effort 达到 87.3%，o1-preview 达到 83%/12.5 out of 15）
+- **现状**：**仍有区分力**，能有效区分不同推理模型的数学能力
+
+### BBH（2022）
+
+**BIG-Bench Hard** 从 BIG-Bench 的 204 个任务中筛选出 23 个 LM 表现低于人类的困难推理任务，共约 6,511 题。BBH 论文的关键贡献是证明 **CoT prompting 可大幅提升推理任务表现**。当前 SOTA 约 88-95%，接近饱和。
+
+### GPQA Diamond（2023）
+
+**Graduate-Level Google-Proof Q&A** (Rein et al., 2024) 是目前最具权威性的高难度推理基准。Diamond 是其 198 题的高质量子集。
+
+- **领域专家准确率**：74%（含容错）
+- **非专家 + 搜索 30 分钟**：仅 34%
+- **当前 SOTA**：约 88%（o3 达到 87.7%）；Gemini 2.5 Pro (thinking) 声称 94.3%
+- **现状**：推理模型已开始突破人类专家水平，但仍能区分不同级别的模型
+
+### FrontierMath（2024）
+
+由 Epoch AI 组织数学家出题的**前沿数学研究问题**。题目未公开，专家需要数小时到数天才能解决。
+
+- **当前 SOTA**：o3 约 25%，其余模型不到 2%（由 Epoch AI 确认）
+- **现状**：**远未饱和**，是目前对 AI 数学能力最有挑战性的基准
+
+### Benchmark 饱和度地图
+
+下面的散点图展示了这 10 个知识与推理 benchmark 的饱和状态。气泡越高表示越接近饱和，越大表示被引用越多：
+
+<ReasoningBenchmarkMap client:visible />
+
+> **观察要点**：注意右上角的"饱和区"（>90%）聚集了 MMLU、GSM8K、ARC、HellaSwag 等早期基准。左下角的 FrontierMath 则代表了当前 AI 能力的边界。随着推理模型（o1/o3）的出现，中间区域的基准（GPQA、AIME、MATH-500）正在快速向饱和线移动。
+
+## 趋势分析：Benchmark 的饱和与迭代
+
+从 2018 到 2025 年，知识与推理 benchmark 呈现出清晰的**饱和-替代**循环：
+
+1. **第一波（2018-2019）**：ARC-Challenge 和 HellaSwag 作为早期推理基准推出，GPT-2 时代还有挑战性
+2. **第二波（2021）**：MMLU、GSM8K、MATH 成为主力基准，GPT-3/GPT-4 时代的核心指标
+3. **第三波（2022-2023）**：BBH 和 GPQA Diamond 提升难度，针对 GPT-4 级别的模型仍有区分力
+4. **第四波（2024）**：MMLU-Pro、AIME 2024、FrontierMath 代表最新一代基准，专为推理模型时代（o1/o3）设计
+
+每一波新基准的出现都由同一个驱动力推动：**旧基准饱和 → 失去区分度 → 需要更难的测试**。这不是缺陷，而是 LLM 能力快速提升的侧面证据。
+
+## 深潜 1：MMLU-Pro
+
+### 为什么选 MMLU-Pro 作为深潜对象？
+
+MMLU-Pro 是当前**最广泛使用的知识评估基准**之一。它解决了 MMLU 的核心问题，被包括 OpenAI、Anthropic、Google、Meta 在内的主要实验室采用作为标准报告指标。理解 MMLU-Pro 的设计和评估方法，有助于正确解读几乎所有新模型发布时的评测数据。
+
+### 数据集构成
+
+MMLU-Pro 包含约 12,032 道题目，分布在 14 个学科领域：
+
+| 领域 | 示例学科 | 占比特点 |
+|------|----------|----------|
+| STEM | 物理、化学、数学、工程、计算机科学、生物 | 占比最高，推理需求强 |
+| 社会科学 | 经济学、心理学、法律 | 需要领域知识 + 分析 |
+| 人文 | 哲学、历史 | 部分题目涉及批判性思维 |
+| 其他 | 商业、健康 | 应用导向 |
+
+与 MMLU 的关键区别：
+
+- **选项数量**：4 → 10。这一变化影响深远——不仅降低了猜测概率，还要求模型具备更强的**排除干扰项**能力
+- **题目筛选**：移除了原 MMLU 中被多位标注者标记为"有歧义"或"答案可能有误"的噪声题目
+- **推理需求**：新增了大量需要多步推理才能解答的题目，而非纯知识记忆
+
+### 评估协议：5-shot CoT
+
+MMLU-Pro 的标准评估协议是 **5-shot Chain-of-Thought (CoT)**：
+
+1. 在 prompt 中提供 5 个来自同一学科的示例题目，每个示例包含**完整的推理过程**和最终答案
+2. 模型需要对新问题先写出推理步骤，再给出选项字母
+3. 从模型输出中提取最终选项，与标准答案做 exact match
+
+为什么用 CoT 而非 direct answer？论文的核心发现之一是：**在 MMLU-Pro 上，CoT 比直接回答平均提升 10-20 个百分点**，远大于在原版 MMLU 上的差异（约 2-3%）。这说明 MMLU-Pro 确实在测量推理能力，而不仅仅是知识记忆。
+
+<MMLUProEvalDemo client:visible />
+
+> **交互说明**：左侧展示"直接回答"模式——模型不经思考直接选 B（错误），置信度仅 18%。右侧点击按钮逐步展示 CoT 推理过程，模型通过 $v = gt$ 公式推导出正确答案 D，置信度 82%。
+
+### CoT vs Direct 的深层原因
+
+为什么 10 选项会放大 CoT 的优势？
+
+- **4 选项**：即使模型不确定，也有 25% 的概率猜对。直接回答的"表面准确率"被虚高
+- **10 选项**：猜测概率降至 10%，模型必须**真正理解**才能选对。此时 CoT 的推理链帮助模型逐步缩小候选范围，效果显著
+- **Prompt 敏感性**：MMLU 上更换 prompt 模板可能导致 4-5% 的分数波动，MMLU-Pro 降至约 2%，这意味着评估结果更可靠
+
+## 深潜 2：GPQA Diamond
+
+### 为什么选 GPQA Diamond？
+
+GPQA Diamond 是当前**区分推理模型能力的关键基准**。在 o1、o3、Gemini 2.5 Pro 等推理模型的评测报告中，GPQA Diamond 几乎必定出现。它的独特价值在于：即使让非专家带着搜索引擎做 30 分钟，准确率也只有 34%——这个基准是真正"Google-Proof"的。
+
+### 数据集构成
+
+GPQA (Rein et al., 2024) 包含 448 道博士级别的科学选择题，覆盖三个领域：
+
+| 领域 | 占比 | 示例话题 |
+|------|------|----------|
+| 物理 | ~33% | 量子力学、统计力学、粒子物理 |
+| 化学 | ~33% | 有机化学、量子化学、热力学 |
+| 生物 | ~33% | 分子生物学、遗传学、生态学 |
+
+**Diamond** 是经过最严格筛选的 198 题子集——每道题都经过了"对抗验证"流程。
+
+### 对抗验证流程
+
+GPQA 的题目生产流程是其核心创新：
+
+1. **出题者**（Domain Expert，该领域 PhD 或在读博士）撰写一道选择题
+2. **同领域验证者**（另一位 Domain Expert）尝试解答——他们应该能做对
+3. **跨领域验证者**（不同领域的 PhD）带着 Google 搜索 30 分钟尝试解答——他们应该做不对
+4. 只有满足"专家做对、非专家搜索后仍做错"的题目才进入 **Diamond** 子集
+
+这个对抗设计确保了两个关键属性：
+- **难度保障**：不是"查一下就知道"的简单事实题，而是需要深度领域理解的推理题
+- **Google-Proof**：无法通过搜索答案来"作弊"，这也意味着数据污染的影响相对较小
+
+### 为什么 GPQA Diamond 难？
+
+以物理学为例，一道典型 GPQA Diamond 题目可能要求：
+
+1. 理解量子力学中的 Hamiltonian 算符
+2. 应用特定的近似方法（如微扰理论）
+3. 执行多步数学推导
+4. 在 4 个精心设计的选项中排除 3 个（干扰项基于常见的推理错误）
+
+这种深度推理 + 专业知识的组合，使得即使是 GPT-4 级别的模型（~39% 在 GPQA 全集上）也难以应对。不过，推理模型的出现正在改变格局：o3 达到 87.7%，已经**超过了人类领域专家的 74%**。
+
+### 评估方式
+
+GPQA Diamond 通常使用 **0-shot 或 few-shot CoT**：
+
+- 模型接收完整的问题和 4 个选项
+- 需要先写出推理过程，再给出选项
+- exact match 评分
+
+值得注意的是，不同报告中的 GPQA Diamond 分数可能使用不同的 shot 设置和 CoT 策略，比较时需要确认评估协议是否一致。
+
+## 过渡：从知识推理到代码与 Agent
+
+知识和推理 benchmark 构成了 LLM 评估的基石——它们测量的是模型"理解世界"和"逻辑思考"的基本能力。但在实际应用中，我们还关心模型能否**写出正确的代码**、能否**使用工具完成复杂任务**。
+
+下一篇文章 [代码 Benchmark 深度剖析](/llm-learning/zh/articles/code-benchmarks) 将深入 HumanEval、SWE-bench、LiveCodeBench 等代码评估基准，探讨从"函数级代码生成"到"项目级软件工程"的完整评估谱系。
+
+如果你对 Agent 和工具调用评估更感兴趣，可以直接跳到 [Agent Benchmark 深度剖析](/llm-learning/zh/articles/agent-benchmarks)。
