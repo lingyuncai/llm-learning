@@ -29,6 +29,8 @@ import LatencyOverheadBar from '../../../components/interactive/LatencyOverheadB
 import ScenarioFitMatrix from '../../../components/interactive/ScenarioFitMatrix.tsx';
 import PaperTimeline from '../../../components/interactive/PaperTimeline.tsx';
 
+> **前置推荐**: 如果你还不熟悉 LLM benchmark 的评估体系和各排行榜的解读方法，建议先阅读 [LLM 评估与 Benchmark 深度解析](/zh/paths/llm-evaluation-benchmarks) 路径，特别是最后一篇 [排行榜解读与模型选型](/zh/articles/leaderboard-model-selection)。
+
 GPT-4 级别的模型和 Llama-3-8B 级别的模型之间，能力差距巨大，而价格差距更大 — 可达 **100 倍**。但实际生产流量中，大约 80% 的 query 并不需要最强的模型：问"今天星期几"和"证明黎曼猜想的等价命题"显然不在同一个难度级别。
 
 **Model Routing**（模型路由）的核心命题是：**根据每个 query 的难度和性质，自动选择最合适的模型**，在质量、成本、延迟和隐私之间取得最优平衡。这不是一个新想法 — 从 2023 年 FrugalGPT 提出级联策略，到 2024 年 RouteLLM 开源路由框架，再到 2025-2026 年各方向的集中爆发，model routing 已经从学术概念演变为生产级系统的核心组件。
