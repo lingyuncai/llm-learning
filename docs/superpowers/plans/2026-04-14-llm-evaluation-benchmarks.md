@@ -117,7 +117,7 @@ articles:
 npm run validate
 ```
 
-Expected: validation passes (articles don't exist yet, but path definition itself should be valid YAML).
+Expected: validation may produce warnings about missing article slugs (articles aren't created yet). The YAML itself should parse correctly. Warnings about unresolved article references are expected and will resolve as Tasks 2-8 create the articles.
 
 - [ ] **Step 3: Commit**
 
@@ -185,12 +185,30 @@ const BENCHMARKS: BenchmarkCard[] = [
     },
     keyFeature: { zh: '4 选 1，zero/few-shot', en: '4-choice, zero/few-shot' },
   },
-  // MMLU-Pro, GPQA Diamond, GSM8K, MATH, AIME, BBH, FrontierMath,
-  // HumanEval, SWE-bench, LiveCodeBench, BigCodeBench,
-  // BFCL, GAIA, WebArena,
-  // Chatbot Arena, AlpacaEval, MT-Bench,
-  // LiveBench
-  // ... (implement ALL benchmarks from spec Art.1 全景部分)
+  // Implement ALL of the following (same structure as MMLU above):
+  // Knowledge: MMLU-Pro (2024, knowledge, exact_match, static)
+  // Reasoning: GSM8K (2021, reasoning, exact_match, static),
+  //   MATH/MATH-500 (2021, reasoning, exact_match, static),
+  //   AIME 2024 (2024, reasoning, exact_match, static),
+  //   BBH (2022, reasoning, exact_match, static),
+  //   GPQA Diamond (2023, reasoning, exact_match, static),
+  //   FrontierMath (2024, reasoning, exact_match, static),
+  //   ARC-Challenge (2018, reasoning, exact_match, static),
+  //   HellaSwag (2019, reasoning, exact_match, static)
+  // Code: HumanEval (2021, code, execution, static),
+  //   HumanEval+ (2023, code, execution, static),
+  //   SWE-bench (2024, code, execution, static),
+  //   LiveCodeBench (2024, code, execution, dynamic),
+  //   BigCodeBench (2024, code, execution, static),
+  //   MBPP (2021, code, execution, static)
+  // Agent: BFCL (2024, agent, execution, dynamic),
+  //   GAIA (2023, agent, execution, static),
+  //   WebArena (2024, agent, execution, static)
+  // Preference: Chatbot Arena (2023, preference, elo, dynamic),
+  //   AlpacaEval (2023, preference, llm_judge, static),
+  //   MT-Bench (2023, preference, llm_judge, static)
+  // Dynamic: LiveBench (2024, reasoning, exact_match, dynamic)
+  // Total: ~22 benchmark entries
 ];
 
 const CATEGORY_LABELS: Record<Category, { zh: string; en: string }> = {
@@ -852,7 +870,7 @@ const STEPS: FlowStep[] = [
       en: 'After applying patch, run relevant tests. All tests pass = resolved. Metric: resolved rate (percentage of successfully resolved issues).',
     },
     icon: '✅',
-    color: '#2e7d32',
+    color: COLORS.green,
   },
 ];
 
@@ -984,6 +1002,14 @@ const DIMENSION_LABELS: Record<Dimension, { zh: string; en: string }> = {
 const DIMENSIONS: Dimension[] = ['functionCalling', 'multiStep', 'planning', 'errorRecovery', 'efficiency'];
 
 // [🔍 WEB SEARCH] All scores must be verified from BFCL, GAIA, τ-bench leaderboards
+// Dimension mapping to benchmarks:
+//   functionCalling → BFCL overall accuracy
+//   multiStep → GAIA Level 2-3 success rate
+//   planning → Derived from GAIA + τ-bench (no single benchmark; use weighted average)
+//   errorRecovery → τ-bench recovery rate (if available) or approximate from GAIA step retries
+//   efficiency → Inverse of average steps/tokens in GAIA (lower = better → normalize)
+// NOTE: "planning" and "errorRecovery" have no direct 1:1 benchmark source.
+// Use best available data and note the approximation in component tooltips.
 // Scores are normalized 0-100 for visualization; include source in tooltip
 const ALL_MODELS: ModelScores[] = [
   { name: 'GPT-4o', color: '#10a37f',
@@ -1434,9 +1460,19 @@ const DATA: DegradationData[] = [
       'HumanEval': { score: 60, baselineScore: 62, degradation: 3.2 },
     },
   },
-  // INT4, FP8 for 7B...
-  // 13B, 70B models...
-  // [verify all — provide complete data for all scale × quant combinations]
+  // Complete ALL of these entries (same structure as above):
+  // 7B × INT4: expect larger drops — MMLU ~2-4%, GSM8K ~5-8%, HumanEval ~6-10%
+  // 7B × FP8: expect drops between INT8 and FP16 — MMLU ~0.5%, GSM8K ~1%, HumanEval ~1.5%
+  // 13B × FP16: baseline (higher absolute scores than 7B)
+  // 13B × INT8: smaller % drops than 7B (more parameter redundancy)
+  // 13B × INT4: moderate drops
+  // 13B × FP8: minimal drops
+  // 70B × FP16: baseline (highest absolute scores)
+  // 70B × INT8: very small drops (~0.3-0.8%)
+  // 70B × INT4: small drops (~1-3%) — key insight: "大模型更耐量化"
+  // 70B × FP8: near-lossless
+  // Total: 12 entries (3 scales × 4 quant methods)
+  // [🔍 WEB SEARCH] verify all with actual published data
 ];
 
 const BENCH_LABELS: Record<string, { zh: string; en: string }> = {
@@ -1609,10 +1645,14 @@ const QUANT_LEVELS: QuantLevel[] = [
       'HumanEval': { score: 62.2, change: -1.0 },
     },
   },
-  // Q6_K, Q5_K_M, Q4_K_M, Q3_K_M, Q2_K
-  // Key data point to highlight: Q4_K_M might show small ppl change but
-  // noticeable HumanEval drop (code is more sensitive)
-  // [verify all values]
+  // Complete ALL of these entries (same structure as above):
+  // Q6_K:   ppl ~6.26, pplChange ~0.3%,  MMLU ~-0.5%, GSM8K ~-0.8%, HumanEval ~-1.5%
+  // Q5_K_M: ppl ~6.30, pplChange ~1.0%,  MMLU ~-0.8%, GSM8K ~-1.5%, HumanEval ~-2.5%
+  // Q4_K_M: ppl ~6.38, pplChange ~2.2%,  MMLU ~-1.2%, GSM8K ~-3.0%, HumanEval ~-5.0%  ← KEY: ppl small but HumanEval drops
+  // Q3_K_M: ppl ~6.55, pplChange ~5.0%,  MMLU ~-2.5%, GSM8K ~-6.0%, HumanEval ~-10%
+  // Q2_K:   ppl ~7.20, pplChange ~15.4%, MMLU ~-8.0%, GSM8K ~-15%, HumanEval ~-20%
+  // Total: 7 quant levels (FP16 through Q2_K)
+  // [🔍 WEB SEARCH] verify all values — above are rough estimates for plan guidance only
 ];
 
 export default function PerplexityVsTaskAccuracy({ locale = 'zh' }: { locale?: 'zh' | 'en' }) {
@@ -1728,7 +1768,7 @@ git commit -m "feat(eval-benchmarks): add Art.6 optimization accuracy with 3 com
 - [ ] **Step 1: Create ModelSelectionDecisionTree.tsx**
 
 ```tsx
-import { useState, useCallback } from 'react';
+import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { COLORS, FONTS } from './shared/colors';
 
@@ -1810,7 +1850,7 @@ const QUESTIONS: Question[] = [
 ];
 
 // Decision logic: based on combination of answers, produce recommendation
-function getRecommendation(answers: Record<string, string>, locale: 'zh' | 'en'): Recommendation {
+function getRecommendation(answers: Record<string, string>): Recommendation {
   const task = answers['task'];
   const deploy = answers['deployment'];
 
@@ -1988,12 +2028,10 @@ git commit -m "feat(eval-benchmarks): add Art.7 leaderboard and model selection 
 After the imports section, before the first heading, add a callout box:
 
 ```mdx
-:::note[前置推荐]
-如果你还不熟悉 LLM benchmark 的评估体系和各排行榜的解读方法，建议先阅读 [LLM 评估与 Benchmark 深度解析](/zh/paths/llm-evaluation-benchmarks) 路径，特别是最后一篇 [排行榜解读与模型选型](/zh/articles/leaderboard-model-selection)。
-:::
+> **前置推荐**: 如果你还不熟悉 LLM benchmark 的评估体系和各排行榜的解读方法，建议先阅读 [LLM 评估与 Benchmark 深度解析](/zh/paths/llm-evaluation-benchmarks) 路径，特别是最后一篇 [排行榜解读与模型选型](/zh/articles/leaderboard-model-selection)。
 ```
 
-**Note:** If the project doesn't support `:::note` directives, use a styled blockquote or paragraph instead. Check how other articles handle callouts.
+This project uses standard markdown blockquotes (`> **Bold label**: text`) for callouts.
 
 - [ ] **Step 2: Run full validation**
 
