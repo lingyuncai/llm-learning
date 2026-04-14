@@ -22,7 +22,7 @@ interface Benchmark {
 const BENCHMARKS: Benchmark[] = [
   // Knowledge
   { name: 'MMLU', year: 2021, category: 'knowledge', evalMethod: 'exact_match', updateStrategy: 'static',
-    datasetSize: '~15,908 (57 subjects)', sotaRange: '90–92%',
+    datasetSize: '~15,908 (57 subjects)', sotaRange: '88–90%',
     description: { zh: '大规模多任务语言理解，覆盖 57 个学科从 STEM 到人文', en: 'Massive Multitask Language Understanding across 57 subjects from STEM to humanities' },
     keyFeature: { zh: '最广泛引用的知识基准，但存在噪声题目', en: 'Most widely cited knowledge benchmark, but contains noisy questions' } },
   { name: 'MMLU-Pro', year: 2024, category: 'knowledge', evalMethod: 'exact_match', updateStrategy: 'static',
@@ -35,7 +35,7 @@ const BENCHMARKS: Benchmark[] = [
     description: { zh: '小学数学应用题，需要 2-8 步推理', en: 'Grade school math word problems requiring 2-8 step reasoning' },
     keyFeature: { zh: '推理能力入门基准，顶级模型已接近饱和', en: 'Entry-level reasoning benchmark, top models near saturation' } },
   { name: 'MATH / MATH-500', year: 2021, category: 'reasoning', evalMethod: 'exact_match', updateStrategy: 'static',
-    datasetSize: '12,500 (500 test subset)', sotaRange: '85–95%',
+    datasetSize: '12,500 (5,000 test; MATH-500 is 500 subset)', sotaRange: '85–95%',
     description: { zh: '高中到竞赛级数学，覆盖代数、几何、数论等 7 个领域', en: 'High school to competition math across 7 areas: algebra, geometry, number theory, etc.' },
     keyFeature: { zh: 'MATH-500 是常用子集，难度分 1-5 级', en: 'MATH-500 is the commonly used subset, difficulty levels 1-5' } },
   { name: 'AIME 2024', year: 2024, category: 'reasoning', evalMethod: 'exact_match', updateStrategy: 'static',
@@ -72,7 +72,7 @@ const BENCHMARKS: Benchmark[] = [
     description: { zh: '增强测试用例版 HumanEval，同样 164 题但每题增加约 80 倍测试', en: 'Enhanced HumanEval with ~80x more test cases per problem' },
     keyFeature: { zh: '揭示原版 HumanEval 高分可能是虚假通过', en: 'Reveals original HumanEval high scores may be false passes' } },
   { name: 'SWE-bench', year: 2024, category: 'code', evalMethod: 'execution', updateStrategy: 'static',
-    datasetSize: '2,294 instances (300 Verified)', sotaRange: '40–55% (Verified)',
+    datasetSize: '2,294 instances (500 Verified)', sotaRange: '55–77% (Verified)',
     description: { zh: '基于真实 GitHub Issue 的端到端软件工程任务', en: 'End-to-end software engineering tasks from real GitHub issues' },
     keyFeature: { zh: '需要跨文件理解和修改，最接近真实开发场景', en: 'Requires cross-file understanding and modification, closest to real dev' } },
   { name: 'LiveCodeBench', year: 2024, category: 'code', evalMethod: 'execution', updateStrategy: 'dynamic',
@@ -115,7 +115,7 @@ const BENCHMARKS: Benchmark[] = [
     keyFeature: { zh: '首个系统化的 LLM-as-Judge 基准', en: 'First systematic LLM-as-Judge benchmark' } },
   // Dynamic (cross-category)
   { name: 'LiveBench', year: 2024, category: 'reasoning', evalMethod: 'exact_match', updateStrategy: 'dynamic',
-    datasetSize: '~900+ (monthly refresh)', sotaRange: '65–85%',
+    datasetSize: '~900+ (monthly refresh)', sotaRange: '50–70%',
     description: { zh: '每月更新的综合基准，从最新信息源（竞赛/论文/新闻）出题', en: 'Monthly-refreshed comprehensive benchmark sourcing from latest competitions/papers/news' },
     keyFeature: { zh: '覆盖数学/代码/推理/语言/指令遵循/数据分析 6 大类', en: 'Covers math/code/reasoning/language/instruction-following/data-analysis' } },
 ];

@@ -52,7 +52,7 @@ const MODELS: ModelRow[] = [
     name: 'GPT-4o', tier: 'frontier', family: 'GPT',
     scores: {
       'mmlu': 88.7, 'mmlu-pro': 72.6, 'ifeval': 84.3,
-      'gpqa': 53.6, 'math500': 76.6, 'aime': 9.3, 'bbh': 83.6, 'arc': 96.4,
+      'gpqa': 56.1, 'math500': 76.6, 'aime': 9.3, 'bbh': 83.6, 'arc': 96.4,
       'humaneval': 90.2, 'swe-bench': 38.4, 'livecodebench': null, 'bfcl': 88.5,
       'gaia': 40.5, 'arena-elo': 1285,
     },
@@ -71,8 +71,8 @@ const MODELS: ModelRow[] = [
   {
     name: 'Gemini 1.5 Pro', tier: 'frontier', family: 'Gemini',
     scores: {
-      'mmlu': 85.9, 'mmlu-pro': 69.4, 'ifeval': null,
-      'gpqa': 46.2, 'math500': 67.7, 'aime': null, 'bbh': 84.0, 'arc': null,
+      'mmlu': 85.9, 'mmlu-pro': 69.0, 'ifeval': null,
+      'gpqa': 46.2, 'math500': 67.7, 'aime': null, 'bbh': 89.2, 'arc': null,
       'humaneval': 84.1, 'swe-bench': null, 'livecodebench': null, 'bfcl': null,
       'gaia': null, 'arena-elo': 1260,
     },
@@ -82,7 +82,7 @@ const MODELS: ModelRow[] = [
     name: 'Llama 3.1 405B', tier: 'frontier', family: 'Llama',
     scores: {
       'mmlu': 87.3, 'mmlu-pro': 73.3, 'ifeval': 88.6,
-      'gpqa': 50.7, 'math500': 73.8, 'aime': null, 'bbh': 85.9, 'arc': 96.1,
+      'gpqa': 50.7, 'math500': 73.8, 'aime': null, 'bbh': 85.9, 'arc': 96.9,
       'humaneval': 89.0, 'swe-bench': 33.2, 'livecodebench': null, 'bfcl': null,
       'gaia': null, 'arena-elo': 1253,
     },
@@ -111,8 +111,8 @@ const MODELS: ModelRow[] = [
   {
     name: 'Qwen 2.5 7B', tier: 'small', family: 'Qwen',
     scores: {
-      'mmlu': 74.2, 'mmlu-pro': 56.3, 'ifeval': 74.6,
-      'gpqa': 34.2, 'math500': 75.5, 'aime': null, 'bbh': 70.4, 'arc': null,
+      'mmlu': 74.2, 'mmlu-pro': 56.3, 'ifeval': 71.2,
+      'gpqa': 36.4, 'math500': 75.5, 'aime': null, 'bbh': 70.4, 'arc': null,
       'humaneval': 84.8, 'swe-bench': null, 'livecodebench': null, 'bfcl': null,
       'gaia': null, 'arena-elo': null,
     },

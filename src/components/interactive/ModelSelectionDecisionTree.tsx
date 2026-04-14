@@ -130,16 +130,16 @@ function getRecommendation(
     } else {
       modelParts.push(
         locale === 'zh'
-          ? '旗舰 API：GPT-4.5 / Claude Opus / Gemini Ultra'
-          : 'Flagship APIs: GPT-4.5 / Claude Opus / Gemini Ultra',
+          ? '旗舰 API：GPT-4o / o3 / Claude Opus / Gemini 2.5 Pro'
+          : 'Flagship APIs: GPT-4o / o3 / Claude Opus / Gemini 2.5 Pro',
       );
     }
   } else if (deployment === 'local') {
     if (hardware === 'nvidia-gpu') {
       modelParts.push(
         locale === 'zh'
-          ? '13B-70B (FP16/INT8)：Qwen2.5-72B / Llama 3.3-70B / Mistral Large'
-          : '13B-70B (FP16/INT8): Qwen2.5-72B / Llama 3.3-70B / Mistral Large',
+          ? '13B-70B (FP16/INT8)：Qwen2.5-72B / Llama 3.3-70B / Mixtral 8x7B'
+          : '13B-70B (FP16/INT8): Qwen2.5-72B / Llama 3.3-70B / Mixtral 8x7B',
       );
     } else if (hardware === 'nvidia-gpu-small') {
       modelParts.push(

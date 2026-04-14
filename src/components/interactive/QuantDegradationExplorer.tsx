@@ -115,6 +115,10 @@ export default function QuantDegradationExplorer({ locale = 'zh' }: { locale?: '
           {t('选择模型规模和视图模式，探索不同量化方法对各 benchmark 的影响',
              'Select model scale and view mode to explore quantization impact on benchmarks')}
         </p>
+        <p className="text-xs mt-0.5" style={{ color: COLORS.orange, fontStyle: 'italic' }}>
+          {t('数据为基于文献和社区评测的代表性趋势值，具体分数因模型版本和评测条件而异',
+             'Data shows representative trends from literature and community benchmarks; exact scores vary by model version and setup')}
+        </p>
       </div>
 
       {/* Controls */}

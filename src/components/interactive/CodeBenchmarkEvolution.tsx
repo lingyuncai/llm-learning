@@ -57,7 +57,7 @@ const NODES: BenchmarkNode[] = [
     evalMethod: { zh: '执行验证 + 动态更新', en: 'Execution + dynamic updates' },
     sota: 'pass@1 ~65%',
     innovation: { zh: '持续引入新竞赛题，抗 contamination', en: 'Continuously adds new competition problems, anti-contamination' },
-    details: { zh: '从 LeetCode/Codeforces 等持续引入新题', en: 'Continuously imports from LeetCode/Codeforces' },
+    details: { zh: '从 LeetCode/AtCoder/Codeforces 等持续引入新题', en: 'Continuously imports from LeetCode/AtCoder/Codeforces' },
     parentIds: [] },
   { id: 'bigcodebench', name: 'BigCodeBench', year: 2024,
     evalMethod: { zh: '执行验证', en: 'Execution' },

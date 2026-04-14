@@ -97,7 +97,7 @@ import ModelBenchmarkMatrix from '../../../components/interactive/ModelBenchmark
 
 **Claude 3.5 Sonnet** 不报 AIME 和 ARC-C。Claude 在 SWE-bench 上以 49.0% 大幅领先（GPT-4o 为 38.4%），但不报 AIME 分数——暗示在超高难度数学竞赛上可能不占优。同样不报 BFCL，在 function calling 维度给出的信号是"我们更侧重代码和推理"。
 
-**Gemini 1.5 Pro** 大量 benchmark 未报告具体分数，特别是 SWE-bench、BFCL、GAIA 和 IFEval。Google 的策略是强调多模态和长上下文（百万 token context window），而非在文本 benchmark 上逐一对标。
+**Gemini 1.5 Pro** 部分 benchmark 未报告具体分数，特别是 SWE-bench 和 GAIA。Google 的策略是强调多模态和长上下文（百万 token context window），而非在文本 benchmark 上逐一对标。不过 Gemini 1.5 技术报告中确实包含了 BFCL 和 IFEval 的评测数据。
 
 **GPT-4o** 是覆盖最全的——几乎所有主流 benchmark 都有分数，这反映了 OpenAI 作为行业标杆的自信：不存在"需要隐藏"的弱项。
 
@@ -153,11 +153,11 @@ Qwen 2.5 是报告最全面的小模型之一——覆盖了 MMLU、MMLU-Pro、I
 
 ### Llama 3.1 8B（Meta）
 
-Meta 的 Llama 3.1 8B 受益于开源生态，是被第三方测试最全面的模型。官方报告覆盖了 MMLU、MMLU-Pro、GPQA Diamond、MATH-500、BBH、HumanEval、IFEval、ARC-C——几乎是小模型中覆盖最全的。分数均衡但没有特别突出的领域：MMLU 69.4%（小模型最低），但 IFEval 80.4% 较为突出。
+Meta 的 Llama 3.1 8B 受益于开源生态，是被第三方测试最全面的模型。官方报告覆盖了 MMLU、MMLU-Pro、GPQA Diamond、MATH-500、BBH、HumanEval、IFEval、ARC-C——几乎是小模型中覆盖最全的。分数均衡但没有特别突出的领域：MMLU 69.4%（仅高于 Mistral 7B 的 62.5%），但 IFEval 80.4% 较为突出。
 
 ### Mistral 7B（Mistral AI）
 
-作为较早期的模型，Mistral 7B 报告的 benchmark 最少——仅有 MMLU (62.5%)、ARC-C (78.5%) 和 HumanEval (32.9%)。大量"N/R"反映了 Mistral 7B 发布时（2023 年底）benchmark 标配集尚未形成。这也说明了标配集的**时间演变**：2023 年不需要报的分数，2024 年已经成为必报项。
+作为较早期的模型，Mistral 7B 报告的 benchmark 最少——仅有 MMLU (62.5%)、ARC-C (78.5%) 和 HumanEval (32.9%)。大量"N/R"反映了 Mistral 7B 发布时（2023 年 9 月）benchmark 标配集尚未形成。这也说明了标配集的**时间演变**：2023 年不需要报的分数，2024 年已经成为必报项。
 
 ## 分数可比性的三大陷阱
 

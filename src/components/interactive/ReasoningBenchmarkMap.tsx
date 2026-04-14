@@ -15,7 +15,7 @@ interface ReasoningBenchmark {
 }
 
 // Scores verified via web search (2025-04):
-// MMLU ~90%: GPT-4o/Claude 3.5 class; MMLU-Pro ~78%: TIGER-Lab leaderboard
+// MMLU ~88-90%: GPT-4o/Claude 3.5 class; MMLU-Pro ~73%: GPT-4o 72.6% (MMLU-Pro paper)
 // GSM8K ~97%: o1/GPT-4o saturated; MATH-500 ~95%: o1 94.8%
 // AIME 2024 ~87%: o3-mini (high) 87.3%; GPQA Diamond ~88%: o3 87.7%
 // BBH ~88%: GPT-4 class; FrontierMath ~25%: o3 reported ~25%
@@ -24,7 +24,7 @@ const BENCHMARKS: ReasoningBenchmark[] = [
   { name: 'MMLU', year: 2021, bestScore: 92, adoptionFreq: 10, category: 'knowledge',
     description: { zh: '57 学科通用知识，4 选 1', en: '57-subject knowledge, 4-choice' },
     status: { zh: '已饱和', en: 'Saturated' } },
-  { name: 'MMLU-Pro', year: 2024, bestScore: 78, adoptionFreq: 9, category: 'knowledge',
+  { name: 'MMLU-Pro', year: 2024, bestScore: 73, adoptionFreq: 9, category: 'knowledge',
     description: { zh: 'MMLU 升级版，10 选项，推理需求更强', en: 'MMLU upgrade, 10 choices, stronger reasoning' },
     status: { zh: '主力基准', en: 'Primary benchmark' } },
   { name: 'GSM8K', year: 2021, bestScore: 97, adoptionFreq: 8, category: 'math',

@@ -83,7 +83,7 @@ MMLU 的主要问题是**噪声题目**和 **4 选项的随机猜测概率太高
 
 **American Invitational Mathematics Examination** 2024 年真题，共 30 道题（2 套 × 15 题），答案为 0-999 整数，天然防猜测。
 
-- **当前 SOTA**：约 87%（o3-mini high effort 达到 87.3%，o1-preview 达到 83%/12.5 out of 15）
+- **当前 SOTA**：约 87%（o3-mini high effort 达到 87.3%，o1-preview 在 64 次采样 majority voting 下达到 83%/12.5 out of 15，单次尝试约 74%）
 - **现状**：**仍有区分力**，能有效区分不同推理模型的数学能力
 
 ### BBH（2022）
@@ -156,7 +156,7 @@ MMLU-Pro 的标准评估协议是 **5-shot Chain-of-Thought (CoT)**：
 2. 模型需要对新问题先写出推理步骤，再给出选项字母
 3. 从模型输出中提取最终选项，与标准答案做 exact match
 
-为什么用 CoT 而非 direct answer？论文的核心发现之一是：**在 MMLU-Pro 上，CoT 比直接回答平均提升 10-20 个百分点**，远大于在原版 MMLU 上的差异（约 2-3%）。这说明 MMLU-Pro 确实在测量推理能力，而不仅仅是知识记忆。
+为什么用 CoT 而非 direct answer？论文的核心发现之一是：**在 MMLU-Pro 上，CoT 比直接回答平均提升 10-20 个百分点**，远大于在原版 MMLU 上的差异（约 0-2%）。这说明 MMLU-Pro 确实在测量推理能力，而不仅仅是知识记忆。
 
 <MMLUProEvalDemo client:visible />
 
