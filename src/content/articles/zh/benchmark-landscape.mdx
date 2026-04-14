@@ -216,10 +216,10 @@ LLM-as-Judge 并非完美，存在多种系统性偏差：
 
 ### 检测方法
 
-1. **Canary String（金丝雀字符串）**：在数据集中嵌入特殊标记字符串，检查模型是否能复现
-2. **Membership Inference**：通过比较模型对训练数据 vs 未见数据的 perplexity 差异来判断
-3. **Performance vs Release Date 分析**：如果模型在发布前的 benchmark 上显著优于发布后的同类 benchmark，可能存在污染
-4. **n-gram Overlap 检测**：直接检查训练数据与测试集的文本重叠度（需要访问训练数据）
+1. **Canary String（金丝雀字符串）**：数据集作者在发布时嵌入一段随机生成的、自然文本中不可能出现的特殊字符串（如 `benchmarks canance the 184729`）。如果模型能补全或复现这段无意义字符串，就证明训练数据中包含了该数据集的原文。这个名字来自"矿井金丝雀"——矿工用金丝雀检测有毒气体，这里用特殊字符串检测数据泄漏。BIG-bench、Pile 等数据集都内置了 canary string
+2. **Membership Inference**：语言模型对"见过的"文本会给出更低的 perplexity（更高的预测概率）。通过比较模型对 benchmark 测试集 vs 同分布但确认未见过的数据的 perplexity 差异，可以推断测试集是否出现在训练数据中。差异越大，污染的可能性越高
+3. **Performance vs Release Date 分析**：如果模型在发布日期**之前**公开的 benchmark 上显著优于发布日期**之后**才出现的同类 benchmark，可能存在污染。例如，一个模型在 HumanEval（2021）上 pass@1 达到 90%，但在 LiveCodeBench（持续更新的新题）上只有 60%，这种异常落差就是污染信号
+4. **n-gram Overlap 检测**：直接检查训练数据与测试集的文本重叠度。例如计算 8-gram 或 13-gram 的重合比例——如果测试题的长片段逐字出现在训练集中，几乎可以确认污染。GPT-3 论文中就使用了这种方法。局限是需要访问训练数据，对闭源模型不适用
 
 ### 动态 Benchmark 的应对
 
