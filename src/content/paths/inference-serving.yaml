@@ -1,4 +1,5 @@
 id: inference-serving
+order: 5
 title:
   zh: "vLLM + SGLang 推理引擎深度解析"
   en: "vLLM + SGLang Inference Engine Deep Dive"

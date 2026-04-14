@@ -1,4 +1,5 @@
 id: reinforcement-learning
+order: 10
 title:
   zh: "强化学习：从基础到 LLM 对齐与推理"
   en: "Reinforcement Learning: From Foundations to LLM Alignment & Reasoning"

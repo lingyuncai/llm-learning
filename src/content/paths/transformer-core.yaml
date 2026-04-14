@@ -1,4 +1,5 @@
 id: transformer-core
+order: 1
 title:
   zh: "Transformer 核心机制"
   en: "Transformer Core Mechanisms"

@@ -1,4 +1,5 @@
 id: ai-compute-stack
+order: 8
 title:
   zh: "AI Compute Stack"
   en: "AI Compute Stack"

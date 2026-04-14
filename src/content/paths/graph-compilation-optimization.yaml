@@ -1,4 +1,5 @@
 id: graph-compilation-optimization
+order: 9
 title:
   zh: "图编译与优化"
   en: "Graph Compilation & Optimization"

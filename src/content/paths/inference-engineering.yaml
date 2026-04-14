@@ -1,4 +1,5 @@
 id: inference-engineering
+order: 4
 title:
   zh: "LLM 推理工程"
   en: "LLM Inference Engineering"

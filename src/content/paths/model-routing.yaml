@@ -1,4 +1,5 @@
 id: model-routing
+order: 6
 title:
   zh: "LLM Model Routing：智能模型选择与混合推理"
   en: "LLM Model Routing: Intelligent Model Selection and Hybrid Inference"

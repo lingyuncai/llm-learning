@@ -1,4 +1,5 @@
 id: quantization
+order: 3
 title:
   zh: "LLM 量化技术"
   en: "LLM Quantization Techniques"

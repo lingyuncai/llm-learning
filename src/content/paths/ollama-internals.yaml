@@ -1,4 +1,5 @@
 id: ollama-internals
+order: 7
 title:
   zh: "Ollama + llama.cpp 深度解析"
   en: "Ollama + llama.cpp Deep Dive"
