@@ -1,0 +1,298 @@
+---
+title: "当 RL 遇上 LLM：从语言生成到策略优化"
+slug: rl-for-llm
+locale: zh
+tags: [reinforcement-learning, llm, post-training, rlhf, policy-optimization, alignment]
+difficulty: intermediate
+created: "2026-04-13"
+updated: "2026-04-13"
+prerequisites: [rl-foundations, policy-gradient, ppo-actor-critic]
+references:
+  - type: paper
+    title: "Training language models to follow instructions with human feedback (Ouyang et al., 2022)"
+    url: "https://arxiv.org/abs/2203.02155"
+  - type: paper
+    title: "Direct Preference Optimization: Your Language Model is Secretly a Reward Model (Rafailov et al., 2023)"
+    url: "https://arxiv.org/abs/2305.18290"
+  - type: paper
+    title: "DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models (Shao et al., 2024)"
+    url: "https://arxiv.org/abs/2402.03300"
+  - type: paper
+    title: "DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning (2025)"
+    url: "https://arxiv.org/abs/2501.12948"
+  - type: paper
+    title: "A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning (Ross et al., 2011)"
+    url: "https://arxiv.org/abs/1011.0686"
+  - type: paper
+    title: "Fine-Tuning Language Models from Human Preferences (Ziegler et al., 2019)"
+    url: "https://arxiv.org/abs/1909.08593"
+  - type: paper
+    title: "Learning to summarize from human feedback (Stiennon et al., 2020)"
+    url: "https://arxiv.org/abs/2009.01325"
+  - type: website
+    title: "Policy Gradient Algorithms — Lilian Weng"
+    url: "https://lilianweng.github.io/posts/2018-04-08-policy-gradient/"
+  - type: website
+    title: "RLHF: Reinforcement Learning from Human Feedback — Chip Huyen"
+    url: "https://huyenchip.com/2023/05/02/rlhf.html"
+---
+
+import SFTvsRLComparison from '../../../components/interactive/SFTvsRLComparison.tsx';
+import LLMasMDP from '../../../components/interactive/LLMasMDP.tsx';
+import TokenRewardAssignment from '../../../components/interactive/TokenRewardAssignment.tsx';
+import PostTrainingPipeline from '../../../components/interactive/PostTrainingPipeline.tsx';
+
+前面三篇文章，我们建立了完整的 RL 工具箱：MDP 和 Bellman 方程（价值评估）、Policy Gradient（直接优化策略）、PPO（稳定的策略优化）。这些算法最初诞生于游戏和机器人控制领域。
+
+但你可能一直在想：**这些和 LLM 有什么关系？**
+
+本文就是这座桥。我们将回答三个核心问题：
+1. 为什么 LLM post-training 必须使用 RL，而不能只靠 SFT？
+2. LLM 的文本生成过程如何精确映射为一个 MDP？
+3. 前面学的 PG、Advantage、PPO 在 LLM 语境下具体意味着什么？
+
+## SFT 的天花板：为什么 Behavioral Cloning 不够
+
+LLM 的第一阶段 post-training 是 **SFT（Supervised Fine-Tuning）**：用人工编写的高质量 (prompt, response) 数据对预训练模型做监督微调。SFT 教会模型遵循指令的基本格式和能力。
+
+但 SFT 本质上是 **behavioral cloning（行为克隆）**——模仿专家的行为。这种方式有四个根本局限。
+
+### Distribution Shift：训练和推理的分布不匹配
+
+SFT 训练时，模型看到的是人类编写的"完美"轨迹，每一步都用 **teacher forcing**：无论模型自己会生成什么，训练时强制喂入正确的下一个 token。
+
+但推理时，模型必须用**自己生成的 token** 作为后续输入。一旦某步生成了训练数据中没见过的 token，模型就进入了"未知领域"——它在训练中从未学习过如何从这种状态恢复。
+
+这就是 **exposure bias / distribution shift**（Ross et al., 2011）：训练分布和推理分布不匹配，而且错误会 **级联放大**（compounding error）——一个小偏差引发下一个更大的偏差。
+
+类比：只看老司机开车录像学开车。在常见路况下表现良好，但一旦遇到录像中没有的情况（突然的施工路段），就完全不知道该怎么修正，越开越偏。
+
+### 上限问题：SFT 无法超越训练数据
+
+SFT 的上限就是训练数据的质量。如果人类标注者写出了 90 分的回答，SFT 最多也只能学到 90 分。它不会"创造"超越训练数据的新策略。
+
+**RL 不受这个限制。** RL 通过 exploration（探索）可以发现训练数据中不存在的更好策略。一个惊人的例子是 **DeepSeek-R1-Zero**：在完全没有任何 SFT 数据的情况下，仅通过 RL（GRPO）训练，模型自发产生了 chain-of-thought 推理、self-verification（自我验证）、以及 reflection（反思）等行为——这些能力不是任何人教的，而是 RL 的 exploration 机制让模型自己"发现"的。
+
+最终的 DeepSeek-R1 在 R1-Zero 的基础上加入了 cold-start SFT 和多轮 RL，进一步提升了可读性和稳定性。但核心发现是：**RL 阶段产生的推理能力超越了 SFT 数据所能教授的上限**。
+
+### Sequence-Level 目标无法通过离散采样反向传播
+
+"有帮助"、"安全"、"推理正确"——这些 post-training 的目标是在**整个 response 层面**定义的，不是在单个 token 层面。
+
+SFT 的 cross-entropy loss 逐 token 计算："你生成的这个 token 和参考答案的 token 是否一致？"。它无法表达"整体回答质量"这种 sequence-level 的概念。
+
+如果我们有一个 Reward Model 可以对完整回答打分呢？问题在于：**从概率分布中采样一个离散 token 的过程是不可微的**。你无法对 argmax 或 categorical sampling 求导——梯度在这里断了。
+
+**Policy Gradient** 正是为此而生。它的核心贡献是：不需要通过采样过程反向传播，而是用 REINFORCE 估计器间接估计梯度。前面学的 $\nabla_\theta J = \mathbb{E}[\nabla_\theta \log \pi_\theta(a|s) \cdot A]$ 在这里找到了它真正的用武之地。
+
+### On-policy 自我进化
+
+上面第一点说的是"问题"（训练分布 ≠ 推理分布），这里来看 RL 为什么天然不存在这个问题。
+
+RL 是 **on-policy** 的：训练数据由模型自己当前的策略生成。这意味着：
+- 模型犯的错误会出现在自己的训练数据中，所以它能学会修正
+- 随着模型改进，生成的数据质量也在提升——形成**自我进化的正循环**
+
+而 SFT 的训练数据是固定的。无论模型训练到什么水平，它看到的永远是同一批人类示范。
+
+<SFTvsRLComparison client:visible />
+
+## 语言生成的马尔可夫决策过程
+
+上面我们论证了 RL 的必要性。但要使用 RL，首先需要把 LLM 的文本生成过程正式建模为一个 **MDP（马尔可夫决策过程）**。
+
+### 完整的 MDP 五元组映射
+
+回忆在 [RL 基础](/llm-learning/zh/articles/rl-foundations) 中学到的 MDP 五元组 $(S, A, P, R, \gamma)$，我们可以精确地将 LLM 的每一步 token 生成对应上去：
+
+**状态 (State)** $s_t = (x, y_{<t})$：prompt $x$ 加上已生成的所有 token $y_1, y_2, \ldots, y_{t-1}$。初始状态 $s_0 = x$ 就是 prompt 本身。
+
+**动作 (Action)** $a_t \in \mathcal{V}$：从词汇表 $\mathcal{V}$（通常 32K-128K 个 token）中选择一个 token。
+
+**策略 (Policy)** $\pi_\theta(a_t | s_t)$：就是 LLM 本身——给定当前 context（prompt + 已生成 tokens），输出下一个 token 的概率分布（softmax 输出层）。
+
+**状态转移 (Transition)** $P(s_{t+1}|s_t, a_t)$：**确定性的**——新状态就是把选中的 token 拼接到序列后面：$s_{t+1} = (x, y_1, \ldots, y_{t-1}, a_t)$。
+
+**奖励 (Reward)** $R(s_t, a_t)$：取决于任务设计。最典型的设置是：中间步骤 $r_t = 0$（$t < T$），只在生成完成时给一个 reward $r_T = R_{RM}(x, y)$（比如 RM score）。
+
+**终止条件**：生成 EOS (End of Sequence) token，或达到最大长度。一个完整的生成过程就是一个 **episode**。
+
+**折扣因子** $\gamma = 1$：由于 LLM 生成的 episode 是有限长的（有最大长度限制），不需要用 $\gamma < 1$ 来保证收敛——这与经典 RL 中无限 horizon 的设置不同。
+
+### LLM MDP 的独特之处
+
+与经典 RL 的 Atari 游戏或机器人控制相比，LLM 的 MDP 有几个显著的特殊性：
+
+- **确定性转移**：经典环境有随机性（打砖块的球反弹方向、机器人的物理扰动），但 LLM 的状态转移完全确定——选了哪个 token，新状态就唯一确定
+- **巨大动作空间**：词汇表有 32K-128K 个可能的 token，远超 Atari 的 18 个动作。这正是 Value-Based 方法（Q-Learning）不适合 LLM 的原因——你不可能为每个 token 都维护一个 Q 值
+- **变长 Episode**：生成长度不固定，从几个 token 到几千个 token
+- **Sparse Reward**：奖励通常只在 episode 结束时给出。几百个 token 的生成过程中，中间步骤全是 $r = 0$——这带来了严重的 credit assignment 问题（§4 详述）
+
+### 具体示例：一次 token 生成的完整 MDP 轨迹
+
+让我们用一个简单的例子走完一轮完整的 MDP 决策过程：
+
+**Prompt**："中国的首都是"
+
+| 步骤 | 状态 $s_t$ | 策略 $\pi_\theta(a \vert s_t)$ | 动作 $a_t$ | 奖励 $r_t$ |
+|------|----------|------------------------|----------|----------|
+| $t=0$ | "中国的首都是" | {"北": 0.82, "上": 0.05, "南": 0.03, ...} | "北" | 0 |
+| $t=1$ | "中国的首都是北" | {"京": 0.97, "方": 0.01, ...} | "京" | 0 |
+| $t=2$ | "中国的首都是北京" | {"。": 0.70, "，": 0.15, ...} | "。" | 0 |
+| $t=3$ | "中国的首都是北京。" | {"\<EOS\>": 0.90, ...} | \<EOS\> | $R_{RM} = 0.92$ |
+
+注意：只有最后一步才有非零的 reward（由 Reward Model 评分）。中间所有步骤的 reward 都是 0。
+
+<LLMasMDP client:visible />
+
+### 关于马尔可夫性
+
+细心的读者可能会问：LLM 的每一步决策都依赖完整的上下文历史，这满足马尔可夫性吗？
+
+答案是**满足的**，因为我们把 state 定义为 $(x, y_{<t})$——完整的 prompt 加上所有已生成的 token。这个 state 包含了所有历史信息。Transformer 的 attention 机制让模型在每一步都能 attend to 完整序列，所以 state 确实是"充分统计量"——给定当前 state，未来的决策不需要额外的历史信息。
+
+这和经典 RL 中的处理方式一致：如果环境本身不满足马尔可夫性（如部分可观测环境），我们可以通过扩展 state 的定义（包含更多历史）来使其满足。
+
+### Token-level 与 Response-level：两种操作粒度
+
+上面建立的 MDP 是 **token-level** 的——每个 token 是一个 action。这是最基础、最精确的建模方式，也是 PPO 在 RLHF 中使用的视角。
+
+但后续文章中你会看到一些方法使用不同的粒度：
+
+- **Token-level MDP**（RLHF + PPO）：每个 token 计算 advantage，逐 token 调整概率
+- **Response-level 视角**（DPO, GRPO）：把整个 response 看作一个 "action"，在完整回答之间做对比
+
+两种视角在数学上是等价的——response-level 的 log probability 就是 token-level log probabilities 的求和：
+
+$$\log \pi_\theta(y|x) = \sum_{t=1}^{T} \log \pi_\theta(y_t | x, y_{<t})$$
+
+Token-level 更细致（能定位哪个 token 好/坏），但计算更重；response-level 更简洁，是 DPO/GRPO 能大幅简化训练的关键。在后续文章中遇到不同粒度时我们会明确标注。
+
+## 从 PG 到 PPO：在 LLM 语境下重新理解
+
+有了 MDP 映射，我们可以重新审视前三篇学过的公式——这一次，每个符号都有了 LLM 中的具体含义。
+
+### Policy Gradient → LLM 微调梯度
+
+在 [Policy Gradient](/llm-learning/zh/articles/policy-gradient) 中我们学到策略梯度定理：
+
+$$\nabla_\theta J(\theta) = \mathbb{E}_{\pi_\theta}\left[\nabla_\theta \log \pi_\theta(a_t|s_t) \cdot A_t\right]$$
+
+翻译到 LLM 语境：
+
+$$\nabla_\theta J(\theta) = \mathbb{E}\left[\nabla_\theta \log \pi_\theta(y_t | x, y_{<t}) \cdot A_t\right]$$
+
+**直觉**：如果生成 token $y_t$ 后，整个回答的质量比平均水平好（$A_t > 0$），就增大 $y_t$ 的生成概率；反之则减小。模型就这样逐步学会"在什么位置生成什么 token 能让回答整体变好"。
+
+### Advantage → Token 级别的"好坏判断"
+
+Advantage $A_t$ 在 LLM 中回答的是一个非常具体的问题：
+
+> 在已经生成了 $y_1, \ldots, y_{t-1}$ 的前提下，选择 token $y_t$ 比"平均选择"好多少？
+
+如果 $A_t > 0$，这个 token 让整个回答质量提升了；如果 $A_t < 0$，这个 token 拖了后腿。
+
+PPO 中用 **GAE（Generalized Advantage Estimation）** 计算 Advantage，需要一个 Critic 网络 $V(s)$ 来估计每个状态的价值。在 RLHF 中，这个 Critic 通常是从 Reward Model 初始化的——利用 RM 对"什么是好回答"的知识来估计中间状态的价值。
+
+### PPO Clip → 防止 LLM 单次更新"突变"
+
+PPO 的核心公式在 LLM 中变成：
+
+$$L^{CLIP}(\theta) = \hat{\mathbb{E}}\left[\min\left(r_t(\theta)\hat{A}_t, \; \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t\right)\right]$$
+
+其中概率比 $r_t(\theta) = \frac{\pi_\theta(y_t|x,y_{<t})}{\pi_{\theta_{old}}(y_t|x,y_{<t})}$ 就是"新模型和旧模型对同一个 token 的概率之比"。
+
+**clip 的 LLM 含义**：不允许任何单个 token 的生成概率在一次更新中变化太大。如果某个 token 的概率突然从 5% 跳到 80%（或反过来），这可能破坏模型的语言能力。$\epsilon$ 通常设为 0.2，意味着概率比被限制在 $[0.8, 1.2]$ 范围内。
+
+这就是 PPO 在 LLM 对齐中的角色：**保守地调整 token 概率分布**，确保每次更新都不会让模型"崩溃"。
+
+## LLM 强化学习的独特挑战
+
+将 RL 应用于 LLM 不是简单地"套公式"。LLM 场景引入了一系列经典 RL 中不存在或不突出的技术挑战。
+
+### Sparse Reward 与 Credit Assignment
+
+在典型的 RLHF 设置中，Reward Model 在整个 response 生成完成后给出一个标量分数。这意味着：
+
+- 一个 200 token 的回答，只有最后一个 token 的位置有非零 reward
+- 前面 199 个 token 的 reward 全是 0
+
+**Credit assignment 问题**：到底是哪些 token 让回答变好了？是开头的问题理解？中间的推理步骤？还是最后的总结？Sparse reward 无法直接回答这个问题。
+
+目前有两种应对策略：
+
+**Outcome Reward Model (ORM)**：只看最终结果打分。简单但 credit assignment 困难。PPO 中的 GAE 通过多步 bootstrapping 来"传播" reward，但这仍然是间接的——从最后一个 token 的 reward 向前传递，估计质量随距离衰减。
+
+**Process Reward Model (PRM)**：对推理过程的每一步打分，提供 dense reward signal。PRM 直接告诉你"第 3 步推理是对的，第 5 步出了错"。OpenAI 的 "Let's Verify Step by Step"（Lightman et al., 2023）证明 PRM 在数学推理上显著优于 ORM。但代价是标注成本极高——需要人工逐步标注每一步的正确性。
+
+这个问题在 [Reward 设计与 Scaling](/llm-learning/zh/articles/reward-modeling) 中有更深入的讨论。
+
+<TokenRewardAssignment client:visible />
+
+### KL Penalty：不要忘记你是一个语言模型
+
+RLHF 的优化目标不仅仅是"最大化 reward"，还有一个关键的正则化项——**KL 散度惩罚**：
+
+$$\max_\theta \; \mathbb{E}_{x \sim D, \; y \sim \pi_\theta}\left[R_{task}(x, y) - \beta \cdot KL(\pi_\theta \| \pi_{ref})\right]$$
+
+其中 $\pi_{ref}$ 是 SFT 模型（参考策略），$\beta$ 控制 KL 约束的强度。
+
+**为什么需要 KL penalty？** 没有它，模型会发现 Reward Model 的弱点并疯狂利用——这就是 **reward hacking**。比如模型可能学会生成一些"看起来很长很专业但实际上是废话"的回答，因为 RM 倾向于给长回答高分。
+
+KL penalty 的直觉：**让模型在对齐的同时不要忘记预训练学到的语言能力**。它像一根弹性绳，允许模型适度偏离 SFT 模型，但拉得太远就会被拽回来。
+
+在实际实现中，KL penalty 被分解到 **token 级别**，成为每步 reward 的一部分：
+
+$$r_t = r_{task,t} - \beta \cdot \left[\log \pi_\theta(y_t|s_t) - \log \pi_{ref}(y_t|s_t)\right]$$
+
+一个关键细节：$r_{task,t} = 0$ 对所有中间 token（$t < T$），只有最后一个 token $r_{task,T} = R_{RM}(x, y)$ 才携带任务 reward。这意味着**中间步骤的 reward 信号完全来自 KL penalty**。
+
+这带来一个有趣的副作用：KL penalty 在 credit assignment 中起到了意想不到的重要作用——它为中间 token 提供了一个"基准信号"（偏离参考策略太多就惩罚），让 GAE 有更多的信息来估计 advantage。
+
+$\beta$ 的权衡：
+- **$\beta$ 太大**：模型几乎无法偏离 SFT，学不到新东西
+- **$\beta$ 太小**：reward hacking 风险高，模型可能变得不像话
+
+### 生成即采样：On-policy 的代价
+
+RL 优化需要 **on-policy 数据**——必须用当前模型的参数 $\theta$ 生成 response，才能计算 policy gradient。这意味着：
+
+1. 每次参数更新后，之前采集的所有 response 数据就"过期"了
+2. 需要用更新后的模型重新生成一批 response
+3. 生成过程本身是 autoregressive 的——逐 token 生成，速度不快
+
+这就是 RLHF 训练成本远高于 SFT 的根本原因之一。InstructGPT 论文提到需要同时运行 **4 个大模型**：policy（当前策略）、reference policy（SFT 模型）、reward model、critic（价值网络）。
+
+这也是为什么 **DPO**（Direct Preference Optimization）如此有吸引力——它是 offline 的，直接在已有的偏好数据上训练，不需要 on-policy 采样。但这也引入了新的问题（distribution shift），我们在 [DPO 文章](/llm-learning/zh/articles/direct-preference-optimization) 中详述。
+
+## Post-Training 全景：从 SFT 到推理强化
+
+现在让我们退后一步，看完整的 post-training 版图。每个阶段都解决一个特定问题，并对应本学习路径中的一篇文章：
+
+**Pretrained LLM**：从海量文本中学习语言规律（next-token prediction）。此时模型会"说话"，但不会遵循指令、不知道什么回答是好的。
+
+**SFT（监督微调）**：用高质量的 (prompt, response) 对做 behavioral cloning。模型学会遵循指令的基本格式。但受限于训练数据的质量上限和 distribution shift。（本文 §1）
+
+**RLHF**：SFT → Reward Model → PPO 的完整 pipeline。用人类偏好训练 RM，再用 PPO 优化 LLM 策略。效果强但训练复杂，需要 4 个模型同时运行。（→ [RLHF：从人类反馈中学习](/llm-learning/zh/articles/rlhf)）
+
+**DPO**：跳过 Reward Model，直接从偏好数据优化策略。数学上等价于 RLHF 的隐式 reward，但训练过程简单如 SFT。代价是 offline 训练的 distribution shift。（→ [从 DPO 到 GRPO](/llm-learning/zh/articles/direct-preference-optimization)）
+
+**GRPO**：DeepSeek 提出的方法。无需 Critic 网络，通过对同一 prompt 生成多个回答、用组内相对排名替代绝对 reward。比 PPO 更轻量，是 DeepSeek-R1 的核心训练算法。（→ [从 DPO 到 GRPO](/llm-learning/zh/articles/direct-preference-optimization)）
+
+**Reward 设计**：无论用哪种对齐方法，reward 信号的质量决定天花板。ORM vs PRM、reward hacking 防御、reward scaling。（→ [Reward 设计与 Scaling](/llm-learning/zh/articles/reward-modeling)）
+
+**Test-Time Scaling**：固定模型大小，在推理时投入更多计算换更好的输出。Best-of-N、MCTS + PRM、CoT 作为 RL trajectory。（→ [Test-Time Scaling 与思维强化](/llm-learning/zh/articles/test-time-scaling)）
+
+<PostTrainingPipeline client:visible />
+
+## 总结
+
+本文建立了从经典 RL 到 LLM post-training 的完整桥梁：
+
+1. **SFT 的局限**：distribution shift、上限问题、sequence-level 目标的不可微性，以及固定数据的 off-policy 本质——这些解释了为什么 post-training 必须使用 RL
+2. **LLM 生成 = MDP**：state 是已生成序列，action 是选择下一个 token，policy 就是 LLM 本身。确定性转移、巨大动作空间、sparse reward 是 LLM MDP 的独特特征
+3. **RL 工具箱翻译**：Policy Gradient 调整 token 概率，Advantage 判断每个 token 的好坏，PPO Clip 防止单次更新过大
+4. **LLM RL 的独特挑战**：sparse reward 的 credit assignment 困难、KL penalty 防止 reward hacking 和遗忘、on-policy 采样的高成本
+5. **Post-Training 全景**：SFT → RLHF / DPO / GRPO → Reward 设计 → Test-Time Scaling
+
+下一篇，我们将深入 RLHF 的完整 pipeline：SFT → Reward Model → PPO，看这些 RL 工具如何具体地用于对齐大语言模型。
