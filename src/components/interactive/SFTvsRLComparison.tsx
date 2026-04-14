@@ -1,5 +1,5 @@
 // src/components/interactive/SFTvsRLComparison.tsx
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { COLORS, FONTS } from './shared/colors';
 
 const W = 580;
@@ -93,19 +93,32 @@ export default function SFTvsRLComparison({ locale = 'zh' }: { locale?: 'zh' | '
   const [rlRound, setRlRound] = useState(0);
   const [animating, setAnimating] = useState(false);
 
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
   const animate = () => {
     if (animating) return;
+    if (timerRef.current) clearInterval(timerRef.current);
     setAnimating(true);
     setSftStep(0);
     setRlRound(0);
     let step = 0;
-    const timer = setInterval(() => {
+    timerRef.current = setInterval(() => {
       step++;
       if (step <= SFT_DEMO.length) setSftStep(step);
       if (step === 2) setRlRound(1);
       if (step === 4) setRlRound(2);
       if (step === 6) setRlRound(3);
-      if (step > 6) { clearInterval(timer); setAnimating(false); }
+      if (step > 6) {
+        if (timerRef.current) clearInterval(timerRef.current);
+        timerRef.current = null;
+        setAnimating(false);
+      }
     }, 500);
   };
 
