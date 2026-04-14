@@ -1,0 +1,300 @@
+---
+title: "优化对精度的影响"
+slug: optimization-accuracy
+locale: zh
+tags: [benchmark, quantization, accuracy, perplexity, openvino, lm-eval-harness, llama-cpp]
+prerequisites: [benchmark-landscape]
+difficulty: intermediate
+created: "2026-04-14"
+updated: "2026-04-14"
+references:
+  - type: website
+    title: "lm-evaluation-harness"
+    url: "https://github.com/EleutherAI/lm-evaluation-harness"
+  - type: website
+    title: "OpenVINO Neural Network Compression Framework (NNCF)"
+    url: "https://github.com/openvinotoolkit/nncf"
+  - type: website
+    title: "Optimum Intel"
+    url: "https://huggingface.co/docs/optimum/intel/index"
+  - type: website
+    title: "llama.cpp"
+    url: "https://github.com/ggerganov/llama.cpp"
+---
+
+import QuantDegradationExplorer from '../../../components/interactive/QuantDegradationExplorer.tsx';
+import EvalToolchainComparison from '../../../components/interactive/EvalToolchainComparison.tsx';
+import PerplexityVsTaskAccuracy from '../../../components/interactive/PerplexityVsTaskAccuracy.tsx';
+
+## 开篇：加速 2-4 倍，精度到底掉多少？
+
+量化、剪枝、KV cache 压缩——这些优化手段号称能让 LLM 推理加速 2-4 倍、内存占用减半。但代价是什么？精度到底掉多少？更关键的是：**你怎么自己验证？**
+
+这不是一个简单的问题。同样是 INT4 量化，一个 7B 模型在 MMLU 上可能只掉 3 个百分点，但在 HumanEval 上可能暴跌 16%。同样的量化方法在 70B 模型上几乎无感，在 7B 上却可能影响实际可用性。
+
+本文聚焦于**评估方法论**——不讲量化算法的原理（那属于[量化路径](/zh/paths/quantization)），而是回答三个核心问题：
+
+1. **不同优化手段的精度代价有多大？** 不同 benchmark 的敏感度差异惊人
+2. **怎么用工具实测？** lm-evaluation-harness、OpenVINO、llama.cpp 三套工具链详解
+3. **Perplexity 够不够？** 什么时候它是好指标，什么时候会误导你
+
+> **定位说明**：本文属于**评估路径**，关注"怎么测量精度损失"。量化算法本身的原理（GPTQ、AWQ、GGUF 量化类型等）请参见量化路径的专门文章。
+
+## 优化手段与精度代价全景
+
+在深入评估方法之前，先建立一个全景认知——主流优化手段各自的精度代价范围：
+
+| 优化类型 | 典型方法 | 典型精度损失 | 敏感度说明 |
+|---------|---------|------------|-----------|
+| **Weight-only 量化** | GPTQ, AWQ, bitsandbytes NF4 | INT8: &lt;1%; INT4: 1-5% | 代码/数学任务最敏感 |
+| **Weight + Activation 量化** | SmoothQuant, ZeroQuant | INT8: 0.5-2%; W4A8: 2-8% | 激活量化增加额外损失 |
+| **GGUF 量化** | llama.cpp Q4_K_M, Q3_K_M 等 | Q4: 1-3%; Q2: 8-20% | 低于 Q4 退化急剧加速 |
+| **FP8 量化** | FP8 E4M3/E5M2 | &lt;0.5% | 接近无损，但需硬件支持 |
+| **KV cache 量化** | KV cache INT8/INT4 | 0.1-2% | 长上下文场景影响更大 |
+| **结构化剪枝** | SparseGPT, Wanda | 10-50% 稀疏: 1-5% | 高稀疏率下非线性退化 |
+
+> **关键认知**：这些是*典型范围*，不是固定值。实际退化取决于模型架构、规模、校准数据、以及你关心的具体任务。这正是为什么需要实测。
+
+两个最重要的规律：
+
+1. **模型越大，越耐量化**：70B 模型的参数冗余度远高于 7B，量化噪声对整体输出的影响更小
+2. **任务类型决定敏感度**：代码生成（需要精确语法）> 数学推理（需要精确计算链）> 知识问答（容错空间更大）
+
+## Degradation 不均匀性
+
+上面提到的"典型精度损失"是平均值——但现实中，退化在不同 benchmark 之间差异巨大。这是选择评估指标时最容易被忽视的陷阱。
+
+下面的交互图让你自己探索这种不均匀性：
+
+<QuantDegradationExplorer client:visible />
+
+### 为什么代码最敏感？
+
+代码生成对量化特别敏感，原因在于其**容错空间极小**：
+
+- **语法刚性**：少一个括号、错一个缩进就完全无法执行。知识问答中"差不多对"还有分，代码里"差不多对"等于零分
+- **精确 token 选择**：代码生成高度依赖 token 概率分布的细微差异——量化引入的微小概率偏移可能让模型选错关键 token（比如 `==` 变成 `=`）
+- **长程依赖**：一个函数的正确性依赖于前面所有变量声明、导入语句的精确性。量化误差会在长序列中累积
+
+### 为什么大模型更耐量化？
+
+这一规律在数据中非常明显（切换到 70B 对比 7B 即可看到）：
+
+- **参数冗余**：大模型有更多"备用通道"，单个权重的量化误差更容易被其他通道补偿
+- **更平滑的损失面**：大模型的权重分布通常更平滑，异常值比例更低，量化友好度更高
+- **实践意义**：如果你的任务对精度极其敏感（如医疗代码生成），优先选择大模型 + 适度量化（如 INT8），而非小模型 + 无量化
+
+## 深潜 1: lm-evaluation-harness 实测工作流
+
+[lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness)（简称 lm-eval）是目前最主流的 LLM 评估框架，由 EleutherAI 维护，覆盖 60+ 标准 benchmark。它是量化前后精度对比的首选工具。
+
+### 5 步实测流程
+
+**Step 1: 安装**
+
+```bash
+pip install lm-eval
+# 或从源码安装（获取最新 benchmark）
+pip install git+https://github.com/EleutherAI/lm-evaluation-harness.git
+```
+
+**Step 2: 评估 FP16 基线**
+
+```bash
+lm_eval --model hf \
+  --model_args pretrained=meta-llama/Llama-3.1-8B-Instruct \
+  --tasks mmlu,gsm8k,humaneval \
+  --device cuda:0 \
+  --batch_size auto
+```
+
+**Step 3: 评估量化版本**
+
+```bash
+# GPTQ 量化模型
+lm_eval --model hf \
+  --model_args pretrained=TheBloke/Llama-3.1-8B-Instruct-GPTQ \
+  --tasks mmlu,gsm8k,humaneval \
+  --device cuda:0 \
+  --batch_size auto
+
+# GGUF 量化模型
+lm_eval --model hf \
+  --model_args pretrained=/path/to/gguf_folder,gguf_file=model-Q4_K_M.gguf,tokenizer=meta-llama/Llama-3.1-8B-Instruct \
+  --tasks mmlu,gsm8k,humaneval
+```
+
+> **注意**：GGUF 模型需要单独指定 tokenizer 路径，否则 lm-eval 会尝试从 GGUF 文件重建词表——这可能需要数小时且结果不准。
+
+**Step 4: 对比结果**
+
+```bash
+# lm-eval 输出 JSON 格式，手动对比或使用脚本
+# 关键字段：results -> task_name -> metric_name
+```
+
+**Step 5: 多轮验证**
+
+对于关键决策（如生产部署），建议至少运行 3 次取平均——某些 benchmark（特别是 HumanEval 的 pass@k）的方差较大。
+
+### 后端集成
+
+lm-eval 支持多种推理后端：
+
+| 后端 | 命令参数 | 适用场景 |
+|------|---------|---------|
+| HuggingFace Transformers | `--model hf` | 默认，最广泛支持 |
+| vLLM | `--model vllm` | 高吞吐评估，支持张量并行 |
+| SGLang | `--model sglang` | FP8/INT4/AWQ/GPTQ 量化 |
+| OpenVINO | `--model openvino` | Intel 平台优化 |
+| API | `--model openai` | 商用 API 模型 |
+
+### 常见陷阱
+
+1. **Prompt 格式敏感**：同一个 benchmark 在不同 prompt 模板下分数可能差 5-10%。确保基线和量化版本使用完全相同的 prompt 配置
+2. **few-shot 数量**：MMLU 标准是 5-shot，GSM8K 通常 8-shot。改变 few-shot 数量会显著影响结果
+3. **temperature 设置**：HumanEval 的 pass@k 对 temperature 极其敏感。pass@1 通常用 temperature=0，pass@10 用 0.8
+4. **batch size 影响**：某些量化方法对 batch size 敏感——确保对比实验使用相同的 batch size
+
+## 深潜 2: OpenVINO 精度评估工具链
+
+对于 Intel 硬件用户，[OpenVINO](https://docs.openvino.ai) 提供了一套完整的精度评估和优化工具链。它的独特优势是**accuracy-aware 量化**——在量化过程中主动约束精度损失。
+
+### Optimum Intel 转换与评估
+
+[Optimum Intel](https://huggingface.co/docs/optimum/intel/index) 是 HuggingFace 与 Intel 合作的库，提供从 HuggingFace 模型到 OpenVINO 格式的无缝转换：
+
+```python
+from optimum.intel import OVModelForCausalLM
+
+# 导出为 OpenVINO IR 格式
+model = OVModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3.1-8B-Instruct",
+    export=True
+)
+model.save_pretrained("./llama-3.1-8b-ov")
+
+# INT8 量化导出
+model = OVModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3.1-8B-Instruct",
+    export=True,
+    load_in_8bit=True
+)
+```
+
+### NNCF Accuracy-Aware 量化
+
+[NNCF](https://github.com/openvinotoolkit/nncf) (Neural Network Compression Framework) 的 accuracy-aware 量化是 OpenVINO 工具链的核心差异化功能：
+
+```python
+import nncf
+
+# 配置精度约束
+quantization_config = nncf.QuantizationConfig(
+    mode=nncf.QuantizationMode.INT8,
+    # 精度损失不超过 1%
+    max_drop=0.01,
+    drop_type=nncf.DropType.ABSOLUTE,
+)
+```
+
+与纯后训练量化（如 GPTQ）不同，NNCF 在量化过程中会持续检查精度——如果某层量化后精度下降超过阈值，自动回退到更高精度。
+
+### benchmark_app 性能评估
+
+量化不仅影响精度，还影响推理速度。OpenVINO 的 `benchmark_app` 让你同时测量两者：
+
+```bash
+# 测量 FP16 延迟
+benchmark_app -m llama-3.1-8b-fp16.xml -d GPU -niter 100
+
+# 测量 INT8 延迟
+benchmark_app -m llama-3.1-8b-int8.xml -d GPU -niter 100
+```
+
+这样你就能建立完整的**精度-速度 trade-off 曲线**：INT8 相比 FP16 速度快了多少？精度掉了多少？这个 trade-off 在你的场景下值不值？
+
+## 深潜 3: llama.cpp 精度评估
+
+[llama.cpp](https://github.com/ggerganov/llama.cpp) 内置了 perplexity 计算功能，这是评估 GGUF 量化质量最快的方法。
+
+### 内置 perplexity 测试
+
+```bash
+# 计算 WikiText-2 上的 perplexity
+./llama-perplexity -m model-Q4_K_M.gguf \
+  -f wiki.test.raw \
+  --ctx-size 512 \
+  --chunks 100
+```
+
+输出示例：
+
+```
+Final estimate: PPL = 6.3842 +/- 0.0312
+```
+
+### GGUF 变体对比
+
+一个常见的工作流是对比同一模型的不同 GGUF 量化变体：
+
+| 量化变体 | 典型大小 (8B) | Perplexity | 适用场景 |
+|---------|-------------|------------|---------|
+| F16 | ~16 GB | 6.24 (基线) | 精度基准 |
+| Q8_0 | ~8.5 GB | ~6.25 (+0.2%) | 几乎无损，推荐首选 |
+| Q6_K | ~6.6 GB | ~6.26 (+0.3%) | 高质量，适合大多数场景 |
+| Q5_K_M | ~5.7 GB | ~6.30 (+1.0%) | 良好平衡点 |
+| Q4_K_M | ~4.9 GB | ~6.38 (+2.2%) | 最常用，注意检查代码任务 |
+| Q3_K_M | ~3.9 GB | ~6.55 (+5.0%) | 内存受限时使用，检查特定任务 |
+| Q2_K | ~3.2 GB | ~7.20 (+15.4%) | 仅限资源极度受限场景 |
+
+> 以上数据为 Llama 3.1 8B 在 WikiText-2 上的代表性值，基于社区 GGUF 评测结果汇总（TheBloke、bartowski 等 HuggingFace 仓库）。具体值因模型版本和评测条件有波动。
+
+### KV cache 量化的影响
+
+llama.cpp 支持 KV cache 量化（`--cache-type-k q8_0 --cache-type-v q8_0`），这会额外引入少量精度损失：
+
+- **KV cache INT8**：perplexity 增加约 0.1-0.3%，对大多数任务几乎无影响
+- **KV cache INT4**：perplexity 增加约 0.5-1.5%，长上下文场景下退化更明显
+
+KV cache 量化的精度影响与权重量化是**叠加关系**——如果权重已经是 Q4_K_M，再加 KV cache INT4 可能导致精度退化超出可接受范围。
+
+## Perplexity vs 任务精度
+
+Perplexity 是最容易获取的精度指标——运行快、不需要标注数据、不需要复杂的评估框架。但它有一个关键局限：**perplexity 和 task-specific 精度的关系不是线性的**。
+
+<PerplexityVsTaskAccuracy client:visible />
+
+### 为什么会出现分歧？
+
+Perplexity 衡量的是模型对下一个 token 的整体预测能力——它是所有 token 预测损失的平均值。但不同任务关注的 token 不同：
+
+- **知识问答 (MMLU)**：答案通常是单个选项字母 (A/B/C/D)，只有极少数 token 关键。perplexity 的大量"背景"token 稀释了关键 token 的信号
+- **数学推理 (GSM8K)**：需要生成完整的推理链，中间步骤的一个错误会导致最终答案错误。perplexity 不会特别加权这些关键步骤
+- **代码生成 (HumanEval)**：如前所述，语法精确性要求极高。perplexity 对"几乎正确但语法错误"的代码不会给予特别的惩罚
+
+### 实践建议
+
+1. **perplexity 适合快速筛选**：如果 perplexity 增加超过 3%，大概率任务精度有明显退化——可以直接排除
+2. **perplexity 不适合精细决策**：Q4_K_M vs Q5_K_M 的 perplexity 差异可能只有 1%，但在代码任务上可能差 2-3 个百分点
+3. **关键场景必须实测**：如果你的应用是代码生成或数学推理，perplexity 不够——需要在目标 benchmark 上做完整评估
+
+## 工具链对比汇总
+
+三种工具链各有定位，选择取决于你的场景：
+
+<EvalToolchainComparison client:visible />
+
+### 组合使用的最佳实践
+
+在实际项目中，这三个工具往往不是二选一，而是**分阶段使用**：
+
+1. **快速筛选阶段**：用 llama.cpp perplexity 快速排除明显不合格的量化变体（perplexity 增加 >5% 的直接淘汰）
+2. **精细评估阶段**：用 lm-eval-harness 在目标 benchmark 上做完整评估（选 2-3 个候选变体）
+3. **部署验证阶段**：如果目标是 Intel 平台，用 OpenVINO 工具链做精度+性能联合评估
+
+## 过渡：从"精度掉多少"到"该选哪个模型"
+
+本文解决了"优化后精度怎么测"的问题。但在实际模型选型中，精度只是决策的一个维度——你还需要考虑推理速度、内存占用、部署成本、以及各种排行榜的信号。
+
+下一篇文章 **[排行榜与模型选型](/zh/articles/leaderboard-model-selection)** 将系统分析主流排行榜（Open LLM Leaderboard、Chatbot Arena、LiveBench）的设计差异和适用场景，并构建一个实用的模型选型决策框架。
