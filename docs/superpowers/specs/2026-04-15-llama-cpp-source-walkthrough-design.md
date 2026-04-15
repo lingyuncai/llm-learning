@@ -521,19 +521,26 @@ articles:
 
 1. **Read 草稿原文**：打开 `docs/llama_cpp_deep_dive.md` 对应章节，逐行阅读
 2. **Read llama.cpp 源码**：对每个引用的函数名、结构体字段、枚举值，去 `c:/workspace/llama.cpp` 中 Grep/Read 确认
-3. **代码片段直接复制**：从草稿复制到 MDX，不重写、不"改善"措辞、不合并/拆分代码块
+3. **代码片段忠实引用**：从草稿复制到 MDX，不重写、不"改善"措辞、不合并/拆分代码块
 4. **解释性文字忠实保留**：草稿中的技术分析、设计动机、优劣对比等文字同样是经过验证的内容。转写到 MDX 时保持原意和措辞，仅做 MDX 格式适配（如 mermaid → 组件引用）。不凭理解重新组织或换一种方式表述
 5. **表格校对**：功能对比表、参数表的每个单元格都要与草稿一致
 6. **如有差异**：如果 llama.cpp 源码已更新导致与草稿不一致，标记并告知用户决定如何处理
 
-### 6.2 文件命名与路径
+### 6.2 代码引用原则
+
+- **不写精确行号**：源码会变，行号很快过时。用函数名、文件名（如 `ggml/src/gguf.cpp`、`src/llama-context.cpp`）定位即可
+- **只在必要时摘抄关键片段**：不是把源码完整搬运，而是选择最能说明机制的核心几行。草稿中已经做了这种精选，遵循草稿的取舍
+- **必要时可用伪代码**：如果原始代码过于冗长或包含大量与当前主题无关的细节，可以用伪代码或简化注释版本替代，但核心逻辑必须与源码一致
+- **注释标注来源**：代码块上方用注释标明来源文件和函数名，如 `// src/llama-context.cpp — llama_context::decode()（简化）`
+
+### 6.3 文件命名与路径
 
 - 文章：`src/content/articles/zh/llama-cpp-{slug}.mdx`
 - 组件：`src/components/interactive/LlamaCpp{ComponentName}.tsx`（PascalCase，加 LlamaCpp 前缀避免命名冲突）
 - 原语：`src/components/primitives/FlowDiagram.tsx`
 - 学习路径：`src/content/paths/llama-cpp-source-walkthrough.yaml`
 
-### 6.3 Frontmatter 规范
+### 6.4 Frontmatter 规范
 
 所有文章遵循项目 CLAUDE.md 中定义的必填字段：
 ```yaml
@@ -552,11 +559,11 @@ references:
 ```
 每篇文章至少引用 llama.cpp 仓库作为 reference。涉及特定论文（如 Flash Attention、speculative decoding）的章节需追加对应 paper reference。
 
-### 6.4 双语说明
+### 6.5 双语说明
 
 本系列首先实现中文版（zh）。英文版暂不创建，commit message 中标注 "zh-only"。
 
-### 6.5 验证
+### 6.6 验证
 
 每篇文章完成后：
 1. 运行 `npm run validate` 确认内容校验通过
