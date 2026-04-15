@@ -1,0 +1,96 @@
+---
+title: "llama.cpp 执行流程总览"
+slug: llama-cpp-overview
+locale: zh
+tags:
+  - llama-cpp
+  - inference-engine
+  - architecture
+  - source-code
+difficulty: advanced
+created: "2026-04-15"
+updated: "2026-04-15"
+references:
+  - type: repo
+    title: "llama.cpp GitHub"
+    url: "https://github.com/ggerganov/llama.cpp"
+prerequisites:
+  - ollama-architecture
+  - ollama-inference-journey
+---
+
+import LlamaCppExecutionPipelineOverview from '../../../components/interactive/LlamaCppExecutionPipelineOverview.tsx';
+
+## 开篇定位
+
+如果你已经阅读了 [Ollama 推理之旅](/zh/ollama-inference-journey)，你了解了从 `ollama run` 到模型输出的概念流程。那篇文章在 llama.cpp 边界停了下来——本系列从那里开始，逐函数追踪 C/C++ 实现细节。
+
+本文是 **llama.cpp 源码精读** 系列的第 0 篇（总览），目标是建立全局地图：一个 token 从磁盘上的 GGUF 文件出发，经过哪些核心阶段，最终变为终端上的一个汉字？每个阶段的瓶颈是什么？后续七篇文章各自聚焦哪一段？
+
+## llama.cpp 项目概况
+
+[llama.cpp](https://github.com/ggerganov/llama.cpp) 是一个纯 C/C++ 实现的 LLM 推理引擎，定位为 **高性能、跨平台、易部署** 的本地推理方案。它的关键特征包括：
+
+- **广泛的架构支持**：支持 125 种已知模型架构（LLaMA、Qwen、Mistral、Gemma、DeepSeek 等），通过统一的 `build_<arch>()` 接口实现架构分发
+- **多种量化格式**：Q4_0、Q4_K、Q8_0、IQ2 等量化方案，在模型体积、推理速度和精度之间提供灵活的权衡
+- **多 Backend 异构计算**：CUDA、Metal、Vulkan、OpenCL、CPU 等多种 backend，支持同一模型在多个设备上分层执行
+- **核心设计哲学**：在 **通用性** 和 **性能** 之间取得平衡——既要覆盖尽可能多的模型和硬件，又要在每种组合上达到接近极限的推理速度
+
+## 端到端执行流程
+
+下方的交互图展示了 llama.cpp 的完整执行流水线。点击任意阶段可以查看该阶段包含的具体步骤和对应的源码章节。
+
+<LlamaCppExecutionPipelineOverview client:visible locale="zh" />
+
+### 完整数据流
+
+从 GGUF 文件到文本输出，一个 token 的完整旅程经历以下 14 个步骤：
+
+1. **GGUF 文件**解析出 tensor 元数据和量化权重
+2. **模型加载**通过 mmap 或 buffer 上传将权重送入计算设备
+3. **Backend 初始化**识别可用硬件并分配 Transformer 层
+4. **Warmup**预热 GPU、探测 Flash Attention 支持
+5. **Tokenization** 把人类文本转换为 token 序列
+6. **Batch/Ubatch** 把 token 序列组织为计算单元
+7. **Build Graph** 为 125 种不同架构构建计算图
+8. **Backend Scheduling** 把计算图分配到多个设备并切分
+9. **Op Fusion** 各 backend 执行硬件特化的图优化
+10. **Tensor 分配** 通过引用计数最小化显存占用
+11. **执行** 遍历 splits，跨设备拷贝数据并异步计算
+12. **采样** 从概率分布中选出下一个 token
+13. **Speculative Decoding** 用小模型加速大模型的解码
+14. **上下文管理** 维护 KV cache 的生命周期
+
+其中步骤 1-4 是一次性的启动阶段；步骤 5 在每次新请求时执行；步骤 6-11 在 Prefill 和 Decode 阶段循环执行（Prefill 处理整个 prompt，Decode 每次只处理 1 个新 token）；步骤 12-14 在每个 Decode 步骤后执行。
+
+## 各阶段性能特征
+
+| 阶段 | 瓶颈 | 典型耗时 |
+|------|------|----------|
+| 模型加载 | 磁盘 I/O（mmap）或 PCIe 带宽（GPU 上传） | 秒级 |
+| Warmup | GPU kernel 编译 + 显存分配 | 秒级 |
+| Prefill | 计算密集（矩阵乘法），受益于 GPU 并行 | 与 prompt 长度成正比 |
+| Decode | 访存密集（KV cache 读取），每次只算 1 个 token | 每 token 几十毫秒 |
+| 采样 | CPU 上运行，通常不是瓶颈 | 微秒级 |
+| Context Shift | KV cache 元数据操作 + K-shift | 毫秒级 |
+
+Prefill 和 Decode 的性能特征截然不同：Prefill 是**计算密集型**（大量矩阵乘法可以高度并行），而 Decode 是**访存密集型**（每次只有一个 token 的向量与整个 KV cache 做注意力计算，矩阵乘法退化为矩阵-向量乘法）。这也是为什么 llama.cpp 对两者使用不同的线程策略（`n_threads_batch` vs `n_threads`）。
+
+## 系列导航
+
+本系列共 8 篇文章，从总览到各子系统逐步深入：
+
+- **#0 [执行流程总览](/zh/llama-cpp-overview)**（本文）：端到端全景图、各阶段性能特征、系列路线图
+- **#1 [工具全景与 GGUF 二进制解析](/zh/llama-cpp-tools-gguf)**：llama.cpp 的工具生态和 GGUF 格式的逐字段解析
+- **#2 [模型加载：从文件到设备](/zh/llama-cpp-model-loading)**：no_alloc 技巧、mmap/read 两条加载路径、GPU 层分配算法
+- **#3 [Warmup、Tokenization 与 Chat Template](/zh/llama-cpp-warmup-tokenization)**：为什么需要 warmup、tokenizer 实现、Jinja2 模板渲染
+- **#4 [Batch、Ubatch 与解码主循环](/zh/llama-cpp-batch-ubatch)**：两级批次切分算法、并行序列解码
+- **#5 [计算图构建与架构分发](/zh/llama-cpp-build-graph)**：125 种架构的 switch 分发、积木接口、图复用
+- **#6 [Backend 调度、Op Fusion 与内存分配](/zh/llama-cpp-scheduling-memory)**：五遍扫描算法、融合模式、三类 tensor 生命周期
+- **#7 [执行、采样与上下文管理](/zh/llama-cpp-execution-sampling)**：MoE 选择性拷贝、sampler chain、speculative decoding、KV cache 管理
+
+## 小结
+
+这不只是一个推理引擎——它是一个精心设计的系统，在**通用性**（125 种已知架构、多种量化格式、跨平台 backend）和**性能**（图复用、op fusion、pipeline parallelism、MoE 选择性拷贝、speculative decoding）之间取得了平衡。
+
+接下来的七篇文章将逐一拆解每个阶段的源码实现。建议按照系列顺序阅读，因为后续章节会引用前面章节建立的概念。如果你对特定子系统（如采样或 KV cache）特别感兴趣，也可以直接跳转——每篇文章都是自包含的，会在必要时回顾依赖的前置知识。

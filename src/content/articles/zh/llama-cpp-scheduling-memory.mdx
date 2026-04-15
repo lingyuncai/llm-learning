@@ -1,0 +1,548 @@
+---
+title: "Backend 调度、Op Fusion 与内存分配"
+slug: llama-cpp-scheduling-memory
+locale: zh
+tags:
+  - llama-cpp
+  - backend-scheduling
+  - op-fusion
+  - memory-allocation
+  - pipeline-parallelism
+difficulty: advanced
+created: "2026-04-15"
+updated: "2026-04-15"
+references:
+  - type: repo
+    title: "llama.cpp GitHub"
+    url: "https://github.com/ggerganov/llama.cpp"
+prerequisites:
+  - llama-cpp-build-graph
+---
+
+import FlowDiagram from '../../../components/primitives/FlowDiagram.tsx';
+import LlamaCppSchedulerPassVisualizer from '../../../components/interactive/LlamaCppSchedulerPassVisualizer.tsx';
+
+> **系列定位**：本文是 llama.cpp 源码精读系列 #6，也是系列中最长最重的一篇。计算图构建完成后，下一个问题是：**图中的每个操作应该在哪个 backend（GPU / CPU）上执行？** 当模型横跨多个设备时（比如部分层在 GPU、部分在 CPU），scheduler 需要把计算图切分成若干 **splits**，每个 split 在单一 backend 上执行，并在 split 边界处插入数据拷贝。本文覆盖三个主题：Backend 调度（五遍扫描算法）、Op Fusion（算子融合）、以及 Tensor 内存分配。
+
+---
+
+## Part A：Backend Scheduling
+
+当你用 `--n-gpu-layers 24` 运行一个 32 层模型时，前几层的权重留在 CPU、后面的层在 GPU。计算图中的操作不能全扔给一个设备——需要一个 **scheduler** 来决定每个节点在哪里执行，并在设备切换处自动插入数据拷贝。这就是 `ggml_backend_sched` 的职责。
+
+scheduler 的设计目标有三个：
+
+1. **最小化跨设备数据拷贝次数**——每次 CPU↔GPU 拷贝都有固定开销（PCIe 延迟 ~5-10 us）和带宽限制（PCIe 4.0 x16 ~25 GB/s）
+2. **尽量将操作放在高优先级 backend（通常是 GPU）上执行**——GPU 的并行计算能力远超 CPU
+3. **确保每个操作的 backend 支持该操作类型**——并非所有 backend 都支持所有操作（例如某些量化类型只在 CPU 上有实现）
+
+五遍扫描算法是实现这三个目标的核心。
+
+### Scheduler 数据结构
+
+`ggml_backend_sched` 是调度的核心结构（定义在 `ggml/src/ggml-backend.cpp`）：
+
+```c
+struct ggml_backend_sched {
+    int n_backends;
+    ggml_backend_t backends[GGML_SCHED_MAX_BACKENDS];      // 最多 16 个 backend
+    ggml_backend_buffer_type_t bufts[GGML_SCHED_MAX_BACKENDS];
+
+    int * node_backend_ids;    // 每个 graph node 分配的 backend ID
+    int * leaf_backend_ids;    // 每个 leaf 分配的 backend ID
+
+    struct ggml_backend_sched_split * splits;  // 切分结果
+    int n_splits;
+
+    int n_copies;   // pipeline parallelism: 1（单设备）或 4（多设备）
+    int cur_copy;
+    // ...
+};
+```
+
+几个关键字段的含义：
+
+- `backends[]` 数组按**优先级排列**：索引 0 是最高优先级（通常是 GPU），最后一个是 CPU。调度器倾向于把操作放在高优先级 backend 上
+- `node_backend_ids` 和 `leaf_backend_ids` 是两个与计算图大小相同的整数数组，记录每个节点/叶子被分配到哪个 backend（用索引表示，-1 表示未分配）
+- `bufts[]` 记录每个 backend 对应的 buffer 类型，用于检查某个 tensor 的 buffer 是否与目标 backend 兼容
+- `n_copies` 控制 pipeline parallelism 的深度——1 表示无流水线，4 表示 4 级流水线
+
+### 五遍扫描算法
+
+`ggml_backend_sched_split_graph()` 是调度的核心函数，它通过五遍扫描将计算图的每个节点分配到 backend 并切分为 splits：
+
+<FlowDiagram
+  client:visible
+  title="五遍扫描总览"
+  direction="vertical"
+  nodes={[
+    { id: 'p1', label: 'Pass 1: 初始分配', sublabel: '根据 tensor buffer 确定 backend', row: 0, column: 0, color: 'bg-blue-50', borderColor: 'border-blue-300' },
+    { id: 'p2', label: 'Pass 2: 传播扩展', sublabel: 'GPU backend 向上下传播', row: 1, column: 0, color: 'bg-indigo-50', borderColor: 'border-indigo-300' },
+    { id: 'p3', label: 'Pass 3: 升级优化', sublabel: '尝试将 CPU 操作提升到 GPU', row: 2, column: 0, color: 'bg-purple-50', borderColor: 'border-purple-300' },
+    { id: 'p4', label: 'Pass 4: 源 tensor 分配', sublabel: '为未分配的 source 确定 backend', row: 3, column: 0, color: 'bg-teal-50', borderColor: 'border-teal-300' },
+    { id: 'p5', label: 'Pass 5: 图切分', sublabel: '按 backend 切分 + 插入拷贝', row: 4, column: 0, color: 'bg-amber-50', borderColor: 'border-amber-300' },
+  ]}
+  edges={[
+    { from: 'p1', to: 'p2' },
+    { from: 'p2', to: 'p3' },
+    { from: 'p3', to: 'p4' },
+    { from: 'p4', to: 'p5' },
+  ]}
+/>
+
+**Pass 1：初始分配**
+
+遍历所有 leaf（预分配的输入 tensor，如权重）和 node，根据它们的 buffer 所在位置确定 backend：
+
+- 权重在 GPU buffer → 分配给 GPU backend
+- 输入在 CPU buffer → 分配给 CPU backend（最低优先级）
+- 如果操作有权重参数，优先使用权重所在的 backend
+
+Pass 1 结束后，只有那些"直接持有已分配 buffer 的 tensor"才有了 backend 归属。大量没有权重的中间操作（如 `ADD`、`MUL`、`SOFTMAX` 等）仍然处于未分配状态。在一个典型的 Llama 模型中，每层约有 20+ 个节点，但只有 4-5 个节点（Q/K/V/O 权重和 FFN 权重）有直接的 buffer 归属。Pass 1 只能分配这些少数节点，大部分工作留给 Pass 2。
+
+**Pass 2：传播扩展**
+
+四个子遍历，沿图的依赖关系双向传播 backend 分配：
+
+1. "Expand GPU down"（正向）：如果一个 GPU 节点的后继未分配，传播 GPU
+2. "Expand GPU up"（反向）：如果一个 GPU 节点的前驱未分配，传播 GPU
+3. "Expand rest down"：处理剩余未分配节点（正向），将非 GPU 的 backend 向下传播
+4. "Expand rest up"：最终反向传播，确保不遗漏任何节点
+
+**为什么先传播 GPU？** 因为 GPU 是高优先级 backend（索引 0），优先传播 GPU 可以尽量多地将操作放在 GPU 上执行，减少跨设备数据拷贝。只有 GPU 无法覆盖的节点才由后两个子遍历分配给其他 backend。
+
+传播时会调用 `ggml_backend_sched_set_if_supported()` 确认目标 backend 支持该操作。如果 GPU backend 不支持某个操作（比如某些特殊的量化类型），该节点会被跳过，留给后续子遍历处理。
+
+**Pass 3：升级优化**
+
+对于已分配到低优先级 backend（如 CPU）的节点，尝试将它们升级到更高优先级的 backend——前提是该 backend 支持该操作类型，且支持所有输入 tensor 的 buffer 类型。这一步可以减少 split 数量：如果一个 CPU 节点被升级到 GPU，它就不再需要成为 split 边界。
+
+升级优化的典型受益者是 `ADD`、`MUL`、`SCALE` 等简单逐元素操作。这些操作在 CPU 和 GPU 上都支持，但 Pass 2 的传播可能因为路径顺序将它们分配给了 CPU。Pass 3 发现 GPU 也能处理这些操作（且输入 tensor 可以从 GPU buffer 读取），就将它们升级到 GPU。
+
+**Pass 4：源 tensor 分配**
+
+为所有未分配 backend 的 source tensor（包括 view tensor）确定归属。这一步主要处理的是没有自己操作的"被动" tensor：
+- view tensor 继承父 tensor 的 backend（因为 view 只是父 tensor 内存的一个窗口，不拥有自己的内存）
+- 其他 source tensor 继承其消费者节点的 backend（遵循"数据就近原则"——在消费者所在的设备上准备数据）
+
+Pass 4 结束后，计算图中的**所有 tensor**（包括节点、叶子和 source）都有了明确的 backend 归属。
+
+**Pass 5：图切分与拷贝插入**
+
+遍历分配结果，在 backend 切换处创建 split 边界。具体做法是顺序扫描节点，当遇到相邻两个节点的 backend ID 不同时，就在此处开启一个新 split。对于跨 split 的输入 tensor，scheduler 创建一个该 tensor 的**副本**（dup），在目标 backend 的 buffer 上分配空间，并将图中的引用替换为这个副本——原始 tensor 则记录为 split 的输入，在执行时由 scheduler 自动拷贝。
+
+### 交互演示
+
+下面的交互组件展示了五遍扫描如何将一个小型计算图（模拟 2 层模型，部分权重在 GPU、部分在 CPU）的每个节点分配到 backend，并最终切分为 splits。点击"下一步"逐遍观察每个节点的颜色变化——蓝色代表 GPU，灰色代表 CPU，白色代表未分配。最后一步展示了 split 边界和自动插入的 copy 节点：
+
+<LlamaCppSchedulerPassVisualizer client:visible locale="zh" />
+
+### ggml_backend_sched_split 结构体
+
+五遍扫描完成后，计算图被切分为若干 split，每个 split 的数据结构如下：
+
+```c
+struct ggml_backend_sched_split {
+    int backend_id;           // 这个 split 在哪个 backend 运行
+    int i_start, i_end;       // graph 中的节点范围
+    struct ggml_tensor * inputs[GGML_SCHED_MAX_SPLIT_INPUTS];  // 需要拷贝的输入
+    int n_inputs;             // 最多 30 个
+    struct ggml_cgraph graph; // 子图视图
+};
+```
+
+`inputs` 数组记录了本 split 需要从其他 backend 拷贝过来的 tensor。`GGML_SCHED_MAX_SPLIT_INPUTS` 限制为 30 个——对于典型的 Transformer 模型来说绑绑有余，因为 split 边界通常只有 hidden state 一个 tensor 需要跨设备传输。`graph` 字段是原始大图的一个**视图**（view），不拥有自己的节点数组，只是用 `i_start` 和 `i_end` 划定范围。
+
+### 切分示例
+
+来看一个具体的切分场景。假设一个 32 层模型，`n_gpu_layers=24`，则 `i_gpu_start=9`（总层数 32 减去 GPU 层数 24 再加 1），前 9 层在 CPU，后 23 层 + output 在 GPU。这是用户显存不足以容纳全部模型时的典型配置。五遍扫描的结果是产生 2 个 splits：
+
+<FlowDiagram
+  client:visible
+  title="32 层模型切分示例 (n_gpu_layers=24)"
+  direction="horizontal"
+  nodes={[
+    { id: 'emb', label: 'Embedding', sublabel: '', row: 0, column: 0, color: 'bg-gray-100', borderColor: 'border-gray-400' },
+    { id: 'l0', label: 'Layer 0', sublabel: '', row: 1, column: 0, color: 'bg-gray-100', borderColor: 'border-gray-400' },
+    { id: 'l8', label: '... Layer 8', sublabel: 'Split 0 — CPU', row: 2, column: 0, color: 'bg-gray-100', borderColor: 'border-gray-400' },
+    { id: 'copy', label: 'tensor copy', sublabel: 'CPU → GPU', row: 3, column: 0, color: 'bg-amber-50', borderColor: 'border-amber-400' },
+    { id: 'l9', label: 'Layer 9', sublabel: '', row: 4, column: 0, color: 'bg-blue-50', borderColor: 'border-blue-400' },
+    { id: 'l31', label: '... Layer 31', sublabel: '', row: 5, column: 0, color: 'bg-blue-50', borderColor: 'border-blue-400' },
+    { id: 'out', label: 'Output', sublabel: 'Split 1 — GPU', row: 6, column: 0, color: 'bg-blue-50', borderColor: 'border-blue-400' },
+  ]}
+  edges={[
+    { from: 'emb', to: 'l0' },
+    { from: 'l0', to: 'l8' },
+    { from: 'l8', to: 'copy' },
+    { from: 'copy', to: 'l9', label: 'CPU→GPU' },
+    { from: 'l9', to: 'l31' },
+    { from: 'l31', to: 'out' },
+  ]}
+/>
+
+split 边界处，Layer 8 的输出（即 hidden state tensor）需要从 CPU 拷贝到 GPU，这个拷贝操作由 scheduler 自动插入。对用户来说，这一切是透明的——只需设置 `n_gpu_layers`，scheduler 就会自动处理所有的切分和拷贝。
+
+注意这个 32 层模型只产生了 2 个 splits 和 1 次拷贝。这是 scheduler 的目标——最小化 split 数量（即最小化跨设备拷贝次数）。如果把所有层交替分配给 CPU 和 GPU，理论上每层都是一个 split 边界，性能会被数据拷贝完全主导。实际中，Pass 3 的升级优化正是为了消除这种不必要的 split 边界。
+
+### 跨 Backend 数据拷贝
+
+在执行阶段（`ggml_backend_sched_compute_splits()`），每个 split 开始前，scheduler 处理该 split 的输入拷贝：
+
+```c
+// 伪代码
+for (int i = 0; i < split->n_inputs; i++) {
+    struct ggml_tensor * input     = split->inputs[i];     // 源 tensor（在其他 backend）
+    struct ggml_tensor * input_cpy = tensor_copy(input, split->backend_id, cur_copy);
+
+    // 优先尝试异步拷贝
+    if (backend->cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
+        // 异步拷贝已入队，不阻塞
+    } else {
+        // 回退到同步拷贝
+        ggml_backend_synchronize(input_backend);
+        ggml_backend_tensor_copy(input, input_cpy);
+    }
+}
+```
+
+`tensor_copy()` 函数中的 `cur_copy` 参数是 pipeline parallelism 相关的——它指定使用哪一组 tensor 副本。单设备时 `cur_copy` 始终为 0。
+
+拷贝操作优先使用**异步拷贝**（`cpy_tensor_async`）——将数据传输入队到 backend 的 command queue 中，不阻塞 CPU。只有当 backend 不支持异步拷贝时才回退到**同步拷贝**（`ggml_backend_tensor_copy`），此时需要先同步源 backend 确保数据就绪。
+
+**MoE 优化**：对于 MoE 模型的专家权重，scheduler 不会拷贝全部 expert——它读取路由结果，**只拷贝实际被激活的 expert 权重**。例如 8 选 2 的 MoE 层，只需拷贝 2 个 expert 的权重，节省约 75% 的拷贝带宽。这对大型 MoE 模型（如 Mixtral 8x7B）的性能至关重要——如果拷贝所有 expert，跨设备带宽可能成为严重瓶颈。
+
+scheduler 在 `ggml_backend_sched_compute_splits()` 中通过读取 MoE 路由节点的输出来确定哪些 expert 被激活。这意味着 MoE 路由计算必须在 expert 权重拷贝之前完成——scheduler 会确保这个执行顺序。
+
+### Pipeline Parallelism
+
+当模型分布在多个 GPU 上时（`--split-mode layer`），单纯顺序执行会导致大量 GPU 空闲时间：GPU 0 计算完 split 0 后，需要等待数据拷贝到 GPU 1，然后 GPU 1 才能开始——此时 GPU 0 完全空闲。llama.cpp 使用 pipeline parallelism 来重叠计算和拷贝，消除这种等待。
+
+实现机制是维护 4 组 tensor 副本（`GGML_SCHED_MAX_COPIES = 4`），轮流使用。以 2 GPU 为例，执行流程如下：
+
+1. GPU 0 计算 Split 0（前半部分层）
+2. Split 0 的结果开始异步拷贝到 GPU 1（CPU→GPU1 或 GPU0→GPU1）
+3. GPU 1 接收到数据后计算 Split 1（后半部分层）
+4. 下一个 ubatch 到来时，GPU 0 可以立即开始计算，无需等待 GPU 1 完成
+
+4 组副本的设计让 scheduler 可以"先入先出"地轮流使用副本——当 GPU 0 在计算 split N 时，split N-1 的结果正在被拷贝到 GPU 1，GPU 1 可以紧接着开始计算——避免了 GPU 空等数据的时间。这和 CPU 流水线的设计思路类似：通过增加少量的存储资源（4 组副本），换取计算和传输的重叠执行。
+
+启用条件（`src/llama-context.cpp`）：
+- 多个设备（`model.n_devices() > 1`）
+- 层分布模式（`LLAMA_SPLIT_MODE_LAYER`）
+- KQV cache 也 offload 到 GPU
+- backend 支持异步计算和事件同步
+
+如果上述条件不满足（例如只有一个 GPU，或使用 `--split-mode none`），`n_copies` 为 1，scheduler 退化为顺序执行——每个 split 等前一个完成后才开始。这也是大多数用户的实际情况。多 GPU 的 pipeline parallelism 主要面向大模型（70B+）部署场景，此时模型无法放入单张 GPU 的显存。
+
+---
+
+## Part B：Op Fusion 与图优化
+
+计算图被切分成 splits 之后、实际分配内存之前，每个 split 会经历一轮**图优化**。优化的核心手段是 **Op Fusion（算子融合）**——把多个小操作合并为一个大操作，减少 kernel launch 开销和中间 tensor 的内存读写。这是 GPU 推理性能优化的关键环节之一。
+
+### 优化时机与执行位置
+
+图优化发生在调度流程的特定位置——split 之后、graph copy 之前。这个时机的选择有其道理：优化需要知道每个 split 在哪个 backend 上运行（因为不同 backend 支持不同的融合），但又必须在实际内存分配之前完成（因为融合会改变 tensor 数量和依赖关系）。
+
+<FlowDiagram
+  client:visible
+  title="图优化在调度流程中的位置"
+  direction="horizontal"
+  nodes={[
+    { id: 'scan', label: '五遍扫描', sublabel: 'backend 分配', row: 0, column: 0, color: 'bg-blue-50', borderColor: 'border-blue-300' },
+    { id: 'split', label: '图切分', sublabel: '创建 splits', row: 1, column: 0, color: 'bg-indigo-50', borderColor: 'border-indigo-300' },
+    { id: 'opt', label: '图优化', sublabel: 'per-split', row: 2, column: 0, color: 'bg-amber-50', borderColor: 'border-amber-400' },
+    { id: 'copy', label: 'graph copy', sublabel: '加入拷贝节点', row: 3, column: 0, color: 'bg-teal-50', borderColor: 'border-teal-300' },
+    { id: 'alloc', label: '内存分配', sublabel: '', row: 4, column: 0, color: 'bg-green-50', borderColor: 'border-green-300' },
+  ]}
+  edges={[
+    { from: 'scan', to: 'split' },
+    { from: 'split', to: 'opt' },
+    { from: 'opt', to: 'copy' },
+    { from: 'copy', to: 'alloc' },
+  ]}
+/>
+
+每个 split 独立优化，由其对应 backend 的 `graph_optimize` 回调执行：
+
+```c
+// ggml/src/ggml-backend.cpp
+// 在 ggml_backend_sched_split_graph() 中
+for (int i = 0; i < sched->n_splits; i++) {
+    struct ggml_backend_sched_split * split = &sched->splits[i];
+    split->graph = ggml_graph_view(graph, split->i_start, split->i_end);
+
+    // 各 backend 执行自己的优化
+    ggml_backend_graph_optimize(sched->backends[split->backend_id], &split->graph);
+}
+
+// graph_optimize 的实现——简单的回调分发
+static void ggml_backend_graph_optimize(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
+    if (backend->iface.graph_optimize != NULL) {
+        backend->iface.graph_optimize(backend, cgraph);
+    }
+}
+```
+
+不同 backend 可以注册不同的优化策略——CPU backend 不做优化（回调为 NULL），而 CUDA、Vulkan、Metal 各有自己的融合规则。
+
+### 典型融合模式
+
+**1. RMSNorm + Scale 融合**
+
+Transformer 中 RMSNorm 之后通常紧跟一个逐元素乘法（乘以 weight）。将这两步融合为单个 kernel 可以节省一次完整的 tensor 读写。
+
+```
+融合前：                           融合后：
+x → RMS_NORM → tmp → MUL → y      x → RMS_NORM_FUSED → y
+                      ↑                               ↑
+                    weight                           weight
+
+融合前需要：                        融合后只需：
+  1. 从 VRAM 读 x                    1. 从 VRAM 读 x + weight
+  2. 写 tmp 到 VRAM                  2. 写 y 到 VRAM
+  3. 从 VRAM 读 tmp + weight         （节省一次完整的 VRAM 读写）
+  4. 写 y 到 VRAM
+```
+
+Vulkan、Metal、OpenCL、Hexagon 等 backend 都实现了这一融合。以 Vulkan 为例，它还能进一步扩展为更长的融合链：
+
+- `RMS_NORM + MUL`：基本融合——节省 1 次全局内存读写
+- `RMS_NORM + MUL + ROPE`：三级融合——归一化、缩放、位置编码一次完成，节省 2 次读写
+- `MUL_MAT + ADD`：矩阵乘法 + 偏置融合——在 GEMM kernel 结束时直接加 bias，避免额外的逐元素 kernel
+
+**2. Flash Attention**
+
+Flash Attention 不是传统意义上的 op fusion，而是一种**算法级优化**——把 Q·K^T → softmax → ·V 整个注意力计算替换为一个单独的高效操作 `GGML_OP_FLASH_ATTN_EXT`。传统多步注意力需要 3 个 kernel launch 和 2 次中间 tensor 的全局内存读写；Flash Attention 将其压缩为 1 个 kernel，利用 tiling 在 SRAM 中完成所有计算。
+
+Flash Attention 的启用决策发生在图构建时（`src/llama-graph.cpp`）：
+
+```cpp
+const bool use_flash_attn = cparams.flash_attn && kq_b == nullptr;
+if (use_flash_attn) {
+    // 用单个 ggml_flash_attn_ext() 操作替代 QK^T → softmax → V 序列
+    cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, ...);
+} else {
+    // 传统多步注意力
+    kq = ggml_mul_mat(ctx0, k, q);           // QK^T
+    kq = ggml_soft_max_ext(ctx0, kq, ...);   // softmax
+    cur = ggml_mul_mat(ctx0, v, kq);         // ·V
+}
+```
+
+Flash Attention 的可用性在 context 初始化阶段自动探测（`src/llama-context.cpp` 构造函数中）：构建一个测试图，检查 `GGML_OP_FLASH_ATTN_EXT` 节点是否被分配到了 KV cache 所在的设备。如果设备不匹配（说明该 backend 不支持），自动降级为传统注意力。这种"构建测试图 → 检查 backend 分配"的探测模式在 llama.cpp 中被多处使用，它避免了硬编码"哪个 backend 支持哪个操作"的映射表，转而让 scheduler 自身来回答这个问题。注意 `kq_b == nullptr` 这个条件——当注意力有 bias 时（如 ALiBi），Flash Attention 不适用，会退回传统路径。
+
+**3. CUDA 注意力并行优化**
+
+CUDA backend 的图优化不是融合操作，而是**重排序**——识别 Transformer 中 Q/K/V 三路并行计算的 fork-join 模式，通过交错排列三个分支的操作来延长 tensor 生存期，提高 GPU stream 的并行利用率。具体来说，标准 Transformer 层中 Q/K/V 三路投影是独立的——Q 路包含 `MatMul → RoPE → ...`，K 和 V 类似。原始图中这些操作按分支连续排列（Q 路的全部操作 → K 路的全部操作 → V 路的全部操作），重排序后变为交错排列（Q0, K0, V0, Q1, K1, V1, ...）。这种交错让 GPU 可以更早释放已完成分支的中间 tensor，同时也让 CUDA stream 有更多并行机会。
+
+**4. Gated Delta Net (GDN) 融合**
+
+针对 Gated Delta Net 架构（如 Qwen3.5、DeltaNet），将多个 gate/delta/net 操作融合为单个 `GGML_OP_GATED_DELTA_NET` 操作。同样在 context 初始化阶段自动探测支持情况（与 Flash Attention 探测相邻，位于 `llama_context` 构造函数中）。GDN 融合与 Flash Attention 类似，属于**算法级优化**——在图构建阶段决定是否使用融合版本，而非在 `graph_optimize` 阶段事后融合。
+
+### 融合的安全性检查
+
+不是任意操作都能融合。ggml 内部提供 `ggml_can_fuse()`（定义在 `ggml-impl.h` 中的内联函数）检查融合的可行性：
+
+- 待融合节点必须在依赖图的合法范围内
+- 中间 tensor 不能是图的输出（别人还要用）
+- view 操作必须完整包含在融合范围内
+- 融合后不能破坏数据依赖关系
+- 所有涉及的节点必须在同一个 split 内（跨 backend 的节点不能融合）
+
+这些检查由 `ggml_can_fuse()` 统一执行。如果检查失败，`graph_optimize` 会跳过该融合候选，保留原始的多步操作。宁可不融合，也不能产生错误的计算结果。
+
+### Op Fusion 小结
+
+图优化的设计是**模块化**的——核心调度器只在每个 split 上调用 `graph_optimize` 回调，具体的融合规则由各 backend 自行实现。这让 CUDA 可以做 Q/K/V 重排序，Vulkan 可以做 RMSNorm+MUL+ROPE 三级融合，Metal 可以做自己的优化——互不干扰。对于不支持优化的 backend（如 CPU），回调为 NULL，跳过即可。
+
+这种设计还有一个好处：新的 backend 只需要实现 `graph_optimize` 回调即可获得融合能力，不需要修改核心调度代码。例如，新增一个 NPU backend 时，只需在其 `graph_optimize` 中实现该 NPU 特有的融合模式即可。
+
+需要注意的是，并非所有优化都在 `graph_optimize` 阶段进行。Flash Attention 和 GDN 的替换发生在**图构建阶段**（`build_graph()`），因为它们改变的是操作的语义（从多步操作变为单个操作），而非仅仅在执行层面做融合。`graph_optimize` 阶段的融合更加"局部"——它不改变计算的语义，只改变执行方式。
+
+---
+
+## Part C：Tensor 内存分配
+
+Backend scheduling 决定了"在哪里执行"，Op Fusion 决定了"执行什么"，接下来的问题是"内存从哪来"。llama.cpp 中有三类 tensor，它们的内存管理策略截然不同：**权重 tensor**（长期驻留）、**KV cache tensor**（会话级别）、**中间激活 tensor**（计算即释放）。理解这三类 tensor 的分配策略，是掌握 llama.cpp 显存占用和性能特征的关键。
+
+### 三类 Tensor 生命周期对比
+
+下表总结了三类 tensor 在分配策略上的关键差异：
+
+| 类别 | 分配时机 | 生命周期 | 内存位置 | 释放时机 | 典型大小 |
+|------|----------|----------|----------|----------|----------|
+| **权重** | 模型加载 | 模型存活期间 | mmap 或 GPU buffer | 模型销毁 | 数 GB |
+| **KV cache** | context 创建 | 推理会话期间 | 按层分配到对应设备 | context 销毁 | 数百 MB ~ 数 GB |
+| **中间激活** | 每次 compute | 单次 ubatch 计算 | scheduler 管理的临时 buffer | 引用计数归零时立即回收 | 数十 MB |
+
+接下来逐一深入每类 tensor 的管理策略。
+
+### 权重 Tensor：mmap 或 Backend Buffer
+
+模型权重在加载时分配，生命周期与模型相同。分配方式取决于是否启用 mmap：
+
+<FlowDiagram
+  client:visible
+  title="权重 tensor 加载路径"
+  direction="vertical"
+  nodes={[
+    { id: 'load', label: 'load_data_for(tensor)', sublabel: '', row: 0, column: 1, color: 'bg-blue-50', borderColor: 'border-blue-300' },
+    { id: 'check', label: 'use_mmap?', sublabel: '', row: 1, column: 1, color: 'bg-amber-50', borderColor: 'border-amber-300' },
+    { id: 'mmap', label: 'mmap 模式', sublabel: 'tensor->data = mmap地址 + offset\n零拷贝，直接指向文件映射', row: 2, column: 0, color: 'bg-green-50', borderColor: 'border-green-400' },
+    { id: 'read', label: '非 mmap 模式', sublabel: '从文件 read 到 backend buffer\n(GPU VRAM 或 pinned CPU 内存)', row: 2, column: 2, color: 'bg-purple-50', borderColor: 'border-purple-300' },
+  ]}
+  edges={[
+    { from: 'load', to: 'check' },
+    { from: 'check', to: 'mmap', label: '是' },
+    { from: 'check', to: 'read', label: '否' },
+  ]}
+/>
+
+**mmap 模式**下，tensor 的 `data` 指针直接指向文件映射区域——不需要额外内存，但数据停留在主存中，GPU 每次使用都需要跨总线读取。
+
+**非 mmap 模式**下，权重被读入 backend buffer（通常是 GPU 显存），后续使用时直接在 GPU 本地访问。为了加速上传，llama.cpp 使用 4 个 pinned staging buffer（Direct I/O 时 64MB，普通模式 1MB）构成流水线——一个 buffer 在做 I/O 读取时，另一个正在被 GPU DMA 传输。这种异步上传机制和 Pipeline Parallelism 的设计思路一致：用多组缓冲区实现 I/O 和计算的重叠。
+
+两种模式各有适用场景：mmap 适合 CPU-only 推理（避免内存翻倍），非 mmap 适合 GPU 推理（数据驻留在 GPU 显存，避免反复跨总线读取）。llama.cpp 会根据 `n_gpu_layers` 和 `use_mmap` 参数自动选择——当所有层都 offload 到 GPU 时，权重自然使用非 mmap 模式上传到 GPU；当完全在 CPU 运行时，mmap 是默认选择。
+
+### KV Cache：会话级分配
+
+KV cache 在创建 context 时**一次性预分配**（pre-allocation），存活整个推理会话。这意味着无论实际用了多少 token，KV cache 始终占据固定大小的内存。每层 Transformer 有独立的 K 和 V tensor：
+
+```cpp
+// src/llama-kv-cache.cpp（简化）
+// 每层创建 3D tensor：[embd_size, kv_size, n_stream]
+ggml_tensor * k = ggml_new_tensor_3d(ctx, type_k, n_embd_k_gqa, kv_size, n_stream);
+ggml_tensor * v = ggml_new_tensor_3d(ctx, type_v, n_embd_v_gqa, kv_size, n_stream);
+```
+
+三个维度的含义：
+- 第一维 `n_embd_k_gqa` / `n_embd_v_gqa`：每个注意力头的嵌入维度乘以 GQA 分组数。GQA（Grouped-Query Attention）模型中，K/V 的头数少于 Q，因此这个维度也更小
+- 第二维 `kv_size`：KV cache 的容量（slot 数量），由 `n_ctx` 参数控制。这是 KV cache 内存占用的主要决定因素
+- 第三维 `n_stream`：控制多序列的隔离程度（unified cache 为 1，否则等于 `n_seq_max`）
+
+`type_k` / `type_v` 可配置——默认 f16，也可以用 q8_0、q4_0 等量化类型节省显存。
+
+KV cache 按层分配到各自的设备上——如果某层的权重在 GPU，该层的 KV cache 也在 GPU（除非关闭了 `--kv-offload`）。这一策略确保注意力计算时 K/V tensor 与该层的计算在同一个设备上，无需跨设备拷贝。
+
+KV cache 的量化类型对显存的影响很大：以 4096 维、4K context 为例，单层 K+V 在 f16 下占 64MB，换成 q4_0 仅需 16MB——32 层模型节省超过 1.5GB 显存。用户可以通过 `--cache-type-k` 和 `--cache-type-v` 参数控制量化类型，在精度和显存之间权衡。
+
+### 中间 Tensor：图分配器（Graph Allocator）
+
+中间激活 tensor 是最频繁创建和销毁的——每次 `process_ubatch()` 都会产生大量临时 tensor（attention scores、FFN 中间结果等）。这些 tensor 由 `ggml_gallocr`（graph allocator）统一管理。与权重和 KV cache 不同，中间 tensor 不需要跨 ubatch 保留——一个 ubatch 计算完成后，所有中间 tensor 的内存都可以回收。
+
+**分配策略：引用计数 + 立即释放**
+
+图分配器在分配前会**静态分析**整个计算图的依赖关系（不是运行时动态追踪），追踪每个 tensor 被几个下游节点引用。这使得分配器能在计算开始前就确定每个 tensor 的生命周期，进而做出最优的内存复用决策。当最后一个消费者完成计算后，该 tensor 的内存立即回收：
+
+<FlowDiagram
+  client:visible
+  title="引用计数释放流程"
+  direction="vertical"
+  nodes={[
+    { id: 'a', label: 'tensor A', sublabel: 'refcount = 2', row: 0, column: 1, color: 'bg-blue-50', borderColor: 'border-blue-300' },
+    { id: 'b', label: 'node B 使用 A', sublabel: '', row: 1, column: 0, color: 'bg-gray-50', borderColor: 'border-gray-300' },
+    { id: 'c', label: 'node C 使用 A', sublabel: '', row: 1, column: 2, color: 'bg-gray-50', borderColor: 'border-gray-300' },
+    { id: 'b_done', label: 'B 完成', sublabel: 'refcount = 1，不释放', row: 2, column: 0, color: 'bg-amber-50', borderColor: 'border-amber-300' },
+    { id: 'c_done', label: 'C 完成', sublabel: 'refcount = 0，立即释放', row: 2, column: 2, color: 'bg-red-50', borderColor: 'border-red-300' },
+    { id: 'reuse', label: 'A 的内存被后续 tensor 复用', sublabel: '', row: 3, column: 1, color: 'bg-green-50', borderColor: 'border-green-400' },
+  ]}
+  edges={[
+    { from: 'a', to: 'b' },
+    { from: 'a', to: 'c' },
+    { from: 'b', to: 'b_done' },
+    { from: 'c', to: 'c_done' },
+    { from: 'c_done', to: 'reuse' },
+  ]}
+/>
+
+**就地操作（In-place）优化**
+
+如果一个操作的输入 tensor 在操作后不再被其他人使用（refcount=1，无 view），分配器会让输出直接复用输入的内存——零额外分配。支持的就地操作包括 `ADD`、`MUL`、`SCALE`、`RMS_NORM`、`SOFT_MAX`、`ROPE` 等。
+
+就地操作在 Transformer 中非常常见：残差连接中的 `ADD`（将注意力输出加到 hidden state 上）、归一化层的 `RMS_NORM`、位置编码的 `ROPE`——这些操作的输入通常只被一个下游节点使用，是就地操作的理想候选。
+
+就地操作与 Op Fusion 是互补的优化：Op Fusion 减少 kernel launch 数量和中间 tensor 数量，就地操作则减少已有 tensor 的内存分配。两者共同作用，使得中间激活的峰值显存远低于理论上限。
+
+**内存池策略**
+
+底层的 `ggml_dyn_tallocr` 使用 **best-fit** 算法：维护一个按大小排序的空闲块列表，每次分配时找到最小的足够大的块。如果没有合适的块，扩展最后一个块或创建新的 chunk。每个 backend 有自己独立的内存池——GPU 和 CPU 的中间激活内存完全隔离。
+
+这种设计意味着中间激活的峰值显存占用远小于"所有中间 tensor 同时存在"的理论上限。实际测量表明，对于典型的 7B 参数模型，中间激活的峰值显存通常只有几十 MB，远小于权重（约 3-7 GB，取决于量化等级）和 KV cache（数百 MB 到数 GB，取决于 context 长度）的占用。
+
+### 分配流程
+
+`ggml_backend_sched_alloc_graph()` 是图内存分配的入口：
+
+<FlowDiagram
+  client:visible
+  title="图内存分配流程"
+  direction="vertical"
+  nodes={[
+    { id: 'entry', label: 'ggml_backend_sched_alloc_graph()', sublabel: '', row: 0, column: 1, color: 'bg-blue-50', borderColor: 'border-blue-300' },
+    { id: 'split', label: 'split_graph()', sublabel: '切分 + 优化', row: 1, column: 1, color: 'bg-indigo-50', borderColor: 'border-indigo-300' },
+    { id: 'check', label: 'backend 分配是否变化？', sublabel: '', row: 2, column: 1, color: 'bg-amber-50', borderColor: 'border-amber-300' },
+    { id: 'reuse', label: '直接 alloc_graph()', sublabel: '复用上次布局', row: 3, column: 0, color: 'bg-green-50', borderColor: 'border-green-400' },
+    { id: 'reserve', label: 'reserve_n()', sublabel: '重新计算 buffer 大小', row: 3, column: 2, color: 'bg-purple-50', borderColor: 'border-purple-300' },
+    { id: 'alloc2', label: 'alloc_graph()', sublabel: '按新布局分配', row: 4, column: 2, color: 'bg-green-50', borderColor: 'border-green-400' },
+    { id: 'done', label: '分配完成', sublabel: '', row: 5, column: 1, color: 'bg-teal-50', borderColor: 'border-teal-300' },
+  ]}
+  edges={[
+    { from: 'entry', to: 'split' },
+    { from: 'split', to: 'check' },
+    { from: 'check', to: 'reuse', label: '不变' },
+    { from: 'check', to: 'reserve', label: '变化' },
+    { from: 'reserve', to: 'alloc2' },
+    { from: 'reuse', to: 'done' },
+    { from: 'alloc2', to: 'done' },
+  ]}
+/>
+
+关键优化：如果图结构和 backend 分配没变（自回归解码阶段通常如此），分配器**复用上次的内存布局**，跳过 reserve 步骤。`reserve_n()` 是一个相对昂贵的操作——它需要遍历整个计算图，计算每个 backend 需要的最大 buffer 大小——因此跳过它对解码延迟有明显改善。
+
+alloc 阶段还会处理一个细节：确保 split 的输入副本（dup tensor）被分配到正确的 backend buffer 上。这些 dup tensor 是 Pass 5 创建的"占位符"，此时才获得真正的内存空间。
+
+此外，`alloc_graph()` 内部调用的 `ggml_gallocr_alloc_graph()` 会执行前文提到的引用计数分析和就地操作检测——这是中间 tensor 高效复用的关键步骤。
+
+---
+
+## 三部分的完整流程
+
+Part A/B/C 不是三个独立的子系统，而是一条完整的流水线。每次 `process_ubatch()` 调用都会经历这条路径：
+
+<FlowDiagram
+  client:visible
+  title="从计算图到执行的完整路径"
+  direction="vertical"
+  nodes={[
+    { id: 'graph', label: 'build_graph()', sublabel: '构建计算图（上一篇）', row: 0, column: 0, color: 'bg-gray-50', borderColor: 'border-gray-300' },
+    { id: 'sched', label: 'split_graph()', sublabel: 'Part A: 五遍扫描 + 切分', row: 1, column: 0, color: 'bg-blue-50', borderColor: 'border-blue-300' },
+    { id: 'opt', label: 'graph_optimize()', sublabel: 'Part B: per-split Op Fusion', row: 2, column: 0, color: 'bg-amber-50', borderColor: 'border-amber-400' },
+    { id: 'alloc', label: 'alloc_graph()', sublabel: 'Part C: 中间 tensor 内存分配', row: 3, column: 0, color: 'bg-green-50', borderColor: 'border-green-400' },
+    { id: 'exec', label: 'graph_compute()', sublabel: '执行计算（下一篇）', row: 4, column: 0, color: 'bg-purple-50', borderColor: 'border-purple-300' },
+  ]}
+  edges={[
+    { from: 'graph', to: 'sched' },
+    { from: 'sched', to: 'opt' },
+    { from: 'opt', to: 'alloc' },
+    { from: 'alloc', to: 'exec' },
+  ]}
+/>
+
+在自回归解码阶段，如果图结构没有变化（`can_reuse()` 返回 true，详见[上一篇的图复用机制](/zh/llama-cpp-build-graph)），`build_graph()` 和 `split_graph()` 可以被跳过，直接从 `alloc_graph()` 开始——而 `alloc_graph()` 本身也会因为 backend 分配不变而跳过 `reserve` 步骤。这种层层优化使得稳态解码的额外开销接近于零，真正的瓶颈回归到计算本身。
+
+---
+
+## 小结
+
+本文覆盖了 llama.cpp 从计算图构建到实际执行之间的三个关键环节：
+
+1. **Backend Scheduling**：五遍扫描算法（初始分配 → 传播扩展 → 升级优化 → 源 tensor 分配 → 图切分）将计算图的每个节点分配到合适的 backend，在 backend 切换处创建 split 边界并插入数据拷贝。Pipeline parallelism 通过 4 组 tensor 副本实现计算与拷贝的重叠
+2. **Op Fusion**：模块化的图优化框架，各 backend 通过 `graph_optimize` 回调实现自己的融合规则——RMSNorm+Scale 融合、Flash Attention、CUDA Q/K/V 重排序、GDN 融合等。融合前通过 `ggml_can_fuse()` 检查安全性
+3. **Tensor 内存分配**：三层分级管理——权重（mmap / GPU buffer，异步流水线上传）、KV cache（会话级，支持量化节省显存）、中间激活（引用计数 + 就地操作 + best-fit 内存池）
+
+这三层设计使得 llama.cpp 能精确控制内存使用：权重和 KV cache 是"已知成本"，可以在加载时精确计算；中间激活通过引用计数和就地操作最小化峰值占用。分配器还会在图结构不变时复用上次的内存布局，进一步减少自回归解码阶段的开销。
+
+从用户的角度来看，这些机制回答了一些常见问题：为什么 `--n-gpu-layers` 不是越大越好（可能导致频繁的 CPU↔GPU 拷贝）？为什么 `--flash-attn` 能显著降低显存占用（消除了 attention scores 的中间 tensor）？为什么自回归解码阶段的 overhead 很低（图复用 + 内存布局复用）？这些都源于本文介绍的调度和内存管理机制。
+
+下一篇将进入 [#7 执行与采样](/zh/llama-cpp-execution-sampling)，探索计算图如何在各 backend 上实际执行（CUDA kernel dispatch、Metal command buffer、CPU 线程池等），以及采样策略链如何将 logits 转化为最终的 token。

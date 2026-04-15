@@ -283,6 +283,8 @@ llama_kv_cache_seq_rm(ctx, seq_id, 0, 512);
 llama_kv_cache_seq_shift(ctx, seq_id, 512, -1, -512);
 ```
 
+> **源码级深入**：Ubatch 三种切分算法（`split_simple` / `split_equal` / `split_seq`）详见 [Batch、Ubatch 与解码主循环](/zh/llama-cpp-batch-ubatch)；Context shift 的 C++ 实现（`seq_rm` + `seq_add` + K-shift）和 KV cache 量化详见 [执行、采样与上下文管理](/zh/llama-cpp-execution-sampling)。
+
 ### Sliding Window Attention
 
 部分模型（如 Mistral 7B）使用 **sliding window attention**，只关注最近的 W 个 tokens（如 W=4096）。这种机制天然支持长上下文：

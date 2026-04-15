@@ -1,0 +1,289 @@
+---
+title: "Warmup、Tokenization 与 Chat Template"
+slug: llama-cpp-warmup-tokenization
+locale: zh
+tags:
+  - llama-cpp
+  - warmup
+  - tokenization
+  - chat-template
+  - jinja2
+  - multimodal
+difficulty: advanced
+created: "2026-04-15"
+updated: "2026-04-15"
+references:
+  - type: repo
+    title: "llama.cpp GitHub"
+    url: "https://github.com/ggerganov/llama.cpp"
+prerequisites:
+  - llama-cpp-overview
+---
+
+import FlowDiagram from '../../../components/primitives/FlowDiagram.tsx';
+import LlamaCppChatTemplateRenderer from '../../../components/interactive/LlamaCppChatTemplateRenderer.tsx';
+
+> **系列定位**：本文是 llama.cpp 源码精读系列 #3，覆盖模型推理前的三个准备阶段——Warmup、Tokenization 和 Chat Template 渲染。如果你还没有阅读 [系列总览](/zh/llama-cpp-overview) 和 [#2 模型加载：从文件到设备](/zh/llama-cpp-model-loading)，建议先建立全局地图再进入本章。
+
+## Part A：Warmup 机制
+
+Backend 初始化完成后，llama.cpp 会执行一次 **warmup**——用极少的 token 做一次完整的前向推理，目的不是生成有意义的文本，而是让整个 pipeline 完成首次资源分配。
+
+### Warmup 做了什么
+
+```cpp
+// common/common.cpp — common_init_from_params()
+if (params.warmup) {
+    LOG_WRN("warming up the model with an empty run - please wait ...\n");
+
+    llama_set_warmup(lctx, true);
+
+    // 构造一个极小的 batch：只有 BOS + EOS 两个 token
+    std::vector<llama_token> tmp;
+    llama_token bos = llama_vocab_bos(vocab);
+    llama_token eos = llama_vocab_eos(vocab);
+    if (bos != LLAMA_TOKEN_NULL) tmp.push_back(bos);
+    if (eos != LLAMA_TOKEN_NULL) tmp.push_back(eos);
+    if (tmp.empty()) tmp.push_back(0);
+
+    // encoder-decoder 模型（如 T5）需要先 encode 再 decode
+    if (llama_model_has_encoder(model)) {
+        llama_encode(lctx, llama_batch_get_one(tmp.data(), tmp.size()));
+        // ...
+    }
+    if (llama_model_has_decoder(model)) {
+        llama_decode(lctx, llama_batch_get_one(tmp.data(), tmp.size()));
+    }
+
+    // 清除 warmup 产生的 KV cache
+    llama_memory_clear(llama_get_memory(lctx), true);
+    llama_synchronize(lctx);
+    llama_perf_context_reset(lctx);
+
+    llama_set_warmup(lctx, false);
+    // 重置 sampler 的 RNG 状态，确保正式推理时种子可复现
+    res->reset_samplers();
+}
+```
+
+代码的逻辑非常直白：构造一个只含 BOS 和 EOS 的极小 batch，走一遍完整的 encode/decode 流程，然后清除所有 warmup 产生的状态，确保正式推理从零开始。
+
+### 为什么需要 Warmup
+
+1. **GPU 内存预分配**：首次执行 `llama_decode()` 会触发 backend scheduler 为中间 tensor 分配 GPU buffer。如果没有 warmup，用户输入的第一个 prompt 会额外等待这些分配。
+
+2. **内核编译**：某些 backend（如 Vulkan、Metal）在首次执行某个 op 时需要编译 shader/kernel。warmup 把这个延迟提前到初始化阶段。
+
+3. **KV cache 初始化**：确保 KV cache 的内存已经分配并映射到正确的设备。
+
+### Encoder-Decoder 模型处理
+
+注意代码中的分支：如果模型同时有 encoder 和 decoder（如 T5），warmup 会先调用 `llama_encode()` 再调用 `llama_decode()`，确保两侧的 pipeline 都完成预热。对于纯 decoder-only 模型（GPT、LLaMA），只需要 `llama_decode()` 一次。
+
+### `--no-warmup` 适用场景
+
+warmup 可以通过 `--no-warmup` 禁用。在基准测试场景下，通常需要禁用 warmup 以获得更准确的首 token 延迟数据。
+
+---
+
+## Part B：Tokenization
+
+模型加载并 warmup 之后，就可以处理用户输入了。第一步是把文本转换为 token ID。
+
+### Tokenization 流程
+
+<FlowDiagram
+  client:visible
+  title="Tokenization 流程"
+  direction="horizontal"
+  nodes={[
+    { id: "input", label: "用户文本", sublabel: "'Hello, world!'", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0 },
+    { id: "func", label: "llama_tokenize()", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 1 },
+    { id: "impl", label: "vocab->tokenize()", sublabel: "BPE / SentencePiece", color: "bg-amber-50", borderColor: "border-amber-200", textColor: "text-amber-800", column: 0, row: 2 },
+    { id: "output", label: "Token IDs", sublabel: "[15496, 11, 1917, 0]", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 3 },
+  ]}
+  edges={[
+    { from: "input", to: "func" },
+    { from: "func", to: "impl" },
+    { from: "impl", to: "output" },
+  ]}
+/>
+
+`llama_tokenize()` 是一个简单的代理函数：
+
+```cpp
+// llama-vocab.cpp
+int32_t llama_tokenize(
+    const llama_vocab * vocab,
+    const char * text, int32_t text_len,
+    llama_token * tokens, int32_t n_tokens_max,
+    bool add_special, bool parse_special)
+{
+    return vocab->tokenize(text, text_len, tokens, n_tokens_max, add_special, parse_special);
+}
+```
+
+两个关键参数：
+
+- **`add_special`**：是否自动添加 BOS（Begin of Sentence）等特殊 token
+- **`parse_special`**：是否解析文本中的特殊 token 标记（如 `<|im_start|>`）
+
+### Tokenizer 实现由模型决定
+
+tokenizer 的具体实现（BPE、SentencePiece 等）由模型决定，信息存储在 GGUF 的 KV metadata 中。llama.cpp 在加载模型时读取 `tokenizer.ggml.model` 字段来确定使用哪种 tokenizer。
+
+### 反向 Detokenize
+
+反向过程（token → 文本）使用 `llama_token_to_piece()`（单个 token）或 `llama_detokenize()`（批量）。在流式输出场景下，每个新生成的 token 都需要通过 detokenize 转回文本片段。
+
+---
+
+## Part C：Chat Template
+
+### 为什么不能直接拼接 Prompt
+
+不同模型训练时使用了不同的**特殊 token** 来标记角色切换。如果你只是把 system prompt 和 user prompt 简单拼在一起：
+
+```
+你是助手你好
+```
+
+模型根本分不清哪部分是系统指令、哪部分是用户输入、该从哪里开始回复。
+
+以同一段对话为例，不同模型期望的格式完全不同：
+
+**ChatML 格式**（Qwen 等）：
+```
+<|im_start|>system
+你是助手<|im_end|>
+<|im_start|>user
+你好<|im_end|>
+<|im_start|>assistant
+```
+
+**Llama-3 格式**：
+```
+<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+你是助手<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+你好<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+```
+
+这些 `<|im_start|>`、`<|start_header_id|>` 等是**特殊 token**——它们在词表中有专门的 token ID，模型在训练时学会了"看到这些 token 就执行角色切换"。
+
+试试下面的交互组件，亲手感受不同模板对同一消息列表的渲染差异：
+
+<LlamaCppChatTemplateRenderer client:visible locale="zh" />
+
+### Chat Template 是什么
+
+Chat template 是一个 **Jinja2 模板字符串**，嵌入在 GGUF 文件的 KV metadata 中（key: `tokenizer.chat_template`）。以 ChatML 模板为例：
+
+```jinja
+{%- for message in messages -%}
+  {{- '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>\n' -}}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+  {{- '<|im_start|>assistant\n' -}}
+{%- endif -%}
+```
+
+这个模板接收一个 `messages` 列表（每条消息有 `role` 和 `content`），输出模型期望的格式化文本。
+
+### 加载与渲染流程
+
+<FlowDiagram
+  client:visible
+  title="Chat Template 加载与渲染流程"
+  direction="vertical"
+  nodes={[
+    { id: "gguf", label: "GGUF 模型文件", sublabel: "tokenizer.chat_template", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0 },
+    { id: "init", label: "common_chat_templates_init()", sublabel: "读取 template 字符串", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 1 },
+    { id: "fallback", label: "Fallback 逻辑", sublabel: "无 template → ChatML", color: "bg-gray-50", borderColor: "border-gray-200", textColor: "text-gray-700", column: 1, row: 1 },
+    { id: "messages", label: "用户输入 messages", sublabel: "[{role, content}, ...]", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 2 },
+    { id: "apply", label: "common_chat_templates_apply()", sublabel: "Jinja2 渲染", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 3 },
+    { id: "prompt", label: "格式化 prompt 文本", sublabel: "含特殊 token 的完整 prompt", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 0, row: 4 },
+  ]}
+  edges={[
+    { from: "gguf", to: "init" },
+    { from: "init", to: "fallback", style: "dashed", label: "if empty" },
+    { from: "fallback", to: "apply", style: "dashed" },
+    { from: "init", to: "apply" },
+    { from: "messages", to: "apply" },
+    { from: "apply", to: "prompt" },
+  ]}
+/>
+
+### 关键代码路径
+
+```cpp
+// chat.cpp — common_chat_templates_init()
+const auto * str = llama_model_chat_template(model, nullptr);
+if (str) {
+    default_template_src = str;  // 从 GGUF 读取
+}
+
+// 如果没有 template，优先使用 tool_use template，否则 fallback 到 ChatML
+if (default_template_src.empty() || default_template_src == "chatml") {
+    if (!template_tool_use_src.empty()) {
+        default_template_src = template_tool_use_src;
+    } else {
+        default_template_src = CHATML_TEMPLATE_SRC;
+    }
+}
+```
+
+`common_chat_templates_init()` 首先尝试从 GGUF 元数据读取 `tokenizer.chat_template`。如果模型没有提供 template（或者 template 就是 `"chatml"`），则走 fallback 逻辑：优先使用 tool_use template（如果存在），否则使用内置的 ChatML 模板。这个 fallback 策略保证了即使模型没有嵌入 chat template，llama.cpp 也能以合理的格式处理对话。
+
+---
+
+## Part D：多模态 Token 注入
+
+对于多模态模型（如 Gemma3、LLaVA），图片/音频需要转换为特殊的 token 序列注入到 prompt 中。这由 `tools/mtmd/` 模块处理。
+
+### `mtmd_tokenize()` 流程
+
+<FlowDiagram
+  client:visible
+  title="多模态 Token 注入流程"
+  direction="vertical"
+  nodes={[
+    { id: "input", label: "文本 + 图片路径", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0, width: 2 },
+    { id: "tokenize", label: "mtmd_tokenize()", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 1, width: 2 },
+    { id: "text", label: "文本部分", sublabel: "普通 token", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 2 },
+    { id: "image", label: "图片标记", sublabel: "<start_of_image> + vision tokens + <end_of_image>", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 1, row: 2 },
+    { id: "chunks", label: "合并为 mtmd_input_chunks", color: "bg-amber-50", borderColor: "border-amber-200", textColor: "text-amber-800", column: 0, row: 3, width: 2 },
+    { id: "encode", label: "mtmd_encode_chunk()", sublabel: "vision encoder 编码图片", color: "bg-orange-50", borderColor: "border-orange-300", textColor: "text-orange-800", column: 0, row: 4, width: 2 },
+    { id: "llm", label: "最终 token 序列送入 LLM", color: "bg-red-50", borderColor: "border-red-300", textColor: "text-red-800", column: 0, row: 5, width: 2 },
+  ]}
+  edges={[
+    { from: "input", to: "tokenize" },
+    { from: "tokenize", to: "text" },
+    { from: "tokenize", to: "image" },
+    { from: "text", to: "chunks" },
+    { from: "image", to: "chunks" },
+    { from: "chunks", to: "encode" },
+    { from: "encode", to: "llm" },
+  ]}
+/>
+
+### Vision Encoder 与 mmproj
+
+vision encoder（基于 CLIP）作为独立的模型文件（mmproj）加载，把图片编码为一组 embedding 向量，这些向量在 token 序列中占据特定位置，LLM 把它们当作特殊的"视觉 token"来处理。
+
+这种设计的好处是 **解耦**：LLM 本身不需要理解图片的像素数据，它只需要处理 vision encoder 产出的 embedding，就像处理普通 token embedding 一样。mmproj 文件可以独立于 LLM 模型更新，不同的 vision encoder 可以搭配同一个 LLM 使用。
+
+---
+
+## 小结
+
+本文覆盖了用户输入到达 LLM 之前的三个关键步骤：
+
+1. **Warmup**：用极小的 batch 跑一次完整推理，预分配 GPU 内存、编译内核、初始化 KV cache
+2. **Tokenization**：通过 `llama_tokenize()` 将文本转换为 token ID 序列，tokenizer 类型由 GGUF 元数据决定
+3. **Chat Template**：使用 Jinja2 模板将 messages 列表渲染为模型期望的格式化 prompt，包含正确的特殊 token
+4. **多模态注入**：对于视觉模型，图片通过 vision encoder 转换为 embedding 后注入 token 序列
+
+下一篇 [#4 Batch 与 Ubatch](/zh/llama-cpp-batch-ubatch) 将深入 llama.cpp 的批处理机制——token 序列如何被组织成高效的计算批次送入模型。

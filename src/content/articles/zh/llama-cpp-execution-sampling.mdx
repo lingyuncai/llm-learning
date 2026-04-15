@@ -1,0 +1,651 @@
+---
+title: "执行、采样与上下文管理"
+slug: llama-cpp-execution-sampling
+locale: zh
+tags:
+  - llama-cpp
+  - execution
+  - sampling
+  - speculative-decoding
+  - kv-cache
+  - context-management
+difficulty: advanced
+created: "2026-04-15"
+updated: "2026-04-15"
+references:
+  - type: repo
+    title: "llama.cpp GitHub"
+    url: "https://github.com/ggerganov/llama.cpp"
+prerequisites:
+  - llama-cpp-scheduling-memory
+  - sampling-and-decoding
+---
+
+import FlowDiagram from '../../../components/primitives/FlowDiagram.tsx';
+import LlamaCppSamplerChainVisualizer from '../../../components/interactive/LlamaCppSamplerChainVisualizer.tsx';
+
+> **系列定位**：本文是 llama.cpp 源码精读系列 #7（最后一篇），覆盖四个主题：执行（Ch.11）、采样（Ch.12）、Speculative Decoding（Ch.13）与上下文管理（Ch.14）。计算图构建、调度、内存分配全部就绪后，终于进入了**真正的计算和输出**阶段。如果你还没有阅读 [#6 Backend 调度、Op Fusion 与内存分配](/zh/llama-cpp-scheduling-memory)，建议先了解图是如何被切分和分配内存的。
+
+---
+
+## Part A：执行
+
+前面几章讲了图如何构建、如何分配 backend、如何分配内存。现在一切就绪，进入真正的**执行**阶段。
+
+### process_ubatch() 全景
+
+`process_ubatch()` 是单个 ubatch 的完整执行入口，把之前所有步骤串联起来：
+
+<FlowDiagram
+  client:visible
+  title="process_ubatch() 执行流程"
+  direction="vertical"
+  nodes={[
+    { id: "entry", label: "process_ubatch(ubatch)", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0, width: 2 },
+    { id: "apply", label: "mctx->apply()", sublabel: "应用 KV cache 操作", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 1, width: 2 },
+    { id: "reuse", label: "can_reuse()?", color: "bg-gray-50", borderColor: "border-gray-300", textColor: "text-gray-700", column: 0, row: 2, width: 2 },
+    { id: "build", label: "model.build_graph()", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 0, row: 3 },
+    { id: "alloc", label: "sched_alloc_graph()", sublabel: "分配内存", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 1, row: 3 },
+    { id: "set", label: "res->set_inputs(&ubatch)", sublabel: "写入输入数据", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 4, width: 2 },
+    { id: "compute", label: "graph_compute()", sublabel: "执行计算图", color: "bg-red-50", borderColor: "border-red-300", textColor: "text-red-800", column: 0, row: 5, width: 2 },
+    { id: "result", label: "返回结果", sublabel: "logits / embeddings", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 6, width: 2 },
+  ]}
+  edges={[
+    { from: "entry", to: "apply" },
+    { from: "apply", to: "reuse" },
+    { from: "reuse", to: "build", label: "否" },
+    { from: "reuse", to: "set", label: "是（复用上次图）", style: "dashed" },
+    { from: "build", to: "alloc" },
+    { from: "alloc", to: "set" },
+    { from: "set", to: "compute" },
+    { from: "compute", to: "result" },
+  ]}
+/>
+
+### 写入输入数据：set_inputs()
+
+构建图时创建的输入 tensor 只有形状信息，没有实际数据。`set_inputs()` 负责把 ubatch 中的数据写入这些 tensor：
+
+```cpp
+// src/llama-graph.cpp
+void llm_graph_result::set_inputs(const llama_ubatch * ubatch) {
+    for (auto & input : inputs) {
+        input->set_input(ubatch);  // 每种输入类型有自己的写入逻辑
+    }
+}
+```
+
+不同的输入类型各有专门的处理器：
+
+| 输入类型 | 写入内容 |
+|----------|----------|
+| `llm_graph_input_embd` | token ID 数组或 embedding 向量 |
+| `llm_graph_input_pos` | 位置 ID（普通 1D 或 M-RoPE 的多维位置） |
+| `llm_graph_input_attn_kv` | KV cache 索引、注意力 mask、K 旋转位置 |
+| `llm_graph_input_attn_no_cache` | 全注意力 mask（encoder 场景） |
+| `llm_graph_input_out_ids` | 需要输出 logits 的 token 索引 |
+
+其中最复杂的是注意力 mask 的构建——它需要根据序列 ID、因果关系（causal）、滑动窗口等条件，逐元素填写 0（允许注意）或 `-∞`（屏蔽）。
+
+### 计算图执行：compute_splits()
+
+`graph_compute()` 最终调用 `ggml_backend_sched_graph_compute_async()`，后者遍历所有 splits 并执行：
+
+```cpp
+// ggml/src/ggml-backend.cpp（简化）
+for (int i = 0; i < sched->n_splits; i++) {
+    struct ggml_backend_sched_split * split = &sched->splits[i];
+    ggml_backend_t backend = sched->backends[split->backend_id];
+
+    // 步骤 1：拷贝该 split 所需的输入
+    for (int j = 0; j < split->n_inputs; j++) {
+        ggml_tensor * input     = split->inputs[j];
+        ggml_tensor * input_cpy = tensor_copy(input, split->backend_id, cur_copy);
+
+        // MoE 优化：只拷贝被激活的 expert（见下文）
+        // 普通 tensor：尝试异步拷贝，失败则同步拷贝
+        ggml_backend_tensor_copy_async(input_backend, backend, input, input_cpy);
+    }
+
+    // 步骤 2：执行该 split 的子图
+    ggml_backend_graph_compute_async(backend, &split->graph);
+
+    // 步骤 3：记录事件（供下一个 split 等待）
+    if (split->n_inputs > 0) {
+        ggml_backend_event_record(events[split->backend_id][cur_copy], backend);
+    }
+}
+```
+
+每个 split 的执行是**异步**的——发起计算后不等待完成，而是通过事件机制让下游 split 在需要时等待。这是 pipeline parallelism 的基础。
+
+### MoE Expert 按需加载
+
+对于 MoE（Mixture of Experts）模型，跨 backend 拷贝 expert 权重是主要瓶颈——比如 Mixtral 8×7B 每层有 8 个 expert，但每个 token 只用其中 2 个。完整拷贝 8 个 expert 的权重是极大的浪费。
+
+llama.cpp 在 split 执行时实现了**选择性 expert 拷贝**：
+
+<FlowDiagram
+  client:visible
+  title="MoE Expert 按需加载"
+  direction="vertical"
+  nodes={[
+    { id: "input", label: "MoE 层 input tensor", sublabel: "8 个 expert 的权重", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0 },
+    { id: "gate", label: "读取 gate 输出", sublabel: "确定每个 token 使用的 expert ID", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 1 },
+    { id: "bitmap", label: "构建 bitmap", sublabel: "标记被激活的 expert", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 2 },
+    { id: "group", label: "分组连续 ID", sublabel: "例如 expert 2,3 → 一次拷贝", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 0, row: 3 },
+    { id: "copy", label: "只拷贝被激活的 expert", sublabel: "2/8 = 节省 75%", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 4 },
+  ]}
+  edges={[
+    { from: "input", to: "gate" },
+    { from: "gate", to: "bitmap" },
+    { from: "bitmap", to: "group" },
+    { from: "group", to: "copy" },
+  ]}
+/>
+
+实现细节（`ggml/src/ggml-backend.cpp`）：
+
+1. 检测到 `GGML_OP_MUL_MAT_ID` 操作且权重在 CPU host buffer 上
+2. 从 gate 的输出 tensor 读取 expert 索引
+3. 用 bitset 标记哪些 expert 被选中
+4. 把连续的被激活 expert 分组，一次 `ggml_backend_tensor_set_async()` 拷贝一组
+5. 每组拷贝后追加少量 padding（512 bytes），确保 CUDA MMQ kernel 的对齐要求
+
+在 8 选 2 的 MoE 模型中，这一优化可以**减少约 75% 的 CPU→GPU 权重传输量**。
+
+### dtype 分发
+
+当计算图的某个操作（如 `MUL_MAT`）实际执行时，需要根据 tensor 的数据类型选择正确的计算内核。以 CPU backend 为例，这通过 `type_traits_cpu` 查找表实现：
+
+```c
+// ggml/src/ggml-cpu/ggml-cpu.c（简化）
+// 每种量化类型注册自己的 vec_dot 函数和配对类型
+type_traits_cpu[GGML_TYPE_Q4_0] = {
+    .vec_dot      = ggml_vec_dot_q4_0_q8_0,  // Q4_0 × Q8_0 的 dot product
+    .vec_dot_type = GGML_TYPE_Q8_0,           // 输入需要转换为 Q8_0
+    .from_float   = quantize_row_q4_0,
+};
+
+type_traits_cpu[GGML_TYPE_Q4_K] = {
+    .vec_dot      = ggml_vec_dot_q4_K_q8_K,  // Q4_K × Q8_K
+    .vec_dot_type = GGML_TYPE_Q8_K,
+    .nrows        = 2,                        // ARM MATMUL_INT8 可并行 2 行
+};
+
+type_traits_cpu[GGML_TYPE_F16] = {
+    .vec_dot      = ggml_vec_dot_f16,         // F16 × F16
+    .vec_dot_type = GGML_TYPE_F16,
+};
+```
+
+执行 `MUL_MAT` 时的 dtype 分发流程：
+
+<FlowDiagram
+  client:visible
+  title="MUL_MAT dtype 分发"
+  direction="vertical"
+  nodes={[
+    { id: "mul", label: "MUL_MAT", sublabel: "src0(Q4_0) × src1(F32)", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0 },
+    { id: "lookup", label: "查表 type_traits_cpu[Q4_0]", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 1 },
+    { id: "vdt", label: "vec_dot_type = Q8_0", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 2 },
+    { id: "conv", label: "src1: F32 → Q8_0", sublabel: "运行时量化", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 0, row: 3 },
+    { id: "dot", label: "ggml_vec_dot_q4_0_q8_0()", sublabel: "Q4_0 × Q8_0 = F32 结果", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 4 },
+  ]}
+  edges={[
+    { from: "mul", to: "lookup" },
+    { from: "lookup", to: "vdt" },
+    { from: "vdt", to: "conv" },
+    { from: "conv", to: "dot" },
+  ]}
+/>
+
+这就是 [#1 GGUF 二进制解析](/zh/llama-cpp-tools-gguf) 中提到的 **dot product pairing** 的实际执行路径：权重保持原始量化格式（Q4_0），输入在运行时被量化为配对类型（Q8_0），然后调用专门优化的 dot product 内核。
+
+### Prefill vs Decode 的线程差异
+
+`graph_compute()` 根据是 prefill（处理多个 token）还是 decode（生成单个 token）使用不同的线程策略：
+
+```cpp
+// src/llama-context.cpp
+ggml_status llama_context::graph_compute(ggml_cgraph * gf, bool batched) {
+    int n_threads    = batched ? cparams.n_threads_batch : cparams.n_threads;
+    ggml_threadpool_t tp = batched ? threadpool_batch     : threadpool;
+
+    ggml_backend_cpu_set_threadpool(backend_cpu, tp);
+    return ggml_backend_sched_graph_compute_async(sched.get(), gf);
+}
+```
+
+- **Prefill**（`batched=true`）：使用 `n_threads_batch`（通常更多线程），因为大量 token 的矩阵运算能充分利用多线程并行
+- **Decode**（`batched=false`）：使用 `n_threads`（通常较少线程），因为单 token 的计算量小，过多线程反而增加同步开销
+
+---
+
+## Part B：采样
+
+模型 forward pass 的输出是一个长度为 `n_vocab` 的 logits 向量——每个 token 的未归一化对数概率。采样（sampling）的任务是从这个巨大的概率分布中选出下一个 token。llama.cpp 使用一个**可配置的采样链（sampler chain）**来完成这一过程。
+
+### 采样链的默认构造顺序
+
+`common_sampler_init()`（`common/sampling.cpp`）按以下顺序构建采样链。这个顺序至关重要——每个采样器修改 logits/概率后传给下一个：
+
+```
+logit_bias → penalties → DRY → top-n-sigma → top-k → typical-p → top-p → min-p → XTC → temperature → dist
+```
+
+默认顺序定义在 `common/common.h` 中：
+
+```cpp
+std::vector<enum common_sampler_type> samplers = {
+    COMMON_SAMPLER_TYPE_PENALTIES,
+    COMMON_SAMPLER_TYPE_DRY,
+    COMMON_SAMPLER_TYPE_TOP_N_SIGMA,
+    COMMON_SAMPLER_TYPE_TOP_K,
+    COMMON_SAMPLER_TYPE_TYPICAL_P,
+    COMMON_SAMPLER_TYPE_TOP_P,
+    COMMON_SAMPLER_TYPE_MIN_P,
+    COMMON_SAMPLER_TYPE_XTC,
+    COMMON_SAMPLER_TYPE_TEMPERATURE,
+};
+// 最后隐式追加 dist（从分布中采样）
+```
+
+其中 `logit_bias` 固定在最前面（在链外单独添加），`dist`（最终随机采样）固定在最后。用户可以通过 `--samplers` 参数重新排列中间部分的顺序。
+
+### 核心采样器简介
+
+| 采样器 | 作用 | 关键参数 |
+|--------|------|----------|
+| **logit_bias** | 给指定 token 加减 logit 偏置 | `--logit-bias TOKEN+BIAS` |
+| **penalties** | 重复/频率/存在惩罚 | `--repeat-penalty`, `--frequency-penalty`, `--presence-penalty` |
+| **DRY** | 检测重复序列，指数级惩罚 | `--dry-multiplier`, `--dry-base` |
+| **top-k** | 只保留 logit 最高的 k 个 token | `--top-k` |
+| **top-p** | 累积概率达到 p 时截断 | `--top-p` |
+| **min-p** | 只保留概率 ≥ p × max_prob 的 token | `--min-p` |
+| **temperature** | 缩放 logits：`logit /= temp` | `--temp` |
+| **dist** | 从最终概率分布中随机采样 | `--seed` |
+
+温度的效果很直观：`temp < 1` 让分布更尖锐（更确定），`temp > 1` 让分布更平坦（更随机），`temp = 0` 退化为 greedy（取概率最高的 token）。
+
+### 交互演示
+
+下方组件展示了采样链中 5 个核心 sampler（top-k → top-p → min-p → temperature → dist）对概率分布的逐步影响。完整链中的 logit_bias、penalties、DRY、top-n-sigma、typical-p、XTC 等 sampler 原理类似但场景更特化，这里省略以突出核心截断和缩放逻辑：
+
+<LlamaCppSamplerChainVisualizer client:visible locale="zh" />
+
+### 采样执行流程
+
+`common_sampler_sample()` 是采样的入口函数：
+
+```cpp
+// common/sampling.cpp（简化）
+llama_token common_sampler_sample(common_sampler * gsmpl, llama_context * ctx, int idx,
+                                   bool grammar_first) {
+    // 1. 从 context 获取 logits
+    gsmpl->set_logits(ctx, idx);
+
+    // 2. 应用 reasoning budget（如果启用）
+    llama_sampler_apply(rbudget, &cur_p);
+
+    // 3a. grammar-first 模式：先应用 grammar 约束
+    if (grammar_first && grammar_should_apply(gsmpl)) {
+        llama_sampler_apply(grmr, &cur_p);
+    }
+
+    // 4. 执行整个采样链
+    llama_sampler_apply(chain, &cur_p);
+
+    // 5. 获取选中的 token
+    id = cur_p.data[cur_p.selected].id;
+
+    // 6. rejection sampling（非 grammar-first 模式）
+    if (!grammar_first && grammar_should_apply(gsmpl)) {
+        // 检查选中的 token 是否符合 grammar
+        // 如果不符合 → 重新采样（先 grammar 再 chain）
+    }
+
+    return id;
+}
+```
+
+### Grammar 约束
+
+Grammar 采样是 llama.cpp 最强大的功能之一——它能约束模型只输出符合指定语法的文本。
+
+**工作原理**：Grammar 维护一组**解析栈（stacks）**，追踪当前在 BNF 语法中的位置。对于每个候选 token，grammar 检查该 token 是否能推进至少一个解析栈。不能推进的 token 的 logit 被设为 `-∞`，确保它们不会被选中。
+
+**两种应用策略**：
+
+<FlowDiagram
+  client:visible
+  title="Grammar 两种应用策略"
+  direction="vertical"
+  nodes={[
+    { id: "gf_title", label: "Grammar-First", sublabel: "grammar_first=true", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0 },
+    { id: "gf_logits", label: "logits", color: "bg-gray-50", borderColor: "border-gray-200", textColor: "text-gray-700", column: 0, row: 1 },
+    { id: "gf_grammar", label: "grammar 约束", sublabel: "不合法 token → -∞", color: "bg-red-50", borderColor: "border-red-300", textColor: "text-red-800", column: 0, row: 2 },
+    { id: "gf_chain", label: "采样链", sublabel: "top-k → top-p → temp → dist", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 3 },
+    { id: "gf_result", label: "选中 token", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 4 },
+    { id: "rs_title", label: "Rejection Sampling", sublabel: "grammar_first=false（默认）", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 1, row: 0 },
+    { id: "rs_logits", label: "logits", color: "bg-gray-50", borderColor: "border-gray-200", textColor: "text-gray-700", column: 1, row: 1 },
+    { id: "rs_chain", label: "采样链", sublabel: "top-k → top-p → temp → dist", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 1, row: 2 },
+    { id: "rs_check", label: "符合 grammar？", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 1, row: 3 },
+    { id: "rs_ok", label: "接受", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 1, row: 4 },
+    { id: "rs_resample", label: "重新采样", sublabel: "先 grammar 再 chain", color: "bg-red-50", borderColor: "border-red-300", textColor: "text-red-800", column: 2, row: 4 },
+  ]}
+  edges={[
+    { from: "gf_logits", to: "gf_grammar" },
+    { from: "gf_grammar", to: "gf_chain" },
+    { from: "gf_chain", to: "gf_result" },
+    { from: "rs_logits", to: "rs_chain" },
+    { from: "rs_chain", to: "rs_check" },
+    { from: "rs_check", to: "rs_ok", label: "是" },
+    { from: "rs_check", to: "rs_resample", label: "否" },
+  ]}
+/>
+
+- **Grammar-first**：先过滤再采样，保证一次成功，但需要对所有 token 检查语法（较慢）
+- **Rejection sampling**（默认）：先采样再检查，大多数情况下第一次就通过（较快），不通过时才回退
+
+**JSON Schema → BNF 转换**
+
+实践中最常用的 grammar 场景是约束输出为 JSON。llama.cpp 提供了 `json_schema_to_grammar()`（`common/json-schema-to-grammar.cpp`）将 JSON Schema 自动转换为 BNF 语法规则：
+
+```
+JSON Schema:                              BNF Grammar:
+{                                         root ::= "{" ws "name" ws ":" ws string
+  "type": "object",                              "," ws "age" ws ":" ws integer "}" ws
+  "properties": {                         string ::= "\"" [^"\\]* "\""
+    "name": { "type": "string" },         integer ::= [0-9]+
+    "age": { "type": "integer" }          ws ::= [ \t\n]*
+  },
+  "required": ["name", "age"]
+}
+```
+
+**Lazy Grammar**：有些场景下 grammar 不需要从第一个 token 就开始生效——比如模型可能先输出一些思考过程，然后才开始生成结构化输出。lazy grammar 等待**触发模式（trigger pattern）**出现后才激活约束。
+
+### 输出：Token → 文本
+
+采样得到 token ID 后，需要转换回人类可读的文本：
+
+```cpp
+// common/common.cpp
+std::string common_token_to_piece(const llama_vocab * vocab, llama_token token, bool special) {
+    std::string piece;
+    piece.resize(piece.capacity());
+
+    const int n_chars = llama_token_to_piece(vocab, token, &piece[0], piece.size(), 0, special);
+
+    if (n_chars < 0) {
+        piece.resize(-n_chars);  // buffer 不够大，扩容重试
+        llama_token_to_piece(vocab, token, &piece[0], piece.size(), 0, special);
+    } else {
+        piece.resize(n_chars);
+    }
+    return piece;
+}
+```
+
+一个 token 可能对应一个完整的单词、一个子词、甚至半个 UTF-8 字符。流式输出时需要注意处理不完整的多字节字符——等到凑齐一个完整字符后再输出。
+
+---
+
+## Part C：Speculative Decoding
+
+自回归解码的瓶颈在于：每次只能生成一个 token，而每个 token 都需要完整的 forward pass。**Speculative decoding（推测解码）**通过"小模型快速猜测、大模型一次验证"的方式打破这个瓶颈。
+
+### 核心思想
+
+关键洞察：target model 对 N 个候选 token 的验证可以在**一次 forward pass** 中完成（因为它们的位置是已知的），而 draft model 的 N 次 forward pass 远比 target model 快。如果大部分猜测被接受，就相当于用一次 target forward pass 生成了多个 token。
+
+<FlowDiagram
+  client:visible
+  title="Speculative Decoding 流程"
+  direction="vertical"
+  nodes={[
+    { id: "draft_title", label: "Draft 阶段", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0, width: 2 },
+    { id: "draft_gen", label: "Draft Model（小/快）", sublabel: "顺序生成 N 个候选 token", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 1, width: 2 },
+    { id: "candidates", label: "候选序列", sublabel: "[t₀, t₁, ..., tₙ₋₁]", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 2, width: 2 },
+    { id: "verify_title", label: "Verify 阶段", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 0, row: 3, width: 2 },
+    { id: "target", label: "Target Model（大/慢）", sublabel: "一次 forward pass 并行评估所有候选", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 0, row: 4, width: 2 },
+    { id: "result", label: "接受前 k 个 + 1 个新 token", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 5, width: 2 },
+  ]}
+  edges={[
+    { from: "draft_title", to: "draft_gen" },
+    { from: "draft_gen", to: "candidates" },
+    { from: "candidates", to: "verify_title" },
+    { from: "verify_title", to: "target" },
+    { from: "target", to: "result" },
+  ]}
+/>
+
+### Draft-Verify 循环
+
+完整的投机解码循环（`examples/speculative-simple/speculative-simple.cpp`）：
+
+```cpp
+while (true) {
+    // 1. Draft 阶段：小模型生成 N 个候选
+    llama_tokens draft = common_speculative_draft(spec, params_spec, prompt_tgt, id_last);
+
+    // 2. 构建 target batch：[上一个 token, 候选₀, 候选₁, ..., 候选ₙ₋₁]
+    common_batch_add(batch_tgt, id_last, n_past++, {0}, true);
+    for (size_t i = 0; i < draft.size(); ++i) {
+        common_batch_add(batch_tgt, draft[i], n_past + i, {0}, true);
+    }
+
+    // 3. Target model 一次 forward pass
+    llama_decode(ctx_tgt, batch_tgt);
+
+    // 4. 验证：逐个比较 target 采样结果与 draft
+    const auto ids = common_sampler_sample_and_accept_n(smpl, ctx_tgt, draft);
+    // ids 包含被接受的 token（至少 1 个，最多 N+1 个）
+
+    // 5. 清理未被接受的 KV cache
+    llama_memory_seq_rm(llama_get_memory(ctx_tgt), 0, n_past + ids.size(), -1);
+
+    // 6. 输出被接受的 token，更新状态
+    for (const auto & id : ids) {
+        output(id);
+    }
+}
+```
+
+### 验证算法
+
+验证有两种模式：
+
+**Greedy 验证**（temperature = 0）：直接比较 target 采样结果与 draft token，不匹配则拒绝。
+
+**随机验证**（temperature > 0）：使用标准的 speculative decoding acceptance test：
+
+```
+对于每个候选 token tᵢ：
+    r = random(0, 1)
+    如果 r ≤ p_target(tᵢ) / p_draft(tᵢ)：
+        接受 tᵢ
+    否则：
+        拒绝 tᵢ，从残差分布重采样：
+        p_residual(t) = max(0, p_target(t) - p_draft(t))
+        归一化后采样
+```
+
+这个公式保证了：无论 draft model 质量如何，最终输出的分布**严格等于 target model 的分布**——speculative decoding 不改变输出质量，只改变生成速度。
+
+### Draft 策略
+
+llama.cpp 支持多种 draft 生成策略：
+
+| 策略 | 原理 | 适用场景 |
+|------|------|----------|
+| **draft model** | 独立的小模型生成候选 | 质量最高，需要额外模型 |
+| **eagle3** | EAGLE-3 投机头（附加在 target model 上） | 实验性 |
+| **ngram-simple** | 在上下文中查找匹配的 n-gram 模式 | 零额外成本，重复性文本效果好 |
+| **ngram-map-k** | 用 hash map 索引上下文中的 n-gram | 查找更高效 |
+| **ngram-map-k4v** | 每个 key 记录最多 4 种不同的 m-gram 值 | 更高接受率 |
+| **ngram-mod** | 滚动哈希查找，共享内存池（~16MB） | 恒定复杂度 |
+| **ngram-cache** | 三级 n-gram 缓存（上下文/动态/静态） | 最灵活，可加载外部统计 |
+
+多种策略可以同时启用——它们按优先级尝试，第一个产生非空 draft 的策略被使用，其余作为 fallback。
+
+### Draft Model 的置信度控制
+
+draft model 不会盲目生成固定 N 个 token——它监控每个生成 token 的置信度（最高概率）：
+
+```
+生成候选 token 时：
+    如果 top_1_prob < p_min（默认 0.75）：
+        停止生成（置信度不够，继续猜只会浪费时间）
+```
+
+这个自适应机制让 draft 在有把握时多猜，没把握时早停。
+
+### 关键参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--draft N` | 16 | 最大 draft token 数 |
+| `--draft-min N` | 0 | 最小 draft token 数 |
+| `--draft-p-min P` | 0.75 | draft 置信度阈值（低于此值停止 draft） |
+| `--model-draft PATH` | — | draft model 的 GGUF 文件路径 |
+| `--gpu-layers-draft N` | — | draft model 的 GPU 层数 |
+
+### 性能收益
+
+speculative decoding 的加速比取决于：
+- **draft 接受率**：draft model 与 target model 的分布越接近，接受率越高
+- **draft 速度比**：draft model 越快（相对 target），收益越大
+- **draft 长度**：适当的 N 平衡了 draft 成本和验证收益
+
+典型场景下（Llama-3-8B target + Llama-3-1B draft），prefill 后的解码速度可以提升 2-3 倍。
+
+---
+
+## Part D：上下文管理
+
+LLM 推理的一个核心约束是**上下文窗口（context window）**——模型能"看到"的最大 token 数量。KV cache 存储了所有已处理 token 的 Key/Value 向量，是上下文管理的核心数据结构。
+
+### KV Cache 内部结构
+
+每层 Transformer 的 KV cache 是两个 3D tensor：
+
+```
+K cache: [n_embd_k_gqa, kv_size, n_stream]
+V cache: [n_embd_v_gqa, kv_size, n_stream]
+```
+
+其中 `kv_size` 是 cache 容量（slot 总数），`n_stream` 控制多序列隔离。
+
+cache 的元数据由 `llama_kv_cells` 管理：
+
+```cpp
+// src/llama-kv-cells.h（核心字段）
+class llama_kv_cells {
+    vector<llama_pos> pos;           // 每个 cell 的位置（-1 = 空闲）
+    vector<llama_pos> shift;         // 累积的位置偏移（待应用）
+    vector<bitset<LLAMA_MAX_SEQ>> seq;  // 每个 cell 属于哪些序列
+    set<uint32_t> used;              // 已占用 cell 的索引集合
+};
+```
+
+每个 cell 是 KV cache 中的一个 slot——它记录了存储在该位置的 token 的序列归属和位置信息。注意力计算时，模型根据 cell 的 `pos` 和 `seq` 信息来决定哪些历史 token 可以被当前 token "看到"。
+
+### KV Cache 量化
+
+KV cache 默认使用 f16 存储，但可以通过参数配置为量化格式以节省显存：
+
+```
+--cache-type-k TYPE    K cache 类型（默认 f16）
+--cache-type-v TYPE    V cache 类型（默认 f16）
+```
+
+支持的类型包括 f32、f16、bf16、q8_0、q4_0、q4_1、iq4_nl、q5_0、q5_1。使用 q4_0 可以让 KV cache 占用减少约 75%，但会引入量化误差。注意：量化 V cache 需要启用 Flash Attention。
+
+### Context Shift：上下文满时的应急机制
+
+当 KV cache 写满时，无法再写入新 token。最简单的做法是丢弃整个 cache 重新开始，但这样会失去所有上下文。Context shift 是一个折中方案——丢弃中间部分，保留头尾：
+
+<FlowDiagram
+  client:visible
+  title="Context Shift 机制"
+  direction="vertical"
+  nodes={[
+    { id: "before_title", label: "Context Shift 前", sublabel: "KV cache 已满", color: "bg-red-50", borderColor: "border-red-300", textColor: "text-red-800", column: 0, row: 0, width: 3 },
+    { id: "keep", label: "n_keep 个初始 token", sublabel: "保留", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 1 },
+    { id: "discard", label: "n_discard 个中间 token", sublabel: "丢弃", color: "bg-red-50", borderColor: "border-red-300", textColor: "text-red-800", column: 1, row: 1 },
+    { id: "rest", label: "剩余 token", sublabel: "保留 + 前移", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 2, row: 1 },
+    { id: "after_title", label: "Context Shift 后", sublabel: "腾出空间", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 2, width: 3 },
+    { id: "a_keep", label: "n_keep 个初始 token", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 3 },
+    { id: "a_rest", label: "剩余 token", sublabel: "位置前移 n_discard", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 1, row: 3 },
+    { id: "a_free", label: "空闲空间", sublabel: "可写入新 token", color: "bg-gray-50", borderColor: "border-gray-200", textColor: "text-gray-500", column: 2, row: 3 },
+  ]}
+  edges={[
+    { from: "before_title", to: "keep" },
+    { from: "before_title", to: "discard" },
+    { from: "before_title", to: "rest" },
+    { from: "rest", to: "after_title", style: "dashed" },
+    { from: "after_title", to: "a_keep" },
+    { from: "after_title", to: "a_rest" },
+    { from: "after_title", to: "a_free" },
+  ]}
+/>
+
+实现代码（`tools/completion/completion.cpp`）：
+
+```cpp
+// 1. 删除 [n_keep, n_keep + n_discard) 范围的 KV cache
+llama_memory_seq_rm(mem, 0, params.n_keep, params.n_keep + n_discard);
+
+// 2. 将 [n_keep + n_discard, n_past) 的位置前移 n_discard
+llama_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
+```
+
+`n_keep` 通常设置为系统提示的长度——确保系统提示永远不会被丢弃。被丢弃的中间 token 的信息就永久丢失了。
+
+对于使用 RoPE 位置编码的模型，位置前移不只是改元数据——需要对量化 K cache 中存储的 RoPE 编码做逆旋转+重新旋转操作（K-shift），确保位置信息正确。
+
+### Prompt Cache：保存和恢复状态
+
+如果每次对话都从头 prefill 系统提示，是很大的浪费。Prompt cache 允许把 KV cache 状态保存到文件，下次直接加载：
+
+```cpp
+// 保存：KV cache + token 序列 → 文件
+llama_state_save_file(ctx, "cache.bin", tokens, n_tokens);
+
+// 恢复：文件 → KV cache + token 序列
+llama_state_load_file(ctx, "cache.bin", tokens_out, capacity, &n_tokens_out);
+```
+
+文件格式是二进制的：按 stream 存储 cell 元数据（位置、序列 ID）和每层的 K/V tensor 数据。恢复时会验证数据类型和维度的兼容性。
+
+典型用法：系统提示处理一次，保存 cache → 后续每次对话加载 cache，直接从用户输入开始生成，跳过系统提示的 prefill 时间。
+
+### 序列操作 API
+
+llama.cpp 提供了一组灵活的序列操作 API 来管理 KV cache：
+
+| API | 功能 |
+|-----|------|
+| `seq_rm(seq, p0, p1)` | 删除序列中 [p0, p1) 范围的 token |
+| `seq_cp(src, dst, p0, p1)` | 复制序列的 KV cache（用于并行解码的前缀共享） |
+| `seq_keep(seq)` | 只保留指定序列，清除其他所有 |
+| `seq_add(seq, p0, p1, delta)` | 位置偏移（context shift 的核心操作） |
+
+这些操作只修改元数据（cell 的 pos/seq 信息），不拷贝实际的 tensor 数据——因此非常快速。唯一的例外是跨 stream 的 `seq_cp`，它需要实际拷贝 tensor 数据。
+
+---
+
+## 小结
+
+本文覆盖了 llama.cpp 推理流程的最后四个环节：
+
+| 阶段 | 核心机制 | 关键代码入口 |
+|------|----------|-------------|
+| **执行** | 逐 split 异步计算 + MoE 选择性拷贝 + dtype 分发 | `process_ubatch()` / `compute_splits()` |
+| **采样** | 可配置采样链 + Grammar 约束 + JSON Schema → BNF | `common_sampler_sample()` |
+| **Speculative Decoding** | 小模型 draft → 大模型一次验证 → 接受率控制 | `common_speculative_draft()` |
+| **上下文管理** | KV cache 量化 + context shift + prompt cache + 序列操作 API | `llama_kv_cells` / `seq_rm()` / `seq_add()` |
+
+至此，llama.cpp 源码精读系列的全部 8 篇文章已经覆盖了从 GGUF 文件解析到最终文本输出的完整旅程。回到 [系列总览](/zh/llama-cpp-overview) 可以看到全局地图。

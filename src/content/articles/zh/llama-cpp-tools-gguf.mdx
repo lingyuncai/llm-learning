@@ -1,0 +1,297 @@
+---
+title: "工具全景与 GGUF 二进制解析"
+slug: llama-cpp-tools-gguf
+locale: zh
+tags:
+  - llama-cpp
+  - gguf
+  - quantization
+  - binary-format
+difficulty: advanced
+created: "2026-04-15"
+updated: "2026-04-15"
+references:
+  - type: repo
+    title: "llama.cpp GitHub"
+    url: "https://github.com/ggerganov/llama.cpp"
+prerequisites:
+  - llama-cpp-overview
+  - gguf-format
+---
+
+import FlowDiagram from '../../../components/primitives/FlowDiagram.tsx';
+
+> **系列定位**：本文是 llama.cpp 源码精读系列 #1，聚焦 llama.cpp 工具生态和 GGUF 格式的 C++ 实现细节。如果你还没有阅读 [系列总览](/zh/llama-cpp-overview)，建议先建立全局地图再进入本章。
+
+## Part A：工具全景
+
+llama.cpp 在 `tools/` 目录下提供了多个可执行程序。最核心的三个是 `llama-completion`、`llama-cli` 和 `llama-bench`，它们面向不同的使用场景，架构也截然不同。
+
+### 架构差异
+
+<FlowDiagram
+  client:visible
+  title="llama.cpp 三个核心工具的架构对比"
+  direction="vertical"
+  nodes={[
+    { id: "c-title", label: "llama-completion（传统工具）", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0 },
+    { id: "c-app", label: "completion.cpp", sublabel: "主入口", color: "bg-blue-50", borderColor: "border-blue-200", column: 0, row: 1 },
+    { id: "c-sampling", label: "sampling.h", sublabel: "直接调用采样 API", color: "bg-blue-50", borderColor: "border-blue-200", column: 0, row: 2 },
+    { id: "c-llama", label: "llama.h", sublabel: "直接调用底层 C API", color: "bg-blue-50", borderColor: "border-blue-200", column: 0, row: 3 },
+    { id: "cli-title", label: "llama-cli（新一代工具）", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 1, row: 0 },
+    { id: "cli-app", label: "cli.cpp", sublabel: "主入口", color: "bg-green-50", borderColor: "border-green-200", column: 1, row: 1 },
+    { id: "cli-ctx", label: "server-context.h", sublabel: "嵌入式 Server", color: "bg-green-50", borderColor: "border-green-200", column: 1, row: 2 },
+    { id: "cli-task", label: "server-task.h", sublabel: "Task/Response 异步模式", color: "bg-green-50", borderColor: "border-green-200", column: 1, row: 3 },
+    { id: "cli-llama", label: "llama.h", color: "bg-green-50", borderColor: "border-green-200", column: 1, row: 4 },
+    { id: "bench-title", label: "llama-bench（基准测试）", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 2, row: 0 },
+    { id: "bench-app", label: "llama-bench.cpp", sublabel: "主入口", color: "bg-amber-50", borderColor: "border-amber-200", column: 2, row: 1 },
+    { id: "bench-llama", label: "llama.h", sublabel: "只测 pp/tg 速度", color: "bg-amber-50", borderColor: "border-amber-200", column: 2, row: 2 },
+  ]}
+  edges={[
+    { from: "c-app", to: "c-sampling" },
+    { from: "c-app", to: "c-llama" },
+    { from: "cli-app", to: "cli-ctx" },
+    { from: "cli-app", to: "cli-task" },
+    { from: "cli-ctx", to: "cli-llama" },
+    { from: "bench-app", to: "bench-llama" },
+  ]}
+/>
+
+**llama-completion** 是最早的文本生成工具（原名 `main`），直接调用 `llama.h` 和 `sampling.h` 的底层 C API，手动管理 context、KV cache 和 sampling。代码结构清晰，适合理解 llama.cpp 底层机制。
+
+**llama-cli** 是新一代的交互式聊天客户端。它在内部嵌入了一个 server 实例（引入 `server-context.h` 和 `server-task.h`），用 task/response reader 模式异步处理请求。有 ASCII logo、spinner 加载动画，支持多模态（图片/音频）和推测解码（speculative decoding）。
+
+**llama-bench** 是纯性能基准测试工具。它不生成有意义的文本，只测量 prompt processing（pp）和 token generation（tg）的吞吐量，输出结构化的性能数据。
+
+### 功能对比
+
+| 特性 | llama-completion | llama-cli | llama-bench |
+|------|:---:|:---:|:---:|
+| 文本生成 / 补全 | ✅ | ✅ | ❌ |
+| 交互式聊天 | ✅ 基础 | ✅ 完善 | ❌ |
+| Prompt Cache | ✅ `--prompt-cache` | ❌ | ❌ |
+| Self-Extend | ✅ `--grp-attn-n/w` | ❌ | ❌ |
+| `--in-prefix/suffix` | ✅ | ❌ | ❌ |
+| Speculative Decoding | ❌ | ✅ `--draft` | ❌ |
+| 多模态（图片/音频） | ❌ | ✅ `--image/audio` | ❌ |
+| Grammar / JSON Schema | ✅ | ✅ | ❌ |
+| 全部采样参数 | ✅ | ✅ | ❌ |
+| 性能测量（pp/tg t/s） | ❌ | ❌ | ✅ |
+
+> **注**：`--in-prefix/suffix` 只注册在 `LLAMA_EXAMPLE_COMPLETION` 中；`--grp-attn-n` 注册在 `LLAMA_EXAMPLE_COMPLETION` 和 `LLAMA_EXAMPLE_PASSKEY` 中，`--grp-attn-w` 只注册在 `LLAMA_EXAMPLE_COMPLETION` 中（见 `common/arg.cpp`）。llama-cli 和 llama-bench 均不支持这些参数。
+
+### 选择建议
+
+- **日常聊天** → `llama-cli`：体验最好，功能最新，支持多模态和推测解码
+- **精细控制 / 脚本化批处理** → `llama-completion`：prompt cache、Self-Extend、自定义前后缀
+- **硬件 / 后端性能评估** → `llama-bench`：纯跑 pp 和 tg 吞吐量
+
+## Part B：GGUF 逐字段解析
+
+llama.cpp 使用 GGUF（GGML Universal File Format）作为模型文件格式。理解 GGUF 的结构是理解后续所有加载流程的基础。
+
+### 文件物理布局
+
+一个 GGUF 文件从头到尾由以下部分顺序排列：
+
+<FlowDiagram
+  client:visible
+  title="GGUF 文件物理布局"
+  direction="vertical"
+  nodes={[
+    { id: "header", label: "Header（固定字段）", sublabel: "Magic: 'GGUF'(4B) | Version: uint32(v3) | n_tensors: int64 | n_kv: int64", color: "bg-sky-50", borderColor: "border-sky-300", textColor: "text-sky-800", column: 0, row: 0, width: 3 },
+    { id: "kv", label: "KV Metadata（变长）", sublabel: "key-value 对: architecture, chat_template, ...", color: "bg-violet-50", borderColor: "border-violet-300", textColor: "text-violet-800", column: 0, row: 1, width: 3 },
+    { id: "tinfo", label: "Tensor Info Array（变长）", sublabel: "每个 tensor: name + n_dims + ne[] + type + offset", color: "bg-emerald-50", borderColor: "border-emerald-300", textColor: "text-emerald-800", column: 0, row: 2, width: 3 },
+    { id: "pad", label: "Alignment Padding", sublabel: "填充到 alignment 边界（默认 32 bytes）", color: "bg-gray-50", borderColor: "border-gray-300", textColor: "text-gray-600", column: 0, row: 3, width: 3 },
+    { id: "data", label: "Tensor Data Blob（数 GB）", sublabel: "所有 tensor 的二进制权重数据，按 offset 顺序排列", color: "bg-rose-50", borderColor: "border-rose-300", textColor: "text-rose-800", column: 0, row: 4, width: 3 },
+  ]}
+  edges={[
+    { from: "header", to: "kv" },
+    { from: "kv", to: "tinfo" },
+    { from: "tinfo", to: "pad" },
+    { from: "pad", to: "data" },
+  ]}
+/>
+
+**关键结论：只需读 header 就能获取所有 tensor 的元数据（name、shape、type），不需要读取 data blob。** 对于一个 7B 模型，header 通常只有几 MB，而 data blob 有数 GB。
+
+### 解析流程
+
+GGUF 的解析入口是 `gguf_init_from_file_ptr()`（`ggml/src/gguf.cpp`），它按以下顺序读取：
+
+```cpp
+// 1. 验证 magic
+char magic[4];
+read(magic);  // 必须是 "GGUF"
+
+// 2. 读版本号
+uint32_t version;
+read(version);  // 当前支持 v2, v3
+
+// 3. 读 tensor 数量和 KV 数量
+int64_t n_tensors, n_kv;
+read(n_tensors);
+read(n_kv);
+
+// 4. 解析所有 KV metadata
+for (int64_t i = 0; i < n_kv; i++) {
+    // 读 key (string) + value type + value
+}
+
+// 5. 解析所有 tensor info（不读 data！）
+for (int64_t i = 0; i < n_tensors; i++) {
+    read(name);          // tensor 名称
+    read(n_dims);        // 维度数
+    read(ne[0..3]);      // 每个维度的元素数（shape）
+    read(type);          // 量化类型: Q4_0, Q4_K, F16 等
+    // 根据 type 计算 stride
+    nb[0] = ggml_type_size(type);
+    nb[1] = nb[0] * (ne[0] / ggml_blck_size(type));
+    read(offset);        // 在 data blob 中的偏移
+}
+
+// 6. 跳到 data section 起始位置（alignment padding 之后）
+fseek(file, GGML_PAD(current_pos, alignment), SEEK_SET);
+ctx->offset = ftell(file);  // 记录 data section 起始偏移
+```
+
+注意第 5 步中，每个 tensor info 只包含元数据，**不包含实际权重数据**。解析完所有 tensor info 后，整个 header 就结束了。后续是否读取 data blob 取决于调用者传入的 `no_alloc` 参数。
+
+### Tensor Info 结构
+
+每个 tensor 的元数据对应以下 C 结构体：
+
+```cpp
+// gguf.cpp
+struct gguf_tensor_info {
+    struct ggml_tensor t;   // 内含 type, ne[4], nb[4], name
+    uint64_t offset;        // 在 data blob 中的字节偏移
+};
+
+// ggml.h（简化）
+struct ggml_tensor {
+    enum ggml_type type;            // 量化类型: GGML_TYPE_Q4_K, GGML_TYPE_F16 等
+    int64_t ne[GGML_MAX_DIMS];      // shape: 每个维度的元素数
+    size_t  nb[GGML_MAX_DIMS];      // byte stride: 每个维度的字节步长
+    char name[GGML_MAX_NAME];       // tensor 名称
+    void * data;                    // 数据指针（解析 header 时为 NULL）
+};
+```
+
+### KV Metadata
+
+KV metadata 存储模型的各种元信息，常见的 key 包括：
+
+| Key | 类型 | 说明 |
+|-----|------|------|
+| `general.architecture` | string | 模型架构名，如 `"llama"`, `"qwen3"` |
+| `general.name` | string | 模型显示名 |
+| `tokenizer.chat_template` | string | Jinja2 chat template（后续章节详解） |
+| `{arch}.context_length` | uint32 | 训练时的最大 context 长度 |
+| `{arch}.embedding_length` | uint32 | embedding 维度 |
+| `{arch}.block_count` | uint32 | transformer 层数 |
+| `{arch}.attention.head_count` | uint32 | attention head 数量 |
+
+llama.cpp 在加载模型时，首先从 `general.architecture` 确定模型架构，再据此读取对应的超参数。
+
+## Part C：量化 Block 结构
+
+GGUF 中的量化类型决定了权重的存储方式。每种量化类型定义了一个固定大小的 **block**，包含一组量化后的权重值及其反量化所需的 scale/min 参数。
+
+### Q4_0：最简单的 4-bit 量化
+
+```cpp
+#define QK4_0 32  // 每个 block 32 个元素
+typedef struct {
+    ggml_half d;           // delta (scale), f16 格式
+    uint8_t qs[QK4_0 / 2]; // 16 bytes: 每个 byte 存 2 个 4-bit 量化值
+} block_q4_0;
+// sizeof = 2 + 16 = 18 bytes → 32 个权重 → 4.5 bits/weight
+```
+
+反量化公式：$w = d \cdot (q - 8)$，其中 $q$ 是 4-bit 无符号整数（0\~15），减去 8 得到有符号值。
+
+### Q4_K：K-quant 系列的 4-bit 量化
+
+```cpp
+#define QK_K 256         // super-block: 256 个元素
+#define K_SCALE_SIZE 12  // scales 的字节数
+
+typedef struct {
+    union {
+        struct {
+            ggml_half d;    // super-block scale（用于量化 scales）
+            ggml_half dmin; // super-block scale（用于量化 mins）
+        };
+        ggml_half2 dm;
+    };
+    uint8_t scales[K_SCALE_SIZE]; // 12 bytes: 8 组 sub-block 的 scale 和 min，6-bit 量化
+    uint8_t qs[QK_K/2];           // 128 bytes: 256 个 4-bit 量化值
+} block_q4_K;
+// sizeof = 4 + 12 + 128 = 144 bytes → 256 个权重 → 4.5 bits/weight
+```
+
+Q4_K 采用两层量化结构：
+
+<FlowDiagram
+  client:visible
+  title="Q4_K 两层量化结构"
+  direction="vertical"
+  nodes={[
+    { id: "super", label: "Super-block（256 个权重）", color: "bg-indigo-50", borderColor: "border-indigo-300", textColor: "text-indigo-800", column: 0, row: 0, width: 3 },
+    { id: "d", label: "d, dmin", sublabel: "2 个 f16 全局 scale", color: "bg-sky-50", borderColor: "border-sky-200", column: 0, row: 1 },
+    { id: "scales", label: "scales[12]", sublabel: "8 组 sub-block 的 scale/min（6-bit 量化）", color: "bg-sky-50", borderColor: "border-sky-200", column: 1, row: 1 },
+    { id: "qs", label: "qs[128]", sublabel: "256 个 4-bit 量化值", color: "bg-sky-50", borderColor: "border-sky-200", column: 2, row: 1 },
+    { id: "dequant", label: "反量化一个权重", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 3, width: 3 },
+    { id: "step1", label: "1. 从 scales[] 解出 sub-block 的 scale 和 min", color: "bg-amber-50", borderColor: "border-amber-200", column: 0, row: 4, width: 3 },
+    { id: "step2", label: "2. scale = d * raw_scale, min = dmin * raw_min", color: "bg-amber-50", borderColor: "border-amber-200", column: 0, row: 5, width: 3 },
+    { id: "step3", label: "3. weight = scale * q - min", color: "bg-amber-50", borderColor: "border-amber-200", column: 0, row: 6, width: 3 },
+  ]}
+  edges={[
+    { from: "super", to: "d" },
+    { from: "super", to: "scales" },
+    { from: "super", to: "qs" },
+    { from: "dequant", to: "step1" },
+    { from: "step1", to: "step2" },
+    { from: "step2", to: "step3" },
+  ]}
+/>
+
+反量化公式：$w = d \cdot \text{raw\_scale} \cdot q - d_{\min} \cdot \text{raw\_min}$，其中 raw\_scale 和 raw\_min 从 `scales[]` 的 6-bit 编码中解出。$d_{\min} \cdot \text{raw\_min}$ 作为零点偏移被减去。
+
+### Q8_0：8-bit 量化
+
+```cpp
+#define QK8_0 32  // 每个 block 32 个元素
+typedef struct {
+    ggml_half d;       // delta (scale), f16 格式
+    int8_t qs[QK8_0];  // 32 bytes: 32 个 int8 量化值
+} block_q8_0;
+// sizeof = 2 + 32 = 34 bytes → 32 个权重 → 8.5 bits/weight
+```
+
+Q8_0 通常不直接作为模型存储格式，而是作为**运行时中间格式**——在执行 dot product 时，激活值会被量化为 Q8_0/Q8_K 与权重做点积。
+
+### Dot Product Pairing
+
+量化矩阵乘法时，两个操作数的量化类型需要配对：
+
+| 权重类型 | 配对的 dot product 类型 | 说明 |
+|---------|----------------------|------|
+| Q4_0 | Q8_0 | 4-bit 权重 × 8-bit 激活 |
+| Q4_K | Q8_K | K-quant 4-bit × K-quant 8-bit |
+| Q5_K | Q8_K | K-quant 5-bit × K-quant 8-bit |
+| Q6_K | Q8_K | K-quant 6-bit × K-quant 8-bit |
+| F16 | F16 | 半精度权重 × 半精度激活 |
+
+执行矩阵乘法时，backend 根据权重 tensor 的 type 查表（`type_traits_cpu[]`）找到对应的 `vec_dot` 函数和 `vec_dot_type`。如果激活值的类型不匹配 `vec_dot_type`，会先分配一个临时 buffer 做类型转换。
+
+## 小结
+
+本章覆盖了 llama.cpp 的两个基础层面：
+
+1. **工具生态**：`llama-completion`（传统、精细控制）、`llama-cli`（新一代、功能最全）、`llama-bench`（纯性能测量）三个工具各有定位，选择取决于使用场景
+2. **GGUF 格式**：Header → KV Metadata → Tensor Info → Padding → Data Blob 的五段式布局，通过 `gguf_init_from_file_ptr()` 一次顺序读取完成解析
+3. **量化 Block**：Q4_0（简单 scale + 4-bit）、Q4_K（两层量化 super-block/sub-block）、Q8_0（运行时中间格式）的 struct 定义和反量化公式，以及 dot product pairing 的查表机制
+
+下一篇 [模型加载](/zh/llama-cpp-model-loading) 将追踪 GGUF 文件解析完成后，权重如何通过 mmap 或 buffer 上传进入 GPU/CPU 内存。

@@ -1,0 +1,18 @@
+id: llama-cpp-source-walkthrough
+order: 9
+title:
+  zh: "llama.cpp 源码精读"
+  en: "llama.cpp Source Code Walkthrough"
+description:
+  zh: "逐函数追踪 llama.cpp 的 C/C++ 执行流程。本路径是「Ollama + llama.cpp 深度解析」的源码级延伸——前者讲概念和架构设计，本系列讲 C++ 实现细节。适合想阅读、修改或贡献 llama.cpp 的开发者。"
+  en: "Trace llama.cpp's complete C/C++ execution flow function by function. This path extends the 'Ollama + llama.cpp Deep Dive' from concepts to source-level implementation details."
+level: advanced
+articles:
+  - llama-cpp-overview
+  - llama-cpp-tools-gguf
+  - llama-cpp-model-loading
+  - llama-cpp-warmup-tokenization
+  - llama-cpp-batch-ubatch
+  - llama-cpp-build-graph
+  - llama-cpp-scheduling-memory
+  - llama-cpp-execution-sampling

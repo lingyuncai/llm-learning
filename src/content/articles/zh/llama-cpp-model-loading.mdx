@@ -1,0 +1,390 @@
+---
+title: "模型加载：从文件到设备"
+slug: llama-cpp-model-loading
+locale: zh
+tags:
+  - llama-cpp
+  - model-loading
+  - mmap
+  - gpu-offload
+  - backend
+difficulty: advanced
+created: "2026-04-15"
+updated: "2026-04-15"
+references:
+  - type: repo
+    title: "llama.cpp GitHub"
+    url: "https://github.com/ggerganov/llama.cpp"
+prerequisites:
+  - llama-cpp-tools-gguf
+  - ollama-hardware-backends
+---
+
+import FlowDiagram from '../../../components/primitives/FlowDiagram.tsx';
+import LlamaCppGPULayerSplit from '../../../components/interactive/LlamaCppGPULayerSplit.tsx';
+
+> **系列定位**：本文是 llama.cpp 源码精读系列 #2，聚焦模型文件的加载流程和 Backend 设备分配机制。如果你还没有阅读 [系列总览](/zh/llama-cpp-overview) 和 [#1 工具全景与 GGUF 二进制解析](/zh/llama-cpp-tools-gguf)，建议先建立全局地图再进入本章。
+
+## Part A：模型加载
+
+有了 GGUF 格式的知识，现在来看 llama.cpp 如何把一个 GGUF 文件变成可以推理的模型。
+
+### 加载总览
+
+<FlowDiagram
+  client:visible
+  title="模型加载五阶段流水线"
+  direction="vertical"
+  nodes={[
+    { id: "a", label: "llama_model_loader 构造函数", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0 },
+    { id: "b", label: "gguf_init_from_file()", sublabel: "no_alloc = true", color: "bg-blue-50", borderColor: "border-blue-200", column: 0, row: 1 },
+    { id: "c", label: "遍历 tensor info", sublabel: "构建 weights_map", color: "bg-blue-50", borderColor: "border-blue-200", column: 0, row: 2 },
+    { id: "d", label: "读取 KV metadata", sublabel: "确定 architecture", color: "bg-blue-50", borderColor: "border-blue-200", column: 0, row: 3 },
+    { id: "e", label: "llama_model::load_tensors()", sublabel: "创建 tensor 并分配到设备", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 4 },
+    { id: "f-yes", label: "init_mappings()", sublabel: "mmap 文件到内存", color: "bg-amber-50", borderColor: "border-amber-200", column: 0, row: 5 },
+    { id: "f-no", label: "直接 read 到 buffer", color: "bg-amber-50", borderColor: "border-amber-200", column: 1, row: 5 },
+    { id: "g", label: "load_all_data()", sublabel: "tensor->data 指向映射地址", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 0, row: 6, width: 2 },
+  ]}
+  edges={[
+    { from: "a", to: "b" },
+    { from: "b", to: "c" },
+    { from: "c", to: "d" },
+    { from: "d", to: "e" },
+    { from: "e", to: "f-yes", label: "use_mmap" },
+    { from: "e", to: "f-no", label: "--no-mmap" },
+    { from: "f-yes", to: "g" },
+    { from: "f-no", to: "g" },
+  ]}
+/>
+
+### 阶段 1：no_alloc 解析 GGUF Header
+
+```cpp
+// llama-model-loader.cpp 构造函数
+struct gguf_init_params params = {
+    /*.no_alloc = */ true,   // 关键：不分配 tensor 数据内存
+    /*.ctx      = */ &ctx,
+};
+metadata = gguf_init_from_file(fname.c_str(), params);
+```
+
+`no_alloc = true` 告诉 GGUF 解析器：只创建 `ggml_tensor` 结构体，不读取也不分配 data 内存。此时内存开销极小：
+
+```cpp
+// gguf.cpp — no_alloc 模式
+if (params.no_alloc) {
+    // 每个 tensor 只分配结构体的 overhead（约 400 bytes）
+    const size_t overhead = n_tensors * ggml_tensor_overhead();
+    mem_size = overhead;  // 1000 个 tensor ≈ 400 KB
+}
+```
+
+对比 `no_alloc = false` 模式需要 `overhead + data_size`（几个 GB），差距巨大。
+
+### 阶段 2：构建 weights_map
+
+解析完 header 后，遍历所有 tensor，建立名称到 tensor 的索引：
+
+```cpp
+// llama-model-loader.cpp 构造函数
+for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
+    std::string tensor_name = std::string(cur->name);
+
+    // 检查无重复名称
+    if (weights_map.find(tensor_name) != weights_map.end()) {
+        throw std::runtime_error("invalid model: tensor is duplicated");
+    }
+
+    n_elements += ggml_nelements(cur);
+    n_bytes    += ggml_nbytes(cur);
+
+    // 记录 tensor 所在文件、文件索引、metadata 上下文、tensor 指针
+    weights_map.emplace(tensor_name, llama_tensor_weight(file, 0, metadata, cur));
+}
+```
+
+此时每个 tensor 对象的状态：
+
+| 字段 | 值 | 状态 |
+|------|-----|------|
+| `type` | `Q4_K` | 有值，从 GGUF header 读取 |
+| `ne[4]` | shape | 有值 |
+| `nb[4]` | stride | 根据 type 和 shape 计算 |
+| `name` | `"blk.0.attn_q.weight"` | 有值 |
+| `data` | `NULL` | 尚未加载数据 |
+
+### 阶段 3：架构识别
+
+从 KV metadata 中读取模型架构：
+
+```cpp
+// llama-model-loader.cpp
+get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
+// arch_name = "llama" 或 "qwen3" 或 "gpt2" 等
+llm_kv = LLM_KV(llm_arch_from_string(arch_name));
+```
+
+`llm_arch_from_string()` 把字符串映射到 `llm_arch` 枚举值（如 `LLM_ARCH_QWEN3`），后续的超参数读取、计算图构建都依赖这个枚举值来分发。
+
+### 阶段 4：mmap vs read
+
+模型权重的加载有两种方式：
+
+#### mmap 模式（默认）
+
+```cpp
+// llama-model-loader.cpp — init_mappings()
+std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file, prefetch ? -1 : 0, is_numa);
+```
+
+mmap 把文件的 data blob 映射到进程的虚拟地址空间，**不立即读取数据到物理内存**。操作系统在首次访问对应页面时才从磁盘加载（demand paging）。
+
+```cpp
+// load_data_for() — mmap 模式
+if (use_mmap) {
+    if (cur->data == nullptr) {
+        // 直接将 tensor->data 指向映射地址 + 偏移
+        cur->data = (uint8_t *)mapping->addr() + w.offs;
+    } else {
+        // 如果 tensor 已有 buffer（如 GPU buffer），则 memcpy
+        memcpy(cur->data, (uint8_t *)mapping->addr() + w.offs, ggml_nbytes(cur));
+    }
+}
+```
+
+mmap 的优势：
+- **零拷贝**：CPU 上的 tensor 直接引用映射地址，不需要额外分配内存
+- **按需加载**：未访问的页面不占物理内存
+- **多进程共享**：多个 llama.cpp 实例加载同一模型时，操作系统会共享物理页面
+
+#### read 模式（`--no-mmap`）
+
+```cpp
+// load_data_for() — read 模式
+GGML_ASSERT(cur->data != nullptr);  // 调用方必须预先分配 buffer
+file->seek(w.offs, SEEK_SET);       // 定位到文件中的偏移
+file->read_raw(cur->data, ggml_nbytes(cur));  // 直接读入 buffer
+```
+
+read 模式适用于：
+- 系统不支持 mmap（某些嵌入式平台）
+- 模型大于物理 RAM 时，mmap 可能导致频繁 page fault，read 模式可以配合 `--mlock` 避免
+
+### 阶段 5：分片模型
+
+对于超大模型（如 70B+），GGUF 文件会被分成多个 split 文件。`llama_model_loader` 通过 `LLM_KV_SPLIT_COUNT` KV 值检测分片数量，然后依次加载所有分片：
+
+```
+model-00001-of-00003.gguf  ← 主文件（完整 GGUF：header + KV metadata + tensor info + tensor data）
+model-00002-of-00003.gguf  ← 附加文件（同为完整 GGUF，含自己的 header + tensor info + tensor data）
+model-00003-of-00003.gguf  ← 附加文件（同上）
+```
+
+所有分片的 tensor 统一注册到同一个 `weights_map` 中，对上层完全透明。
+
+---
+
+## Part B：Backend 初始化与设备分配
+
+模型权重加载完成后，下一步是初始化计算后端（Backend），并决定每一层的 tensor 放在哪个设备上。
+
+### Backend 发现与初始化
+
+llama.cpp 的 backend 初始化发生在 `llama_context` 构造函数中，按以下优先级顺序：
+
+<FlowDiagram
+  client:visible
+  title="Backend 初始化优先级"
+  direction="vertical"
+  nodes={[
+    { id: "dev", label: "遍历 model.devices", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0 },
+    { id: "gpu", label: "ggml_backend_dev_init(dev)", sublabel: "初始化 GPU backends（Vulkan / CUDA / Metal）", color: "bg-blue-50", borderColor: "border-blue-200", column: 0, row: 1 },
+    { id: "scan", label: "遍历所有 backend 设备", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 2 },
+    { id: "accel", label: "初始化 ACCEL backends", sublabel: "如 BLAS 加速", color: "bg-green-50", borderColor: "border-green-200", column: 0, row: 3 },
+    { id: "cpu", label: "ggml_backend_init_by_type(CPU)", sublabel: "初始化 CPU backend（兜底）", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 4 },
+    { id: "vec", label: "所有 backend 存入 backends 向量", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 0, row: 5 },
+  ]}
+  edges={[
+    { from: "dev", to: "gpu" },
+    { from: "gpu", to: "scan" },
+    { from: "scan", to: "accel" },
+    { from: "accel", to: "cpu" },
+    { from: "cpu", to: "vec" },
+  ]}
+/>
+
+```cpp
+// llama-context.cpp — 构造函数
+// 1. GPU backends
+for (const auto & dev : model.devices) {
+    ggml_backend_t backend = ggml_backend_dev_init(dev.dev, nullptr);
+    backends.emplace_back(backend);
+}
+
+// 2. ACCEL backends（如 BLAS）
+for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+    ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+    if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_ACCEL) {
+        backends.emplace_back(ggml_backend_dev_init(dev, nullptr));
+    }
+}
+
+// 3. CPU backend（永远作为兜底）
+backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+backends.emplace_back(backend_cpu);
+```
+
+**CPU backend 永远存在**，即使所有层都 offload 到 GPU，某些操作（如 tokenization、采样）仍然在 CPU 上执行。
+
+### n_gpu_layers 层分配
+
+`-ngl`（`--n-gpu-layers`）参数决定多少层 offload 到 GPU。核心计算在 `load_tensors()` 中：
+
+```cpp
+// llama-model.cpp — load_tensors()
+const int i_gpu_start = std::max(int(n_layer) + 1 - n_gpu_layers, 0);
+```
+
+这意味着：**最后的 n_gpu_layers 层放在 GPU 上，前面的层留在 CPU**。
+
+以 `n_layer=32, n_gpu_layers=24` 为例：
+- `i_gpu_start = 32 + 1 - 24 = 9`
+- Layer 0-8 在 CPU（9 层）
+- Layer 9-31 + Output 在 GPU（23 层 + output = 24）
+
+当 `n_gpu_layers=33`（大于等于 n_layer+1）时：
+- `i_gpu_start = 0`
+- 全部 Layer 0-31 + Output 在 GPU
+
+注意：**Input layer（embedding）始终留在 CPU 上**——offload embedding 的收益极小，不值得占用 GPU 显存：
+
+```cpp
+// llama-model.cpp
+// there is very little benefit to offloading the input layer, so always keep it on the CPU
+pimpl->dev_input = { cpu_dev, &pimpl->cpu_buft_list };
+```
+
+拖动下方的滑块，直观感受 `n_gpu_layers` 和多 GPU 配置对层分配的影响：
+
+<LlamaCppGPULayerSplit client:visible locale="zh" />
+
+### 多 GPU 分配（tensor_split）
+
+当有多个 GPU 时，`--tensor-split` 参数控制层的分配比例。如果用户不指定，默认按**各 GPU 的空闲显存**比例分配：
+
+```cpp
+// llama-model.cpp — load_tensors()
+if (all_zero) {
+    // 默认按空闲显存比例
+    for (size_t i = 0; i < n_devices(); ++i) {
+        size_t total, free;
+        ggml_backend_dev_memory(devices[i].dev, &free, &total);
+        splits[i] = free;
+    }
+} else {
+    // 使用用户指定的比例
+    std::copy(tensor_split, tensor_split + n_devices(), splits.begin());
+}
+
+// 归一化为累积分布
+float split_sum = 0.0f;
+for (auto & s : splits) { split_sum += s; s = split_sum; }
+for (auto & s : splits) { s /= split_sum; }
+```
+
+然后用 `upper_bound` 二分查找，将每一层映射到对应的 GPU：
+
+```cpp
+// 根据层的位置在累积分布中查找，确定该层属于哪个 GPU
+const int layer_gpu = std::upper_bound(
+    splits.begin(), splits.begin() + n_devices(),
+    float(il - i_gpu_start) / act_gpu_layers
+) - splits.begin();
+```
+
+例如，两个 GPU 分别有 12GB 和 8GB 空闲显存，24 层需要 offload：
+
+```
+splits 归一化 = [0.6, 1.0]
+Layer 0-13 → GPU 0（前 60%）
+Layer 14-23 → GPU 1（后 40%）
+```
+
+> 在上方的交互组件中，将 GPU 数量调到 2 或更多，可以看到 tensor_split 算法的实际效果。
+
+### Buffer Type 选择
+
+每个设备可能支持多种 buffer type（如 CUDA 的 device memory、host pinned memory 等）。`select_buft()` 遍历候选列表，测试每种 buffer type 是否能执行目标操作：
+
+```cpp
+// llama-model.cpp
+static ggml_backend_buffer_type_t select_buft(const buft_list_t & buft_list, const F & fn) {
+    for (const auto & cur : buft_list) {
+        ggml_backend_dev_t cur_dev = cur.first;
+        ggml_backend_buffer_type_t cur_buft = cur.second;
+        if (buft_supported(cur_buft, cur_dev, fn)) {
+            return cur_buft;  // 返回第一个支持的 buffer type
+        }
+    }
+    throw std::runtime_error("no suitable buffer type found");
+}
+```
+
+GPU 的 buft_list 构建时，会把 CPU buffer type 追加到末尾作为 fallback：
+
+```cpp
+buft_list_t buft_list = make_gpu_buft_list(dev, split_mode, tensor_split);
+// 追加 CPU buffer type 作为兜底
+buft_list.insert(buft_list.end(), cpu_buft_list.begin(), cpu_buft_list.end());
+```
+
+这意味着：如果某个操作 GPU 不支持，会自动退回到 CPU 执行。
+
+### Auto-fit
+
+当指定 `-ngl auto`（默认值）时，llama.cpp 会自动估算显存需求，调整 `n_gpu_layers` 和 `ctx_size` 使模型适配可用显存：
+
+<FlowDiagram
+  client:visible
+  title="Auto-fit 自动适配流程"
+  direction="vertical"
+  nodes={[
+    { id: "measure", label: "测量每个设备的空闲显存", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0, width: 2 },
+    { id: "check", label: "显存足够?", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 1, width: 2 },
+    { id: "use", label: "使用请求的 n_gpu_layers 和 ctx_size", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 2 },
+    { id: "shrink", label: "缩减 ctx_size", sublabel: "在 fit_ctx 和原始值之间线性插值", color: "bg-red-50", borderColor: "border-red-300", textColor: "text-red-800", column: 1, row: 2 },
+    { id: "check2", label: "缩减后够了?", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 1, row: 3 },
+    { id: "use2", label: "使用缩减后的 ctx_size", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 4 },
+    { id: "reduce", label: "减少 n_gpu_layers", color: "bg-red-50", borderColor: "border-red-200", column: 1, row: 4 },
+  ]}
+  edges={[
+    { from: "measure", to: "check" },
+    { from: "check", to: "use", label: "是" },
+    { from: "check", to: "shrink", label: "否" },
+    { from: "shrink", to: "check2" },
+    { from: "check2", to: "use2", label: "是" },
+    { from: "check2", to: "reduce", label: "否" },
+    { from: "reduce", to: "measure" },
+  ]}
+/>
+
+auto-fit 逻辑在 `llama_params_fit_impl()`（`src/llama.cpp`）中实现，确保用户不需要手动计算显存就能正确加载模型。
+
+---
+
+## 小结
+
+本文追踪了 llama.cpp 从打开 GGUF 文件到模型就绪的完整路径：
+
+1. **no_alloc 解析**：只读取 header，不分配 tensor data 内存，开销极小
+2. **weights_map 构建**：为每个 tensor 建立名称索引，data 指针仍为 NULL
+3. **架构识别**：从 KV metadata 读取模型架构字符串，映射到枚举值
+4. **mmap vs read**：默认用 mmap 实现零拷贝按需加载，`--no-mmap` 适用于特殊场景
+5. **分片模型**：多个 split 文件统一注册到同一 weights_map
+6. **Backend 初始化**：GPU → ACCEL → CPU 优先级顺序，CPU 永远作为兜底
+7. **n_gpu_layers**：`i_gpu_start = max(n_layer+1 - ngl, 0)` 决定 CPU/GPU 分界线
+8. **多 GPU tensor_split**：归一化累积分布 + upper_bound 二分查找
+9. **Buffer type 选择**：遍历候选列表，GPU 不支持时自动退回 CPU
+10. **Auto-fit**：自动调整 n_gpu_layers 和 ctx_size 适配可用显存
+
+下一篇 [#3 预热与 Tokenization](/zh/llama-cpp-warmup-tokenization) 将进入推理流程的第一步：输入文本如何变成 token 序列。

@@ -110,6 +110,8 @@ struct ggml_tensor* output = ggml_add(ctx, h, ffn_out);
 - **GQA** (Grouped Query Attention): Q 有 32 heads，K/V 只有 8 heads，节省 KV Cache 内存
 - **残差连接** (蓝色节点): 将输入直接加到输出，防止梯度消失
 
+> **源码级深入**：125 种架构如何共享积木接口（`build_norm` / `build_attn` / `build_ffn`）、以及计算图复用机制（`can_reuse()`），详见 [计算图构建与架构分发](/zh/llama-cpp-build-graph)。
+
 ## 算子融合
 
 构建完图后，GGML 会进行 **Operator Fusion (算子融合)** 优化。传统方式下，每个操作都需要:

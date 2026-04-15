@@ -278,6 +278,8 @@ ollama run qwen:8b --gpu-layers 20
 - **混合模式** (部分 GPU + 部分 CPU): 性能介于纯 GPU 和纯 CPU 之间,每跨一次 PCIe 边界约损失 2-5 tok/s
 - **纯 CPU** (VRAM 为 0): 性能完全依赖 CPU 算力和内存带宽
 
+> **源码级深入**：`n_gpu_layers` 层分配算法（`i_gpu_start` 计算 + 多 GPU `tensor_split`）详见 [模型加载：从文件到设备](/zh/llama-cpp-model-loading)；五遍扫描 backend 调度算法详见 [Backend 调度、Op Fusion 与内存分配](/zh/llama-cpp-scheduling-memory)。
+
 ## 性能对比
 
 下图对比了同一模型 (Qwen3-8B Q4_K_M) 在四个后端上的实际推理速度:

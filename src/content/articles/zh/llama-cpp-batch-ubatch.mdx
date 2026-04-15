@@ -1,0 +1,339 @@
+---
+title: "Batch、Ubatch 与解码主循环"
+slug: llama-cpp-batch-ubatch
+locale: zh
+tags:
+  - llama-cpp
+  - batch
+  - ubatch
+  - decoding
+  - parallel-sequences
+  - kv-cache
+difficulty: advanced
+created: "2026-04-15"
+updated: "2026-04-15"
+references:
+  - type: repo
+    title: "llama.cpp GitHub"
+    url: "https://github.com/ggerganov/llama.cpp"
+prerequisites:
+  - llama-cpp-overview
+  - kv-cache
+---
+
+import FlowDiagram from '../../../components/primitives/FlowDiagram.tsx';
+import LlamaCppBatchSplitVisualizer from '../../../components/interactive/LlamaCppBatchSplitVisualizer.tsx';
+
+> **系列定位**：本文是 llama.cpp 源码精读系列 #4，覆盖 token 从用户提交到实际计算的组织方式——batch、ubatch 与 decode 主循环。如果你还没有阅读 [系列总览](/zh/llama-cpp-overview) 和 [#3 Warmup、Tokenization 与 Chat Template](/zh/llama-cpp-warmup-tokenization)，建议先建立全局地图再进入本章。
+
+Tokenization 之后，我们得到了一个 token 序列。但在送入模型计算之前，还需要把这些 token 组织成**批次（batch）**。llama.cpp 采用了两级批次机制：用户提交的**逻辑批次（batch）**和内部实际计算使用的**微批次（ubatch）**。
+
+---
+
+## Part A：llama_batch 用户侧接口
+
+`llama_batch` 是用户与 llama.cpp 交互的核心数据结构，定义在公开头文件 `include/llama.h` 中：
+
+```c
+typedef struct llama_batch {
+    int32_t n_tokens;
+
+    llama_token  *  token;    // token ID 数组
+    float        *  embd;     // 或者直接给 embedding（与 token 二选一）
+    llama_pos    *  pos;      // 每个 token 在序列中的位置
+    int32_t      *  n_seq_id; // 每个 token 归属的序列数量
+    llama_seq_id ** seq_id;   // 每个 token 归属的序列 ID 列表
+    int8_t       *  logits;   // 哪些 token 需要输出 logits
+} llama_batch;
+```
+
+各字段的含义：
+
+| 字段 | 说明 |
+|------|------|
+| `token` | token ID 数组，大小 `n_tokens`。与 `embd` 二选一 |
+| `embd` | 直接提供 embedding 向量，大小 `n_tokens * n_embd`。用于外部 encoder 场景 |
+| `pos` | 每个 token 在其所属序列中的位置。可以为 NULL（自动递增） |
+| `n_seq_id` / `seq_id` | 每个 token 可以同时属于多个序列，用于前缀共享 |
+| `logits` | 标记哪些 token 的输出需要计算 logits（采样只需最后一个 token） |
+
+llama.cpp 提供了两个便捷函数来创建 batch：
+
+```c
+// 最简单的用法：一个连续 token 序列，自动填充 pos 和 seq_id
+struct llama_batch llama_batch_get_one(llama_token * tokens, int32_t n_tokens);
+
+// 分配一个可容纳 n_tokens 的空 batch，需要手动填充
+struct llama_batch llama_batch_init(int32_t n_tokens, int32_t embd, int32_t n_seq_max);
+```
+
+`llama_batch_get_one()` 适合最简单的场景：给定一组连续 token，自动填充位置和序列信息。`llama_batch_init()` 则分配一个空 batch，由调用者手动填充各字段——这在并行序列解码等高级场景中必不可少。
+
+---
+
+## Part B：llama_ubatch 内部微批次
+
+用户提交的 batch 可能很大（比如一个 2048 token 的 prompt），不可能一次全部送入 GPU 计算。llama.cpp 内部将其切分为更小的 **ubatch（micro-batch）**，定义在 `src/llama-batch.h` 中：
+
+```c
+struct llama_ubatch {
+    uint32_t n_tokens;     // 总 token 数 = n_seq_tokens * n_seqs
+    uint32_t n_seq_tokens; // 每个序列集的 token 数
+    uint32_t n_seqs;       // 序列集数量
+    uint32_t n_seqs_unq;   // 去重后的序列 ID 数量
+
+    llama_token  *  token;      // [n_tokens]
+    llama_pos    *  pos;        // [n_tokens]
+    int32_t      *  n_seq_id;   // [n_tokens]
+    llama_seq_id ** seq_id;     // [n_tokens]
+    llama_seq_id *  seq_id_unq; // [n_seqs_unq] 去重序列 ID
+    int32_t      *  seq_idx;    // 序列 ID -> ubatch 内索引映射
+    int8_t       *  output;     // [n_tokens] 输出标记
+    // ...
+};
+```
+
+ubatch 与 batch 最大的区别在于：它追踪了**序列集（sequence set）**的结构信息。`n_seq_tokens` 和 `n_seqs` 明确了"几个序列、每序列几个 token"的矩阵形状，这对后续的注意力计算和 KV cache 管理至关重要。
+
+### 两级批次参数
+
+这两级批次由两个命令行参数控制：
+
+```
+--batch-size  N   逻辑批次大小（默认 2048）—— 用户一次提交的最大 token 数
+--ubatch-size N   物理批次大小（默认 512） —— GPU 一次实际计算的最大 token 数
+```
+
+它们在 `llama_context_params` 中对应 `n_batch` 和 `n_ubatch`：
+
+```c
+// common/common.h 默认值
+int32_t n_batch  = 2048;  // 逻辑最大批次
+int32_t n_ubatch =  512;  // 物理最大批次
+```
+
+**关键约束：`n_ubatch <= n_batch`。** `n_batch` 决定了 KV cache 一次能接收多少新 token，而 `n_ubatch` 决定了 GPU 实际的计算粒度。减小 `n_ubatch` 可以降低 GPU 显存峰值占用，但会增加切分次数（更多 ubatch = 更多 kernel launch 开销）。
+
+---
+
+## Part C：三种切分算法
+
+`llama_batch_allocr` 类负责将 batch 切分为 ubatch。它提供三种切分策略：
+
+<FlowDiagram
+  client:visible
+  title="batch 到 ubatch 的切分路径"
+  direction="horizontal"
+  nodes={[
+    { id: "batch", label: "llama_batch", sublabel: "用户提交", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0 },
+    { id: "allocr", label: "llama_batch_allocr", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 1 },
+    { id: "simple", label: "split_simple()", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 2 },
+    { id: "equal", label: "split_equal()", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 1, row: 2 },
+    { id: "seq", label: "split_seq()", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 2, row: 2 },
+    { id: "ub", label: "ubatch 0, 1, 2 ...", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 0, row: 3, width: 3 },
+  ]}
+  edges={[
+    { from: "batch", to: "allocr" },
+    { from: "allocr", to: "simple" },
+    { from: "allocr", to: "equal" },
+    { from: "allocr", to: "seq" },
+    { from: "simple", to: "ub" },
+    { from: "equal", to: "ub" },
+    { from: "seq", to: "ub" },
+  ]}
+/>
+
+### 1. `split_simple(n_ubatch)` — 顺序切分
+
+最直接的切分方式：从头到尾顺序取 token，每次最多取 `n_ubatch` 个。不关心序列边界。
+
+适用场景：单序列 prompt prefill。比如 1000 个 token 的 prompt，按 `n_ubatch=512` 切成两个 ubatch（512 + 488）。
+
+### 2. `split_equal(n_ubatch, sequential)` — 等长切分
+
+确保同一 ubatch 中各序列集的 token 数相等。算法先选出不重叠的序列集，然后从每个序列集中取相同数量的 token，直到总 token 数接近 `n_ubatch` 上限或某个序列耗尽。
+
+适用场景：多序列并行 prefill，需要均衡各序列进度。
+
+### 3. `split_seq(n_ubatch)` — 按序列切分
+
+每个 ubatch 只包含**同一个序列集**的 token。不同序列之间不会混在一个 ubatch 里。
+
+适用场景：自回归解码阶段，各序列独立生成。
+
+### 策略选择
+
+切分策略的选择发生在 KV cache 的 `init_batch()` 中：
+
+```cpp
+// src/llama-kv-cache.cpp
+llama_memory_context_ptr llama_kv_cache::init_batch(
+        llama_batch_allocr & balloc, uint32_t n_ubatch, bool embd_all) {
+    balloc.split_reset();
+
+    std::vector<llama_ubatch> ubatches;
+    while (true) {
+        // 单流模式用 split_simple，多流模式用 split_equal
+        auto ubatch = n_stream == 1
+            ? balloc.split_simple(n_ubatch)
+            : balloc.split_equal(n_ubatch, true);
+
+        if (ubatch.n_tokens == 0) break;
+        ubatches.push_back(std::move(ubatch));
+    }
+
+    // 为每个 ubatch 在 KV cache 中预留 slot
+    auto sinfos = prepare(ubatches);
+    // ...
+}
+```
+
+逻辑很简洁：单序列流（`n_stream == 1`）走 `split_simple`，多序列流走 `split_equal`。`split_seq` 则在其他特定路径中使用。
+
+### 交互演示
+
+调整下方参数，直观感受三种切分算法在不同配置下的行为差异：
+
+<LlamaCppBatchSplitVisualizer client:visible locale="zh" />
+
+---
+
+## Part D：Prompt Prefill 分块示例
+
+假设用户输入一个 1500 token 的 prompt，`n_batch=2048`，`n_ubatch=512`：
+
+<FlowDiagram
+  client:visible
+  title="1500 token prompt 的 prefill 分块流程"
+  direction="vertical"
+  nodes={[
+    { id: "prompt", label: "用户 prompt", sublabel: "1500 tokens", color: "bg-blue-50", borderColor: "border-blue-300", textColor: "text-blue-800", column: 0, row: 0, width: 3 },
+    { id: "batch", label: "llama_batch", sublabel: "n_tokens=1500", color: "bg-amber-50", borderColor: "border-amber-300", textColor: "text-amber-800", column: 0, row: 1, width: 3 },
+    { id: "u0", label: "ubatch 0", sublabel: "tokens [0..511]", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 0, row: 2 },
+    { id: "u1", label: "ubatch 1", sublabel: "tokens [512..1023]", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 1, row: 2 },
+    { id: "u2", label: "ubatch 2", sublabel: "tokens [1024..1499]", color: "bg-green-50", borderColor: "border-green-300", textColor: "text-green-800", column: 2, row: 2 },
+    { id: "p0", label: "process_ubatch()", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 0, row: 3 },
+    { id: "p1", label: "process_ubatch()", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 1, row: 3 },
+    { id: "p2", label: "process_ubatch()", color: "bg-purple-50", borderColor: "border-purple-300", textColor: "text-purple-800", column: 2, row: 3 },
+    { id: "kv0", label: "KV cache", sublabel: "pos 0-511", color: "bg-red-50", borderColor: "border-red-300", textColor: "text-red-800", column: 0, row: 4 },
+    { id: "kv1", label: "KV cache", sublabel: "pos 512-1023", color: "bg-red-50", borderColor: "border-red-300", textColor: "text-red-800", column: 1, row: 4 },
+    { id: "kv2", label: "KV cache", sublabel: "pos 1024-1499", color: "bg-red-50", borderColor: "border-red-300", textColor: "text-red-800", column: 2, row: 4 },
+  ]}
+  edges={[
+    { from: "prompt", to: "batch" },
+    { from: "batch", to: "u0" },
+    { from: "batch", to: "u1" },
+    { from: "batch", to: "u2" },
+    { from: "u0", to: "p0" },
+    { from: "u1", to: "p1" },
+    { from: "u2", to: "p2" },
+    { from: "p0", to: "kv0" },
+    { from: "p1", to: "kv1" },
+    { from: "p2", to: "kv2" },
+  ]}
+/>
+
+每个 ubatch 独立经历完整的 build graph、alloc、compute 流程，但它们共享同一个 KV cache——前面 ubatch 写入的 KV 数据，后面 ubatch 的注意力计算可以看到。
+
+---
+
+## Part E：并行序列解码
+
+`seq_id` 机制使得多个序列可以**共享 prompt 前缀**，然后各自独立解码。这是 `--parallel N` 参数的核心原理。
+
+### seq_id 共享前缀机制
+
+在 prefill 阶段，一个 token 可以同时属于多个序列。例如将 "Hello world" 的 token 标记为 `seq_id=[{0,1,2}]`，三个序列共享同一份 KV cache 数据。到了 decode 阶段，每个序列各自生成不同的 token，写入各自独立的 KV slot。
+
+### Prefill vs Decode 阶段对比
+
+**Prefill（共享 prompt）**：添加 token "Hello world"，`pos=[0,1]`，`seq_id=[{0,1,2}]`。所有 3 个序列共享同一份 KV。
+
+**Decode（独立生成）**：
+- 序列 0 生成 "foo"，`pos=2`，`seq_id=[{0}]`
+- 序列 1 生成 "bar"，`pos=2`，`seq_id=[{1}]`
+- 序列 2 生成 "baz"，`pos=2`，`seq_id=[{2}]`
+
+每个序列独立写入各自的 KV slot。
+
+### batched.cpp 代码示例
+
+具体代码流程（以 `examples/batched/batched.cpp` 为参考）：
+
+```cpp
+// Prefill 阶段：所有序列共享同一个 prompt
+std::vector<llama_seq_id> all_seqs = {0, 1, 2};
+for (size_t i = 0; i < prompt_tokens.size(); ++i) {
+    common_batch_add(batch, prompt_tokens[i], i, all_seqs, false);
+}
+// 最后一个 token 需要输出 logits（用于第一次采样）
+batch.logits[batch.n_tokens - 1] = true;
+llama_decode(ctx, batch);
+
+// Decode 阶段：每个序列独立生成
+while (n_cur <= n_predict) {
+    common_batch_clear(batch);
+    for (int i = 0; i < n_parallel; ++i) {
+        llama_token new_token = llama_sampler_sample(smpl, ctx, i);
+        common_batch_add(batch, new_token, n_cur, { i }, true);
+    }
+    llama_decode(ctx, batch);
+    n_cur++;
+}
+```
+
+关键点：prefill 阶段一个 token 属于 `{0, 1, 2}` 三个序列——KV cache 只存一份，但三个序列都能访问。到了 decode 阶段，每个序列各自生成不同的 token，写入各自独立的 KV slot。
+
+---
+
+## Part F：llama_decode 主循环
+
+理解了 batch/ubatch 的结构后，我们来看 `llama_decode()` 如何驱动整个流程：
+
+```cpp
+// src/llama-context.cpp（简化）
+int llama_context::decode(const llama_batch & batch_inp) {
+    // 1. 验证并自动填充缺失字段（pos, seq_id, logits）
+    balloc->init(batch_inp, vocab, memory.get(), ...);
+
+    // 2. 让 memory 模块将 batch 切分为 ubatch，并预留 KV cache slot
+    mctx = memory->init_batch(*balloc, cparams.n_ubatch, output_all);
+    //    如果 KV cache 满了，尝试优化（碎片整理）后重试
+    //    仍然失败则返回错误码 1（提示调用者做 context shift）
+
+    // 3. 预分配输出 buffer
+    output_reserve(n_outputs_all);
+
+    // 4. 逐 ubatch 处理
+    do {
+        const auto & ubatch = mctx->get_ubatch();
+
+        // 构建计算图 -> 分配中间 tensor -> 设置输入 -> 执行计算
+        const auto * res = process_ubatch(ubatch, LLM_GRAPH_TYPE_DECODER, mctx, status);
+
+        // 提取 logits 和 embeddings 到输出 buffer
+        ggml_backend_tensor_get_async(..., res->get_logits(), ...);
+
+        n_outputs_prev += n_outputs;
+    } while (mctx->next_ubatch());  // 下一个 ubatch
+
+    return 0;
+}
+```
+
+这里的 `process_ubatch()` 是单个微批次的完整执行流程——它包含了 build graph、alloc、set inputs、compute 等步骤，我们将在后续章节详细展开。
+
+---
+
+## 小结
+
+两级批次机制的设计目标很清晰：
+
+| 层次 | 控制参数 | 职责 |
+|------|----------|------|
+| **Batch** | `--batch-size` | 面向用户的逻辑单位，决定一次能提交多少 token |
+| **Ubatch** | `--ubatch-size` | 面向硬件的物理单位，决定 GPU 一次处理多少 token |
+
+通过 `seq_id` 和切分策略的组合，llama.cpp 实现了灵活的批处理：单序列 prefill 用 `split_simple` 顺序切块，多序列并行用 `split_equal` 均衡分配，独立解码用 `split_seq` 按序列隔离。这套机制在保持接口简洁的同时，给了内部调度足够的自由度。
+
+下一篇 [#5 计算图构建与架构分发](/zh/llama-cpp-build-graph) 将深入 llama.cpp 如何为 125 种不同架构构建计算图，以及图复用机制如何避免重复构建。
