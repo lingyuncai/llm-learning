@@ -250,7 +250,7 @@ NPU 芯片 (40xx Lunar Lake)
 - "记住状态"交给 NPUW 的 ZeroVariableState：
   - 持有 Level Zero 内存（NPU 可访问的设备内存）
   - set_state() / get_state() / reset()（新对话时 memset(0) 清零）
-- 与编译原理的关联：本质上是 SSA（静态单赋值）思想——消除可变状态，让数据流显式化。有状态模型中"隐式的跨调用持久化"变成了"显式的函数输入/输出参数"，编译器和运行时各管各的
+- 与编译原理的关联：这个转换类似函数式编程中的 lambda lifting——将隐式捕获的可变状态（ReadValue/Assign 对"变量"的读写）提升为函数的显式输入/输出参数。转换后 blob 是纯函数，没有副作用，编译器和运行时各管各的
 
 ### §7 从 Host 到 NPU：一次推理调用
 
@@ -273,7 +273,7 @@ NPU 芯片 (40xx Lunar Lake)
 6. NPUW 读取输出（logits + present KV cache），update_kvcache_for() 追加到 past
 
 **Mutable Command Lists 优化：**
-- Level Zero 扩展特性（驱动版本 >= 1.0）
+- Level Zero 实验性扩展（ZE_experimental_mutable_command_list，需 Level Zero spec 1.9+）
 - 首次推理创建 command list，后续只 updateMutableCommands() 更新 tensor 指针
 - 类比：在已录好的"脚本"上只改几个参数，不重新录
 
@@ -422,7 +422,7 @@ NPU 芯片 (40xx Lunar Lake)
 - KV cache 搬运开销：prefill→generate 的 copy_kvcache 可达 512MB（32 层 × 2 × 32 heads × 1024 seq × 128 dim × 2 bytes FP16）
 - 多次编译：多个 generate 变体 = 更长冷启动，需 blob 缓存缓解
 
-### §7 编程模型的反思：ONNX 的边界与 cuTile 的启示
+### §7 编程模型的反思：ONNX 的边界与 CuTe 的启示
 
 **"编译器包揽一切"的四条裂缝：**
 1. 每种 attention 变体需要手写新 SHAVE kernel（sdpa → incremental_sdpa → flash_sdpa）。新变体（Sliding Window、Cross Attention、Linear Attention）需等编译器团队实现，周期以月计
@@ -449,17 +449,17 @@ NPU 芯片 (40xx Lunar Lake)
 - 关联：关联 cuda-programming-model 和 spirv-level-zero 文章的概念
 - 目的：让读者形成跨硬件的系统性理解
 
-**cuTile 的启示（第三条路）：**
+**CuTe 的启示（第三条路）：**
 - 当前三个层次：ONNX（不表达 tiling）→ ? → raw SHAVE ASM（表达一切）
-- cuTile 在 GPU 上开辟中间层：算子作者控制 tile 大小和循环结构，编译器负责 DMA 和硬件映射
-- 假设 NPU 有 cuTile 式 DSL：
+- CuTe 在 GPU 上开辟中间层：算子作者控制 tile 大小和循环结构，编译器负责 DMA 和硬件映射
+- 假设 NPU 有 CuTe 式 DSL：
   - Flash SDPA 不需要编译器团队手写 SHAVE kernel，算子作者直接写 tiled attention
   - Tiling 策略可根据模型特点调整（长上下文 → 大 KV tile，小模型 → 不需要 tiling）
   - 新算法验证周期从月缩短到天
 
-**ONNX vs cuTile 式 DSL 对比表：**
+**ONNX vs CuTe 式 DSL 对比表：**
 
-| 维度 | ONNX | cuTile 式 DSL |
+| 维度 | ONNX | CuTe 式 DSL |
 |------|------|---------------|
 | 表达内容 | 计算图（做什么） | Tiled 算法（怎么切、怎么传状态） |
 | Tiling | 不表达，引擎自动 | 算子作者指定 tile shape |
@@ -469,11 +469,11 @@ NPU 芯片 (40xx Lunar Lake)
 | 可移植性 | 极好（跨硬件） | 好（跨同厂商硬件代际） |
 | 开发门槛 | 极低（导出模型） | 中等（需理解 tiling 概念） |
 
-**关键洞察：** cuTile 和 ONNX 都隐藏了 DMA，但 cuTile 暴露了 tiling。Tiling 是算法和硬件之间的接口——往上依赖算法知识（只有算法作者知道 tile 间怎么传状态），往下依赖硬件知识（只有编译器知道 CMX 容量和 DMA 带宽）。
+**关键洞察：** CuTe 和 ONNX 都隐藏了 DMA，但 CuTe 暴露了 tiling。Tiling 是算法和硬件之间的接口——往上依赖算法知识（只有算法作者知道 tile 间怎么传状态），往下依赖硬件知识（只有编译器知道 CMX 容量和 DMA 带宽）。
 
 **平衡观点：**
 - ONNX 对 99% 用户是正确选择，标准操作的优化路径已经足够好
-- cuTile 面向 1% 的算子作者——他们的生产力决定了推理引擎内部的优化速度
+- CuTe 面向 1% 的算子作者——他们的生产力决定了推理引擎内部的优化速度
 - 两者互补而非替代：ONNX 用户什么都不用改，但享受到更快的 SDPA 实现
 
 **对 NPU 生态的启示：**
