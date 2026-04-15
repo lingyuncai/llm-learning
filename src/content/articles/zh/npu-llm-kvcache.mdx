@@ -1,0 +1,383 @@
+---
+title: "NPU 上的 LLM 推理：KV Cache 与软件栈"
+slug: npu-llm-kvcache
+locale: zh
+tags: [intel, npu, llm, kv-cache, openvino, npuw, static-shape]
+difficulty: advanced
+created: "2026-04-15"
+updated: "2026-04-15"
+prerequisites: [npu-gpu-co-inference]
+references:
+  - type: website
+    title: "OpenVINO GenAI — Stateful LLM Pipeline"
+    url: "https://docs.openvino.ai/2024/learn-openvino/llm_inference_guide/genai-guide.html"
+  - type: website
+    title: "Intel NPU Device — OpenVINO Documentation"
+    url: "https://docs.openvino.ai/2024/openvino-workflow/running-inference/inference-devices-and-modes/npu-device.html"
+  - type: website
+    title: "openvinotoolkit/npu_compiler — GitHub"
+    url: "https://github.com/openvinotoolkit/npu_compiler"
+  - type: website
+    title: "Level Zero Specification"
+    url: "https://spec.oneapi.io/level-zero/latest/index.html"
+---
+
+import KVCacheGrowthAnimation from '../../../components/interactive/KVCacheGrowthAnimation.tsx';
+import PrefillGenerateSwitch from '../../../components/interactive/PrefillGenerateSwitch.tsx';
+import GenerateVariantSelector from '../../../components/interactive/GenerateVariantSelector.tsx';
+
+## 简介
+
+在[前一篇文章](/zh/articles/npu-gpu-co-inference)中，我们了解了 NPU 的 NCE 架构（DPU + SHAVE）、CMX/DDR 两层内存层次和管理核的角色。本文进入 NPU 推理的核心挑战：**LLM 的 KV cache 天然是动态增长的，但 NPU 只能执行静态 shape 的计算图——这个矛盾怎么解决？**
+
+我们将从 KV cache 的矛盾出发，逐层剖析三层软件栈（openvino.genai → NPUW → npu_compiler）如何协同工作，理解 prefill/generate 两个模型的设计，以及从 host 到 NPU 的完整推理调用路径。最终通过一个端到端的例子串联所有概念。
+
+## KV Cache 回顾与 NPU 上的矛盾
+
+在 Transformer 的自回归生成中，每生成一个新 token，都需要用到之前所有 token 的 Key 和 Value 向量来计算 attention。为了避免重复计算，这些向量被缓存下来，称为 KV cache（详细原理见 [Prefill vs Decode](/zh/articles/prefill-vs-decode) 文章）。
+
+在 GPU 上，KV cache 的管理相对直接——运行时可以动态分配显存，vLLM 的 PagedAttention 甚至能按需分页。但 NPU 的执行模型与 GPU 有根本性不同：
+
+**NPU 的 blob 执行模型**要求编译时确定一切：
+
+- 所有 tensor 的**精确 shape**（每个维度的具体数值）
+- 每块数据在 CMX/DDR 中的**内存地址**
+- 所有 DMA 搬运的**时序和顺序**
+- DPU 任务描述、SHAVE kernel 机器码、barrier 配置
+
+编译后的产物称为 **blob**——格式是标准 ELF（Executable and Linkable Format），包含了以上所有信息。运行时 NPU 管理核逐条执行 blob 中的任务描述符，**不做任何决策**。
+
+这意味着 KV cache tensor `[batch, heads, seq_len, head_dim]` 中的 `seq_len` 维度必须是编译时常量。但 KV cache 的本质是随着生成过程逐步增长的——第 1 个 token 时 seq_len=1，第 100 个 token 时 seq_len=100。
+
+> **核心矛盾**：KV cache 天然是动态的，但 NPU 只能执行静态 shape 的计算图。
+
+运行时唯一可变的是输入/输出 tensor 的**地址**（通过 ELF 重定位机制），但 shape 绝不可变。
+
+## 解决方案：预分配 + Attention Mask
+
+解决思路出奇地直观：既然 shape 不能变，那就**预分配一块固定大小的缓冲区**，把"动态增长"变成"在固定空间内移动写入位置"。
+
+NPUW（NPU Wrapper）通过两个参数控制缓冲区大小：
+
+- `MAX_PROMPT_LEN`：最大 prompt 长度（默认 1024）
+- `MIN_RESPONSE_LEN`：预留生成空间（默认 128）
+- 总容量 = 1024 + 128 = **1152**
+
+KV cache tensor 始终被分配为 `[batch, heads, 1152, head_dim]`——无论实际使用了多少位置。
+
+### Attention Mask 的作用
+
+缓冲区中未使用的位置填充着零或垃圾数据，必须确保这些 padding 不影响 attention 计算。这通过 **attention mask** 实现——一个与 seq_len 等长的 0/1 向量：
+
+- `1` 表示有效数据位置
+- `0` 表示 padding 位置
+
+在 attention 计算的 softmax 步骤中，mask=0 的位置被设为 $-\infty$，经 softmax 后对应权重变为零，完全忽略 padding 内容。
+
+### 具体示例
+
+假设 prompt 是"什么是NPU"（4 个 token），缓冲区容量 1152：
+
+**生成第 1 个 token 时**：
+- KV cache: `[K1, K2, K3, K4, 0, 0, ..., 0]`（4 个有效 + 1148 个 padding）
+- Mask: `[1, 1, 1, 1, 0, 0, ..., 0]`
+
+**生成第 100 个 token 时**：
+- KV cache: `[K1, K2, ..., K103, 0, ..., 0]`（103 个有效 + 1049 个 padding）
+- Mask: `[1, 1, ..., 1, 0, ..., 0]`（103 个 1）
+
+**关键洞察**：物理大小从未改变（始终 1152），变化的只是有效边界和 mask 中 1 的个数。NPU 每次执行的 blob 完全相同，只有输入数据（input_ids、mask、position_ids、KV cache 内容）不同。
+
+<KVCacheGrowthAnimation client:visible />
+
+## 三层软件栈的分工
+
+NPU 上的 LLM 推理涉及三层软件，各层职责清晰：
+
+### openvino.genai（最上层）：应用框架
+
+面向用户的高层接口，核心是 `StatefulLLMPipeline`：
+
+- **分词（Tokenization）**：将用户输入文本转为 token ID 序列
+- **采样策略**：贪心搜索（Greedy）、Top-K、Top-P 等解码策略
+- **聊天历史管理**：多轮对话的上下文拼接与截断
+- **流程决策**：何时做 prefill、何时做 decode、何时因历史过长而截断重新 prefill
+
+genai 层不关心底层用的是 GPU 还是 NPU——它只调用 OpenVINO 的推理接口。
+
+### NPUW（中间层）：NPU Wrapper，核心调度器
+
+NPUW 是整个 NPU LLM 推理的"大脑"，负责把动态的 LLM 推理需求翻译成 NPU 能理解的静态执行：
+
+- **模型拆分**：把一个动态 shape 的 LLM 模型拆成 prefill 和 generate 两个静态 shape 子模型
+- **编译管理**：分别把两个子模型编译成 NPU blob（通过 npu_compiler）
+- **KV cache 管理**：分配缓冲区、清零（新对话）、prefill→generate 之间的 KV cache 搬运
+- **Chunked prefill**：处理超长 prompt 的分块
+- **任务提交**：通过 Level Zero API 向 NPU 提交推理任务
+
+### npu_compiler（最底层）：编译器
+
+编译器负责把 OpenVINO IR（Intermediate Representation）编译成 NPU blob：
+
+- **完全不知道什么是 KV cache**——它只看到标记为"有状态"的 tensor（ReadValue/Assign 操作对）
+- 将有状态操作转换成 blob 的普通输入/输出参数
+- 规划所有 DMA 搬运时序、DPU/SHAVE 任务调度、barrier 同步
+- 生成 ELF 格式的 blob
+
+> **一句话总结**：genai 决定**何时**推理，NPUW 决定**怎么**推理，compiler 决定**硬件执行什么**。
+
+## NPUW 的核心设计：两个模型，一份 KV Cache
+
+### 为什么需要两个模型？
+
+LLM 推理分 prefill 和 decode 两个阶段（详见 [Prefill vs Decode](/zh/articles/prefill-vs-decode)），两者的 `input_ids` 长度完全不同：
+
+- **Prefill**：一次性处理整个 prompt，`input_ids` 的 seq_len 可能是几百到上千
+- **Decode（Generate）**：每次只处理 1 个新 token，`input_ids` 的 seq_len 固定为 1
+
+由于 NPU blob 的所有 tensor shape 必须在编译时确定，不可能一个 blob 兼容两种 seq_len。NPUW 的解决方案是编译**两个独立的 blob**：
+
+| | Prefill 模型 | Generate 模型 |
+|---|---|---|
+| input_ids seq_len | 1024 | 1 |
+| KV cache 输出 | `[batch, heads, 1024, head_dim]` | `[batch, heads, 1152, head_dim]` |
+| KV cache 输入 | 无（首次生成） | `[batch, heads, 1152, head_dim]` |
+| 执行时机 | 收到 prompt 时 | 逐 token 生成时 |
+
+### 推理流程
+
+整个推理过程是 prefill 和 generate 两个 blob 的接力：
+
+1. **用户输入 prompt**（如"什么是NPU"，4 个 token）
+2. **调用 prefill blob**：输入 `input_ids=[t1, t2, t3, t4, 0, ..., 0]`（padding 到 1024），输出第一个 token + KV cache（present tensors）
+3. **copy_kvcache()**：将 prefill 的输出 KV cache 拷贝到 generate 的输入位置。这是 64 个 tensor 的并行拷贝（32 层 × K + V），做切片对齐：`prefill.present[0:N] → generate.past[0:N]`
+4. **循环调用 generate blob**：每次输入 1 个 token → 输出下一个 token + 更新 KV cache
+5. **结束**：遇到 EOS token 或达到最大长度
+
+### KV Cache 更新
+
+在 generate 循环中，每次推理后 `update_kvcache_for()` 只需要**复制新增的一行**到 past KV cache 中，`num_stored_tokens` 计数器递增 1。这比 copy_kvcache()（需要拷贝整个 prefill 输出）轻量得多。
+
+<PrefillGenerateSwitch client:visible />
+
+## 应对现实：Generate 变体与 Chunked Prefill
+
+### Generate 变体
+
+上面的设计有一个效率问题：KV cache 容量是 1152，但如果 prompt 只有 20 个 token，生成时每次 decode 仍然遍历完整 1152 长度的 KV cache——其中大部分是无效的 padding。
+
+NPUW 的解决方案是编译**多个 generate 变体**，每个变体有不同的 KV cache 容量：
+
+| 变体 | KV cache 容量 |
+|------|-------------|
+| 变体 1 | 256 |
+| 变体 2 | 512 |
+| 变体 3 | 1024 |
+| 变体 4 | 1152（最大） |
+
+运行时 `select_generate_request()` 选择**最小够用**的变体：
+
+- prompt 20 个 token + 预留 128 = 148 → 选 **256**
+- prompt 400 个 token + 预留 128 = 528 → 选 **1024**
+
+**内存优化**：所有变体**共享同一块内存缓冲区**。最大变体（1152）分配整块内存，较小的变体是这块内存的**前缀切片**——不需要额外分配。
+
+**代价**：编译时间增加（每个变体需要单独编译一个 blob）。NPUW 通过 `EXPORT_BLOB` 机制将编译结果缓存到磁盘，第二次启动时直接加载，跳过编译。
+
+<GenerateVariantSelector client:visible />
+
+### Chunked Prefill
+
+当 prompt 超过 `MAX_PROMPT_LEN`（1024）时，prefill blob 一次放不下，需要**分块处理**：
+
+1. 假设 prompt 有 2048 个 token
+2. **第一轮 prefill**：处理 token[0:1024]，KV cache 输出写入 past
+3. **第二轮 prefill**：处理 token[1024:2048]，读取 past（第一轮的结果）+ 写入新的 present
+4. 每轮结束后 present 追加到 past，积累 KV 状态
+5. **全部完成后**：执行 copy_kvcache() 将完整的 KV cache 传给 generate blob
+
+这种分块机制确保了任意长度的 prompt 都能被处理（在总容量限制内）。
+
+## 编译器：有状态变成无状态
+
+### OpenVINO IR 中的有状态机制
+
+在 OpenVINO 的中间表示（IR）中，KV cache 通过 **ReadValue / Assign** 操作对实现有状态推理：
+
+```
+ReadValue("kv_k_layer0")  → 从"变量"读取上次推理保存的 K cache
+... 计算新的 K cache ...
+Assign("kv_k_layer0", new_value) → 把新 K cache 写回"变量"
+```
+
+这种机制让模型看起来有"记忆"——每次推理自动读取上次的状态，计算后更新。
+
+### 编译器的转换：lambda lifting
+
+npu_compiler 中的 `ConvertAssignReadValueToReturnsAndInputs` pass 做了一个关键转换：
+
+- `ReadValue` → **函数输入参数**（KV cache 从外部传入）
+- `Assign` → **函数输出值**（更新后的 KV cache 作为输出返回）
+
+转换后的 blob 是一个**纯函数**：KV cache 从输入进来，更新后从输出出去，blob 本身没有任何状态。
+
+这个转换在编译原理中有个专门的名字——**lambda lifting**（λ 提升）：将隐式捕获的可变状态（ReadValue/Assign 对"变量"的读写）提升为函数的显式输入/输出参数。与 SSA（静态单赋值）不同，lambda lifting 关注的是消除对外部可变状态的隐式依赖。
+
+### 状态管理交给运行时
+
+"记住状态"的职责从编译器转移到了 NPUW 的 `ZeroVariableState`：
+
+- 持有 **Level Zero 内存**（NPU 可访问的设备内存），存放 KV cache 缓冲区
+- `set_state()` / `get_state()`：每次推理前后读写 KV cache
+- `reset()`：新对话开始时 `memset(0)` 清零整个缓冲区
+
+这种分离的好处是：编译器只需要处理纯函数，运行时只需要管理内存——**各管各的，互不干扰**。
+
+## 从 Host 到 NPU：一次推理调用
+
+了解了软件栈的分工后，我们来看一次推理调用的完整路径——从 blob 加载到结果返回。
+
+### Blob 加载（一次性，启动时完成）
+
+1. **ELF 解析**：驱动中的 ELF Parser 解析 blob 文件，创建 HostParsedInference (HPI) 对象
+2. **内存分配**：为不同类型的数据分配不同属性的 NPU 内存：
+   - 可执行代码（SHAVE kernel）→ WriteCombineFw 内存
+   - SHAVE 数据段 → WriteCombineShave 内存
+   - DMA 描述符 → WriteCombineDma 内存
+3. **静态重定位**：修补 blob 内部的交叉引用——将相对偏移替换为实际的 NPU 设备地址
+4. **元数据提取**：读取输入/输出 tensor 的名称、shape、数据类型，供 NPUW 使用
+
+NPUW 通过 `EXPORT_BLOB` 机制将编译结果缓存到磁盘。第二次启动时直接加载 blob，跳过耗时的编译过程。
+
+### 每次推理路径
+
+每一次推理（无论 prefill 还是 generate）都经过以下步骤：
+
+**1. 准备输入**
+
+NPUW 准备四类输入 tensor：
+- `input_ids`：token ID 序列（prefill 时 padding 到 1024，generate 时只有 1 个 token）
+- `attention_mask`：0/1 向量，标记有效位置
+- `position_ids`：位置编码索引（与 mask 中 1 的个数对应）
+- `past KV cache`：上一轮的 KV cache 缓冲区（首次 prefill 时全零）
+
+**2. JIT 重定位（applyInputOutput）**
+
+blob 编译时不知道 KV cache 缓冲区的实际地址——这个地址在运行时才确定。`applyInputOutput` 遍历 blob 中标记为 `VPU_SHF_USERINPUT` 的重定位项，将 KV cache 缓冲区的 NPU 虚拟地址写入 DMA 任务描述符的对应位置。
+
+这就像一本书的目录在印刷时留了空白页码，装订完成后再填入实际页码。
+
+**3. 提交执行**
+
+将准备好的 command list 提交到 NPU 命令队列。底层通过 `DRM_IVPU_CMDQ_SUBMIT` ioctl（在 Linux 上）或 Level Zero API 完成。
+
+**4. NPU 自治执行**
+
+管理核（40xx 的 RISC-V）接管：
+- 逐条读取任务描述符
+- 检查 barrier 同步条件（producer/consumer 计数）
+- 条件满足后派发到 DMA / DPU / SHAVE
+- 所有任务完成后写入 fence value
+
+**5. Host 检测完成**
+
+Host 有两种等待策略：
+- **中断等待**（`DRM_IVPU_BO_WAIT`）：CPU 休眠等中断，省电
+- **轮询等待**（`UMONITOR/UMWAIT`）：CPU 主动监测，低延迟
+
+**6. 读取输出**
+
+NPUW 读取两类输出：
+- **logits**：下一个 token 的概率分布，交给 genai 层做采样
+- **present KV cache**：本次推理产生的 KV cache，`update_kvcache_for()` 将新增部分追加到 past 缓冲区
+
+### Mutable Command Lists 优化
+
+默认情况下，每次推理都需要重新创建 command list。Level Zero 的实验性扩展 `ZE_experimental_mutable_command_list`（需 Level Zero spec 1.9+）提供了一个优化：
+
+- **首次推理**：创建完整的 command list
+- **后续推理**：只调用 `updateMutableCommands()` 更新变化的 tensor 指针
+
+类比：在一张已经录好的"脚本"上只改几个参数（tensor 地址），不重新录制整个脚本。这减少了 command list 创建的 CPU 开销。
+
+## 端到端流程走读
+
+让我们用一个具体例子串联以上所有概念。
+
+**设定**：输入 "Hello"（1 个 token，ID 为 15496），KV cache 总容量 1152，编译了 2 个 generate 变体（256 和 1152）。模型为 32 层 Transformer。
+
+### 第一步：初始化
+
+NPUW 将 LLM 模型克隆为两份：
+- Prefill 模型（input_ids seq_len = 1024）
+- Generate 模型（input_ids seq_len = 1）
+
+npu_compiler 编译 **3 个 blob**：1 个 prefill + 2 个 generate 变体（256 和 1152）。每个 blob 经过 ELF 解析和静态重定位。
+
+### 第二步：新对话开始
+
+- `memset(0)` 清零所有 KV cache 缓冲区
+- `select_generate_request(1)`：需要 1 + 128 = 129 个位置 → 选 **256 变体**
+
+### 第三步：Prefill
+
+输入：
+- `input_ids = [15496, 0, 0, ..., 0]`（1 个有效 token + 1023 个 padding）
+- `attention_mask = [1, 0, 0, ..., 0]`
+
+NPU 执行 32 层 Transformer：每层依次完成 DMA 搬权重到 CMX → DPU 做 QKV 投影 → SHAVE 执行 RoPE → SHAVE 执行 SDPA → DPU 做 FFN。
+
+输出：第一个 token（如 "，"）+ 32 层的 KV cache（present tensors）。
+
+### 第四步：Prefill → Generate 切换
+
+`copy_kvcache()` 将 prefill 的 present KV cache 拷贝到 generate(256) 的 past 缓冲区：
+
+```
+prefill.present[0:1] → generate_256.past[0:1]
+```
+
+共 64 个 tensor（32 层 × K + V）的并行拷贝。
+
+### 第五步：Generate 循环
+
+每次迭代：
+- `input_ids = [0, ..., 0, token]`（右对齐，只有最后一个位置是真实 token）
+- `position_ids = [0, ..., 0, N]`（N 为当前 token 在序列中的位置）
+- `attention_mask`：1 的个数递增（第 1 轮 2 个 1，第 2 轮 3 个 1，...）
+
+NPU 执行 generate blob → 输出下一个 token。`update_kvcache_for()` 只写入新增的一行 KV cache。
+
+### 第六步：结束
+
+遇到 EOS token 或达到 256 容量上限 → detokenize → 返回完整文本。
+
+## 总结与前瞻
+
+本文的核心思路可以用一句话概括：**把"动态增长"变成"固定空间内移动写入位置"**。
+
+这个看似简单的思路背后是精密的工程协作：
+
+- **NPUW** 拆分模型、管理缓冲区、协调 prefill 和 generate 之间的 KV cache 搬运
+- **npu_compiler** 通过 lambda lifting 将有状态模型编译为纯函数 blob
+- **Level Zero / DRM 驱动** 提供 JIT 重定位和任务提交机制
+- **NPU 管理核** 按照编译时确定的任务列表自治执行
+
+### 当前限制
+
+这些限制全部源于 NPU 的静态执行模型：
+
+- **固定 KV cache 容量**：超出容量时只能截断历史重新 prefill，GPU 上的 PagedAttention 无此限制
+- **batch_size = 1**：不支持 continuous batching，无法同时处理多个请求
+- **KV cache 搬运开销**：prefill → generate 的 copy_kvcache 数据量可达约 512MB（32 层 × 2 × 32 heads × 1024 seq × 128 dim × 2 bytes FP16）
+- **多次编译**：多个 generate 变体 = 更长的冷启动时间，需要 blob 缓存机制缓解
+
+### 下一步
+
+这些 blob 在 NPU 硬件上到底**怎么执行**？编译器做了哪些调度决策来隐藏内存延迟？Attention 在 NPU 上有哪些实现路径？编程模型的天花板在哪里？这些问题将在[下一篇文章](/zh/articles/npu-execution-programming)中展开。
+
+## 延伸阅读
+
+- [OpenVINO GenAI 指南](https://docs.openvino.ai/2024/learn-openvino/llm_inference_guide/genai-guide.html)详细介绍了 StatefulLLMPipeline 的使用方法和配置选项。
+- [npu_compiler 源码](https://github.com/openvinotoolkit/npu_compiler)中的 `ConvertAssignReadValueToReturnsAndInputs` pass 是理解有状态→无状态转换的最佳入口。
+- [Level Zero 规范](https://spec.oneapi.io/level-zero/latest/index.html)定义了 NPU 设备交互的底层 API，包括 command list、fence 和 mutable command list 扩展。

@@ -1,0 +1,296 @@
+---
+title: "NPU 执行模型与编程模型的边界"
+slug: npu-execution-programming
+locale: zh
+tags: [intel, npu, execution-model, dma, tiling, attention, programming-model, cute]
+difficulty: advanced
+created: "2026-04-15"
+updated: "2026-04-15"
+prerequisites: [npu-llm-kvcache]
+references:
+  - type: website
+    title: "openvinotoolkit/npu_compiler — GitHub"
+    url: "https://github.com/openvinotoolkit/npu_compiler"
+  - type: website
+    title: "Flash Attention — Tri Dao et al."
+    url: "https://arxiv.org/abs/2205.14135"
+  - type: website
+    title: "CUTLASS 3.0 & CuTe — NVIDIA"
+    url: "https://github.com/NVIDIA/cutlass"
+  - type: website
+    title: "Level Zero Specification"
+    url: "https://spec.oneapi.io/level-zero/latest/index.html"
+---
+
+import PipelineTimeline from '../../../components/interactive/PipelineTimeline.tsx';
+import AttentionPathDecisionTree from '../../../components/interactive/AttentionPathDecisionTree.tsx';
+import NpuVsGpuExecution from '../../../components/interactive/NpuVsGpuExecution.tsx';
+
+## 简介
+
+在[上一篇文章](/zh/articles/npu-llm-kvcache)中，我们理解了 NPU 如何通过预分配 KV cache、两个模型（prefill + generate）和三层软件栈来运行 LLM。但有一个关键问题没有展开：**这些编译好的 blob 在 NPU 硬件上到底怎么执行？**
+
+本文深入 NPU 的执行模型——32 层 Transformer 如何被展开成一个扁平任务列表，DMA/DPU/SHAVE 三条流水线如何通过 barrier 协作隐藏内存延迟，编译器如何为 attention 选择最优实现路径。最后，我们跳出具体实现，反思 NPU 编程模型的天花板：ONNX 能表达什么、不能表达什么，以及 CuTe 式 DSL 可能带来的变革。
+
+## 32 层 Transformer 的执行：一个 blob，没有循环
+
+### CMX 的容量约束
+
+在[NPU 架构概览](/zh/articles/npu-gpu-co-inference#cmxddr-两层内存架构)中我们提到，NPU 的片上高速存储 CMX 容量有限（KB~MB 级）。一个 7B 参数的 LLM，单层权重就可能达到几十 MB——CMX 根本放不下。
+
+解决方案是**流式处理**：每次只把一层的权重从 DDR 搬入 CMX，计算完后释放 CMX 空间，再搬下一层。这与 GPU 形成鲜明对比——GPU 把所有权重一次性加载到显存（VRAM），计算时直接访问。
+
+### 编译时展开：没有循环，只有任务列表
+
+npu_compiler 将 32 层 Transformer **完全展开（unroll）** 成一个扁平的任务列表——可能包含几千条 DMA + DPU + SHAVE 任务。层与层之间没有明确的分界线，也没有 host 端的 `for` 循环。
+
+整个 blob 的执行流程是：
+1. Host 将 blob 加载到 NPU 可访问的内存中
+2. Host 提交一个指针（`MappedInference` 结构体）到 NPU
+3. **NPU 完全自治**：管理核（40xx 的 RISC-V）逐条读取任务描述符，检查 barrier 条件，派发到 DMA/DPU/SHAVE
+4. 所有任务完成后，管理核写入 fence value 通知 host
+
+这与 GPU 的 kernel launch 模型形成鲜明对比：GPU 每个 kernel 是一次 host→device 调度，host 始终保持控制权；NPU 是**一次提交后完全放手**，直到所有层全部执行完毕。
+
+> **类比**：GPU 像导演在片场逐镜头喊"Action"，NPU 像把整部电影的拍摄计划提前排好，按下播放键后导演就可以离开了。
+
+## DMA/计算流水重叠
+
+### 核心优化：隐藏搬运延迟
+
+如果 DMA、DPU、SHAVE 严格串行执行（搬数据 → 算矩阵 → 算激活 → 搬下一层...），大量时间浪费在等待上。NPU 的关键性能优化是**三条流水线并行**：
+
+- **DMA** 搬第 N+1 层的权重时，**DPU** 正在计算第 N 层
+- **SHAVE** 执行第 N 层的激活函数时，**DMA** 可能已经在搬第 N+2 层的数据
+
+这种重叠通过 **barrier 同步**实现：管理核检查每个 barrier 的 producer/consumer 计数，只有前置任务完成后才派发后续任务。
+
+<PipelineTimeline client:visible />
+
+### FeasibleMemoryScheduler：编译时的四个核心决策
+
+这种流水并行不是运行时动态决定的——它在**编译时**由 `FeasibleMemoryScheduler` 完全规划好：
+
+**1. CMX 容量管理**
+
+线性扫描算法追踪每个时刻的 CMX 使用量，确保任何时刻都不超过物理容量。每个 DMA 搬入操作增加使用量，每个计算完成后释放对应空间。
+
+**2. Prefetch 提前量**
+
+`prefetchingLevelLimit` 参数控制 DMA 提前几步开始搬运。提前量越大，隐藏延迟越好，但占用的 CMX 空间也越多——这是一个权衡。
+
+**3. 动态溢出（Spilling）**
+
+当 CMX 满了但还需要搬入新数据时，编译器会选择当前不急用的数据**暂时写回 DDR**（spill out），腾出 CMX 空间。后续需要时再搬回来（spill in）。
+
+**4. Ping-Pong 缓冲**
+
+两块 CMX buffer 交替使用：一块供 DPU/SHAVE 读取计算，另一块让 DMA 写入新数据。计算和搬运完全重叠，不需要等待。
+
+### 与 GPU 的对比
+
+这里有一个有趣的对称性（关联 [CUDA 编程模型](/zh/articles/cuda-programming-model)）：
+
+| | NPU | GPU |
+|---|---|---|
+| **目标** | 隐藏 DDR→CMX 搬运延迟 | 隐藏 Global Memory→SM 延迟 |
+| **机制** | DMA prefetch（编译时规划） | Stream + async memcpy（运行时调度） |
+| **决策时机** | 编译时全部确定 | 运行时由 warp scheduler 动态决定 |
+| **类比** | 播放一张已经录好的唱片 | 即兴乐队现场演奏 |
+
+概念相同——都是隐藏内存延迟。但机制相反——GPU 是运行时动态调度，NPU 是编译时全规划好（运行时零决策）。
+
+## Attention 在 NPU 上的三条路径
+
+Attention 是 Transformer 的核心计算，也是 NPU 编译器最需要精心优化的部分。根据推理阶段和硬件能力，编译器在三条实现路径中选择：
+
+### 路径 1：分解路径（Decompose SDPA）
+
+当目标硬件不支持专用 attention 算子时的 fallback 方案。将 Scaled Dot-Product Attention 分解为独立的操作序列：
+
+1. $Q \times K^T$ → **DPU**（NCE MatMul）
+2. $\times \text{scale}$ → **DPU**（PPE，融合在 MatMul 后处理中）
+3. $+ \text{attention\_mask}$ → **DPU/SHAVE**（PPE 只能加逐 channel 常数，2D mask 需要 SHAVE）
+4. $\text{Softmax}$ → **SHAVE**（没有对应的 DPU 固定功能硬件）
+5. $\times V$ → **DPU**（NCE MatMul）
+
+中间结果需要在 CMX/DDR 间搬运（除非 Vertical Fusion 生效——见下一节）。
+
+### 路径 2：Flash SDPA
+
+适用于 **prefill 阶段**的长序列。整个 attention 作为一个 SHAVE kernel 执行，mask 处理融合在内部。
+
+核心思想：将 KV cache 沿 seq_len 维度切成 tile，每个 tile 独立计算局部 attention，同时维护三个滚动状态：
+
+- `running_output`：累积的加权输出
+- `running_max`：当前最大值（用于数值稳定的在线 softmax）
+- `running_sum`：归一化分母
+
+编译器中的 `UnrollFlashSDPA` pass 将一个 FlashSDPA op 展开为 tile 链。
+
+这与 [Flash Attention 论文](https://arxiv.org/abs/2205.14135)使用了**相同的在线 softmax 算法**，但 tiling 约束不同：GPU 版本受 shared memory 容量限制，NPU 版本受 CMX 容量限制。
+
+### 路径 3：Incremental SDPA
+
+适用于 **decode 阶段**，此时 query 只有 1 个 token。$Q \times K^T$ 从矩阵乘法退化为**向量-矩阵乘法**，可以用专门优化的 SHAVE kernel 实现，mask 在 kernel 内部处理。
+
+这三条路径的演进轨迹是：先有通用 `sdpa` → decode 专用 `incremental_sdpa` → prefill 专用 `flash_sdpa`，随着优化需求逐步特化。
+
+<AttentionPathDecisionTree client:visible />
+
+## Tiling 与 Vertical Fusion
+
+### DPU Tiling
+
+当操作的输入/输出 tensor 太大，无法一次放入 CMX 时，编译器沿 H（高度）或 C（通道）维度**切成多个 tile**，每个 tile 单独处理：
+
+- 每个 tile 对应一个 `DPUVariant`（同一 `DPUInvariant` 下的不同工作负载）
+- `DpuTiler` 根据 CMX 容量和硬件对齐要求自动决定切分方式
+- 切分对计算结果透明——tile 的输出拼接后与未切分的完全一致
+
+### SHAVE Tiling
+
+`TileActShaveKernelTask` 负责 SHAVE 任务的切分。关键原则：**优先选不产生 strided memory access 的维度**。Strided access 意味着数据在内存中不连续，需要额外的 DMA 重排操作，代价很高。
+
+### Vertical Fusion
+
+Vertical Fusion 是 NPU 上**影响最大的优化之一**（关联[图编译优化](/zh/paths/graph-compilation-optimization)路径中的[算子融合](/zh/articles/operator-fusion-taxonomy)概念）。
+
+`PipeliningVFScheduling` pass 识别连续的操作序列（如 MatMul → RoPE → SDPA），将它们融合为一个"垂直融合区域"。融合后的关键收益：**中间结果留在 CMX 中，不需要写回 DDR 再读回**。
+
+这对 attention 块特别有价值：QKV 投影的输出可以直接在 CMX 中被 RoPE 和 SDPA 消费，省去了 MB 级别的 DDR 往返搬运。
+
+**与 GPU 算子融合的关键区别：**
+
+| | NPU Vertical Fusion | GPU 算子融合 |
+|---|---|---|
+| **省的是什么** | DDR 往返搬运（MB 级数据） | Kernel launch 开销（微秒级） |
+| **约束条件** | CMX 容量 | Shared memory + register 压力 |
+| **决策时机** | 编译时 | 编译时（XLA/TVM）或手动（CUDA） |
+
+## RoPE 与 Position IDs
+
+Attention 本身不感知 token 顺序，位置信息通过 `position_ids` 和 RoPE（Rotary Position Embedding）注入（数学细节见 [位置编码](/zh/articles/positional-encoding)文章）。
+
+在 NPU 上，RoPE 是专门的 SHAVE kernel。编译器的 `fuse_rope` pass 识别 IR 中的 Sin/Cos/Multiply 模式，将它们融合为单个高效的 RoPE 算子。
+
+静态 shape 下的一个细节：`position_ids` 的有效位置值从 0 开始递增，padding 位置填 0。对齐方式取决于阶段：
+
+**Prefill**（左对齐——有效 token 在前，padding 在后）：
+```
+input_ids      = [t1, t2, t3, t4, 0, 0, 0, 0]
+attention_mask = [1,  1,  1,  1,  0, 0, 0, 0]
+position_ids   = [0,  1,  2,  3,  0, 0, 0, 0]
+```
+
+**Generate**（右对齐——padding 在前，新 token 在最后一个位置）：
+```
+input_ids      = [0, 0, 0, 0, 0, 0, 0, token]
+attention_mask = [1, 1, 1, 1, 1, 0, 0, 0]
+position_ids   = [0, 0, 0, 0, 0, 0, 0, 4]
+```
+
+Generate 阶段的 `position_ids` 最后一个值等于当前 token 在序列中的实际位置（即 `attention_mask` 中 1 的个数）。
+
+## 实际优化与当前限制
+
+### 与静态执行模型直接相关的优化
+
+**DynamicDataMask**：padding 区域包含零或垃圾数据，对 attention 来说通过 mask 屏蔽了。但 LayerNorm 和 reduction 操作**不感知 mask**——它们会把 padding 区域的值也纳入计算，导致结果错误。编译器通过 `DynamicDataMask` 在这些操作前**插入清零**操作，确保 padding 区域不会污染计算。
+
+**LM Head 分离**：最后一层的 vocabulary 投影（hidden_size × vocab_size）是一个非常大的矩阵乘法。当 vocab_size 很大（如 32000+）时，NPU 未必比 CPU 快。NPUW 可以将这个操作切出来在 CPU 上执行。
+
+### 其他优化（简述）
+
+- **Prefix Caching**：多轮对话中，system prompt 的 KV cache 可以被缓存和复用，跳过重复的 prefill
+- **Speculative Decoding 支持**：`trim_kvcache_for_speculative_decoding` 处理被拒 token 的 KV cache 截断
+
+### 当前限制
+
+以下限制全部源于 NPU 的**静态执行模型**：
+
+| 限制 | 原因 | GPU 上的对比 |
+|------|------|------------|
+| 固定 KV cache 容量 | blob shape 不可变 | PagedAttention 按需分页 |
+| batch_size = 1 | 每个 batch size 需要单独编译 | Continuous batching |
+| KV cache 搬运开销（~512MB） | prefill 和 generate 是独立 blob | 同一 kernel 内直接访问 |
+| 冷启动慢（多变体编译） | 多个 generate blob | 运行时 JIT 编译 |
+
+## 编程模型的反思：ONNX 的边界与 CuTe 的启示
+
+### "编译器包揽一切"的四条裂缝
+
+回顾前面的内容，NPU 的编程模型本质上是"开发者提供 ONNX 模型，编译器负责一切优化"。这个模型在标准场景下工作得很好，但在 LLM 推理中暴露出四个结构性问题：
+
+1. **每种 attention 变体需要手写 SHAVE kernel**：sdpa → incremental_sdpa → flash_sdpa，新变体（Sliding Window、Cross Attention、Linear Attention）需等编译器团队实现，周期以月计
+2. **静态 shape 的副作用需要专门补丁**：DynamicDataMask 就是一例。换一种 KV cache 管理策略可能需要新的补丁
+3. **Generate 变体是蛮力枚举运行时动态性**：目前只枚举 KV cache 容量。如果还要枚举 batch size 和 beam width，排列组合爆炸
+4. **KV cache 搬运是架构约束的代价**：prefill→generate 的拷贝是因为两个 blob 不共享地址空间。如果算子作者能控制内存布局，这个拷贝可能可以避免
+
+### ONNX 能表达什么、不能表达什么
+
+ONNX（以及 OpenVINO IR）本质上是一个**计算图描述语言**：
+
+**能表达**：做什么操作（MatMul、Softmax、Add...）、操作间的数据依赖
+
+**不能表达**：
+- **Tiling 策略**：Flash Attention 的核心不是 Q×K×V 这几个操作，而是怎么切 tile、tile 间如何传递 `running_max` 和 `running_sum`
+- **内存布局偏好**：KV cache 的 `[batch, heads, seq_len, dim]` vs `[batch, seq_len, heads, dim]` 对 DMA 效率影响巨大，但 ONNX 不表达这个偏好
+- **融合决策**：Vertical Fusion 是巨大的优化，但 ONNX 不描述哪些中间结果应该留在片上
+
+### CuTe 的启示：第三条路
+
+当前 NPU 的编程抽象只有两个极端：
+- **ONNX**：极高层，不表达 tiling——所有优化交给编译器
+- **Raw SHAVE ASM**：极底层，表达一切——但开发门槛极高
+
+NVIDIA 的 [CuTe](https://github.com/NVIDIA/cutlass)（CUTLASS 3.0 的 tile abstraction）在 GPU 上开辟了一个**中间层**：算子作者控制 tile 大小和循环结构，编译器负责 DMA 和硬件映射。
+
+假设 NPU 有 CuTe 式的 DSL：
+- Flash SDPA 不需要编译器团队手写 SHAVE kernel，算子作者可以直接写 tiled attention
+- Tiling 策略可以根据模型特点调整（长上下文 → 大 KV tile，小模型 → 不需要 tiling）
+- 新算法验证周期从**月级缩短到天级**
+
+| 维度 | ONNX | CuTe 式 DSL |
+|------|------|-------------|
+| 表达内容 | 计算图（做什么） | Tiled 算法（怎么切、怎么传状态） |
+| Tiling | 不表达，引擎自动 | 算子作者指定 tile shape |
+| DMA/内存搬运 | 不表达，引擎自动 | 不表达，编译器自动 |
+| 新算子 | 等引擎支持（月级） | 算子作者直接写（天级） |
+| 调优空间 | 几乎为零 | tile 大小、循环顺序、分区策略 |
+| 可移植性 | 极好（跨硬件） | 好（跨同厂商硬件代际） |
+| 开发门槛 | 极低（导出模型） | 中等（需理解 tiling 概念） |
+
+> **关键洞察**：CuTe 和 ONNX 都隐藏了 DMA，但 CuTe 暴露了 tiling。Tiling 是算法和硬件之间的接口——往上依赖算法知识（只有算法作者知道 tile 间怎么传状态），往下依赖硬件知识（只有编译器知道 CMX 容量和 DMA 带宽）。
+
+<NpuVsGpuExecution client:visible />
+
+### 平衡观点
+
+需要强调的是：
+- **ONNX 对 99% 的用户是正确选择**。标准操作（Conv、MatMul、attention）的优化路径已经足够好
+- **CuTe 面向 1% 的算子作者**——但他们的生产力决定了推理引擎内部的优化速度
+- 两者**互补而非替代**：ONNX 用户什么都不用改，但享受到更快的 SDPA 实现
+
+当前 NPU 生态的瓶颈是人力：全世界能写 SHAVE kernel + npu_compiler pass 的人可能不超过几十个。模型作者无法试验新 attention 模式在 NPU 上的效果——只能等编译器团队实现已支持的算子。NPU 的定位（笔记本低功耗 AI 助手）使这些限制暂时可接受，但如果要支持更广泛的模型生态，某种形式的算子可编程性可能是绕不开的。
+
+## 总结
+
+本文画了一条从硬件执行到编程模型边界的完整弧线：
+
+1. **执行模型**：32 层 Transformer 被展开为扁平任务列表，NPU 一次提交后完全自治
+2. **流水重叠**：DMA/DPU/SHAVE 三条流水线通过 barrier 协作，编译时全部规划好
+3. **Attention 路径**：编译器根据推理阶段和硬件能力在三条路径中选择最优实现
+4. **Tiling 与融合**：DPU/SHAVE tiling 解决 CMX 容量限制，Vertical Fusion 省去 DDR 往返
+5. **编程模型反思**：ONNX 不表达 tiling，CuTe 暴露 tiling——这是 NPU 未来可能需要的中间抽象层
+
+**NPU 的定位**：笔记本低功耗单用户 LLM 推理。batch=1 是常态，固定 KV cache 容量覆盖大多数对话场景，核心优势在于低功耗和不占 GPU 资源。
+
+硬件的天花板不只是算力和带宽——也是编程模型允许多少人为它写高效代码。
+
+## 延伸阅读
+
+- [npu_compiler 源码](https://github.com/openvinotoolkit/npu_compiler)中的 `FeasibleMemoryScheduler` 是理解编译时调度决策的最佳入口。
+- [Flash Attention 论文](https://arxiv.org/abs/2205.14135)描述了在线 softmax 算法和 tiling 策略的原始设计。
+- [CUTLASS 3.0 / CuTe](https://github.com/NVIDIA/cutlass)展示了 GPU 上的 tile abstraction 如何解耦算法和硬件。
+- [CUDA 编程模型](/zh/articles/cuda-programming-model)和[图编译优化](/zh/paths/graph-compilation-optimization)路径提供了 GPU 侧的对比视角。

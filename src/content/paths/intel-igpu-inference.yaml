@@ -16,3 +16,5 @@ articles:
   - openvino-graph-pipeline
   - igpu-performance-analysis
   - npu-gpu-co-inference
+  - npu-llm-kvcache
+  - npu-execution-programming

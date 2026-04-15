@@ -10,6 +10,10 @@
 - [x] LLM Accuracy Benchmark：各 benchmark 详解（MMLU, HumanEval, GSM8K, MATH, ARC 等），评估方法论，排行榜解读 (来源: 2026-04-13) — 进行中: brainstorming
 
 ## 未来内容
+
+- [x] NPU programming in OpenVINO for Intel (来源: 2026-04-15) — 完成: npu-gpu-co-inference 扩充 + npu-llm-kvcache + npu-execution-programming (6 组件, zh-only)
+- [ ] RouteLLM details, how to train MF etc.
+- [ ] llama.cpp 文章增强
 - [x] Positional Encoding 专题文章（含 RoPE 旋转向量详细动画）(来源: 2026-04-01) — 完成: positional-encoding (含 RoPEFrequencyBands, RoPEComplexPlane, RoPEExtrapolation)
 - [x] MoE (Mixture of Experts) 专题 (来源: 2026-03-31) — 完成: mixture-of-experts (7 组件)
 - [x] Mamba / 状态空间模型专题 (来源: 2026-03-31) — 完成: state-space-models + hybrid-architectures (10 组件)
